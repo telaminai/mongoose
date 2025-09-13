@@ -11,9 +11,9 @@ Together, these two enable re-entrant event generation: handlers can schedule an
 ## Sample code
 
 - Processor
-  source: [ReEntrantHandler.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/reentrant/ReEntrantHandler.java)
+  source: [ReEntrantHandler.java]({{source_root}}/test/java/com/telamin/mongoose/example/reentrant/ReEntrantHandler.java)
 - Test
-  node: [ReEntrantTest.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/reentrant/ReEntrantTest.java)
+  node: [ReEntrantTest.java]({{source_root}}/test/java/com/telamin/mongoose/example/reentrant/ReEntrantTest.java)
 
 ## Minimal example
 ```java

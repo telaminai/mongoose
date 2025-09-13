@@ -71,7 +71,7 @@ extending ObjectEventHandlerNode.
   if needed.
 - Implements lifecycle via LifecycleNode; your handler will receive lifecycle callbacks from the server.
 - Less
-  configuration: [MongooseServerConfig](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/config/MongooseServerConfig.java)
+  configuration: [MongooseServerConfig]({{source_root}}/main/java/com/telamin/mongoose/config/MongooseServerConfig.java)
   exposes shortcut
   methods to register ObjectEventHandlerNode-based handlers, reducing boilerplate when wiring.
 - Encourages clean separation of concerns: the server handles scheduling, dispatch, and I/O; your handler handles
@@ -95,7 +95,7 @@ lifecycle, and interfaces.
   interface(s). The server can then route typed calls directly (compile-time safety, less casting).
 -
 
-Example: [ConfigAwareEventProcessor](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/internal/ConfigAwareEventProcessor.java)
+Example: [ConfigAwareEventProcessor]({{source_root}}/main/java/com/telamin/mongoose/internal/ConfigAwareEventProcessor.java)
 demonstrates a processor that implements ConfigListener and receives configuration updates via strongly typed
 callbacks.
 
@@ -133,7 +133,7 @@ Mongoose server composes handlers into EventProcessor groups. Many handlers can 
 execute
 on the same thread. Each EventProcessor group runs on its own agent (single-threaded loop). This means you can move
 handlers to different threads/agents by changing configuration, without changing application code.
-See [EventProcessorGroupConfig.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/config/EventProcessorGroupConfig.java)
+See [EventProcessorGroupConfig.java]({{source_root}}/main/java/com/telamin/mongoose/config/EventProcessorGroupConfig.java)
 for
 grouping options.
 
@@ -148,7 +148,7 @@ for wiring.
 
 During startup the server distributes configuration to processors and handlers that implement ConfigListener. The
 initial configuration is delivered via initialConfig(ConfigMap) before normal event flow begins. For
-example, [ConfigAwareEventProcessor.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/internal/ConfigAwareEventProcessor.java)
+example, [ConfigAwareEventProcessor.java]({{source_root}}/main/java/com/telamin/mongoose/internal/ConfigAwareEventProcessor.java)
 caches the ConfigMap and forwards it to an underlying listener when present.
 
 ## Injecting server resources
@@ -189,7 +189,7 @@ public class MyHandler extends ObjectEventHandlerNode {
 ```
 
 Real example in
-repo: [src/test/java/com/telamin/mongoose/example/PublishingServiceTypedSubscriberHandler.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/PublishingServiceTypedSubscriberHandler.java) (
+repo: [src/test/java/com/telamin/mongoose/example/PublishingServiceTypedSubscriberHandler.java]({{source_root}}/test/java/com/telamin/mongoose/example/PublishingServiceTypedSubscriberHandler.java) (
 TypedHandler inner class).
 
 ### Subscribing to event feeds
@@ -245,7 +245,7 @@ public class MyHandler extends ObjectEventHandlerNode implements PublishingServi
 
 Real example in repo showing service injection and subscribe in start():
 
-- [src/test/java/com/telamin/mongoose/example/PublishingServiceTypedSubscriberHandler.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/PublishingServiceTypedSubscriberHandler.java) (
+- [src/test/java/com/telamin/mongoose/example/PublishingServiceTypedSubscriberHandler.java]({{source_root}}/test/java/com/telamin/mongoose/example/PublishingServiceTypedSubscriberHandler.java) (
   TypedHandler inner class)
 
 3) Broadcast feeds
@@ -269,11 +269,11 @@ public void onServiceEvent(String event) {
 ```
 
 A complete working example is in:
-[src/test/java/com/telamin/mongoose/example/PublishingServiceTypedSubscriberHandler.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/PublishingServiceTypedSubscriberHandler.java).
+[src/test/java/com/telamin/mongoose/example/PublishingServiceTypedSubscriberHandler.java]({{source_root}}/test/java/com/telamin/mongoose/example/PublishingServiceTypedSubscriberHandler.java).
 
 ## Strongly typed callbacks example reference
 
-See: [ConfigAwareEventProcessor.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/internal/ConfigAwareEventProcessor.java)
+See: [ConfigAwareEventProcessor.java]({{source_root}}/main/java/com/telamin/mongoose/internal/ConfigAwareEventProcessor.java)
 
 - Extends DefaultEventProcessor and implements ConfigListener
 - Receives initial configuration via initialConfig(ConfigMap)
@@ -294,7 +294,7 @@ debug/tracing from normal operations.
 ## Management and control
 
 Event handlers and processors can be managed at runtime through the server control
-service: [MongooseServerController.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/servercontrol/MongooseServerController.java).
+service: [MongooseServerController.java]({{source_root}}/main/java/com/telamin/mongoose/service/servercontrol/MongooseServerController.java).
 It allows you to:
 
 - Add processors into groups with a chosen IdleStrategy

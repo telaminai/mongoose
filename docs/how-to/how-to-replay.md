@@ -13,9 +13,9 @@ Key points:
 ## Sample code
 
 - Processor
-  source: [HandlerPipeServerBootExample.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/replay/ReplayCaptureHandler.java)
+  source: [HandlerPipeServerBootExample.java]({{source_root}}/test/java/com/telamin/mongoose/example/replay/ReplayCaptureHandler.java)
 - Test
-  node: [HandlerPipeTest.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/replay/ReplayServerBootExample.java)
+  node: [HandlerPipeTest.java]({{source_root}}/test/java/com/telamin/mongoose/example/replay/ReplayServerBootExample.java)
 
 What it demonstrates:
 

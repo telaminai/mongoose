@@ -149,8 +149,8 @@ Resources in this repo:
 - [Zero‑GC object pooling](../how-to/how-to-object-pool.md)
 - [Benchmarks and performance](../reports/server-benchmarks-and-performance.md)
 -
-Tests/benchmarks: [EventProcessingBenchmark.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/benchmark/objectpool/EventProcessingBenchmark.java)
-and [ObjectPoolServerIntegrationTest.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/pool/ObjectPoolServerIntegrationTest.java)
+Tests/benchmarks: [EventProcessingBenchmark.java]({{source_root}}/test/java/com/telamin/mongoose/benchmark/objectpool/EventProcessingBenchmark.java)
+and [ObjectPoolServerIntegrationTest.java]({{source_root}}/test/java/com/telamin/mongoose/pool/ObjectPoolServerIntegrationTest.java)
 
 Guidelines:
 

@@ -182,8 +182,8 @@ Resources in this repo:
 - [Benchmarks and performance](../reports/server-benchmarks-and-performance.md)
 -
 
-Tests/benchmarks: [EventProcessingBenchmark.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/benchmark/objectpool/EventProcessingBenchmark.java)
-and [ObjectPoolServerIntegrationTest.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/pool/ObjectPoolServerIntegrationTest.java)
+Tests/benchmarks: [EventProcessingBenchmark.java]({{source_root}}/test/java/com/telamin/mongoose/benchmark/objectpool/EventProcessingBenchmark.java)
+and [ObjectPoolServerIntegrationTest.java]({{source_root}}/test/java/com/telamin/mongoose/pool/ObjectPoolServerIntegrationTest.java)
 
 ## Configuration pointers
 

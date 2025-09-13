@@ -76,7 +76,7 @@ public static void main(String[] args) throws Exception {
 ```
 
 5) Full end-to-end example with a real EventSource (this guide mirrors it):
-- [PoolEventSourceServerExample.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/objectpool/PoolEventSourceServerExample.java)
+- [PoolEventSourceServerExample.java]({{source_root}}/test/java/com/telamin/mongoose/example/objectpool/PoolEventSourceServerExample.java)
 
 What it shows:
 

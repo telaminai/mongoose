@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-package com.telamin.mongoose.objectpool;
+package com.telamin.mongoose.benchmark.objectpool;
 
 import com.fluxtion.runtime.EventProcessor;
 import com.fluxtion.runtime.StaticEventProcessor;

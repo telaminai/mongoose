@@ -35,9 +35,9 @@ Notes:
 ## Sample code
 
 - Processor
-  source: [HandlerPipeServerBootExample.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/handlerpipe/HandlerPipeServerBootExample.java)
+  source: [HandlerPipeServerBootExample.java]({{source_root}}/test/java/com/telamin/mongoose/example/handlerpipe/HandlerPipeServerBootExample.java)
 - Test
-  node: [HandlerPipeTest.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/connector/memory/HandlerPipeTest.java#L17)
+  node: [HandlerPipeTest.java]({{source_root}}/test/java/com/telamin/mongoose/connector/memory/HandlerPipeTest.java#L17)
   
 ## Lifecycle semantics
 HandlerPipe delegates lifecycle to InMemoryEventSource:

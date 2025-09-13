@@ -18,9 +18,9 @@ You’ll learn:
 
 References in this repository:
 
-- [ServiceConfig.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/config/ServiceConfig.java)
-- [ServerConfigurator.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/internal/ServerConfigurator.java)
-- [MongooseServer.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/MongooseServer.java)
+- [ServiceConfig.java]({{source_root}}/main/java/com/telamin/mongoose/config/ServiceConfig.java)
+- [ServerConfigurator.java]({{source_root}}/main/java/com/telamin/mongoose/internal/ServerConfigurator.java)
+- [MongooseServer.java]({{source_root}}/main/java/com/telamin/mongoose/MongooseServer.java)
 
 ## When to write a service
 
@@ -291,9 +291,9 @@ svc.tearDown();
 - Message sinks: [Writing a Message Sink Plugin](writing-a-message-sink-plugin.md)
 - Event sources: [Writing an Event Source Plugin](writing-an-event-source-plugin.md)
 - Configuration
-  API: [ServiceConfig.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/config/ServiceConfig.java),
+  API: [ServiceConfig.java]({{source_root}}/main/java/com/telamin/mongoose/config/ServiceConfig.java),
   `MongooseServerConfig.Builder`
 -
 
-Bootstrapping: [ServerConfigurator.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/internal/ServerConfigurator.java),
+Bootstrapping: [ServerConfigurator.java]({{source_root}}/main/java/com/telamin/mongoose/internal/ServerConfigurator.java),
 `MongooseServer`

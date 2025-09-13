@@ -11,12 +11,12 @@ When to use this:
 Key pieces in this repository:
 
 - MongooseServerConfig/EventProcessorGroupConfig/EventProcessorConfig builder APIs
-- [Config map container](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/config/ConfigMap.java)
+- [Config map container]({{source_root}}/main/java/com/telamin/mongoose/config/ConfigMap.java)
   for type-safe lookup
-- [Config Listener](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/config/ConfigListener.java)
+- [Config Listener]({{source_root}}/main/java/com/telamin/mongoose/config/ConfigListener.java)
   interface for receiving initial configuration
 - Helper
-  wrapper: [Config dispatch wrapper](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/internal/ConfigAwareEventProcessor.java)
+  wrapper: [Config dispatch wrapper]({{source_root}}/main/java/com/telamin/mongoose/internal/ConfigAwareEventProcessor.java)
 
 ## 1) How config is delivered at boot
 
@@ -90,7 +90,7 @@ At boot, the server will deliver this map to the handler if it exports ConfigLis
 ## 4) End-to-end example (runnable test)
 
 Check this test that boots a server using the fluent API and verifies the initial config is delivered:
-[InitialConfigFluentBootTest.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/config/InitialConfigFluentBootTest.java)
+[InitialConfigFluentBootTest.java]({{source_root}}/test/java/com/telamin/mongoose/config/InitialConfigFluentBootTest.java)
 
 ## 5) Tips
 

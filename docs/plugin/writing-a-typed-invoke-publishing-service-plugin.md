@@ -15,15 +15,15 @@ What you will learn:
 References in this repository:
 
 - Typed
-  service: [PublishingService.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/PublishingServiceTyped.java)
+  service: [PublishingService.java]({{source_root}}/test/java/com/telamin/mongoose/example/PublishingServiceTyped.java)
 - Listener
-  interface: [PublishingServiceListener.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/PublishingServiceListener.java)
+  interface: [PublishingServiceListener.java]({{source_root}}/test/java/com/telamin/mongoose/example/PublishingServiceListener.java)
 - Typed
-  processor: [PublishingServiceTypedSubscriberHandler.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/PublishingServiceTypedSubscriberHandler.java)
+  processor: [PublishingServiceTypedSubscriberHandler.java]({{source_root}}/test/java/com/telamin/mongoose/example/PublishingServiceTypedSubscriberHandler.java)
 - End-to-end
-  test: [PublishingServiceTypedInvokeExampleTest.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/PublishingServiceTypedInvokeExampleTest.java)
+  test: [PublishingServiceTypedInvokeExampleTest.java]({{source_root}}/test/java/com/telamin/mongoose/example/PublishingServiceTypedInvokeExampleTest.java)
 - Base service
-  support: [AbstractEventSourceService.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/extension/AbstractEventSourceService.java)
+  support: [AbstractEventSourceService.java]({{source_root}}/main/java/com/telamin/mongoose/service/extension/AbstractEventSourceService.java)
 
 ## 1) Define a listener interface
 

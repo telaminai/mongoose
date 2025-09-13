@@ -27,12 +27,12 @@ You’ll learn:
 
 References:
 
-- [AdminCommandRegistry.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/admin/AdminCommandRegistry.java)
-- [AdminFunction.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/admin/AdminFunction.java)
-- [AdminCommandRequest.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/admin/AdminCommandRequest.java)
-- [AdminCommandProcessor.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/admin/impl/AdminCommandProcessor.java)
-- [CliAdminCommandProcessor.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/admin/impl/CliAdminCommandProcessor.java)
-- [MongooseServerAdmin.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/servercontrol/MongooseServerAdmin.java)
+- [AdminCommandRegistry.java]({{source_root}}/main/java/com/telamin/mongoose/service/admin/AdminCommandRegistry.java)
+- [AdminFunction.java]({{source_root}}/main/java/com/telamin/mongoose/service/admin/AdminFunction.java)
+- [AdminCommandRequest.java]({{source_root}}/main/java/com/telamin/mongoose/service/admin/AdminCommandRequest.java)
+- [AdminCommandProcessor.java]({{source_root}}/main/java/com/telamin/mongoose/service/admin/impl/AdminCommandProcessor.java)
+- [CliAdminCommandProcessor.java]({{source_root}}/main/java/com/telamin/mongoose/service/admin/impl/CliAdminCommandProcessor.java)
+- [MongooseServerAdmin.java]({{source_root}}/main/java/com/telamin/mongoose/service/servercontrol/MongooseServerAdmin.java)
 
 ## How it works
 
@@ -212,6 +212,6 @@ void processAdminCommand(List<String> args, Consumer<OUT> out, Consumer<ERR> err
 
 See:
 
-- [BroadcastCallbackTest.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/dispatch/BroadcastCallbackTest.java)
-- [MongooseServerAdmin.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/servercontrol/MongooseServerAdmin.java)
+- [BroadcastCallbackTest.java]({{source_root}}/test/java/com/telamin/mongoose/dispatch/BroadcastCallbackTest.java)
+- [MongooseServerAdmin.java]({{source_root}}/main/java/com/telamin/mongoose/service/servercontrol/MongooseServerAdmin.java)
   These show wiring the admin registry, adding commands, and optional CLI usage.

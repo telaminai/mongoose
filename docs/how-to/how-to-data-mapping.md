@@ -10,7 +10,7 @@ reach your processors. We will:
 
 The complete, runnable example is in:
 
-- Example: [ExampleDataMapping.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/datamapper/ExampleDataMapping.java)
+- Example: [ExampleDataMapping.java]({{source_root}}/test/java/com/telamin/mongoose/example/datamapper/ExampleDataMapping.java)
 
 ## When to use value mapping
 
@@ -156,7 +156,7 @@ Key points:
 - Acquire from the pool in apply(...), populate fields, and return the pooled instance.
 - Ensure pooled types define a reset method used by the pool to clear state on release.
 
-Example (based on [PoolingDataMapper.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/pool/PoolingDataMapper.java)):
+Example (based on [PoolingDataMapper.java]({{source_root}}/test/java/com/telamin/mongoose/pool/PoolingDataMapper.java)):
 
 
 ```java

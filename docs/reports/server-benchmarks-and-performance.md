@@ -10,7 +10,7 @@ Summary:
 This page summarizes benchmark results and observations for the Mongoose Server using the object pool and in-VM event flow.
 
 Source of results:
-- Data files: `*.hgrm` under this directory were produced by running the test/benchmark [BenchmarkObjectPoolDistribution.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/benchmark/objectpool/BenchmarkObjectPoolDistribution.java) in report mode.
+- Data files: `*.hgrm` under this directory were produced by running the test/benchmark [BenchmarkObjectPoolDistribution.java]({{source_root}}/test/java/com/telamin/mongoose/benchmark/objectpool/BenchmarkObjectPoolDistribution.java) in report mode.
 - Visualizations: Histogram PNGs in this folder were generated from those HdrHistogram output files.
 
 ## Test setup at a glance
@@ -60,7 +60,7 @@ Notes:
 
 ## Memory and heap usage (Object Pooling)
 
-The example program [PoolEventSourceServerExample.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/objectpool/PoolEventSourceServerExample.java) publishes pooled events at very high rates and periodically prints heap and GC statistics. A representative snippet of its output:
+The example program [PoolEventSourceServerExample.java]({{source_root}}/test/java/com/telamin/mongoose/example/objectpool/PoolEventSourceServerExample.java) publishes pooled events at very high rates and periodically prints heap and GC statistics. A representative snippet of its output:
 
 ```
 Processed 12000000 messages in 252 ms, heap used: 23 MB, GC count: 0

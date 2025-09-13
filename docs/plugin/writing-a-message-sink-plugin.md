@@ -239,11 +239,11 @@ static class TestableMySink extends MyCustomMessageSink {
 ## Reference implementations in this repo
 
 - File
-  sink: [FileMessageSink.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/connector/file/FileMessageSink.java) —
+  sink: [FileMessageSink.java]({{source_root}}/main/java/com/telamin/mongoose/connector/file/FileMessageSink.java) —
   appends
   each published message as a line to a file.
 - In-memory sink (for
-  testing): [InMemoryMessageSink.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/connector/memory/InMemoryMessageSink.java) —
+  testing): [InMemoryMessageSink.java]({{source_root}}/main/java/com/telamin/mongoose/connector/memory/InMemoryMessageSink.java) —
   accumulates messages in memory.
 - End-to-end usage: [file-and-memory-feeds-example.md](../guide/file-and-memory-feeds-example.md) — shows processor
   wiring and

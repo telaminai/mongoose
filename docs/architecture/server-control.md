@@ -7,7 +7,7 @@ Related reading:
 
 - How-to: Add an admin command → [write an admin command](../how-to/writing-an-admin-command.md)
 - Programmatic control
-  API → [MongooseServerController.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/servercontrol/MongooseServerController.java)
+  API → [MongooseServerController.java]({{source_root}}/main/java/com/telamin/mongoose/service/servercontrol/MongooseServerController.java)
 
 ## Overview
 
@@ -21,20 +21,20 @@ Exposing the registry externally:
 
 - The AdminCommandRegistry is exposed to the outside world via plugins. A concrete example is the CLI plugin
   that reads from stdin and forwards requests to the registry:
-  [CliAdminCommandProcessor.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/admin/impl/CliAdminCommandProcessor.java).
+  [CliAdminCommandProcessor.java]({{source_root}}/main/java/com/telamin/mongoose/service/admin/impl/CliAdminCommandProcessor.java).
   In the same way, you can expose HTTP, gRPC, or other transports by writing a small adapter that translates incoming
   requests into AdminCommandRequest objects and passes them to the registry.
 
 The core types are:
 
 - AdminCommandRegistry — a registry where commands can be registered and invoked at runtime.
-  Source: [AdminCommandRegistry.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/admin/AdminCommandRegistry.java)
+  Source: [AdminCommandRegistry.java]({{source_root}}/main/java/com/telamin/mongoose/service/admin/AdminCommandRegistry.java)
 - AdminFunction — the functional interface you implement for a command handler.
-  Source: [AdminFunction.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/admin/AdminFunction.java)
+  Source: [AdminFunction.java]({{source_root}}/main/java/com/telamin/mongoose/service/admin/AdminFunction.java)
 - AdminCommandProcessor — the default registry implementation and dispatcher that wires into the event flow.
-  Source: [AdminCommandProcessor.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/admin/impl/AdminCommandProcessor.java)
+  Source: [AdminCommandProcessor.java]({{source_root}}/main/java/com/telamin/mongoose/service/admin/impl/AdminCommandProcessor.java)
 - Optional CLI driver (example) that reads commands and sends them to the registry.
-  Source: [CliAdminCommandProcessor.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/admin/impl/CliAdminCommandProcessor.java)
+  Source: [CliAdminCommandProcessor.java]({{source_root}}/main/java/com/telamin/mongoose/service/admin/impl/CliAdminCommandProcessor.java)
 
 ## Registering commands on the fly
 
@@ -69,11 +69,11 @@ public class MyHandler /* extends ObjectEventHandlerNode, etc. */ {
 Notes:
 
 - AdminFunction’s signature is: void processAdminCommand(List<String> args, Consumer<OUT> out, Consumer<ERR> err)
-  See: [AdminFunction.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/admin/AdminFunction.java)
+  See: [AdminFunction.java]({{source_root}}/main/java/com/telamin/mongoose/service/admin/AdminFunction.java)
 - To invoke a command you typically create an AdminCommandRequest and call
   AdminCommandRegistry.processAdminCommandRequest(request). The CLI example shows how to parse user input and route it
   to the registry.
-  See: [CliAdminCommandProcessor.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/admin/impl/CliAdminCommandProcessor.java)
+  See: [CliAdminCommandProcessor.java]({{source_root}}/main/java/com/telamin/mongoose/service/admin/impl/CliAdminCommandProcessor.java)
 
 ## Dispatching and threading model for commands
 
@@ -84,7 +84,7 @@ that queue and executed on the correct processor thread. Implementation referenc
 - queue registration and subscription: AdminCommandProcessor.addCommand(...)
 - registration behavior based on ProcessorContext: AdminCommandProcessor.registerCommand(...)
 
-Source: [AdminCommandProcessor.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/admin/impl/AdminCommandProcessor.java)
+Source: [AdminCommandProcessor.java]({{source_root}}/main/java/com/telamin/mongoose/service/admin/impl/AdminCommandProcessor.java)
 
 ## Built-in commands (default)
 
@@ -97,7 +97,7 @@ AdminCommandProcessor registers several default commands during start():
 - eventSources
     - Prints information about queues/event sources known to the EventFlowManager.
 
-Source: [AdminCommandProcessor.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/admin/impl/AdminCommandProcessor.java)
+Source: [AdminCommandProcessor.java]({{source_root}}/main/java/com/telamin/mongoose/service/admin/impl/AdminCommandProcessor.java)
 
 ## Server controller (optional plugin)
 
@@ -113,7 +113,7 @@ Security note:
 - The MongooseServerController plugin should be enabled only when you require runtime control; keep it disabled otherwise.
 
 - MongooseServerController interface
-  Source: [MongooseServerController.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/servercontrol/MongooseServerController.java)
+  Source: [MongooseServerController.java]({{source_root}}/main/java/com/telamin/mongoose/service/servercontrol/MongooseServerController.java)
 
 Capabilities provided:
 
@@ -141,4 +141,4 @@ The CLI admin component demonstrates wiring stdin to admin commands:
 - Creates an AdminCommandRequest (with output and error consumers)
 - Calls AdminCommandRegistry.processAdminCommandRequest(request)
 
-Source: [CliAdminCommandProcessor.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/admin/impl/CliAdminCommandProcessor.java)
+Source: [CliAdminCommandProcessor.java]({{source_root}}/main/java/com/telamin/mongoose/service/admin/impl/CliAdminCommandProcessor.java)

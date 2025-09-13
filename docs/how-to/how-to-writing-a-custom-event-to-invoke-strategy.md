@@ -15,9 +15,9 @@ When to customize:
 You can:
 
 - Implement the low-level interface
-  directly: [EventToInvokeStrategy](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/EventToInvokeStrategy.java)
+  directly: [EventToInvokeStrategy]({{source_root}}/main/java/com/telamin/mongoose/service/EventToInvokeStrategy.java)
 - Or extend the convenience base
-  class: [AbstractEventToInvocationStrategy](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/dispatch/AbstractEventToInvocationStrategy.java)
+  class: [AbstractEventToInvocationStrategy]({{source_root}}/main/java/com/telamin/mongoose/dispatch/AbstractEventToInvocationStrategy.java)
 
 The helper already manages:
 
@@ -66,7 +66,7 @@ Notes:
 - Using an invoker strategy allows your event processors to be strongly typed (e.g., MarkerProcessor.onString), while
   the strategy takes responsibility for mapping inbound events to the correct callback. This reduces boilerplate and
   centralizes dispatch logic, which can make future maintenance easier.
-- [ProcessorContext](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/dispatch/ProcessorContext.java)
+- [ProcessorContext]({{source_root}}/main/java/com/telamin/mongoose/dispatch/ProcessorContext.java)
   is automatically set to the current target processor during dispatch. Inside the processor, you can call
   ProcessorContext.currentProcessor() if needed.
 - If you call processEvent(event, time), AbstractEventToInvocationStrategy wires a synthetic clock into each target
@@ -75,7 +75,7 @@ Notes:
 ## 3) Wire your strategy into the runtime
 
 Register your strategy as a factory for
- a [CallBackType](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/CallBackType.java).
+ a [CallBackType]({{source_root}}/main/java/com/telamin/mongoose/service/CallBackType.java).
 
 Via MongooseServerConfig fluent builder (server will register on boot), and override the default onEvent strategy,
 ON_EVENT_CALL_BACK,
@@ -92,7 +92,7 @@ MongooseServer server = MongooseServer.bootServer(mongooseServerConfig);
 
 For a full end-to-end example that boots the server via the fluent MongooseServerConfig builder and verifies the custom strategy,
 see the test method fluentBuilder_bootsServer_and_applies_custom_strategy
-in [CustomEventToInvokeStrategyTest.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/dispatch/CustomEventToInvokeStrategyTest.java).
+in [CustomEventToInvokeStrategyTest.java]({{source_root}}/test/java/com/telamin/mongoose/dispatch/CustomEventToInvokeStrategyTest.java).
 
 Via MongooseServer (register at runtime), beware that custom strategy will not affect queues that are already in use
 and have been registered before the new invoker strategy is registered.
@@ -111,7 +111,7 @@ server.registerEventMapperFactory(UppercaseStringStrategy::new, CallBackType.ON_
 - If you need timestamp semantics, publish a ReplayRecord through the EventToQueuePublisher or use processEvent(event,
   time) inside a controlled driver and have your processor consult its clock strategy.
 
-See [CustomEventToInvokeStrategyTest.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/dispatch/CustomEventToInvokeStrategyTest.java)
+See [CustomEventToInvokeStrategyTest.java]({{source_root}}/test/java/com/telamin/mongoose/dispatch/CustomEventToInvokeStrategyTest.java)
 for a complete, runnable example. It includes:
 
 - A direct EventFlowManager usage example of a custom strategy ✓
@@ -119,10 +119,10 @@ for a complete, runnable example. It includes:
 
 References:
 
-- [EventFlowManager](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/dispatch/EventFlowManager.java)
-- [EventToQueuePublisher](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/dispatch/EventToQueuePublisher.java)
-- [EventSourceKey](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/EventSourceKey.java)
-- [MongooseServer](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/MongooseServer.java)
-- [CallBackType](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/CallBackType.java)
-- [AbstractEventToInvocationStrategy](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/dispatch/AbstractEventToInvocationStrategy.java)
-- [ProcessorContext](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/dispatch/ProcessorContext.java)
+- [EventFlowManager]({{source_root}}/main/java/com/telamin/mongoose/dispatch/EventFlowManager.java)
+- [EventToQueuePublisher]({{source_root}}/main/java/com/telamin/mongoose/dispatch/EventToQueuePublisher.java)
+- [EventSourceKey]({{source_root}}/main/java/com/telamin/mongoose/service/EventSourceKey.java)
+- [MongooseServer]({{source_root}}/main/java/com/telamin/mongoose/MongooseServer.java)
+- [CallBackType]({{source_root}}/main/java/com/telamin/mongoose/service/CallBackType.java)
+- [AbstractEventToInvocationStrategy]({{source_root}}/main/java/com/telamin/mongoose/dispatch/AbstractEventToInvocationStrategy.java)
+- [ProcessorContext]({{source_root}}/main/java/com/telamin/mongoose/dispatch/ProcessorContext.java)

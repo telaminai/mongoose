@@ -110,7 +110,7 @@ try {
 
 ## 4) Complete, runnable test
 
-See [YamlConfigFeedsExampleTest](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/YamlConfigFeedsExampleTest.java)
+See [YamlConfigFeedsExampleTest]({{source_root}}/test/java/com/telamin/mongoose/example/YamlConfigFeedsExampleTest.java)
 for a full end-to-end test that builds the YAML string programmatically with temporary file paths, boots the server,
 stimulates both sources, and asserts the sink content.
 

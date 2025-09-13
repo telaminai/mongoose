@@ -18,7 +18,7 @@ Prerequisites:
 
 References in this repo:
 
-- [Optional test](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/internal/CoreAffinityOptionalTest.java)
+- [Optional test]({{source_root}}/test/java/com/telamin/mongoose/internal/CoreAffinityOptionalTest.java)
 - [POM entry for optional Affinity dependency](https://github.com/gregv12/fluxtion-server/blob/main/pom.xml) (artifact
   net.openhft:affinity)
 
@@ -62,10 +62,10 @@ configured core.
 
 Key code paths:
 
-- [CoreAffinity.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/internal/CoreAffinity.java)
-- [MongooseServer.java#resolveCoreIdForAgentName](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/MongooseServer.java#L726)
-- [ComposingEventProcessorAgent.java#onStart](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/dutycycle/ComposingEventProcessorAgent.java#L233)
-- [ComposingServiceAgent.java#onStart](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/dutycycle/ComposingServiceAgent.java#L89)
+- [CoreAffinity.java]({{source_root}}/main/java/com/telamin/mongoose/internal/CoreAffinity.java)
+- [MongooseServer.java#resolveCoreIdForAgentName]({{source_root}}/main/java/com/telamin/mongoose/MongooseServer.java#L726)
+- [ComposingEventProcessorAgent.java#onStart]({{source_root}}/main/java/com/telamin/mongoose/dutycycle/ComposingEventProcessorAgent.java#L233)
+- [ComposingServiceAgent.java#onStart]({{source_root}}/main/java/com/telamin/mongoose/dutycycle/ComposingServiceAgent.java#L89)
 
 ## 3) Enable OS‑level pinning (optional)
 
@@ -113,4 +113,4 @@ Notes:
 ## 6) Related reading
 
 - [Threading overview and agent lifecycles](../architecture/threading-model.md#optional-core-pinning-for-agent-threads)
-- [Fluent MongooseServerConfig examples](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/BuilderApiFluentExampleTest.java)
+- [Fluent MongooseServerConfig examples]({{source_root}}/test/java/com/telamin/mongoose/example/BuilderApiFluentExampleTest.java)

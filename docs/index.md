@@ -1,6 +1,6 @@
 # Mongoose Server
 
-Mongoose Server is a high‑performance, event‑driven library for building scalable event processing applications fast.
+[Mongoose Server]({{source_root}}) is a high‑performance, event‑driven library for building scalable event processing applications fast.
 It wires sources, processors, sinks, and services for you, handling threading and lifecycle behind the scenes, so you
 can focus on business logic.
 
@@ -37,7 +37,7 @@ standalone single‑server app — the same APIs support both.
 ### Quickstart: Hello Mongoose
 
 Run the one-file example to see events flowing through a handler:
-- Source: [HelloMongoose.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/example/hellomongoose/HelloMongoose.java)
+- Source: [HelloMongoose.java]({{source_root}}/main/java/com/telamin/mongoose/example/hellomongoose/HelloMongoose.java)
 
 ```java
 public static void main(String[] args) {
@@ -88,7 +88,7 @@ public static void main(String[] args) {
 ```
 
 ### Start here: Learn path
-- Step 1: Quickstart — run the one-file example: [Hello Mongoose](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/example/hellomongoose/HelloMongoose.java)
+- Step 1: Quickstart — run the one-file example: [Hello Mongoose]({{source_root}}/main/java/com/telamin/mongoose/example/hellomongoose/HelloMongoose.java)
 - Step 2: Learn the basics — [Event handling and business logic](overview/event-processing-architecture.md)
 - Step 3: Do common tasks — [How-to guides](how-to/how-to-subscribing-to-named-event-feeds.md)
 - Step 4: Understand internals — [Threading model](architecture/threading-model.md) and [Architecture overview](architecture/overview.md)

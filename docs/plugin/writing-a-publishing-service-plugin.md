@@ -15,13 +15,13 @@ We will:
 References in this repository:
 
 - Example
-  service: [PublishingService.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/PublishingService.java)
+  service: [PublishingService.java]({{source_root}}/test/java/com/telamin/mongoose/example/PublishingService.java)
 - Example
-  processor: [PublishingServiceSubscriberHandler.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/PublishingServiceSubscriberHandler.java)
+  processor: [PublishingServiceSubscriberHandler.java]({{source_root}}/test/java/com/telamin/mongoose/example/PublishingServiceSubscriberHandler.java)
 - Example
-  test: [PublishingServicePluginExampleTest.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/PublishingServicePluginExampleTest.java)
+  test: [PublishingServicePluginExampleTest.java]({{source_root}}/test/java/com/telamin/mongoose/example/PublishingServicePluginExampleTest.java)
 - Service base
-  class: [AbstractEventSourceService.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/extension/AbstractEventSourceService.java)
+  class: [AbstractEventSourceService.java]({{source_root}}/main/java/com/telamin/mongoose/service/extension/AbstractEventSourceService.java)
 
 ## 1) Implement a publishing Service
 

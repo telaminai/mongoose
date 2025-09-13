@@ -16,16 +16,16 @@ You’ll learn:
 References in this repository:
 
 - Processor
-  agent: [ComposingEventProcessorAgent](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/dutycycle/ComposingEventProcessorAgent.java)
+  agent: [ComposingEventProcessorAgent]({{source_root}}/main/java/com/telamin/mongoose/dutycycle/ComposingEventProcessorAgent.java)
 - Service
-  agent: [ComposingServiceAgent](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/dutycycle/ComposingServiceAgent.java)
+  agent: [ComposingServiceAgent]({{source_root}}/main/java/com/telamin/mongoose/dutycycle/ComposingServiceAgent.java)
 - Scheduler
-  agent: [DeadWheelScheduler](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/scheduler/DeadWheelScheduler.java)
+  agent: [DeadWheelScheduler]({{source_root}}/main/java/com/telamin/mongoose/service/scheduler/DeadWheelScheduler.java)
 - Event source
-  base: [AbstractEventSourceService](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/extension/AbstractEventSourceService.java) (+
+  base: [AbstractEventSourceService]({{source_root}}/main/java/com/telamin/mongoose/service/extension/AbstractEventSourceService.java) (+
   agent variant)
 - Queue
-  publisher: [EventToQueuePublisher](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/dispatch/EventToQueuePublisher.java)
+  publisher: [EventToQueuePublisher]({{source_root}}/main/java/com/telamin/mongoose/dispatch/EventToQueuePublisher.java)
 
 ## 1) Big picture
 
@@ -217,15 +217,15 @@ improve tail latency on systems where CPU affinity is desirable.
 Key points:
 
 - Configure per-agent core pinning using MongooseServerConfig’s agent
-  Threads: [ThreadConfig](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/config/ThreadConfig.java)
+  Threads: [ThreadConfig]({{source_root}}/main/java/com/telamin/mongoose/config/ThreadConfig.java)
   has an optional coreId field (zero-based CPU index).
 - Pinning is applied inside the agent thread itself during start (onStart) for both processor and service agent groups:
     - Processor
-      agent: [ComposingEventProcessorAgent](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/dutycycle/ComposingEventProcessorAgent.java)
+      agent: [ComposingEventProcessorAgent]({{source_root}}/main/java/com/telamin/mongoose/dutycycle/ComposingEventProcessorAgent.java)
     - Service
-      agent: [ComposingServiceAgent](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/dutycycle/ComposingServiceAgent.java)
+      agent: [ComposingServiceAgent]({{source_root}}/main/java/com/telamin/mongoose/dutycycle/ComposingServiceAgent.java)
 - Mongoose uses a lightweight
-  helper [CoreAffinity](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/internal/CoreAffinity.java)
+  helper [CoreAffinity]({{source_root}}/main/java/com/telamin/mongoose/internal/CoreAffinity.java)
   that attempts to pin via reflection to OpenHFT’s Affinity library if present; otherwise it logs and no-ops.
 
 Configure via fluent builder:
@@ -265,7 +265,7 @@ Optional dependency for pinning:
   dependency: [pom.xml](https://github.com/gregv12/fluxtion-server/blob/main/pom.xml) (artifact
   net.openhft:affinity).
 - A simple optional test that exercises pinning via reflection is provided
-  here: [CoreAffinityOptionalTest](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/internal/CoreAffinityOptionalTest.java).
+  here: [CoreAffinityOptionalTest]({{source_root}}/test/java/com/telamin/mongoose/internal/CoreAffinityOptionalTest.java).
 
 Notes:
 

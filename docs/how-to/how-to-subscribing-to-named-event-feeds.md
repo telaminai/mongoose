@@ -13,9 +13,9 @@ sink, ignoring orders entirely.
 ## Sample code
 
 - Test
-  source: [NamedFeedsSubscriptionExampleTest.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/NamedFeedsSubscriptionExampleTest.java)
+  source: [NamedFeedsSubscriptionExampleTest.java]({{source_root}}/test/java/com/telamin/mongoose/example/NamedFeedsSubscriptionExampleTest.java)
 - Processor
-  node: [NamedFeedsFilterHandler.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/NamedFeedsFilterHandler.java)
+  node: [NamedFeedsFilterHandler.java]({{source_root}}/test/java/com/telamin/mongoose/example/NamedFeedsFilterHandler.java)
 
 ### Processor handler that subscribes to specific feed names
 

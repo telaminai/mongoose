@@ -12,7 +12,7 @@ The processor receives events from both sources and writes them to a file sink.
 ## 1) Create a custom handler
 
 Extend ObjectEventHandlerNode and inject the FileMessageSink using @ServiceRegistered, see
-[BuilderApiExampleHandler](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/BuilderApiExampleHandler.java).
+[BuilderApiExampleHandler]({{source_root}}/test/java/com/telamin/mongoose/example/BuilderApiExampleHandler.java).
 In handleEvent, forward the incoming event to the sink:
 
 ```java
@@ -116,7 +116,7 @@ try {
 ```
 
 The example
-test [BuilderApiFluentExampleTest](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/BuilderApiFluentExampleTest.java)
+test [BuilderApiFluentExampleTest]({{source_root}}/test/java/com/telamin/mongoose/example/BuilderApiFluentExampleTest.java)
 demonstrates the complete flow and asserts that the sink contains these
 events from both sources:
 

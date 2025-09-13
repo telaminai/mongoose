@@ -168,12 +168,12 @@ private void scheduleHeartbeat(long periodMs) {
 ## References
 
 - Scheduler
-  interface  [SchedulerService.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/scheduler/SchedulerService.java)
+  interface  [SchedulerService.java]({{source_root}}/main/java/com/telamin/mongoose/service/scheduler/SchedulerService.java)
 - Default
-  implementation: [DeadWheelScheduler.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/scheduler/DeadWheelScheduler.java)
+  implementation: [DeadWheelScheduler.java]({{source_root}}/main/java/com/telamin/mongoose/service/scheduler/DeadWheelScheduler.java)
 - Trigger
-  helper: [ScheduledTriggerNode.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/service/scheduler/ScheduledTriggerNode.java)
+  helper: [ScheduledTriggerNode.java]({{source_root}}/main/java/com/telamin/mongoose/service/scheduler/ScheduledTriggerNode.java)
 - Wiring an event
-  processor: [ComposingEventProcessorAgent.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/dutycycle/ComposingEventProcessorAgent.java)
+  processor: [ComposingEventProcessorAgent.java]({{source_root}}/main/java/com/telamin/mongoose/dutycycle/ComposingEventProcessorAgent.java)
 - Wiring a
-  services: [ComposingServiceAgent.java](https://github.com/gregv12/fluxtion-server/blob/main/src/main/java/com/telamin/mongoose/dutycycle/ComposingServiceAgent.java)
+  services: [ComposingServiceAgent.java]({{source_root}}/main/java/com/telamin/mongoose/dutycycle/ComposingServiceAgent.java)

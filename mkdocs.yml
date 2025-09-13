@@ -48,11 +48,16 @@ plugins:
   - search
   - mermaid2
   - awesome-pages
+  - macros
 
 extra:
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/telaminai
+  # Define variables here
+  source_root: https://github.com/telaminai/mongoose/tree/main/src
+  version: 1.0.0
+  release_date: "2024-09-13"
 
 nav:
   - Home:

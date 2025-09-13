@@ -60,7 +60,7 @@ Key concepts:
 ## Example FileEventSource with different ReadStrategy
 
 The example class is provided under:
-[FileReadStrategyExample](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/readstrategy/FileReadStrategyExample.java).
+[FileReadStrategyExample]({{source_root}}/test/java/com/telamin/mongoose/example/readstrategy/FileReadStrategyExample.java).
 
 It demonstrates creating three FileEventSource instances reading three files with strategies: EARLIEST, LATEST, and
 COMMITED. You can easily extend it to ONCE_*.

@@ -47,9 +47,9 @@ graph TD
 End‑to‑end runnable code (already in the repo):
 
 * Feed
-  Handler: [NamedFeedsFilterHandler.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/NamedFeedsFilterHandler.java)
+  Handler: [NamedFeedsFilterHandler.java]({{source_root}}/test/java/com/telamin/mongoose/example/NamedFeedsFilterHandler.java)
 * Wiring +
-  test: [NamedFeedsSubscriptionExampleTest.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/NamedFeedsSubscriptionExampleTest.java)
+  test: [NamedFeedsSubscriptionExampleTest.java]({{source_root}}/test/java/com/telamin/mongoose/example/NamedFeedsSubscriptionExampleTest.java)
 
 ## 1) Write the handler (business logic only)
 
@@ -150,7 +150,7 @@ MongooseServer server = MongooseServer.bootServer(mongooseServerConfig, rec -> {
 ```
 
 Complete and runnable
-version [NamedFeedsSubscriptionExampleTest](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/NamedFeedsSubscriptionExampleTest.java)
+version [NamedFeedsSubscriptionExampleTest]({{source_root}}/test/java/com/telamin/mongoose/example/NamedFeedsSubscriptionExampleTest.java)
 
 ## 3) Run and verify
 
@@ -183,6 +183,6 @@ threading—without editing your business logic.
 ## Source code
 
 * Feed
-  Handler: [NamedFeedsFilterHandler.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/NamedFeedsFilterHandler.java)
+  Handler: [NamedFeedsFilterHandler.java]({{source_root}}/test/java/com/telamin/mongoose/example/NamedFeedsFilterHandler.java)
 * Wiring +
-  test: [NamedFeedsSubscriptionExampleTest.java](https://github.com/gregv12/fluxtion-server/blob/main/src/test/java/com/telamin/mongoose/example/NamedFeedsSubscriptionExampleTest.java)
+  test: [NamedFeedsSubscriptionExampleTest.java]({{source_root}}/test/java/com/telamin/mongoose/example/NamedFeedsSubscriptionExampleTest.java)
