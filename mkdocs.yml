@@ -1,0 +1,114 @@
+site_name: Mongoose Server
+site_description: High-performance, event-driven server framework
+site_url: https://telamin.github.io/mongoose/
+repo_url: https://github.com/telamin/mongoose
+repo_name: telamin/mongoose
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.indexes
+    - navigation.sections
+    - content.code.copy
+    - content.action.edit
+    - content.tabs.link
+    - search.suggest
+    - search.highlight
+  palette:
+    - scheme: slate
+      primary: blue
+      accent: indigo
+
+markdown_extensions:
+  - admonition
+  - codehilite
+  - toc:
+      permalink: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.details
+  - pymdownx.tabbed
+  - pymdownx.critic
+  - pymdownx.snippets
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.tilde
+  - attr_list
+  - tables
+
+plugins:
+  - search
+  - mermaid2
+  - awesome-pages
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/telamin
+
+nav:
+  - Home:
+      - index: index.md
+      - Why Mongoose: overview/mongoose-two-page-intro.md
+      - Mongoose for managers: overview/managers-overview.md
+      - Mongoose for engineers: overview/engineers-overview.md
+  - Getting started:
+      - 5-minute handler tutorial: guide/five-minute-event-handler-tutorial.md
+      - Event handler examples:
+          - Fluent API: guide/file-and-memory-feeds-example.md
+          - YAML config: guide/file-and-memory-feeds-yaml-example.md
+  - Component overview:
+      - Event source feeds: overview/event-sources-overview.md
+      - Event handling business logic: overview/event-processing-architecture.md
+      - Event sink outputs: overview/event-sinks-overview.md
+      - Service functions: overview/services-overview.md
+      - Plugin extension mechanism: overview/plugin_extension_architecture.md
+  - Examples and how-to:
+      - Plugin examples:
+          - Event sink plugin: plugin/writing-a-message-sink-plugin.md
+          - Event source plugin: plugin/writing-an-event-source-plugin.md
+          - Service plugin: plugin/writing-a-service-plugin.md
+          - Service plugin as event feed: plugin/writing-a-publishing-service-plugin.md
+          - Service plugin with custom dispatch: plugin/writing-a-typed-invoke-publishing-service-plugin.md
+      - How-to:
+          - Subscribe to named event feeds: how-to/how-to-subscribing-to-named-event-feeds.md
+          - Using the scheduler service: how-to/how-to-using-the-scheduler-service.md
+          - Inject config into a processor: how-to/how-to-injecting-config-into-a-processor.md
+          - Transform events: how-to/how-to-data-mapping.md
+          - Schedule re-entrant events: how-to/how-to-scheduler-processAsNewEventCycle.md
+          - Add an admin command: how-to/writing-an-admin-command.md
+          - Pipe messages between handlers: how-to/how-to-handler-pipe.md
+          - Event replay and synthetic time: how-to/how-to-replay.md
+          - Write a custom EventToInvokeStrategy: how-to/how-to-writing-a-custom-event-to-invoke-strategy.md
+          - Event source read strategy: guide/read-strategy.md
+          - Zero‑GC object pooling: how-to/how-to-object-pool.md
+          - Core pin agent threads: how-to/how-to-core-pin.md
+  - Reference guide:
+      - Glossary: reference/glossary.md
+      - Architecture and design:
+          - Doc description: architecture/index.md
+          - Overview: architecture/overview.md
+          - Components: architecture/components.md
+          - Event flow: architecture/event-flow.md
+          - Sequence diagrams:
+              - Overview: architecture/sequence-diagrams/index.md
+              - Sequence event subscription: architecture/sequence-diagrams/event-subscription.md
+              - Sequence event processing: architecture/sequence-diagrams/event-processing.md
+          - Agent Execution: architecture/agent-execution.md
+          - Threading model: architecture/threading-model.md
+          - Object pooling: architecture/object_pooling.md
+          - Server control: architecture/server-control.md
+      - Reference:
+          - Troubleshooting and FAQ: reference/troubleshooting.md
+          - Comparisons: reference/comparisons.md
+          - Operations runbook: reference/operations-runbook.md
+          - API Reference: https://javadoc.io/doc/com.fluxtion/server/latest/index.html
+      - Server benchmarks and performance: reports/server-benchmarks-and-performance.md
