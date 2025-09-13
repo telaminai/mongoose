@@ -1,6 +1,6 @@
 # Mongoose Server
 
-[Mongoose Server]({{source_root}}) is a high‑performance, event‑driven library for building scalable event processing applications fast.
+Mongoose Server is a high‑performance, event‑driven library for building scalable event processing applications fast.
 It wires sources, processors, sinks, and services for you, handling threading and lifecycle behind the scenes, so you
 can focus on business logic.
 
