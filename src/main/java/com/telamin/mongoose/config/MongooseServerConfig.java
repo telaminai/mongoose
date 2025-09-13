@@ -506,6 +506,37 @@ public class MongooseServerConfig {
         }
 
         /**
+         * Add a processor configuration into a group identified by agentName. If the
+         * group does not yet exist in this builder, it is created implicitly and added.
+         *
+         * @param agentName   the agent name of the target EventProcessorGroupConfig
+         * @param handlerName the key/name under which the processor config is registered
+         * @param cfg         the processor configuration
+         * @return this builder
+         */
+        public Builder addProcessor(String agentName, String handlerName, EventProcessorConfig<?> cfg) {
+            if (agentName == null || handlerName == null || cfg == null) {
+                throw new IllegalArgumentException("agentName, handlerName and cfg must be non-null");
+            }
+            // find or create group by agentName
+            EventProcessorGroupConfig group = this.eventHandlers.stream()
+                    .filter(g -> agentName.equals(g.getAgentName()))
+                    .findFirst()
+                    .orElseGet(() -> {
+                        EventProcessorGroupConfig g = EventProcessorGroupConfig.builder()
+                                .agentName(agentName)
+                                .build();
+                        this.eventHandlers.add(g);
+                        return g;
+                    });
+            if (group.getEventHandlers() == null) {
+                group.setEventHandlers(new java.util.HashMap<>());
+            }
+            group.getEventHandlers().put(handlerName, cfg);
+            return this;
+        }
+
+        /**
          * Build an {@link MongooseServerConfig} instance from the accumulated values.
          *
          * @return a new {@link MongooseServerConfig}
