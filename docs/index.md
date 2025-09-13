@@ -46,44 +46,47 @@ public static void main(String[] args) {
         @Override
         protected boolean handleEvent(Object event) {
             if (event instanceof String s) {
-                System.out.println("Got event: " + s);
+                System.out.println("thread:'" + Thread.currentThread().getName() + "' Got event: " + s);
             }
             return true;
-    }};
+        }
+    };
 
-    // 2) Create an in-memory event feed (String payloads)
+    // 2) Build in-memory feed
     var feed = new InMemoryEventSource<String>();
 
-    // 3) Wire processor group with our handler
-    var processorGroup = EventProcessorGroupConfig.builder()
-            .agentName("processor-agent")
-            .put("hello-processor", new EventProcessorConfig<>(handler))
+    // 3) Build and boot server with an in-memory feed and handler using builder APIs
+    var eventProcessorConfig = EventProcessorConfig.builder()
+            .customHandler(handler)
             .build();
 
-    // 4) Wire the feed on its own agent with a busy-spin idle strategy (lowest latency)
-    var feedCfg = EventFeedConfig.builder()
+    var feedConfig = EventFeedConfig.<String>builder()
             .instance(feed)
             .name("hello-feed")
             .broadcast(true)
             .agent("feed-agent", new BusySpinIdleStrategy())
             .build();
 
-    // 5) Build the application config and boot the mongooseServer
-    var mongooseServerConfig = MongooseServerConfig.builder()
-            .addProcessorGroup(processorGroup)
-            .addEventFeed(feedCfg)
+    var threadConfig = ThreadConfig.builder()
+            .agentName("processor-agent")
+            .idleStrategy(new BusySpinIdleStrategy())
             .build();
 
-    // boot with a no-op record consumer
-    var mongooseServer = MongooseServer.bootServer(
-            mongooseServerConfig, rec -> {/* no-op */});
+    var app = MongooseServerConfig.builder()
+            .addProcessor("processor-agent", "hello-handler", eventProcessorConfig)
+            .addEventFeed(feedConfig)
+            .addThread(threadConfig)
+            .build();
 
-    // 6) Publish a few events
+    var server = bootServer(app, rec -> { /* optional log listener */ });
+
+    // 4) Publish a few events
+    System.out.println("thread:'" + Thread.currentThread().getName() + "' publishing events\n");
     feed.offer("hi");
     feed.offer("mongoose");
 
-    // 7) Stop the mongooseServer (in real apps, you keep it running)
-    mongooseServer.stop();
+    // 5) Cleanup (in a real app, keep running)
+    server.stop();
 }
 ```
 
