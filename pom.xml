@@ -17,7 +17,7 @@
     <description>
         A high-performance opinionated event processing server, connecting event source and event sinks to event handlers
     </description>
-    <url>https://github.com/telamin/mongoose</url>
+    <url>https://github.com/telaminai/mongoose</url>
 
 
     <licenses>
@@ -36,9 +36,9 @@
     </developers>
 
     <scm>
-        <connection>scm:git:https://github.com/telamin/mongoose.git</connection>
-        <developerConnection>scm:git:https://github.com/telamin/mongoose.git</developerConnection>
-        <url>https://github.com/telamin/mongoose</url>
+        <connection>scm:git:https://github.com/telaminai/mongoose.git</connection>
+        <developerConnection>scm:git:https://github.com/telaminai/mongoose.git</developerConnection>
+        <url>https://github.com/telaminai/mongoose</url>
     </scm>
 
     <dependencies>
