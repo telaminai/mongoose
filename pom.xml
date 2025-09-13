@@ -15,7 +15,7 @@
         <fluxtion.version>9.7.14</fluxtion.version>
     </properties>
     <description>
-        A high performance opinionated event processing server, connecting event source and event sinks to event handlers
+        A high-performance opinionated event processing server, connecting event source and event sinks to event handlers
     </description>
     <url>https://github.com/telamin/mongoose</url>
 

@@ -25,7 +25,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install mkdocs mkdocs-material mkdocs-mermaid2-plugin mkdocs-awesome-pages-plugin
+          pip install mkdocs mkdocs-macros-plugin mkdocs-material mkdocs-mermaid2-plugin mkdocs-awesome-pages-plugin
 
       - name: Build site
         run: mkdocs build
