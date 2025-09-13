@@ -1,8 +1,8 @@
 site_name: Mongoose Server
 site_description: High-performance, event-driven server framework
-site_url: https://telamin.github.io/mongoose/
-repo_url: https://github.com/telamin/mongoose
-repo_name: telamin/mongoose
+site_url: https://telaminai.github.io/mongoose/
+repo_url: https://github.com/telaminai/mongoose
+repo_name: telaminai/mongoose
 edit_uri: edit/main/docs/
 
 theme:
@@ -52,7 +52,7 @@ plugins:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/telamin
+      link: https://github.com/telaminai
 
 nav:
   - Home:
