@@ -148,6 +148,17 @@ public class EventProcessorGroupConfig {
         }
 
         /**
+         * Adds a single event handler configuration
+         * @param cfg  handler configuration
+         * @return this builder instance
+         */
+        public Builder add(EventProcessorConfig<?> cfg) {
+            if (this.eventHandlers == null) this.eventHandlers = new HashMap<>();
+            this.eventHandlers.put(cfg.getName(), cfg);
+            return this;
+        }
+
+        /**
          * Builds and returns the configured EventProcessorGroupConfig instance
          *
          * @return new EventProcessorGroupConfig instance

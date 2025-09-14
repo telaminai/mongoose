@@ -30,6 +30,11 @@ public class EventProcessorConfig<T extends EventProcessor<?>> {
     private T eventHandler;
 
     /**
+     * Name identifier for this event processor configuration
+     */
+    private String name;
+
+    /**
      * Custom event handler node for specialized processing
      */
     private ObjectEventHandlerNode customHandler;
@@ -88,6 +93,7 @@ public class EventProcessorConfig<T extends EventProcessor<?>> {
      */
     public static final class Builder<T extends EventProcessor<?>> {
         private T eventHandler;
+        private String name;
         private ObjectEventHandlerNode customHandler;
         private Supplier<T> eventHandlerBuilder;
         private EventLogControlEvent.LogLevel logLevel;
@@ -103,6 +109,16 @@ public class EventProcessorConfig<T extends EventProcessor<?>> {
          */
         public Builder<T> handler(T handler) {
             this.eventHandler = handler;
+            return this;
+        }
+
+        /**
+         * Sets the name identifier for this event processor configuration
+         * @param name identifier for this event processor configuration
+         * @return this builder
+         */
+        public Builder<T> name(String name) {
+            this.name = name;
             return this;
         }
 
@@ -154,6 +170,7 @@ public class EventProcessorConfig<T extends EventProcessor<?>> {
         public EventProcessorConfig<T> build() {
             EventProcessorConfig<T> cfg = new EventProcessorConfig<>();
             cfg.setEventHandler(eventHandler);
+            cfg.setName(name);
             cfg.setCustomHandler(customHandler);
             cfg.setEventHandlerBuilder(eventHandlerBuilder);
             cfg.setLogLevel(logLevel);
