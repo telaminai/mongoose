@@ -88,7 +88,7 @@ nav:
           - Inject config into a processor: how-to/how-to-injecting-config-into-a-processor.md
           - Transform events: how-to/how-to-data-mapping.md
           - Schedule re-entrant events: how-to/how-to-scheduler-processAsNewEventCycle.md
-          - Add an admin command: how-to/writing-an-admin-command.md
+          - Add an admin command: how-to/how-to-write-an-admin-command.md
           - Pipe messages between handlers: how-to/how-to-handler-pipe.md
           - Event replay and synthetic time: how-to/how-to-replay.md
           - Write a custom EventToInvokeStrategy: how-to/how-to-writing-a-custom-event-to-invoke-strategy.md

@@ -11,6 +11,7 @@ reach your processors. We will:
 The complete, runnable example is in:
 
 - Example: [ExampleDataMapping.java]({{source_root}}/test/java/com/telamin/mongoose/example/datamapper/ExampleDataMapping.java)
+- Complete how-to example: [Data Mapping Example](https://github.com/telaminai/mongoose-examples/blob/229e01e2f508bdf084a611677dc93c1174c96bdc/how-to/data-mapping)
 
 ## When to use value mapping
 

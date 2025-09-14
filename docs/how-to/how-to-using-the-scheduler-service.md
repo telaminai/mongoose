@@ -154,6 +154,7 @@ private void scheduleHeartbeat(long periodMs) {
 - Heartbeat publisher (uses agent loop, shows timing/rate):
   `src/test/java/com/telamin/mongoose/example/HeartBeatEventFeed.java`
 - Simple scheduled trigger node: `src/main/java/com/telamin/mongoose/service/scheduler/ScheduledTriggerNode.java`
+- Complete how-to example: [Using the Scheduler Service Example](https://github.com/telaminai/mongoose-examples/blob/229e01e2f508bdf084a611677dc93c1174c96bdc/how-to/using-the-scheduler-service)
 - Injection sites:
     - `AbstractEventSourceService.scheduler(SchedulerService)`
     - `ComposingEventProcessorAgent` and `ComposingServiceAgent` where the scheduler is created and injected

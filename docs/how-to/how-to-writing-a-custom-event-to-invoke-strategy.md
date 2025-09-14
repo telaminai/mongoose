@@ -117,6 +117,8 @@ for a complete, runnable example. It includes:
 - A direct EventFlowManager usage example of a custom strategy ✓
 - A fluent MongooseServerConfig builder example that boots a MongooseServer and registers the custom strategy ✓
 
+Complete how-to example: [Writing a Custom Event to Invoke Strategy Example](https://github.com/telaminai/mongoose-examples/blob/229e01e2f508bdf084a611677dc93c1174c96bdc/how-to/writing-a-custom-event-to-invoke-strategy)
+
 References:
 
 - [EventFlowManager]({{source_root}}/main/java/com/telamin/mongoose/dispatch/EventFlowManager.java)

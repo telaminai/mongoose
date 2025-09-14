@@ -16,6 +16,7 @@ Key points:
   source: [HandlerPipeServerBootExample.java]({{source_root}}/test/java/com/telamin/mongoose/example/replay/ReplayCaptureHandler.java)
 - Test
   node: [HandlerPipeTest.java]({{source_root}}/test/java/com/telamin/mongoose/example/replay/ReplayServerBootExample.java)
+- Complete how-to example: [Replay Example](https://github.com/telaminai/mongoose-examples/blob/229e01e2f508bdf084a611677dc93c1174c96bdc/how-to/replay)
 
 What it demonstrates:
 

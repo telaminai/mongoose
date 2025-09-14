@@ -77,6 +77,7 @@ public static void main(String[] args) throws Exception {
 
 5) Full end-to-end example with a real EventSource (this guide mirrors it):
 - [PoolEventSourceServerExample.java]({{source_root}}/test/java/com/telamin/mongoose/example/objectpool/PoolEventSourceServerExample.java)
+- Complete how-to example: [Object Pool Example](https://github.com/telaminai/mongoose-examples/blob/229e01e2f508bdf084a611677dc93c1174c96bdc/how-to/object-pool)
 
 What it shows:
 

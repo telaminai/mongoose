@@ -38,7 +38,8 @@ Notes:
   source: [HandlerPipeServerBootExample.java]({{source_root}}/test/java/com/telamin/mongoose/example/handlerpipe/HandlerPipeServerBootExample.java)
 - Test
   node: [HandlerPipeTest.java]({{source_root}}/test/java/com/telamin/mongoose/connector/memory/HandlerPipeTest.java#L17)
-  
+- Complete how-to example: [HandlerPipe Example](https://github.com/telaminai/mongoose-examples/blob/229e01e2f508bdf084a611677dc93c1174c96bdc/how-to/handler-pipe)
+
 ## Lifecycle semantics
 HandlerPipe delegates lifecycle to InMemoryEventSource:
 - start(): If cacheEventLog is true, publishes are cached (not dispatched).

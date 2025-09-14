@@ -5,7 +5,7 @@ own commands on the fly. It also lists the default commands that are available o
 
 Related reading:
 
-- How-to: Add an admin command → [write an admin command](../how-to/writing-an-admin-command.md)
+- How-to: Add an admin command → [write an admin command](../how-to/how-to-write-an-admin-command.md)
 - Programmatic control
   API → [MongooseServerController.java]({{source_root}}/main/java/com/telamin/mongoose/service/servercontrol/MongooseServerController.java)
 
