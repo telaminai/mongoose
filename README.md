@@ -1,12 +1,12 @@
-# Fluxtion Server
+# Mongoose Server
 
 # [Main Documentation](https://telaminai.github.io/mongoose/)
 
-Fluxtion Server is a high‑performance, event‑driven server framework for building scalable, composable event processing
+Mongoose Server is a high‑performance, event‑driven server framework for building scalable, composable event processing
 applications. It wires event sources, processors, sinks, and services, and manages their lifecycle and threading so you
 can focus on business logic.
 
-## Why Fluxtion Server?
+## Why Mongoose Server?
 
 - Performance: Agent‑based concurrency with configurable idle strategies enables very high throughput and predictable
   latency.
