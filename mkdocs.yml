@@ -113,6 +113,7 @@ nav:
       - Reference:
           - Troubleshooting and FAQ: reference/troubleshooting.md
           - Comparisons: reference/comparisons.md
+          - Modulith suitability: reference/modulith-suitability.md
           - Operations runbook: reference/operations-runbook.md
           - API Reference: https://javadoc.io/doc/com.telamin/mongoose/latest/index.html
       - Server benchmarks and performance: reports/server-benchmarks-and-performance.md
