@@ -47,46 +47,42 @@ public static void main(String[] args) {
         @Override
         protected boolean handleEvent(Object event) {
             if (event instanceof String s) {
-                System.out.println("thread:'" + Thread.currentThread().getName() + "' Got event: " + s);
+                System.out.println("Got event: " + s);
             }
             return true;
-        }
-    };
+    }};
 
-    // 2) Build in-memory feed
+    // 2) Create an in-memory event feed (String payloads)
     var feed = new InMemoryEventSource<String>();
 
-    // 3) Build and boot server with an in-memory feed and handler using builder APIs
+    // 3) Build and boot mongoose server with an in-memory feed and handler using builder APIs
     var eventProcessorConfig = EventProcessorConfig.builder()
             .customHandler(handler)
+            .name("hello-handler")
             .build();
 
+    // 4) Wire the feed on its own agent with a busy-spin idle strategy (lowest latency)
     var feedConfig = EventFeedConfig.<String>builder()
             .instance(feed)
             .name("hello-feed")
             .broadcast(true)
             .agent("feed-agent", new BusySpinIdleStrategy())
             .build();
-
-    var threadConfig = ThreadConfig.builder()
-            .agentName("processor-agent")
-            .idleStrategy(new BusySpinIdleStrategy())
-            .build();
-
+    
+    // 6) Build the application config and boot the mongooseServer
     var app = MongooseServerConfig.builder()
-            .addProcessor("processor-agent", "hello-handler", eventProcessorConfig)
+            .addProcessor("processor-agent", eventProcessorConfig)
             .addEventFeed(feedConfig)
-            .addThread(threadConfig)
             .build();
 
-    var server = bootServer(app, rec -> { /* optional log listener */ });
+    // 7) boot an embedded MongooseServer instance
+    var server = MongooseServer.bootServer(app);
 
-    // 4) Publish a few events
-    System.out.println("thread:'" + Thread.currentThread().getName() + "' publishing events\n");
+    // 8) Publish a few events
     feed.offer("hi");
     feed.offer("mongoose");
 
-    // 5) Cleanup (in a real app, keep running)
+    // 9) Cleanup (in a real app, keep running)
     server.stop();
 }
 ```

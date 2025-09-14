@@ -537,6 +537,19 @@ public class MongooseServerConfig {
         }
 
         /**
+         * Add a processor configuration into a group identified by agentName, using the processor's
+         * configured name as the handler name. If the group does not exist, it will be created.
+         *
+         * @param agentName name of the target agent group
+         * @param cfg       the processor configuration to add
+         * @return this builder
+         * @throws IllegalArgumentException if agentName or cfg is null, or if cfg has no name set
+         */
+        public Builder addProcessor(String agentName, EventProcessorConfig<?> cfg) {
+            return addProcessor(agentName, cfg.getName(), cfg);
+        }
+
+        /**
          * Build an {@link MongooseServerConfig} instance from the accumulated values.
          *
          * @return a new {@link MongooseServerConfig}

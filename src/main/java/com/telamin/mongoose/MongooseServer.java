@@ -22,10 +22,7 @@ import com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent;
 import com.telamin.mongoose.dutycycle.ComposingServiceAgent;
 import com.telamin.mongoose.dutycycle.NamedEventProcessor;
 import com.telamin.mongoose.dutycycle.ServiceAgent;
-import com.telamin.mongoose.internal.ComposingEventProcessorAgentRunner;
-import com.telamin.mongoose.internal.ComposingWorkerServiceAgentRunner;
-import com.telamin.mongoose.internal.LifecycleManager;
-import com.telamin.mongoose.internal.ServiceInjector;
+import com.telamin.mongoose.internal.*;
 import com.telamin.mongoose.service.CallBackType;
 import com.telamin.mongoose.service.EventFlowService;
 import com.telamin.mongoose.service.EventSource;
@@ -113,8 +110,8 @@ import java.util.function.Supplier;
 @Log
 public class MongooseServer implements MongooseServerController {
 
-    public static final String CONFIG_FILE_PROPERTY = "fluxtionserver.config.file";
-    private static LogRecordListener logRecordListener;
+    public static final String CONFIG_FILE_PROPERTY = "mongooseServer.config.file";
+    private static LogRecordListener logRecordListener = logRecord -> {log.info(logRecord.toString());};
     private final MongooseServerConfig mongooseServerConfig;
     private final EventFlowManager flowManager = new EventFlowManager();
     private final ConcurrentHashMap<String, ComposingEventProcessorAgentRunner> composingEventProcessorAgents = new ConcurrentHashMap<>();
@@ -126,6 +123,23 @@ public class MongooseServer implements MongooseServerController {
     private volatile boolean started = false;
     private final LifecycleManager lifecycleManager = new LifecycleManager(this);
 
+    /**
+     * Entry point for starting a MongooseServer instance with default configuration.
+     * <p>
+     * This method loads server configuration from a file specified by the
+     * {@value #CONFIG_FILE_PROPERTY} system property and boots the server using
+     * default settings. The server configuration path must be provided via
+     * the system property {@code mongooseServer.config.file}.
+     *
+     * @param args command line arguments (not used)
+     * @see #bootServer()
+     * @see #CONFIG_FILE_PROPERTY
+     */
+    public static void main(String[] args) {
+        log.info("starting server from MongooseServer.main() with args:" + Arrays.toString(args));
+        MongooseServer.bootServer();  
+    }
+    
     /**
      * Construct a MongooseServer bound to a specific application configuration.
      * <p>
@@ -159,9 +173,24 @@ public class MongooseServer implements MongooseServerController {
     }
 
     /**
+     * Boots a MongooseServer instance using configuration from the provided reader and default log record listener.
+     * <p>
+     * This is a convenience method that delegates to {@link #bootServer(Reader, LogRecordListener)} using the default
+     * log record listener. The configuration data is read from the supplied reader and parsed as YAML to create
+     * an {@link MongooseServerConfig} instance.
+     *
+     * @param reader A {@code Reader} instance containing YAML-formatted server configuration
+     * @return A new {@code MongooseServer} instance configured from the reader's contents
+     * @see #bootServer(Reader, LogRecordListener)
+     */
+    public static MongooseServer bootServer(Reader reader) {
+        return bootServer(reader, logRecordListener);
+    }
+
+    /**
      * Boots a MongooseServer instance using a configuration file specified by a system property
      * and a log record listener. The configuration file path must be specified using the system property
-     * {@value #CONFIG_FILE_PROPERTY} ({@code fluxtionserver.config.file}). The configuration file
+     * {@value #CONFIG_FILE_PROPERTY} ({@code mongooseServer.config.file}). The configuration file
      * should contain YAML-formatted server configuration that will be parsed into an {@link MongooseServerConfig}
      * instance.
      *
@@ -182,19 +211,54 @@ public class MongooseServer implements MongooseServerController {
     }
 
     /**
+     * Boots a MongooseServer instance using the default log record listener and configuration
+     * from a file specified by the {@value #CONFIG_FILE_PROPERTY} system property.
+     * <p>
+     * This is a convenience method that delegates to {@link #bootServer(LogRecordListener)}
+     * using the default log record listener. The configuration file path must be specified
+     * using the system property {@code mongooseServer.config.file}.
+     *
+     * @return A new {@code MongooseServer} instance configured from the specified config file
+     * @throws NullPointerException if the configuration file name is not specified in the system property
+     * @throws IOException          if an error occurs while reading the configuration file
+     * @see #bootServer(LogRecordListener)
+     * @see #CONFIG_FILE_PROPERTY
+     */
+    @SneakyThrows
+    public static MongooseServer bootServer() {
+        return bootServer(logRecordListener);
+    }
+
+    /**
      * Boots a MongooseServer instance using the provided application configuration and log record listener.
      * The server is initialized based on the configuration data, and the log record listener
      * is used to handle log messages during its operation.
      *
-     * @param mongooseServerConfig         An {@code MongooseServerConfig} instance containing the server configuration.
-     * @param logRecordListener A {@code LogRecordListener} instance for handling log messages.
+     * @param mongooseServerConfig An {@code MongooseServerConfig} instance containing the server configuration.
+     * @param logRecordListener    A {@code LogRecordListener} instance for handling log messages.
      * @return A new {@code MongooseServer} instance configured with the given {@code MongooseServerConfig} and {@code LogRecordListener}.
      */
     public static MongooseServer bootServer(MongooseServerConfig mongooseServerConfig, LogRecordListener logRecordListener) {
         MongooseServer.logRecordListener = logRecordListener;
         log.info("booting fluxtion server");
         log.fine("config:" + mongooseServerConfig);
-        return com.telamin.mongoose.internal.ServerConfigurator.bootFromConfig(mongooseServerConfig, logRecordListener);
+        return ServerConfigurator.bootFromConfig(mongooseServerConfig, logRecordListener);
+    }
+    
+    /**
+     * Boots a MongooseServer instance using the provided application configuration and default log record listener.
+     * <p>
+     * This is a convenience method that delegates to {@link #bootServer(MongooseServerConfig, LogRecordListener)}
+     * using the default log record listener. The server is initialized based on the configuration data
+     * and prepared for starting.
+     *
+     * @param mongooseServerConfig An {@code MongooseServerConfig} instance containing the server configuration
+     * @return A new {@code MongooseServer} instance configured with the given {@code MongooseServerConfig}
+     * and default {@code LogRecordListener}
+     * @see #bootServer(MongooseServerConfig, LogRecordListener)
+     */
+    public static MongooseServer bootServer(MongooseServerConfig mongooseServerConfig) {
+        return bootServer(mongooseServerConfig, logRecordListener);
     }
 
     /**
@@ -251,7 +315,7 @@ public class MongooseServer implements MongooseServerController {
      * @param services   the event feed service to register as an agent-hosted worker
      * @param dataMapper optional function to transform event data (may be null)
      */
-    public void registerEventFeedWorker(ServiceAgent<?> services, Function<?,?> dataMapper) {
+    public void registerEventFeedWorker(ServiceAgent<?> services, Function<?, ?> dataMapper) {
         ServiceInjector.inject(dataMapper, registeredServices.values());
         registerWorkerService(services);
     }
@@ -640,7 +704,7 @@ public class MongooseServer implements MongooseServerController {
      * Returns null when no core pinning is configured for the agent.
      */
     public Integer resolveCoreIdForAgentName(String agentName) {
-        if (mongooseServerConfig ==null || mongooseServerConfig.getAgentThreads() == null) return null;
+        if (mongooseServerConfig == null || mongooseServerConfig.getAgentThreads() == null) return null;
         return mongooseServerConfig.getAgentThreads().stream()
                 .filter(t -> agentName != null && agentName.equals(t.getAgentName()))
                 .map(com.telamin.mongoose.config.ThreadConfig::getCoreId)
