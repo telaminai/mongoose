@@ -36,8 +36,7 @@ standalone single‑server app — the same APIs support both.
 
 ### Quickstart: Hello Mongoose
 
-Run the one-file example to see events flowing through a handler:
-- Source: [HelloMongoose.java]({{source_root}}/main/java/com/telamin/mongoose/example/hellomongoose/HelloMongoose.java)
+- Github project: [HelloMongoose](https://github.com/telaminai/hellomongoose)
 
 ```java
 public static void main(String[] args) {
