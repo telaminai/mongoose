@@ -54,36 +54,35 @@ public static void main(String[] args) {
     // 2) Create an in-memory event feed (String payloads)
     var feed = new InMemoryEventSource<String>();
 
-    // 3) Wire processor group with our handler
-    var processorGroup = EventProcessorGroupConfig.builder()
-            .agentName("processor-agent")
-            .put("hello-processor", new EventProcessorConfig<>(handler))
+    // 3) Build and boot mongoose server with an in-memory feed and handler using builder APIs
+    var eventProcessorConfig = EventProcessorConfig.builder()
+            .customHandler(handler)
+            .name("hello-handler")
             .build();
 
     // 4) Wire the feed on its own agent with a busy-spin idle strategy (lowest latency)
-    var feedCfg = EventFeedConfig.builder()
+    var feedConfig = EventFeedConfig.<String>builder()
             .instance(feed)
             .name("hello-feed")
             .broadcast(true)
             .agent("feed-agent", new BusySpinIdleStrategy())
             .build();
-
-    // 5) Build the application config and boot the mongooseServer
-    var mongooseServerConfig = MongooseServerConfig.builder()
-            .addProcessorGroup(processorGroup)
-            .addEventFeed(feedCfg)
+    
+    // 6) Build the application config and boot the mongooseServer
+    var app = MongooseServerConfig.builder()
+            .addProcessor("processor-agent", eventProcessorConfig)
+            .addEventFeed(feedConfig)
             .build();
 
-    // boot with a no-op record consumer
-    var mongooseServer = MongooseServer.bootServer(
-            mongooseServerConfig, rec -> {/* no-op */});
+    // 7) boot an embedded MongooseServer instance
+    var server = MongooseServer.bootServer(app);
 
-    // 6) Publish a few events
+    // 8) Publish a few events
     feed.offer("hi");
     feed.offer("mongoose");
 
-    // 7) Stop the mongooseServer (in real apps, you keep it running)
-    mongooseServer.stop();
+    // 9) Cleanup (in a real app, keep running)
+    server.stop();
 }
 ```
 
