@@ -31,13 +31,19 @@ flowchart TD
     priceFile["File: price-events"]
     orderFile["File: order-events"]
 %% Event Sources
-    newsFeed["FileEventSource<br>(news-Feed)"]
-    priceFeed["FileEventSource<br>(price-Feed)"]
-    orderFeed["FileEventSource<br>(order-Feed)"]
-%% Agent
-    fileAgent["file-source-agent<br>(Polls files for changes)"]
+    subgraph "Inbound Feeds (agents)"
+        newsFeed["FileEventSource<br>(news-Feed)"]
+        priceFeed["FileEventSource<br>(price-Feed)"]
+        orderFeed["FileEventSource<br>(order-Feed)"]
+    %% Agent
+        fileAgent["file-source-agent<br>(Polls files for changes)"]
+    end
+
 %% Handler
-    filterHandler["NamedFeedsFilterHandler<br>(Subscribes to: news-Feed, price-Feed)"]
+    subgraph "Processor agent"
+        filterHandler["NamedFeedsFilterHandler<br>(Subscribes to: news-Feed, price-Feed)"]
+    end
+    
 %% Sink
     fileSink["FileMessageSink<br>(processed-events)"]
 %% Connections
@@ -61,12 +67,9 @@ flowchart TD
 
 End‑to‑end runnable code (available in the mongoose-examples repository):
 
-*
-Handler: [NamedFeedsFilterHandler.java](https://github.com/telaminai/mongoose-examples/blob/main/gettting-started/five-minute-yaml-tutorial/src/main/java/com/telamin/mongoose/example/fivemin/NamedFeedsFilterHandler.java)
-* YAML
-  Configuration: [appConfig.yml](https://github.com/telaminai/mongoose-examples/blob/main/gettting-started/five-minute-yaml-tutorial/run/appConfig.yml)
-* Run
-  Script: [runMongooseServer.sh](https://github.com/telaminai/mongoose-examples/blob/main/gettting-started/five-minute-yaml-tutorial/run/runMongooseServer.sh)
+* Handler: [NamedFeedsFilterHandler.java](https://github.com/telaminai/mongoose-examples/blob/main/gettting-started/five-minute-yaml-tutorial/src/main/java/com/telamin/mongoose/example/fivemin/NamedFeedsFilterHandler.java)
+* YAML Configuration: [appConfig.yml](https://github.com/telaminai/mongoose-examples/blob/main/gettting-started/five-minute-yaml-tutorial/run/appConfig.yml)
+* Run Script: [runMongooseServer.sh](https://github.com/telaminai/mongoose-examples/blob/main/gettting-started/five-minute-yaml-tutorial/run/runMongooseServer.sh)
 
 ## 1) Modify the handler for YAML configuration
 
@@ -323,7 +326,8 @@ eventHandlers:
 4. **Property Injection vs. Constructor Injection**: The handler in the YAML example uses property injection instead of
    constructor injection, allowing it to be instantiated by the YAML deserializer.
 5. **Long-Running vs. Short-Lived**: The YAML-configured application is designed to run continuously, monitoring input
-   files for changes, while the programmatic example is more suited for short-lived, in-memory processing.
+   files for changes, while the programmatic example is more suited for short-lived, in-memory processing embedded in other 
+    applications.
 
 ## Source code
 
