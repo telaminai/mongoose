@@ -23,8 +23,8 @@ Reference implementations in this repository:
 Complete working example in the mongoose-examples repository:
 
 - [Event Source Example](https://github.com/telaminai/mongoose-examples/tree/main/plugins/event-source-example) - A complete example demonstrating how to create a custom event source that generates heartbeat events at regular intervals
-  - [HeartBeatEventFeed.java](https://github.com/telaminai/mongoose-examples/blob/main/plugins/event-source-example/src/main/java/com/telamin/mongoose/example/eventsource/HeartBeatEventFeed.java) - A custom event source that generates heartbeat events at regular intervals
-  - [EventSourceExample.java](https://github.com/telaminai/mongoose-examples/blob/main/plugins/event-source-example/src/main/java/com/telamin/mongoose/example/eventsource/EventSourceExample.java) - Main application showing how to configure and use the custom event source
+    - [HeartBeatEventFeed.java](https://github.com/telaminai/mongoose-examples/blob/main/plugins/event-source-example/src/main/java/com/telamin/mongoose/example/eventsource/HeartBeatEventFeed.java) - A custom event source that generates heartbeat events at regular intervals
+    - [EventSourceExample.java](https://github.com/telaminai/mongoose-examples/blob/main/plugins/event-source-example/src/main/java/com/telamin/mongoose/example/eventsource/EventSourceExample.java) - Main application showing how to configure and use the custom event source
 
 ## When to write a source
 
@@ -298,6 +298,6 @@ assertEquals(List.of("x"), drained.stream().map(Object::toString).toList());
 - [AbstractEventSourceService]({{source_root}}/main/java/com/telamin/mongoose/service/extension/AbstractEventSourceService.java), [AbstractAgentHostedEventSourceService]({{source_root}}/main/java/com/telamin/mongoose/service/extension/AbstractAgentHostedEventSourceService.java)
   for lifecycle and wiring details
 - [Event Source Example](https://github.com/telaminai/mongoose-examples/tree/main/plugins/event-source-example) in the mongoose-examples repository:
-  - [HeartBeatEventFeed.java](https://github.com/telaminai/mongoose-examples/blob/main/plugins/event-source-example/src/main/java/com/telamin/mongoose/example/eventsource/HeartBeatEventFeed.java) - A custom event source that generates heartbeat events at regular intervals
-  - [EventSourceExample.java](https://github.com/telaminai/mongoose-examples/blob/main/plugins/event-source-example/src/main/java/com/telamin/mongoose/example/eventsource/EventSourceExample.java) - Main application showing how to configure and use the custom event source
-  - [HeartbeatEvent.java](https://github.com/telaminai/mongoose-examples/blob/main/plugins/event-source-example/src/main/java/com/telamin/mongoose/example/eventsource/HeartbeatEvent.java) - The event class used by the custom event source
+    - [HeartBeatEventFeed.java](https://github.com/telaminai/mongoose-examples/blob/main/plugins/event-source-example/src/main/java/com/telamin/mongoose/example/eventsource/HeartBeatEventFeed.java) - A custom event source that generates heartbeat events at regular intervals
+    - [EventSourceExample.java](https://github.com/telaminai/mongoose-examples/blob/main/plugins/event-source-example/src/main/java/com/telamin/mongoose/example/eventsource/EventSourceExample.java) - Main application showing how to configure and use the custom event source
+    - [HeartbeatEvent.java](https://github.com/telaminai/mongoose-examples/blob/main/plugins/event-source-example/src/main/java/com/telamin/mongoose/example/eventsource/HeartbeatEvent.java) - The event class used by the custom event source
