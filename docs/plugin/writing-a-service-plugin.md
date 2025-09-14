@@ -22,6 +22,14 @@ References in this repository:
 - [ServerConfigurator.java]({{source_root}}/main/java/com/telamin/mongoose/internal/ServerConfigurator.java)
 - [MongooseServer.java]({{source_root}}/main/java/com/telamin/mongoose/MongooseServer.java)
 
+Complete working example in the mongoose-examples repository:
+
+- [Service Plugin Example](https://github.com/telaminai/mongoose-examples/tree/main/plugins/service-plugin-example) - A complete example demonstrating how to create custom service plugins, including both simple lifecycle services and worker services that run background tasks
+    - [GreetingService.java](https://github.com/telaminai/mongoose-examples/blob/main/plugins/service-plugin-example/src/main/java/com/telamin/mongoose/example/service/GreetingService.java) - A simple lifecycle-based service that provides greeting functionality
+    - [MetricsCollectorService.java](https://github.com/telaminai/mongoose-examples/blob/main/plugins/service-plugin-example/src/main/java/com/telamin/mongoose/example/service/MetricsCollectorService.java) - A worker service that runs on its own agent thread and performs periodic metrics collection
+    - [ServiceAwareEventHandler.java](https://github.com/telaminai/mongoose-examples/blob/main/plugins/service-plugin-example/src/main/java/com/telamin/mongoose/example/service/ServiceAwareEventHandler.java) - An event handler that demonstrates service injection using @ServiceRegistered
+    - [ServicePluginExample.java](https://github.com/telaminai/mongoose-examples/blob/main/plugins/service-plugin-example/src/main/java/com/telamin/mongoose/example/service/ServicePluginExample.java) - Main application showing how to configure and register services
+
 ## When to write a service
 
 Create a service when you need reusable functionality that should be lifecycle-managed and injectable across processors
