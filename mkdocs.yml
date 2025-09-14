@@ -66,7 +66,7 @@ nav:
       - Mongoose for managers: overview/managers-overview.md
       - Mongoose for engineers: overview/engineers-overview.md
   - Getting started:
-      - 5-minute handler tutorial: guide/five-minute-event-handler-tutorial.md
+      - 5-minute handler tutorial: getting-started/five-minute-event-handler-tutorial.md
       - Event handler examples:
           - Fluent API: guide/file-and-memory-feeds-example.md
           - YAML config: guide/file-and-memory-feeds-yaml-example.md
