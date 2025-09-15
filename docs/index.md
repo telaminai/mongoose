@@ -43,21 +43,14 @@ Run the one-file example to see events flowing through a handler:
 ```java
 public static void main(String[] args) {
     // 1) Business logic handler
-    var handler = new ObjectEventHandlerNode() {
-        @Override
-        protected boolean handleEvent(Object event) {
-            if (event instanceof String s) {
-                System.out.println("Got event: " + s);
-            }
-            return true;
-    }};
+    Consumer<Object> handler = event -> System.out.println("Got event: " + event);
 
     // 2) Create an in-memory event feed (String payloads)
     var feed = new InMemoryEventSource<String>();
 
     // 3) Build and boot mongoose server with an in-memory feed and handler using builder APIs
     var eventProcessorConfig = EventProcessorConfig.builder()
-            .customHandler(handler)
+            .handlerFunction(handler)
             .name("hello-handler")
             .build();
 

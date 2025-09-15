@@ -63,7 +63,7 @@ nav:
   - Home:
       - index: index.md
       - Why Mongoose: overview/mongoose-two-page-intro.md
-      - Mongoose for managers: overview/managers-overview.md
+      - Mongoose for managers: overview/everyone-overview.md
       - Mongoose for engineers: overview/engineers-overview.md
       - Event drive programming: reference/event-driven-programming-explained.md
   - Getting started:

@@ -8,11 +8,13 @@ package com.telamin.mongoose.config;
 import com.fluxtion.runtime.EventProcessor;
 import com.fluxtion.runtime.audit.EventLogControlEvent;
 import com.fluxtion.runtime.node.ObjectEventHandlerNode;
+import com.telamin.mongoose.MongooseEventHandler;
 import com.telamin.mongoose.internal.ConfigAwareEventProcessor;
 import lombok.Data;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -56,6 +58,7 @@ public class EventProcessorConfig<T extends EventProcessor<?>> {
 
     /**
      * Creates configuration with a custom handler
+     *
      * @param customHandler the custom event handler node
      */
     public EventProcessorConfig(ObjectEventHandlerNode customHandler) {
@@ -89,6 +92,7 @@ public class EventProcessorConfig<T extends EventProcessor<?>> {
 
     /**
      * Builder class for creating EventProcessorConfig instances
+     *
      * @param <T> type of EventProcessor being configured
      */
     public static final class Builder<T extends EventProcessor<?>> {
@@ -104,6 +108,7 @@ public class EventProcessorConfig<T extends EventProcessor<?>> {
 
         /**
          * Sets the event handler instance
+         *
          * @param handler the event processor instance
          * @return this builder
          */
@@ -113,7 +118,19 @@ public class EventProcessorConfig<T extends EventProcessor<?>> {
         }
 
         /**
+         * Sets a function to handle events in a MongooseEventHandler
+         *
+         * @param handlerFunction consumer function that processes events
+         * @return this builder
+         */
+        @SuppressWarnings({"unchecked"})
+        public Builder<T> handlerFunction(Consumer<Object> handlerFunction) {
+            return handler((T) new MongooseEventHandler(handlerFunction));
+        }
+
+        /**
          * Sets the name identifier for this event processor configuration
+         *
          * @param name identifier for this event processor configuration
          * @return this builder
          */
