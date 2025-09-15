@@ -7,20 +7,24 @@ It helps teams build real‑time, event‑driven products (things that react to 
 ## Why teams use Mongoose
 
 - Faster delivery
-  - Reuse common building blocks for “inputs → business rules → outputs” instead of reinventing boilerplate.
-  - Start small and add capabilities as you go.
+    - Reuse common building blocks for “inputs → business rules → outputs” instead of reinventing boilerplate.
+    - Start small and add capabilities as you go.
 
 - Predictable speed
-  - Designed for high throughput and tight, consistent response times.
-  - Tunable to match your latency or efficiency goals.
+    - Designed for high throughput and tight, consistent response times.
+    - Tunable to match your latency or efficiency goals.
 
 - Lower cost to run
-  - Processes more work per CPU core, so you need fewer instances for the same workload.
-  - Less operational overhead thanks to built‑in controls and clean architecture.
+    - Processes more work per CPU core, so you need fewer instances for the same workload.
+    - Less operational overhead thanks to built‑in controls and clean architecture.
 
 - Grows with you
-  - Add integrations through plugins (e.g., popular messaging and data tools).
-  - Adopt incrementally—no “big bang” rewrite required.
+    - Add integrations through plugins (e.g., popular messaging and data tools).
+    - Adopt incrementally—no “big bang” rewrite required.
+
+- Community supported
+    - Opensource project with active community and support.
+    - Growing ecosystem of integration and plugins.
 
 ## Where Mongoose fits
 
