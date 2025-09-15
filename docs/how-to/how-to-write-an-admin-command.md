@@ -13,6 +13,13 @@ You’ll learn:
 - How to invoke commands from a CLI or programmatically
 - Tips, patterns, and references in this repository
 
+## Sample code
+
+For a complete, runnable example that demonstrates all the concepts covered in this guide, see:
+
+- [Writing an Admin Command Example](https://github.com/telaminai/mongoose-examples/tree/main/how-to/writing-an-admin-command) A comprehensive Maven project showing how to register admin commands from processors and services, wire admin infrastructure, and invoke commands programmatically.
+
+
 ## Key types
 
 - AdminCommandRegistry — central registry to add and invoke commands
@@ -210,7 +217,11 @@ void processAdminCommand(List<String> args, Consumer<OUT> out, Consumer<ERR> err
 
 ## Example end‑to‑end
 
-See:
+For a complete, runnable example that demonstrates all the concepts covered in this guide, see:
+
+- [Writing an Admin Command Example](https://github.com/telaminai/mongoose-examples/tree/main/how-to/writing-an-admin-command) - A comprehensive Maven project showing how to register admin commands from processors and services, wire admin infrastructure, and invoke commands programmatically.
+
+Additional references:
 
 - [BroadcastCallbackTest.java]({{source_root}}/test/java/com/telamin/mongoose/dispatch/BroadcastCallbackTest.java)
 - [MongooseServerAdmin.java]({{source_root}}/main/java/com/telamin/mongoose/service/servercontrol/MongooseServerAdmin.java)

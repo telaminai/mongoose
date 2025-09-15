@@ -14,6 +14,7 @@ Together, these two enable re-entrant event generation: handlers can schedule an
   source: [ReEntrantHandler.java]({{source_root}}/test/java/com/telamin/mongoose/example/reentrant/ReEntrantHandler.java)
 - Test
   node: [ReEntrantTest.java]({{source_root}}/test/java/com/telamin/mongoose/example/reentrant/ReEntrantTest.java)
+- Complete how-to example: [Scheduler processAsNewEventCycle Example](https://github.com/telaminai/mongoose-examples/blob/229e01e2f508bdf084a611677dc93c1174c96bdc/how-to/scheduler-processAsNewEventCycle)
 
 ## Minimal example
 ```java

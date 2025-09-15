@@ -47,7 +47,7 @@ import com.telamin.mongoose.config.EventProcessorConfig;
 class MyConfigAwareHandler 
         extends ObjectEventHandlerNode 
         implements ConfigListener {
-    
+
     private String greeting;
     private int threshold;
 
@@ -91,6 +91,8 @@ At boot, the server will deliver this map to the handler if it exports ConfigLis
 
 Check this test that boots a server using the fluent API and verifies the initial config is delivered:
 [InitialConfigFluentBootTest.java]({{source_root}}/test/java/com/telamin/mongoose/config/InitialConfigFluentBootTest.java)
+
+Complete how-to example: [Injecting Config into a Processor Example](https://github.com/telaminai/mongoose-examples/blob/229e01e2f508bdf084a611677dc93c1174c96bdc/how-to/injecting-config-into-a-processor)
 
 ## 5) Tips
 

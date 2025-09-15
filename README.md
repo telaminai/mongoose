@@ -1,12 +1,12 @@
-# Fluxtion Server
+# Mongoose Server
 
 # [Main Documentation](https://telaminai.github.io/mongoose/)
 
-Fluxtion Server is a high‑performance, event‑driven server framework for building scalable, composable event processing
+Mongoose Server is a high‑performance, event‑driven server framework for building scalable, composable event processing
 applications. It wires event sources, processors, sinks, and services, and manages their lifecycle and threading so you
 can focus on business logic.
 
-## Why Fluxtion Server?
+## Why Mongoose Server?
 
 - Performance: Agent‑based concurrency with configurable idle strategies enables very high throughput and predictable
   latency.
@@ -17,12 +17,17 @@ can focus on business logic.
 - Operational control: Admin commands, scheduling, logging/audit support, and dynamic registration make operations
   simpler.
 
-## Minimal bootstrap from code:
+## Minimal bootstrap from code (using EventProcessorConfig):
 
 ```java
-EventProcessorGroupConfig processorGroup = EventProcessorGroupConfig.builder()
-        .agentName("processor-agent")
-        .put("example-processor", new EventProcessorConfig(new BuilderApiExampleHandler()))
+import com.telamin.mongoose.config.MongooseServerConfig;
+import com.telamin.mongoose.config.EventProcessorConfig;
+import com.telamin.mongoose.config.EventFeedConfig;
+import com.telamin.mongoose.config.EventSinkConfig;
+import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
+
+var handlerCfg = EventProcessorConfig.builder()
+        .customHandler(new BuilderApiExampleHandler())
         .build();
 
 EventFeedConfig<?> fileFeedCfg = EventFeedConfig.builder()
@@ -44,14 +49,14 @@ EventSinkConfig<FileMessageSink> sinkCfg = EventSinkConfig.<FileMessageSink>buil
         .name("fileSink")
         .build();
 
-AppConfig mongooseServerConfig = AppConfig.builder()
-        .addProcessorGroup(processorGroup)
+MongooseServerConfig app = MongooseServerConfig.builder()
+        .addProcessor("processor-agent", "example-processor", handlerCfg)
         .addEventFeed(fileFeedCfg)
         .addEventFeed(memFeedCfg)
         .addEventSink(sinkCfg)
         .build();
 
-FluxtionServer server = FluxtionServer.bootServer(mongooseServerConfig, logRecordListener);
+var server = com.telamin.mongoose.MongooseServer.bootServer(app, logRecordListener);
 ```
 
 ## License

@@ -24,6 +24,23 @@ If your sink is IO-bound and simple (e.g., append a line to a file), you can kee
 heavier workloads or where you need back-pressure buffering, consider an agent-hosted service that pulls from a queue
 and writes asynchronously (see Agent-hosted sinks).
 
+## Complete working example in the mongoose-examples repository
+
+A complete example demonstrating how to create and use a custom message sink is available in the mongoose-examples repository:
+
+- [Message Sink Example](https://github.com/telaminai/mongoose-examples/tree/main/plugins/message-sink-example) - Illustrates how to create a custom message sink by extending the AbstractMessageSink class, with configurable formatting options for console output.
+    - [ConsoleMessageSink.java](https://github.com/telaminai/mongoose-examples/blob/main/plugins/message-sink-example/src/main/java/com/telamin/mongoose/example/messagesink/ConsoleMessageSink.java) - A custom message sink that formats and prints messages to the console with timestamps and configurable formatting options.
+    - [MessageSinkExample.java](https://github.com/telaminai/mongoose-examples/blob/main/plugins/message-sink-example/src/main/java/com/telamin/mongoose/example/messagesink/MessageSinkExample.java) - Main application showing how to configure and use the custom message sink.
+    - [MyObjectEventHandlerNode.java](https://github.com/telaminai/mongoose-examples/blob/main/plugins/message-sink-example/src/main/java/com/telamin/mongoose/example/messagesink/MyObjectEventHandlerNode.java) - A custom event handler that uses the @ServiceRegistered annotation to inject and use the message sink.
+
+The example demonstrates:
+
+- Creating a custom message sink with configurable properties
+- Implementing the Lifecycle interface for proper resource management
+- Formatting messages before output
+- Wiring the sink to an event handler using the @ServiceRegistered annotation
+- Configuring and registering the sink with a Mongoose Server
+
 ## Base class: AbstractMessageSink
 
 All sinks should extend `com.fluxtion.runtime.output.AbstractMessageSink<T>`. This base class:
@@ -248,6 +265,7 @@ static class TestableMySink extends MyCustomMessageSink {
 - End-to-end usage: [file-and-memory-feeds-example.md](../guide/file-and-memory-feeds-example.md) — shows processor
   wiring and
   registering sinks with `EventSinkConfig`.
+- [Message Sink Example](https://github.com/telaminai/mongoose-examples/tree/main/plugins/message-sink-example) in the mongoose-examples repository — demonstrates a complete implementation of a custom message sink with configurable formatting options.
 
 With this structure, you can implement custom sinks for any target in a few lines, register them with `MongooseServerConfig`, and
 begin publishing from your processors immediately.

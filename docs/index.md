@@ -37,58 +37,51 @@ standalone single‑server app — the same APIs support both.
 ### Quickstart: Hello Mongoose
 
 Run the one-file example to see events flowing through a handler:
-- Source: [HelloMongoose.java]({{source_root}}/main/java/com/telamin/mongoose/example/hellomongoose/HelloMongoose.java)
+
+- Github project: [HelloMongoose](https://github.com/telaminai/hellomongoose)
 
 ```java
 public static void main(String[] args) {
     // 1) Business logic handler
-    var handler = new ObjectEventHandlerNode() {
-        @Override
-        protected boolean handleEvent(Object event) {
-            if (event instanceof String s) {
-                System.out.println("Got event: " + s);
-            }
-            return true;
-    }};
+    Consumer<Object> handler = event -> System.out.println("Got event: " + event);
 
     // 2) Create an in-memory event feed (String payloads)
     var feed = new InMemoryEventSource<String>();
 
-    // 3) Wire processor group with our handler
-    var processorGroup = EventProcessorGroupConfig.builder()
-            .agentName("processor-agent")
-            .put("hello-processor", new EventProcessorConfig<>(handler))
+    // 3) Build and boot mongoose server with an in-memory feed and handler using builder APIs
+    var eventProcessorConfig = EventProcessorConfig.builder()
+            .handlerFunction(handler)
+            .name("hello-handler")
             .build();
 
     // 4) Wire the feed on its own agent with a busy-spin idle strategy (lowest latency)
-    var feedCfg = EventFeedConfig.builder()
+    var feedConfig = EventFeedConfig.<String>builder()
             .instance(feed)
             .name("hello-feed")
             .broadcast(true)
             .agent("feed-agent", new BusySpinIdleStrategy())
             .build();
-
-    // 5) Build the application config and boot the mongooseServer
-    var mongooseServerConfig = MongooseServerConfig.builder()
-            .addProcessorGroup(processorGroup)
-            .addEventFeed(feedCfg)
+    
+    // 6) Build the application config and boot the mongooseServer
+    var app = MongooseServerConfig.builder()
+            .addProcessor("processor-agent", eventProcessorConfig)
+            .addEventFeed(feedConfig)
             .build();
 
-    // boot with a no-op record consumer
-    var mongooseServer = MongooseServer.bootServer(
-            mongooseServerConfig, rec -> {/* no-op */});
+    // 7) boot an embedded MongooseServer instance
+    var server = MongooseServer.bootServer(app);
 
-    // 6) Publish a few events
+    // 8) Publish a few events
     feed.offer("hi");
     feed.offer("mongoose");
 
-    // 7) Stop the mongooseServer (in real apps, you keep it running)
-    mongooseServer.stop();
+    // 9) Cleanup (in a real app, keep running)
+    server.stop();
 }
 ```
 
 ### Start here: Learn path
-- Step 1: Quickstart — run the one-file example: [Hello Mongoose]({{source_root}}/main/java/com/telamin/mongoose/example/hellomongoose/HelloMongoose.java)
+- Step 1: Quickstart — run the one-file example: [Hello Mongoose](https://github.com/telaminai/hellomongoose)
 - Step 2: Learn the basics — [Event handling and business logic](overview/event-processing-architecture.md)
 - Step 3: Do common tasks — [How-to guides](how-to/how-to-subscribing-to-named-event-feeds.md)
 - Step 4: Understand internals — [Threading model](architecture/threading-model.md) and [Architecture overview](architecture/overview.md)

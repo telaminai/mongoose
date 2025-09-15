@@ -9,11 +9,27 @@ import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
 import com.fluxtion.agrona.concurrent.YieldingIdleStrategy;
 import com.fluxtion.runtime.EventProcessor;
 import com.fluxtion.runtime.audit.EventLogControlEvent;
+import com.telamin.mongoose.MongooseServer;
+import com.telamin.mongoose.connector.memory.InMemoryEventSource;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 public class MongooseServerConfigBuilderTest {
+
+
+    private MongooseServer server;
+
+    @AfterEach
+    void tearDown() {
+        if (server != null) {
+            server.stop();
+        }
+    }
 
     static class DummyProcessor implements EventProcessor<DummyProcessor> {
         @Override
@@ -35,6 +51,34 @@ public class MongooseServerConfigBuilderTest {
         @Override
         public void tearDown() {
         }
+    }
+
+    @Test
+    public void testBuildSimpleAppConfigViaBuilders() throws Exception {
+        CountDownLatch eventProcessedLatch = new CountDownLatch(1);
+
+        var processorConfig = EventProcessorConfig.builder()
+                .handlerFunction(e -> eventProcessedLatch.countDown())
+                .name("testProcessor")
+                .build();
+
+        var inMemoryEventSource = new InMemoryEventSource<>();
+        var feedConfig = EventFeedConfig.builder()
+                .broadcast(true)
+                .name("feedConfig")
+                .instance(inMemoryEventSource)
+                .build();
+
+        var serverConfig = MongooseServerConfig.builder()
+                .addEventFeed(feedConfig)
+                .addProcessor("processor-agent", processorConfig)
+                .idleStrategy(new YieldingIdleStrategy())
+                .build();
+
+        server = MongooseServer.bootServer(serverConfig);
+        inMemoryEventSource.publishNow("Hello, world!");
+
+        assertTrue(eventProcessedLatch.await(20, TimeUnit.SECONDS), "Processor should receive event from example feed");
     }
 
     @Test

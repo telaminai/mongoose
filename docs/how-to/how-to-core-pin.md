@@ -21,6 +21,7 @@ References in this repo:
 - [Optional test]({{source_root}}/test/java/com/telamin/mongoose/internal/CoreAffinityOptionalTest.java)
 - [POM entry for optional Affinity dependency](https://github.com/gregv12/fluxtion-server/blob/main/pom.xml) (artifact
   net.openhft:affinity)
+- Complete how-to example: [Core Pin Example](https://github.com/telaminai/mongoose-examples/blob/229e01e2f508bdf084a611677dc93c1174c96bdc/how-to/core-pin)
 
 ## 1) Configure core IDs with the fluent MongooseServerConfig builder
 

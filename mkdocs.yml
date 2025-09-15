@@ -63,13 +63,12 @@ nav:
   - Home:
       - index: index.md
       - Why Mongoose: overview/mongoose-two-page-intro.md
-      - Mongoose for managers: overview/managers-overview.md
+      - Mongoose for managers: overview/everyone-overview.md
       - Mongoose for engineers: overview/engineers-overview.md
+      - Event drive programming: reference/event-driven-programming-explained.md
   - Getting started:
-      - 5-minute handler tutorial: guide/five-minute-event-handler-tutorial.md
-      - Event handler examples:
-          - Fluent API: guide/file-and-memory-feeds-example.md
-          - YAML config: guide/file-and-memory-feeds-yaml-example.md
+      - 5-minute tutorial: getting-started/five-minute-event-handler-tutorial.md
+      - Yaml configuration tutorial: getting-started/five-minute-yaml-configuration-tutorial.md
   - Component overview:
       - Event source feeds: overview/event-sources-overview.md
       - Event handling business logic: overview/event-processing-architecture.md
@@ -89,7 +88,7 @@ nav:
           - Inject config into a processor: how-to/how-to-injecting-config-into-a-processor.md
           - Transform events: how-to/how-to-data-mapping.md
           - Schedule re-entrant events: how-to/how-to-scheduler-processAsNewEventCycle.md
-          - Add an admin command: how-to/writing-an-admin-command.md
+          - Add an admin command: how-to/how-to-write-an-admin-command.md
           - Pipe messages between handlers: how-to/how-to-handler-pipe.md
           - Event replay and synthetic time: how-to/how-to-replay.md
           - Write a custom EventToInvokeStrategy: how-to/how-to-writing-a-custom-event-to-invoke-strategy.md
@@ -114,6 +113,7 @@ nav:
       - Reference:
           - Troubleshooting and FAQ: reference/troubleshooting.md
           - Comparisons: reference/comparisons.md
+          - Modulith suitability: reference/modulith-suitability.md
           - Operations runbook: reference/operations-runbook.md
           - API Reference: https://javadoc.io/doc/com.telamin/mongoose/latest/index.html
       - Server benchmarks and performance: reports/server-benchmarks-and-performance.md

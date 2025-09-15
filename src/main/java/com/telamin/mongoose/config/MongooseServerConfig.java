@@ -10,6 +10,7 @@ import com.fluxtion.agrona.concurrent.IdleStrategy;
 import com.fluxtion.agrona.concurrent.YieldingIdleStrategy;
 import com.fluxtion.runtime.EventProcessor;
 import com.fluxtion.runtime.node.ObjectEventHandlerNode;
+import com.telamin.mongoose.MongooseEventHandler;
 import com.telamin.mongoose.service.CallBackType;
 import com.telamin.mongoose.service.EventToInvokeStrategy;
 import lombok.Data;
@@ -18,6 +19,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -140,6 +142,21 @@ public class MongooseServerConfig {
         return this;
     }
 
+
+    /**
+     * Adds an event source instance to the configuration with worker thread configuration.
+     * <p>
+     * This method allows registering an event source that runs in a dedicated worker thread with
+     * custom idle strategy. The source can be configured for broadcast or targeted event delivery.
+     *
+     * @param <T>          event type published by the source
+     * @param eventSource  source instance to register
+     * @param name         unique name for the source
+     * @param isBroadcast  true to broadcast published events to all subscribers; false for targeted delivery
+     * @param agentGroup   name of the agent group that will host this event source
+     * @param idleStrategy idle strategy for the worker thread, may be null to use defaults
+     * @return this {@link MongooseServerConfig} for fluent chaining
+     */
     public <T> MongooseServerConfig addEventSourceWorker(T eventSource, String name, boolean isBroadcast, String agentGroup, IdleStrategy idleStrategy) {
         if (eventFeeds == null) {
             eventFeeds = new ArrayList<>();
@@ -261,6 +278,29 @@ public class MongooseServerConfig {
         processorConfig.setEventHandler(processor);
         eventProcessorGroupConfig.getEventHandlers().put(name, processorConfig);
 
+        return this;
+    }
+
+    /**
+     * Adds a functional event processor to a specified processor group.
+     * If the group does not exist, it will be created. The processor is wrapped in a MongooseEventHandler
+     * that executes the provided handler function for each event.
+     *
+     * @param <T>             concrete processor type
+     * @param groupName       name of the processor group
+     * @param handlerFunction consumer function that processes each event
+     * @param name            unique name/key under which to register the processor
+     * @return this {@link MongooseServerConfig} for fluent chaining
+     */
+    public <T extends EventProcessor<?>> MongooseServerConfig addProcessor(
+            String groupName,
+            Consumer<Object> handlerFunction,
+            String name) {
+        var eventProcessorGroupConfig = getGroupConfig(groupName);
+        EventProcessorConfig<T> processorConfig = new EventProcessorConfig<>();
+        T mongooseEventHandler = (T) (Object) new MongooseEventHandler(handlerFunction);
+        processorConfig.setEventHandler(mongooseEventHandler);
+        eventProcessorGroupConfig.getEventHandlers().put(name, processorConfig);
         return this;
     }
 

@@ -16,6 +16,7 @@ sink, ignoring orders entirely.
   source: [NamedFeedsSubscriptionExampleTest.java]({{source_root}}/test/java/com/telamin/mongoose/example/NamedFeedsSubscriptionExampleTest.java)
 - Processor
   node: [NamedFeedsFilterHandler.java]({{source_root}}/test/java/com/telamin/mongoose/example/NamedFeedsFilterHandler.java)
+- Complete how-to example: [Subscribing to Named Event Feeds Example](https://github.com/telaminai/mongoose-examples/blob/229e01e2f508bdf084a611677dc93c1174c96bdc/how-to/subscribing-to-named-event-feeds)
 
 ### Processor handler that subscribes to specific feed names
 

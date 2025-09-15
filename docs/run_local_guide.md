@@ -16,7 +16,7 @@ Your shell prompt should show (.venv)
 .3)Upgrade pip and install MkDocs + plugins
 
 - python -m pip install --upgrade pip
-- pip install mkdocs mkdocs-material mkdocs-mermaid2-plugin mkdocs-awesome-pages-plugin
+- pip install mkdocs mkdocs-material mkdocs-mermaid2-plugin mkdocs-awesome-pages-plugin mkdocs-macros-plugin
 
 4)Verify installation
 
