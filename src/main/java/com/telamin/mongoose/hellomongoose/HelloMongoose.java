@@ -67,8 +67,8 @@ public final class HelloMongoose {
                 mongooseServerConfig, rec -> {/* no-op */});
 
         // 6) Publish a few events
-        feed.offer("hi");
-        feed.offer("mongoose");
+        feed.publishNow("hi");
+        feed.publishNow("mongoose");
 
         // 7) Stop the mongooseServer (in real apps, you keep it running)
         mongooseServer.stop();
