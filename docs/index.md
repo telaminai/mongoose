@@ -69,14 +69,14 @@ public static void main(String[] args) {
             .build();
 
     // 7) boot an embedded MongooseServer instance
-    var server = MongooseServer.bootServer(app);
+    var mongooseServer = MongooseServer.bootServer(app);
 
     // 8) Publish a few events
     feed.offer("hi");
     feed.offer("mongoose");
 
     // 9) Cleanup (in a real app, keep running)
-    server.stop();
+    mongooseServer.stop();
 }
 ```
 
