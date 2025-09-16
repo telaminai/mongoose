@@ -34,16 +34,25 @@ standalone single‑server app — the same APIs support both.
 - See detailed results in the benchmarks
   report: [Server benchmarks and performance](reports/server-benchmarks-and-performance.md).
 
-## Maven co-ordinates
-```xml
-<dependencies>
-    <dependency>
-        <groupId>com.telamin</groupId>
-        <artifactId>mongoose</artifactId>
-        <version>{{mongoose_version}}</version>
-    </dependency>
-</dependencies>
-```
+## Build coordinates
+
+=== "Maven"
+
+    ``` xml
+    <dependencies>
+        <dependency>
+            <groupId>com.telamin</groupId>
+            <artifactId>mongoose</artifactId>
+            <version>{{mongoose_version}}</version>
+        </dependency>
+    </dependencies>
+    ```
+
+=== "Gradle"
+
+    ``` groovy
+    implementation 'com.telamin:mongoose:{{mongoose_version}}'
+    ```
 
 ## Quickstart: Hello Mongoose
 
