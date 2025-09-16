@@ -104,7 +104,7 @@ nav:
   - Reference guide:
       - Glossary: reference/glossary.md
       - Architecture and design:
-          - Doc description: architecture/example-repo-index.md
+          - Doc description: architecture/index.md
           - Overview: architecture/overview.md
           - Components: architecture/components.md
           - Event flow: architecture/event-flow.md
