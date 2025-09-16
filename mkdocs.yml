@@ -86,18 +86,18 @@ nav:
           - Service plugin as event feed: example/plugin/writing-a-publishing-service-plugin.md
           - Service plugin with custom dispatch: example/plugin/writing-a-typed-invoke-publishing-service-plugin.md
       - How-to:
-          - Subscribe to named event feeds: how-to/how-to-subscribing-to-named-event-feeds.md
-          - Using the scheduler service: how-to/how-to-using-the-scheduler-service.md
-          - Inject config into a processor: how-to/how-to-injecting-config-into-a-processor.md
-          - Transform events: how-to/how-to-data-mapping.md
-          - Schedule re-entrant events: how-to/how-to-scheduler-processAsNewEventCycle.md
-          - Add an admin command: how-to/how-to-write-an-admin-command.md
-          - Pipe messages between handlers: how-to/how-to-handler-pipe.md
-          - Event replay and synthetic time: how-to/how-to-replay.md
-          - Write a custom EventToInvokeStrategy: how-to/how-to-writing-a-custom-event-to-invoke-strategy.md
+          - Subscribe to named event feeds: example/how-to/how-to-subscribing-to-named-event-feeds.md
+          - Using the scheduler service: example/how-to/how-to-using-the-scheduler-service.md
+          - Inject config into a processor: example/how-to/how-to-injecting-config-into-a-processor.md
+          - Transform events: example/how-to/how-to-data-mapping.md
+          - Schedule re-entrant events: example/how-to/how-to-scheduler-processAsNewEventCycle.md
+          - Add an admin command: example/how-to/how-to-write-an-admin-command.md
+          - Pipe messages between handlers: example/how-to/how-to-handler-pipe.md
+          - Event replay and synthetic time: example/how-to/how-to-replay.md
+          - Write a custom EventToInvokeStrategy: example/how-to/how-to-writing-a-custom-event-to-invoke-strategy.md
           - Event source read strategy: guide/read-strategy.md
-          - Zero‑GC object pooling: how-to/how-to-object-pool.md
-          - Core pin agent threads: how-to/how-to-core-pin.md
+          - Zero‑GC object pooling: example/how-to/how-to-object-pool.md
+          - Core pin agent threads: example/how-to/how-to-core-pin.md
   - Reference guide:
       - Glossary: reference/glossary.md
       - Architecture and design:

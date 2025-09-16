@@ -146,7 +146,7 @@ Tips:
 
 Related docs:
 
-- [Transform events](../how-to/how-to-data-mapping.md)
+- [Transform events](../example/how-to/how-to-data-mapping.md)
 
 ## Caching strategies
 
@@ -178,7 +178,7 @@ Use pooling to minimize allocations on hot paths:
 Resources in this repo:
 
 - [Object pooling architecture](../architecture/object_pooling.md)
-- [Zero‑GC object pooling](../how-to/how-to-object-pool.md)
+- [Zero‑GC object pooling](../example/how-to/how-to-object-pool.md)
 - [Benchmarks and performance](../reports/server-benchmarks-and-performance.md)
 -
 

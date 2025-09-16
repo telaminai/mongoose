@@ -6,7 +6,7 @@ source uses the object pool as the source of event instances. In the example bel
 a rate of four million per second with Zero‑GC.
 
 If you need the low-level details of the pool internals (capacity, partitions, MPMC queues, reference counting
-implementation), see the Architecture and design page: [Object pooling](../architecture/object_pooling.md).
+implementation), see the Architecture and design page: [Object pooling](../../architecture/object_pooling.md).
 
 ## Quick start
 
@@ -128,4 +128,4 @@ Processed 18000000 messages in 250 ms, heap used: 23 MB, GC count: 0
 ```
 
 For design and performance details, see:
-- Architecture and design: [Object pooling](../architecture/object_pooling.md)
+- Architecture and design: [Object pooling](../../architecture/object_pooling.md)

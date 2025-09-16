@@ -155,7 +155,7 @@ Implementation tips:
 
 Related docs:
 
-- [Subscribe to named feeds](../how-to/how-to-subscribing-to-named-event-feeds.md)
+- [Subscribe to named feeds](../example/how-to/how-to-subscribing-to-named-event-feeds.md)
 
 ## Idle/read strategies (read pacing)
 
@@ -190,7 +190,7 @@ Recommendations:
 
 Related docs:
 
-- [Transform events](../how-to/how-to-data-mapping.md)
+- [Transform events](../example/how-to/how-to-data-mapping.md)
 
 ## Zero‑GC object pooling for sources
 
@@ -203,7 +203,7 @@ For high‑throughput, low‑latency workloads, use object pools to reuse event 
 Resources in this repo:
 
 - [Object pooling architecture](../architecture/object_pooling.md)
-- [Zero‑GC object pooling](../how-to/how-to-object-pool.md)
+- [Zero‑GC object pooling](../example/how-to/how-to-object-pool.md)
 - [Benchmarks and performance](../reports/server-benchmarks-and-performance.md)
 - Tests/benchmarks: [EventProcessingBenchmark.java]({{source_root}}/test/java/com/telamin/mongoose/benchmark/objectpool/EventProcessingBenchmark.java) and [ObjectPoolServerIntegrationTest.java]({{source_root}}/test/java/com/telamin/mongoose/pool/ObjectPoolServerIntegrationTest.java)
 
@@ -242,7 +242,7 @@ Guidelines:
   - [Publishing service plugin](../example/plugin/writing-a-publishing-service-plugin.md)
   - [Typed invoke publishing service](../example/plugin/writing-a-typed-invoke-publishing-service-plugin.md)
 - For handler wiring and subscriptions, see [Event handling and business logic](event-processing-architecture.md) and
-  [Subscribe to named feeds](../how-to/how-to-subscribing-to-named-event-feeds.md).
+  [Subscribe to named feeds](../example/how-to/how-to-subscribing-to-named-event-feeds.md).
 
 ## Quick checklist
 

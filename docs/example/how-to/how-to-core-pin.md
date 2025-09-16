@@ -113,5 +113,5 @@ Notes:
 
 ## 6) Related reading
 
-- [Threading overview and agent lifecycles](../architecture/threading-model.md#optional-core-pinning-for-agent-threads)
+- [Threading overview and agent lifecycles](../../architecture/threading-model.md#optional-core-pinning-for-agent-threads)
 - [Fluent MongooseServerConfig examples]({{source_root}}/test/java/com/telamin/mongoose/example/BuilderApiFluentExampleTest.java)

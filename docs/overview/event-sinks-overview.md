@@ -89,7 +89,7 @@ Publishing pathway:
 
 Related:
 
-- [Subscribe to named feeds](../how-to/how-to-subscribing-to-named-event-feeds.md) — for inbound subscription; for
+- [Subscribe to named feeds](../example/how-to/how-to-subscribing-to-named-event-feeds.md) — for inbound subscription; for
   sinks, use explicit registration via EventSinkConfig
 
 ## Backpressure and slow‑consumer policy (sinks)
@@ -121,7 +121,7 @@ Recommendations:
 
 Related docs:
 
-- [Transform events](../how-to/how-to-data-mapping.md)
+- [Transform events](../example/how-to/how-to-data-mapping.md)
 
 ## Batching, flushing, and retries
 
@@ -146,7 +146,7 @@ Use pools to stabilize latency and minimize allocations:
 Resources in this repo:
 
 - [Object pooling architecture](../architecture/object_pooling.md)
-- [Zero‑GC object pooling](../how-to/how-to-object-pool.md)
+- [Zero‑GC object pooling](../example/how-to/how-to-object-pool.md)
 - [Benchmarks and performance](../reports/server-benchmarks-and-performance.md)
 -
 Tests/benchmarks: [EventProcessingBenchmark.java]({{source_root}}/test/java/com/telamin/mongoose/benchmark/objectpool/EventProcessingBenchmark.java)
