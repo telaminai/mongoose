@@ -70,6 +70,7 @@ nav:
       - 5-minute tutorial: getting-started/five-minute-event-handler-tutorial.md
       - Yaml configuration tutorial: getting-started/five-minute-yaml-configuration-tutorial.md
   - Component overview:
+      - Composing a server: overview/configuration-and-composition.md
       - Event source feeds: overview/event-sources-overview.md
       - Event handling business logic: overview/event-processing-architecture.md
       - Event sink outputs: overview/event-sinks-overview.md

@@ -89,6 +89,17 @@ public static void main(String[] args) {
 ## Mongoose examples
 Github repository [mongoose-examples](https://github.com/telaminai/mongoose-examples/).
 
+## Mongoose maven co-ordinates
+```xml
+<dependencies>
+    <dependency>
+        <groupId>com.telamin</groupId>
+        <artifactId>mongoose</artifactId>
+        <version>1.0.5</version>
+    </dependency>
+</dependencies>
+```
+
 ## Documentation is organized into the following sections:
 
 - Start with the [Overview](overview/engineers-overview.md) to learn concepts and architecture.
