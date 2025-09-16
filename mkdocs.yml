@@ -73,6 +73,7 @@ nav:
   - Getting started:
       - 5-minute tutorial: getting-started/five-minute-event-handler-tutorial.md
       - Yaml configuration tutorial: getting-started/five-minute-yaml-configuration-tutorial.md
+      - Stream programming tutorial: getting-started/stream-programming-tutorial.md
   - Component overview:
       - Composing a server: overview/configuration-and-composition.md
       - Event source feeds: overview/event-sources-overview.md
