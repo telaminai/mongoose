@@ -1,7 +1,7 @@
 # 5‑minute tutorial: Configuring a Mongoose server with YAML
 
 > **Note:** The complete code for this tutorial is available in
-> the [Five Minute YAML Tutorial](https://github.com/telaminai/mongoose-examples/blob/main/gettting-started/five-minute-yaml-tutorial/README.md).
+> the [Five Minute YAML Tutorial](https://github.com/telaminai/mongoose-examples/blob/main/getting-started/five-minute-yaml-tutorial/README.md).
 > For all examples, see the
 > [mongoose-examples repository](https://github.com/telaminai/mongoose-examples/).
 
@@ -67,9 +67,9 @@ flowchart TD
 
 End‑to‑end runnable code (available in the mongoose-examples repository):
 
-* Handler: [NamedFeedsFilterHandler.java](https://github.com/telaminai/mongoose-examples/blob/main/gettting-started/five-minute-yaml-tutorial/src/main/java/com/telamin/mongoose/example/fivemin/NamedFeedsFilterHandler.java)
-* YAML Configuration: [appConfig.yml](https://github.com/telaminai/mongoose-examples/blob/main/gettting-started/five-minute-yaml-tutorial/run/appConfig.yml)
-* Run Script: [runMongooseServer.sh](https://github.com/telaminai/mongoose-examples/blob/main/gettting-started/five-minute-yaml-tutorial/run/runMongooseServer.sh)
+* Handler: [NamedFeedsFilterHandler.java](https://github.com/telaminai/mongoose-examples/blob/main/getting-started/five-minute-yaml-tutorial/src/main/java/com/telamin/mongoose/example/fivemin/NamedFeedsFilterHandler.java)
+* YAML Configuration: [appConfig.yml](https://github.com/telaminai/mongoose-examples/blob/main/getting-started/five-minute-yaml-tutorial/run/appConfig.yml)
+* Run Script: [runMongooseServer.sh](https://github.com/telaminai/mongoose-examples/blob/main/getting-started/five-minute-yaml-tutorial/run/runMongooseServer.sh)
 
 ## 1) Modify the handler for YAML configuration
 
@@ -331,8 +331,8 @@ eventHandlers:
 
 ## Source code
 
-* Handler: [NamedFeedsFilterHandler.java](https://github.com/telaminai/mongoose-examples/blob/main/gettting-started/five-minute-yaml-tutorial/src/main/java/com/telamin/mongoose/example/fivemin/NamedFeedsFilterHandler.java)
-* YAML Configuration: [appConfig.yml](https://github.com/telaminai/mongoose-examples/blob/main/gettting-started/five-minute-yaml-tutorial/run/appConfig.yml)
-* Run Script: [runMongooseServer.sh](https://github.com/telaminai/mongoose-examples/blob/main/gettting-started/five-minute-yaml-tutorial/run/runMongooseServer.sh)
-* Cleanup Script: [cleanup.sh](https://github.com/telaminai/mongoose-examples/blob/main/gettting-started/five-minute-yaml-tutorial/run/cleanup.sh)
-* Detailed  README: [Five Minute YAML Tutorial README](https://github.com/telaminai/mongoose-examples/blob/main/gettting-started/five-minute-yaml-tutorial/README.md)
+* Handler: [NamedFeedsFilterHandler.java](https://github.com/telaminai/mongoose-examples/blob/main/getting-started/five-minute-yaml-tutorial/src/main/java/com/telamin/mongoose/example/fivemin/NamedFeedsFilterHandler.java)
+* YAML Configuration: [appConfig.yml](https://github.com/telaminai/mongoose-examples/blob/main/getting-started/five-minute-yaml-tutorial/run/appConfig.yml)
+* Run Script: [runMongooseServer.sh](https://github.com/telaminai/mongoose-examples/blob/main/getting-started/five-minute-yaml-tutorial/run/runMongooseServer.sh)
+* Cleanup Script: [cleanup.sh](https://github.com/telaminai/mongoose-examples/blob/main/getting-started/five-minute-yaml-tutorial/run/cleanup.sh)
+* Detailed  README: [Five Minute YAML Tutorial README](https://github.com/telaminai/mongoose-examples/blob/main/getting-started/five-minute-yaml-tutorial/README.md)
