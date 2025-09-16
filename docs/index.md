@@ -86,6 +86,9 @@ public static void main(String[] args) {
 - Step 3: Do common tasks — [How-to guides](how-to/how-to-subscribing-to-named-event-feeds.md)
 - Step 4: Understand internals — [Threading model](architecture/threading-model.md) and [Architecture overview](architecture/overview.md)
 
+## Mongoose examples
+Github repository [mongoose-examples](https://github.com/telaminai/mongoose-examples/).
+
 ## Documentation is organized into the following sections:
 
 - Start with the [Overview](overview/engineers-overview.md) to learn concepts and architecture.
