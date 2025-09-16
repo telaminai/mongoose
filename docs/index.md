@@ -95,7 +95,7 @@ Github repository [mongoose-examples](https://github.com/telaminai/mongoose-exam
     <dependency>
         <groupId>com.telamin</groupId>
         <artifactId>mongoose</artifactId>
-        <version>1.0.5</version>
+        <version>{{mongoose_version}}</version>
     </dependency>
 </dependencies>
 ```
