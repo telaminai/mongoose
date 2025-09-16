@@ -1,9 +1,9 @@
 # 5‑minute tutorial: Configuring a Mongoose server with YAML
 
 > **Note:** The complete code for this tutorial is available in
-> the [mongoose-examples repository](https://github.com/telaminai/mongoose-examples/tree/main/gettting-started/five-minute-yaml-tutorial).
-> For a more detailed explanation, see
-> the [Five Minute YAML Tutorial README](https://github.com/telaminai/mongoose-examples/blob/main/gettting-started/five-minute-yaml-tutorial/README.md).
+> the [Five Minute YAML Tutorial](https://github.com/telaminai/mongoose-examples/blob/main/gettting-started/five-minute-yaml-tutorial/README.md).
+> For all examples, see the
+> [mongoose-examples repository](https://github.com/telaminai/mongoose-examples/).
 
 This quick tutorial shows how to configure a Mongoose server using YAML instead of programmatic configuration. You'll:
 

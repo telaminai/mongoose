@@ -1,6 +1,7 @@
 # 5‑minute tutorial: Processing events in a handler with business logic
 
-> **Note:** The complete code for this tutorial is available in the [mongoose-examples repository](https://github.com/telaminai/mongoose-examples/tree/main/gettting-started/five-minute-tutorial). For a more detailed explanation, see the [Five Minute Tutorial README](https://github.com/telaminai/mongoose-examples/blob/main/gettting-started/five-minute-tutorial/README.md).
+> **Note:** The complete code for this tutorial is available in the [Five Minute Tutorial README](https://github.com/telaminai/mongoose-examples/tree/main/gettting-started/five-minute-tutorial).
+> For all examples, see the [mongoose-examples repository](https://github.com/telaminai/mongoose-examples/).
 
 This quick tutorial shows how to write business logic in an event handler while keeping infrastructure separate. You’ll:
 
