@@ -69,7 +69,7 @@ Choosing:
   threads
 
 See also: [Threading model](../architecture/threading-model.md)
-and [Service plugin guide](../plugin/writing-a-service-plugin.md).
+and [Service plugin guide](../example/plugin/writing-a-service-plugin.md).
 
 ## Threading and invocation
 
@@ -84,7 +84,7 @@ and [Service plugin guide](../plugin/writing-a-service-plugin.md).
       on the agent thread, have the completion stage publish a response event into the dispatcher instead of calling
       handler code directly.
     - Scheduler assisted: for periodic or deferred completions, schedule a timer and publish results when due.
-    - See [Service as a publishing event source](../plugin/writing-a-publishing-service-plugin.md) guide for more
+    - See [Service as a publishing event source](../example/plugin/writing-a-publishing-service-plugin.md) guide for more
       details.
 
 ## **Thread safety warning**:
@@ -119,9 +119,9 @@ Common invocation patterns from handlers:
 
 Related plugin guides:
 
-- [Service plugin](../plugin/writing-a-service-plugin.md)
-- [Service plugin as event feed](../plugin/writing-a-publishing-service-plugin.md)
-- [Service plugin with custom dispatch](../plugin/writing-a-typed-invoke-publishing-service-plugin.md)
+- [Service plugin](../example/plugin/writing-a-service-plugin.md)
+- [Service plugin as event feed](../example/plugin/writing-a-publishing-service-plugin.md)
+- [Service plugin with custom dispatch](../example/plugin/writing-a-typed-invoke-publishing-service-plugin.md)
 
 ## Request/response design
 
@@ -193,9 +193,9 @@ and [ObjectPoolServerIntegrationTest.java]({{source_root}}/test/java/com/telamin
 
 See:
 
-- [Service plugin](../plugin/writing-a-service-plugin.md)
-- [Publishing service plugin](../plugin/writing-a-publishing-service-plugin.md)
-- [Typed invoke publishing service](../plugin/writing-a-typed-invoke-publishing-service-plugin.md)
+- [Service plugin](../example/plugin/writing-a-service-plugin.md)
+- [Publishing service plugin](../example/plugin/writing-a-publishing-service-plugin.md)
+- [Typed invoke publishing service](../example/plugin/writing-a-typed-invoke-publishing-service-plugin.md)
 - [Plugin extension mechanism](plugin_extension_architecture.md)
 
 ## Quick checklist
@@ -211,5 +211,5 @@ See:
 
 - [Event handling and business logic](event-processing-architecture.md)
 - [Threading model](../architecture/threading-model.md)
-- [Service plugin guide](../plugin/writing-a-service-plugin.md)
+- [Service plugin guide](../example/plugin/writing-a-service-plugin.md)
 - [Server benchmarks and performance](../reports/server-benchmarks-and-performance.md)

@@ -105,7 +105,7 @@ Github repository [mongoose-examples](https://github.com/telaminai/mongoose-exam
 - Start with the [Overview](overview/engineers-overview.md) to learn concepts and architecture.
 - See [Event processing](overview/event-processing-architecture.md) where business logic meets event handling.
 - See [Examples](guide/file-and-memory-feeds-example.md) for quick hands-on guidance.
-- See [Plugins](plugin/writing-a-message-sink-plugin.md) for advice on writing plugins.
+- See [Plugins](example/plugin/writing-a-message-sink-plugin.md) for advice on writing plugins.
 - Use [How-to guides](how-to/how-to-subscribing-to-named-event-feeds.md) for common tasks and extensions.
 
 ## Architecture and threading model for internals

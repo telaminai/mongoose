@@ -40,7 +40,7 @@ Event feeds produce events and publish them into the event processing graph.
 
 See also:
 
-- Guide: Event source plugin (how to implement) — [Event source plugin](../plugin/writing-an-event-source-plugin.md)
+- Guide: Event source plugin (how to implement) — [Event source plugin](../example/plugin/writing-an-event-source-plugin.md)
 - Example: In-memory feed — `com.telamin.mongoose.connector.memory.InMemoryEventSource`
 
 ### 2) Services
@@ -56,7 +56,7 @@ cache loader).
 
 See also:
 
-- Guide: Service plugin — [Service plugin](../plugin/writing-a-service-plugin.md)
+- Guide: Service plugin — [Service plugin](../example/plugin/writing-a-service-plugin.md)
 - SchedulerService and DeadWheelScheduler implementation
 
 ### 3) Event sinks
@@ -70,7 +70,7 @@ metrics).
 
 See also:
 
-- Guide: Message sink plugin — [Message sink plugin](../plugin/writing-a-message-sink-plugin.md)
+- Guide: Message sink plugin — [Message sink plugin](../example/plugin/writing-a-message-sink-plugin.md)
 
 ## Wiring plugins into your application
 
@@ -179,8 +179,8 @@ Inline within a processor when:
 
 ## See also (detailed guides)
 
-- [Event sink plugin](../plugin/writing-a-message-sink-plugin.md)
-- [Event source plugin](../plugin/writing-an-event-source-plugin.md)
-- [Service plugin](../plugin/writing-a-service-plugin.md)
-- [Service plugin as event feed](../plugin/writing-a-publishing-service-plugin.md)
-- [Service plugin with custom dispatch](../plugin/writing-a-typed-invoke-publishing-service-plugin.md)
+- [Event sink plugin](../example/plugin/writing-a-message-sink-plugin.md)
+- [Event source plugin](../example/plugin/writing-an-event-source-plugin.md)
+- [Service plugin](../example/plugin/writing-a-service-plugin.md)
+- [Service plugin as event feed](../example/plugin/writing-a-publishing-service-plugin.md)
+- [Service plugin with custom dispatch](../example/plugin/writing-a-typed-invoke-publishing-service-plugin.md)

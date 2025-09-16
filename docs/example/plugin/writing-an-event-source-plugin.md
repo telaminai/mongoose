@@ -296,7 +296,7 @@ assertEquals(List.of("x"), drained.stream().map(Object::toString).toList());
   and [InMemoryEventSource.java]({{source_root}}/main/java/com/telamin/mongoose/connector/memory/InMemoryEventSource.java)
   for
   complete, working examples
-- [docs/guide/file-and-memory-feeds-example.md](../guide/file-and-memory-feeds-example.md) for end-to-end wiring with
+- [docs/guide/file-and-memory-feeds-example.md](../../guide/file-and-memory-feeds-example.md) for end-to-end wiring with
   processors
   and sinks
 - [AbstractEventSourceService]({{source_root}}/main/java/com/telamin/mongoose/service/extension/AbstractEventSourceService.java), [AbstractAgentHostedEventSourceService]({{source_root}}/main/java/com/telamin/mongoose/service/extension/AbstractAgentHostedEventSourceService.java)

@@ -64,7 +64,7 @@ Choosing:
 - Use non‑agent when writes block or the target client mandates its own threads.
 
 See also: [Threading model](../architecture/threading-model.md)
-and [Message sink plugin guide](../plugin/writing-a-message-sink-plugin.md).
+and [Message sink plugin guide](../example/plugin/writing-a-message-sink-plugin.md).
 
 ## Lifecycle and publishing patterns
 
@@ -167,7 +167,7 @@ Register sinks programmatically with EventSinkConfig:
 
 See:
 
-- [Message sink plugin guide](../plugin/writing-a-message-sink-plugin.md)
+- [Message sink plugin guide](../example/plugin/writing-a-message-sink-plugin.md)
 - [Plugin extension mechanism](plugin_extension_architecture.md)
 
 ## Putting it together: picking a sink design
@@ -204,7 +204,7 @@ See:
 ## See also
 
 - [Event handling and business logic](event-processing-architecture.md)
-- [Message sink plugin guide](../plugin/writing-a-message-sink-plugin.md)
+- [Message sink plugin guide](../example/plugin/writing-a-message-sink-plugin.md)
 - [Object pooling](../architecture/object_pooling.md)
 - [Threading model](../architecture/threading-model.md)
 - [Server benchmarks and performance](../reports/server-benchmarks-and-performance.md)

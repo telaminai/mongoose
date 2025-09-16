@@ -56,6 +56,7 @@ extra:
       link: https://github.com/telaminai
   # Define variables here
   source_root: https://github.com/telaminai/mongoose/tree/main/src
+  example_root: https://github.com/telaminai/mongoose-examples/tree/main
   version: 1.0.0
   release_date: "2024-09-13"
 
@@ -77,12 +78,13 @@ nav:
       - Service functions: overview/services-overview.md
       - Plugin extension mechanism: overview/plugin_extension_architecture.md
   - Examples and how-to:
+      - Example repo: example/example-repo-index.md
       - Plugin examples:
-          - Event sink plugin: plugin/writing-a-message-sink-plugin.md
-          - Event source plugin: plugin/writing-an-event-source-plugin.md
-          - Service plugin: plugin/writing-a-service-plugin.md
-          - Service plugin as event feed: plugin/writing-a-publishing-service-plugin.md
-          - Service plugin with custom dispatch: plugin/writing-a-typed-invoke-publishing-service-plugin.md
+          - Event sink plugin: example/plugin/writing-a-message-sink-plugin.md
+          - Event source plugin: example/plugin/writing-an-event-source-plugin.md
+          - Service plugin: example/plugin/writing-a-service-plugin.md
+          - Service plugin as event feed: example/plugin/writing-a-publishing-service-plugin.md
+          - Service plugin with custom dispatch: example/plugin/writing-a-typed-invoke-publishing-service-plugin.md
       - How-to:
           - Subscribe to named event feeds: how-to/how-to-subscribing-to-named-event-feeds.md
           - Using the scheduler service: how-to/how-to-using-the-scheduler-service.md
@@ -99,7 +101,7 @@ nav:
   - Reference guide:
       - Glossary: reference/glossary.md
       - Architecture and design:
-          - Doc description: architecture/index.md
+          - Doc description: architecture/example-repo-index.md
           - Overview: architecture/overview.md
           - Components: architecture/components.md
           - Event flow: architecture/event-flow.md

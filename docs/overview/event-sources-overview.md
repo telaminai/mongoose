@@ -78,7 +78,7 @@ Choosing:
 - Use in‑agent when you control a cooperative, non‑blocking poll; events are enqueued to the handler agent’s queue with deterministic per‑agent ordering.
 - Use non‑agent when reads block or when an external library drives callbacks on its own threads.
 
-See also: [Threading model](../architecture/threading-model.md) and [Event source plugin guide](../plugin/writing-an-event-source-plugin.md).
+See also: [Threading model](../architecture/threading-model.md) and [Event source plugin guide](../example/plugin/writing-an-event-source-plugin.md).
 
 ## Lifecycle and publishing patterns
 
@@ -238,9 +238,9 @@ Guidelines:
 ## Configuration pointers
 
 - Register event source plugins in MongooseServerConfig or via YAML, using existing plugin extension points:
-  - [Event source plugin](../plugin/writing-an-event-source-plugin.md)
-  - [Publishing service plugin](../plugin/writing-a-publishing-service-plugin.md)
-  - [Typed invoke publishing service](../plugin/writing-a-typed-invoke-publishing-service-plugin.md)
+  - [Event source plugin](../example/plugin/writing-an-event-source-plugin.md)
+  - [Publishing service plugin](../example/plugin/writing-a-publishing-service-plugin.md)
+  - [Typed invoke publishing service](../example/plugin/writing-a-typed-invoke-publishing-service-plugin.md)
 - For handler wiring and subscriptions, see [Event handling and business logic](event-processing-architecture.md) and
   [Subscribe to named feeds](../how-to/how-to-subscribing-to-named-event-feeds.md).
 
@@ -257,5 +257,5 @@ Guidelines:
 - [Event handling and business logic](event-processing-architecture.md)
 - [Event source read strategy](../guide/read-strategy.md)
 - [Object pooling](../architecture/object_pooling.md)
-- [Event source plugin guide](../plugin/writing-an-event-source-plugin.md)
+- [Event source plugin guide](../example/plugin/writing-an-event-source-plugin.md)
 - [Threading model](../architecture/threading-model.md)

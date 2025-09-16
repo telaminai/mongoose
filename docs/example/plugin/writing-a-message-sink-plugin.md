@@ -262,7 +262,7 @@ static class TestableMySink extends MyCustomMessageSink {
 - In-memory sink (for
   testing): [InMemoryMessageSink.java]({{source_root}}/main/java/com/telamin/mongoose/connector/memory/InMemoryMessageSink.java) —
   accumulates messages in memory.
-- End-to-end usage: [file-and-memory-feeds-example.md](../guide/file-and-memory-feeds-example.md) — shows processor
+- End-to-end usage: [file-and-memory-feeds-example.md](../../guide/file-and-memory-feeds-example.md) — shows processor
   wiring and
   registering sinks with `EventSinkConfig`.
 - [Message Sink Example](https://github.com/telaminai/mongoose-examples/tree/main/plugins/message-sink-example) in the mongoose-examples repository — demonstrates a complete implementation of a custom message sink with configurable formatting options.
