@@ -65,7 +65,7 @@ nav:
       - Why Mongoose: overview/mongoose-two-page-intro.md
       - Mongoose for managers: overview/everyone-overview.md
       - Mongoose for engineers: overview/engineers-overview.md
-      - Event drive programming: reference/event-driven-programming-explained.md
+      - Event driven programming: reference/event-driven-programming-explained.md
   - Getting started:
       - 5-minute tutorial: getting-started/five-minute-event-handler-tutorial.md
       - Yaml configuration tutorial: getting-started/five-minute-yaml-configuration-tutorial.md
