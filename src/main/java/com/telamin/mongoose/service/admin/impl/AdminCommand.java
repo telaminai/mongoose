@@ -5,7 +5,7 @@
 
 package com.telamin.mongoose.service.admin.impl;
 
-import com.fluxtion.runtime.annotations.feature.Experimental;
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
 import com.telamin.mongoose.dispatch.EventToQueuePublisher;
 import com.telamin.mongoose.service.admin.AdminCommandRequest;
 import com.telamin.mongoose.service.admin.AdminFunction;

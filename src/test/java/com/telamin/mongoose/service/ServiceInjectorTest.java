@@ -5,8 +5,8 @@
 
 package com.telamin.mongoose.service;
 
-import com.fluxtion.runtime.annotations.runtime.ServiceRegistered;
-import com.fluxtion.runtime.service.Service;
+import com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered;
+import com.telamin.fluxtion.runtime.service.Service;
 import com.telamin.mongoose.internal.ServiceInjector;
 import org.junit.jupiter.api.Test;
 

@@ -7,8 +7,8 @@ package com.telamin.mongoose.dispatch;
 
 import com.fluxtion.agrona.concurrent.Agent;
 import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
-import com.fluxtion.runtime.StaticEventProcessor;
-import com.fluxtion.runtime.input.EventFeed;
+import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.input.EventFeed;
 import com.telamin.mongoose.MongooseServer;
 import com.telamin.mongoose.config.EventProcessorConfig;
 import com.telamin.mongoose.config.MongooseServerConfig;
@@ -42,10 +42,10 @@ public class CustomEventToInvokeStrategyTest {
     /**
      * Test StaticEventProcessor that records received events and asserts ProcessorContext correctness.
      */
-    static class RecordingProcessor implements StaticEventProcessor, MarkerProcessor {
+    static class RecordingProcessor implements DataFlow, MarkerProcessor {
         final List<Object> received = new ArrayList<>();
         final List<Object> receivedOnEvent = new ArrayList<>();
-        StaticEventProcessor seenCurrentProcessor;
+        DataFlow seenCurrentProcessor;
 
         @Override
         public void onString(String s) {
@@ -71,7 +71,7 @@ public class CustomEventToInvokeStrategyTest {
     /**
      * A processor that should be rejected by isValidTarget.
      */
-    static class NonMarkedProcessor implements StaticEventProcessor {
+    static class NonMarkedProcessor implements DataFlow {
         final List<Object> received = new ArrayList<>();
 
         @Override
@@ -85,7 +85,7 @@ public class CustomEventToInvokeStrategyTest {
      */
     static class UppercaseStringStrategy extends AbstractEventToInvocationStrategy {
         @Override
-        protected void dispatchEvent(Object event, StaticEventProcessor eventProcessor) {
+        protected void dispatchEvent(Object event, DataFlow eventProcessor) {
             if (event instanceof String s && eventProcessor instanceof MarkerProcessor marker) {
                 marker.onString(s.toUpperCase());
             } else {
@@ -95,7 +95,7 @@ public class CustomEventToInvokeStrategyTest {
         }
 
         @Override
-        protected boolean isValidTarget(StaticEventProcessor eventProcessor) {
+        protected boolean isValidTarget(DataFlow eventProcessor) {
             return eventProcessor instanceof MarkerProcessor;
         }
     }
@@ -229,7 +229,7 @@ public class CustomEventToInvokeStrategyTest {
     }
 
     // Processor used with the fluent builder server boot example
-    static class FluentRecordingProcessor extends RecordingProcessor implements com.fluxtion.runtime.EventProcessor<FluentRecordingProcessor> {
+    static class FluentRecordingProcessor extends RecordingProcessor implements DataFlow {
         private final List<EventFeed> feeds = new ArrayList<>();
         private final String feedName;
 

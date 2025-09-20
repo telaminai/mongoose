@@ -4,7 +4,7 @@
  */
 package com.telamin.mongoose.config;
 
-import com.fluxtion.runtime.node.ObjectEventHandlerNode;
+import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 

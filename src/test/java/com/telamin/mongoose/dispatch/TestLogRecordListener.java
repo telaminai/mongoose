@@ -5,8 +5,8 @@
 
 package com.telamin.mongoose.dispatch;
 
-import com.fluxtion.runtime.audit.LogRecord;
-import com.fluxtion.runtime.audit.LogRecordListener;
+import com.telamin.fluxtion.runtime.audit.LogRecord;
+import com.telamin.fluxtion.runtime.audit.LogRecordListener;
 import lombok.Getter;
 
 import java.util.ArrayList;

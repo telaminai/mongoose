@@ -43,7 +43,7 @@ The example demonstrates:
 
 ## Base class: AbstractMessageSink
 
-All sinks should extend `com.fluxtion.runtime.output.AbstractMessageSink<T>`. This base class:
+All sinks should extend `com.telamin.fluxtion.runtime.output.AbstractMessageSink<T>`. This base class:
 
 - Exposes `accept(Object value)` to upstream processors.
 - Applies an optional `valueMapper` before calling your sink.
@@ -62,8 +62,8 @@ Below is a skeleton you can copy. Replace the TODOs with your target integration
 ```java
 package com.mycompany.connector;
 
-import com.fluxtion.runtime.lifecycle.Lifecycle;
-import com.fluxtion.runtime.output.AbstractMessageSink;
+import com.telamin.fluxtion.runtime.lifecycle.Lifecycle;
+import com.telamin.fluxtion.runtime.output.AbstractMessageSink;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.java.Log;

@@ -17,11 +17,11 @@
  * - EventFlowManager (orchestrated by MongooseServer)
  * - EventToQueuePublisher (used by Event sources)
  * - CallBackType and EventToInvokeStrategy (SPI for mapping events -> callbacks)
- * - ProcessorContext (thread-local current StaticEventProcessor)
+ * - ProcessorContext (thread-local current DataFlow)
  * <p>
  * Allowed dependencies
  * - May depend on: com.telamin.mongoose.exception (for domain exceptions),
- * com.fluxtion.runtime (StaticEventProcessor, Event types),
+ * com.telamin.fluxtion.runtime (DataFlow, Event types),
  * minimal Agrona concurrency queues.
  * - Must not depend on: com.telamin.mongoose.config, com.telamin.mongoose.service.* (to avoid inward coupling),
  * com.telamin.mongoose.dutycycle (agents consume dispatch, not vice-versa).

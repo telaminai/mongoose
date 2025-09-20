@@ -1,8 +1,8 @@
 package com.telamin.mongoose;
 
-import com.fluxtion.runtime.DefaultEventProcessor;
-import com.fluxtion.runtime.EventProcessorContext;
-import com.fluxtion.runtime.node.ObjectEventHandlerNode;
+import com.telamin.fluxtion.runtime.context.DataFlowContext;
+import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
+import com.telamin.fluxtion.runtime.DefaultEventProcessor;
 
 import java.util.Map;
 import java.util.function.Consumer;
@@ -57,8 +57,8 @@ public class MongooseEventHandler extends DefaultEventProcessor {
      *
      * @return the EventProcessorContext associated with this handler
      */
-    protected EventProcessorContext getContext() {
-        return serviceRegistry.getEventProcessorContext();
+    protected DataFlowContext getContext() {
+        return serviceRegistry.getDataFlowContext();
     }
 
     private static class FunctionalEventHandler extends ObjectEventHandlerNode {

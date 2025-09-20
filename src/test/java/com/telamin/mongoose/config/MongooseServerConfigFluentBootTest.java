@@ -5,11 +5,11 @@
 
 package com.telamin.mongoose.config;
 
-import com.fluxtion.runtime.EventProcessor;
-import com.fluxtion.runtime.StaticEventProcessor;
-import com.fluxtion.runtime.audit.LogRecord;
-import com.fluxtion.runtime.audit.LogRecordListener;
-import com.fluxtion.runtime.input.EventFeed;
+
+import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.audit.LogRecord;
+import com.telamin.fluxtion.runtime.audit.LogRecordListener;
+import com.telamin.fluxtion.runtime.input.EventFeed;
 import com.telamin.mongoose.MongooseServer;
 import com.telamin.mongoose.service.EventSubscriptionKey;
 import com.telamin.mongoose.service.extension.AbstractEventSourceService;
@@ -113,9 +113,14 @@ public class MongooseServerConfigFluentBootTest {
                 output.publish(event);
             }
         }
+
+        @Override
+        public String getFeedName() {
+            return getName();
+        }
     }
 
-    private static class TestEventProcessor implements StaticEventProcessor, EventProcessor<TestEventProcessor> {
+    private static class TestEventProcessor implements DataFlow {
         private final CountDownLatch latch;
         private volatile TestEvent last;
         private final List<EventFeed> feeds = new ArrayList<>();

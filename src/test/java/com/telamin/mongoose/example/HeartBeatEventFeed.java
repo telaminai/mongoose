@@ -5,7 +5,7 @@
 
 package com.telamin.mongoose.example;
 
-import com.fluxtion.runtime.annotations.Start;
+import com.telamin.fluxtion.runtime.annotations.Start;
 import com.telamin.mongoose.service.extension.AbstractAgentHostedEventSourceService;
 import com.telamin.mongoose.test.HeartbeatEvent;
 import lombok.Getter;

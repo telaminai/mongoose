@@ -46,7 +46,7 @@ package com.telamin.mongoose.example;
 import java.util.List;
 import java.util.Map;
 
-import com.fluxtion.runtime.annotations.OnEvent;
+import com.telamin.fluxtion.runtime.annotations.OnEvent;
 import com.telamin.mongoose.config.ConfigMap;
 
 /**

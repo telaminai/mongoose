@@ -5,7 +5,7 @@
 package com.telamin.mongoose.dutycycle;
 
 import com.fluxtion.agrona.concurrent.OneToOneConcurrentArrayQueue;
-import com.fluxtion.runtime.StaticEventProcessor;
+import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.mongoose.dispatch.RetryPolicy;
 import com.telamin.mongoose.service.EventToInvokeStrategy;
 import org.junit.jupiter.api.Test;
@@ -71,7 +71,7 @@ public class EventQueueToEventProcessorAgentRetryTest {
         }
     }
 
-    private static class NoopProcessor implements StaticEventProcessor {
+    private static class NoopProcessor implements DataFlow {
         @Override
         public void onEvent(Object event) { /* no-op */ }
     }
@@ -79,7 +79,7 @@ public class EventQueueToEventProcessorAgentRetryTest {
     private static class FailingThenSucceedStrategy implements EventToInvokeStrategy {
         private final int failuresBeforeSuccess;
         private int failures;
-        private final List<StaticEventProcessor> procs = new ArrayList<>();
+        private final List<DataFlow> procs = new ArrayList<>();
         int attempts;
         Object lastEvent;
 
@@ -95,7 +95,7 @@ public class EventQueueToEventProcessorAgentRetryTest {
                 throw new RuntimeException("boom" + failures);
             }
             lastEvent = event;
-            for (StaticEventProcessor p : procs) p.onEvent(event);
+            for (DataFlow p : procs) p.onEvent(event);
         }
 
         @Override
@@ -104,12 +104,12 @@ public class EventQueueToEventProcessorAgentRetryTest {
         }
 
         @Override
-        public void registerProcessor(StaticEventProcessor eventProcessor) {
+        public void registerProcessor(DataFlow eventProcessor) {
             procs.add(eventProcessor);
         }
 
         @Override
-        public void deregisterProcessor(StaticEventProcessor eventProcessor) {
+        public void deregisterProcessor(DataFlow eventProcessor) {
             procs.remove(eventProcessor);
         }
 

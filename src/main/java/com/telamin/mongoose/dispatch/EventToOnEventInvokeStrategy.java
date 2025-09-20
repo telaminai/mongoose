@@ -5,16 +5,16 @@
 
 package com.telamin.mongoose.dispatch;
 
-import com.fluxtion.runtime.StaticEventProcessor;
-import com.fluxtion.runtime.annotations.feature.Experimental;
+import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
 
 /**
  * A concrete implementation of {@link AbstractEventToInvocationStrategy} that dispatches events
- * directly to the {@code onEvent} method of {@link StaticEventProcessor}.
+ * directly to the {@code onEvent} method of {@link DataFlow}.
  * <p>
- * This strategy ensures that all registered {@link StaticEventProcessor} targets will handle
+ * This strategy ensures that all registered {@link DataFlow} targets will handle
  * the incoming events in their `onEvent` callback without any additional validation logic.
- * The default behavior deems all {@link StaticEventProcessor} instances as valid targets for event processing.
+ * The default behavior deems all {@link DataFlow} instances as valid targets for event processing.
  * <p>
  * Key behaviors:
  * - The `dispatchEvent` method directly invokes the `onEvent` callback on the target processor for the provided event.
@@ -25,12 +25,12 @@ import com.fluxtion.runtime.annotations.feature.Experimental;
 @Experimental
 public class EventToOnEventInvokeStrategy extends AbstractEventToInvocationStrategy {
     @Override
-    protected void dispatchEvent(Object event, StaticEventProcessor eventProcessor) {
+    protected void dispatchEvent(Object event, DataFlow eventProcessor) {
         eventProcessor.onEvent(event);
     }
 
     @Override
-    protected boolean isValidTarget(StaticEventProcessor eventProcessor) {
+    protected boolean isValidTarget(DataFlow eventProcessor) {
         return true;
     }
 }

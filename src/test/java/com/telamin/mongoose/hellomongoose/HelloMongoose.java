@@ -6,7 +6,7 @@
 package com.telamin.mongoose.hellomongoose;
 
 import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
-import com.fluxtion.runtime.node.ObjectEventHandlerNode;
+import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
 import com.telamin.mongoose.config.MongooseServerConfig;
 import com.telamin.mongoose.connector.memory.InMemoryEventSource;
 

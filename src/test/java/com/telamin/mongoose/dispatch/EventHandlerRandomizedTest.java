@@ -5,9 +5,8 @@
 
 package com.telamin.mongoose.dispatch;
 
-import com.fluxtion.runtime.EventProcessor;
-import com.fluxtion.runtime.StaticEventProcessor;
-import com.fluxtion.runtime.input.EventFeed;
+import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.input.EventFeed;
 import com.telamin.mongoose.service.EventSubscriptionKey;
 import com.telamin.mongoose.test.util.EventFixtures;
 import com.telamin.mongoose.test.util.TestNameUtil;
@@ -51,7 +50,7 @@ public class EventHandlerRandomizedTest {
         }
     }
 
-    private static final class RecordingProcessor implements StaticEventProcessor, EventProcessor<RecordingProcessor> {
+    private static final class RecordingProcessor implements DataFlow {
         @Override
         public void init() {
         }

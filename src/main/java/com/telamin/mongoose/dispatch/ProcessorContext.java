@@ -5,12 +5,12 @@
 
 package com.telamin.mongoose.dispatch;
 
-import com.fluxtion.runtime.StaticEventProcessor;
+import com.telamin.fluxtion.runtime.DataFlow;
 
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Holds per-thread reference to the current StaticEventProcessor being invoked.
+ * Holds per-thread reference to the current DataFlow being invoked.
  * <p>
  * This class exists to reduce coupling between components that previously
  * depended on EventFlowManager for accessing a thread-local current processor.
@@ -18,13 +18,13 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class ProcessorContext {
 
-    private static final ThreadLocal<AtomicReference<StaticEventProcessor>> CURRENT = new ThreadLocal<>();
+    private static final ThreadLocal<AtomicReference<DataFlow>> CURRENT = new ThreadLocal<>();
 
     private ProcessorContext() {
     }
 
-    public static void setCurrentProcessor(StaticEventProcessor eventProcessor) {
-        AtomicReference<StaticEventProcessor> ref = CURRENT.get();
+    public static void setCurrentProcessor(DataFlow eventProcessor) {
+        AtomicReference<DataFlow> ref = CURRENT.get();
         if (ref == null) {
             ref = new AtomicReference<>(eventProcessor);
             CURRENT.set(ref);
@@ -34,14 +34,14 @@ public final class ProcessorContext {
     }
 
     public static void removeCurrentProcessor() {
-        AtomicReference<StaticEventProcessor> ref = CURRENT.get();
+        AtomicReference<DataFlow> ref = CURRENT.get();
         if (ref != null) {
             ref.set(null);
         }
     }
 
-    public static StaticEventProcessor currentProcessor() {
-        AtomicReference<StaticEventProcessor> ref = CURRENT.get();
+    public static DataFlow currentProcessor() {
+        AtomicReference<DataFlow> ref = CURRENT.get();
         return ref == null ? null : ref.get();
 
     }

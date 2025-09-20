@@ -5,9 +5,9 @@
 
 package com.telamin.mongoose.service;
 
-import com.fluxtion.runtime.StaticEventProcessor;
-import com.fluxtion.runtime.input.SubscriptionManager;
-import com.fluxtion.runtime.node.EventSubscription;
+import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.input.SubscriptionManager;
+import com.telamin.fluxtion.runtime.node.EventSubscription;
 import com.telamin.mongoose.dispatch.*;
 import com.telamin.mongoose.service.extension.AbstractEventSourceService;
 import com.telamin.mongoose.service.scheduler.SchedulerService;
@@ -322,7 +322,7 @@ public class AbstractEventSourceServiceTest {
         }
     }
 
-    private static class TestEventProcessor implements StaticEventProcessor {
+    private static class TestEventProcessor implements DataFlow {
         private SubscriptionManager subscriptionManager;
 
         @Override
@@ -388,11 +388,11 @@ public class AbstractEventSourceServiceTest {
         }
 
         @Override
-        public void registerProcessor(StaticEventProcessor eventProcessor) {
+        public void registerProcessor(DataFlow eventProcessor) {
         }
 
         @Override
-        public void deregisterProcessor(StaticEventProcessor eventProcessor) {
+        public void deregisterProcessor(DataFlow eventProcessor) {
         }
 
         @Override

@@ -18,7 +18,7 @@
  * <p>
  * Allowed dependencies
  * - May depend on: com.telamin.mongoose.service.EventSource (for EventWrapStrategy),
- * com.fluxtion.runtime (Service, MessageSink, EventProcessor) for typing.
+ * com.telamin.fluxtion.runtime (Service, MessageSink, EventProcessor) for typing.
  * - Must not depend on: dutycycle, server orchestration, or admin/service impls.
  * <p>
  * Notes

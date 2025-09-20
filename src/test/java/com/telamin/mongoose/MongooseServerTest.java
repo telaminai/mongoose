@@ -6,11 +6,11 @@
 package com.telamin.mongoose;
 
 import com.fluxtion.agrona.concurrent.IdleStrategy;
-import com.fluxtion.runtime.StaticEventProcessor;
-import com.fluxtion.runtime.audit.LogRecord;
-import com.fluxtion.runtime.audit.LogRecordListener;
-import com.fluxtion.runtime.lifecycle.Lifecycle;
-import com.fluxtion.runtime.service.Service;
+import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.audit.LogRecord;
+import com.telamin.fluxtion.runtime.audit.LogRecordListener;
+import com.telamin.fluxtion.runtime.lifecycle.Lifecycle;
+import com.telamin.fluxtion.runtime.service.Service;
 import com.telamin.mongoose.config.MongooseServerConfig;
 import com.telamin.mongoose.dispatch.EventFlowManager;
 import com.telamin.mongoose.dispatch.EventToQueuePublisher;
@@ -136,7 +136,7 @@ public class MongooseServerTest {
         // Arrange
         String processorName = "testProcessor";
         String groupName = "testGroup";
-        Supplier<StaticEventProcessor> processorSupplier = () -> testEventProcessor;
+        Supplier<DataFlow> processorSupplier = () -> testEventProcessor;
 
         // Act
         mongooseServer.addEventProcessor(processorName, groupName, testIdleStrategy, processorSupplier);
@@ -154,7 +154,7 @@ public class MongooseServerTest {
         // Arrange
         String processorName = "testProcessor";
         String groupName = "testGroup";
-        Supplier<StaticEventProcessor> processorSupplier = () -> testEventProcessor;
+        Supplier<DataFlow> processorSupplier = () -> testEventProcessor;
         mongooseServer.addEventProcessor(processorName, groupName, testIdleStrategy, processorSupplier);
 
         // Act
@@ -294,7 +294,7 @@ public class MongooseServerTest {
         }
     }
 
-    private static class TestEventProcessor implements StaticEventProcessor {
+    private static class TestEventProcessor implements DataFlow {
         private final List<Object> receivedEvents = new ArrayList<>();
 
         @Override

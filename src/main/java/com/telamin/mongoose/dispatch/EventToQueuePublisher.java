@@ -6,9 +6,9 @@
 package com.telamin.mongoose.dispatch;
 
 import com.fluxtion.agrona.concurrent.OneToOneConcurrentArrayQueue;
-import com.fluxtion.runtime.event.NamedFeedEvent;
-import com.fluxtion.runtime.event.NamedFeedEventImpl;
-import com.fluxtion.runtime.event.ReplayRecord;
+import com.telamin.fluxtion.runtime.event.NamedFeedEvent;
+import com.telamin.fluxtion.runtime.event.NamedFeedEventImpl;
+import com.telamin.fluxtion.runtime.event.ReplayRecord;
 import com.telamin.mongoose.service.EventSource;
 import com.telamin.mongoose.service.pool.PoolAware;
 import com.telamin.mongoose.service.pool.impl.PoolTracker;

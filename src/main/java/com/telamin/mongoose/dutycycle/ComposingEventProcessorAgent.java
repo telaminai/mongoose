@@ -7,11 +7,11 @@ package com.telamin.mongoose.dutycycle;
 
 import com.fluxtion.agrona.concurrent.DynamicCompositeAgent;
 import com.fluxtion.agrona.concurrent.OneToOneConcurrentArrayQueue;
-import com.fluxtion.runtime.StaticEventProcessor;
-import com.fluxtion.runtime.annotations.feature.Experimental;
-import com.fluxtion.runtime.input.EventFeed;
-import com.fluxtion.runtime.lifecycle.Lifecycle;
-import com.fluxtion.runtime.service.Service;
+import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
+import com.telamin.fluxtion.runtime.input.EventFeed;
+import com.telamin.fluxtion.runtime.lifecycle.Lifecycle;
+import com.telamin.fluxtion.runtime.service.Service;
 import com.telamin.mongoose.MongooseServer;
 import com.telamin.mongoose.dispatch.EventFlowManager;
 import com.telamin.mongoose.service.EventSubscriptionKey;
@@ -27,7 +27,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 
 /**
- * Composite agent that manages named StaticEventProcessor instances within an agent group.
+ * Composite agent that manages named DataFlow instances within an agent group.
  * <p>
  * Responsibilities:
  * <ul>
@@ -101,12 +101,12 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     }
 
     @Override
-    public void registerSubscriber(StaticEventProcessor subscriber) {
+    public void registerSubscriber(DataFlow subscriber) {
         log.info("registerSubscriber:" + subscriber + " " + roleName());
     }
 
     @Override
-    public void subscribe(StaticEventProcessor subscriber, EventSubscriptionKey<?> subscriptionKey) {
+    public void subscribe(DataFlow subscriber, EventSubscriptionKey<?> subscriptionKey) {
         Objects.requireNonNull(subscriber, "subscriber is null");
         Objects.requireNonNull(subscriptionKey, "subscriptionKey is null");
         log.info("subscribe subscriptionKey:" + subscriptionKey + " subscriber:" + subscriber);
@@ -125,7 +125,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     }
 
     @Override
-    public void unSubscribe(StaticEventProcessor subscriber, EventSubscriptionKey<?> subscriptionKey) {
+    public void unSubscribe(DataFlow subscriber, EventSubscriptionKey<?> subscriptionKey) {
         if (queueProcessorMap.containsKey(subscriptionKey)) {
             EventQueueToEventProcessor eventQueueToEventProcessor = queueProcessorMap.get(subscriptionKey);
             if (eventQueueToEventProcessor.deregisterProcessor(subscriber) == 0) {
@@ -137,7 +137,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     }
 
     @Override
-    public void removeAllSubscriptions(StaticEventProcessor subscriber) {
+    public void removeAllSubscriptions(DataFlow subscriber) {
         log.info("removing all subscriptions for:" + subscriber + " " + roleName());
         queueProcessorMap.values().forEach(q -> q.deregisterProcessor(subscriber));
     }
@@ -150,7 +150,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         if (!toStartList.isEmpty()) {
             toStartList.drain(init -> {
                 NamedEventProcessor namedEventProcessor = init.get();
-                StaticEventProcessor eventProcessor = namedEventProcessor.eventProcessor();
+                DataFlow eventProcessor = namedEventProcessor.eventProcessor();
                 registeredEventProcessors.put(namedEventProcessor.name(), namedEventProcessor);
                 com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(eventProcessor);
                 eventProcessor.registerService(schedulerService);

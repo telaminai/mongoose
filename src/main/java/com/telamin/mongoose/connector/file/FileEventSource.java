@@ -6,7 +6,7 @@
 package com.telamin.mongoose.connector.file;
 
 import com.fluxtion.agrona.IoUtil;
-import com.fluxtion.runtime.event.NamedFeedEvent;
+import com.telamin.fluxtion.runtime.event.NamedFeedEvent;
 import com.telamin.mongoose.config.ReadStrategy;
 import com.telamin.mongoose.dispatch.EventToQueuePublisher;
 import com.telamin.mongoose.service.extension.AbstractAgentHostedEventSourceService;
@@ -26,7 +26,7 @@ import java.util.logging.Level;
 
 @Log
 @SuppressWarnings("all")
-public class FileEventSource extends AbstractAgentHostedEventSourceService {
+public class FileEventSource extends AbstractAgentHostedEventSourceService<String> {
 
     @Getter
     @Setter
@@ -160,9 +160,14 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService {
     }
 
     @Override
-    public <T> NamedFeedEvent<T>[] eventLog() {
-        List<NamedFeedEvent> eventLog = output.getEventLog();
+    public NamedFeedEvent<String>[] eventLog() {
+        List<NamedFeedEvent> eventLog = (List) output.getEventLog();
         return eventLog.toArray(new NamedFeedEvent[0]);
+    }
+
+    @Override
+    public String getFeedName() {
+        return getName();
     }
 
     @SuppressWarnings("all")
@@ -365,7 +370,7 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService {
     }
 
     //for testing
-    void setOutput(EventToQueuePublisher<?> output) {
+    void setOutput(EventToQueuePublisher<String> output) {
         this.output = output;
     }
 }
