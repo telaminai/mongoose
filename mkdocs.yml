@@ -60,7 +60,7 @@ extra:
   # Define variables here
   source_root: https://github.com/telaminai/mongoose/tree/main/src
   example_root: https://github.com/telaminai/mongoose-examples/tree/main
-  mongoose_version: 1.0.5
+  mongoose_version: 1.0.6
   release_date: "2024-09-13"
 
 nav:
