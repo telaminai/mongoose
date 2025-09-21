@@ -5,8 +5,8 @@
 
 package com.telamin.mongoose.pool;
 
-import com.fluxtion.runtime.StaticEventProcessor;
-import com.fluxtion.runtime.lifecycle.Lifecycle;
+import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.lifecycle.Lifecycle;
 import com.telamin.mongoose.service.CallBackType;
 import com.telamin.mongoose.service.EventSourceKey;
 import com.telamin.mongoose.service.EventSubscriptionKey;
@@ -14,8 +14,8 @@ import com.telamin.mongoose.service.EventSubscriptionKey;
 /**
  * Processor that subscribes on start to the source using ON_EVENT mapping.
  */
-class SubscribingProcessor implements StaticEventProcessor, Lifecycle {
-    private com.fluxtion.runtime.input.EventFeed<EventSubscriptionKey<?>> feed;
+class SubscribingProcessor implements DataFlow, Lifecycle {
+    private com.telamin.fluxtion.runtime.input.EventFeed<EventSubscriptionKey<?>> feed;
 
     @Override
     public void onEvent(Object event) { /* no-op */ }
@@ -44,11 +44,11 @@ class SubscribingProcessor implements StaticEventProcessor, Lifecycle {
     }
 
     @Override
-    public void registerService(com.fluxtion.runtime.service.Service<?> service) {
+    public void registerService(com.telamin.fluxtion.runtime.service.Service<?> service) {
     }
 
     @Override
-    public void addEventFeed(com.fluxtion.runtime.input.EventFeed eventFeed) {
+    public void addEventFeed(com.telamin.fluxtion.runtime.input.EventFeed eventFeed) {
         this.feed = eventFeed;
     }
 }

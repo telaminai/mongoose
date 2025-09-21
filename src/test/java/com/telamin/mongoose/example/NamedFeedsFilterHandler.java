@@ -5,9 +5,9 @@
 
 package com.telamin.mongoose.example;
 
-import com.fluxtion.runtime.annotations.runtime.ServiceRegistered;
-import com.fluxtion.runtime.node.ObjectEventHandlerNode;
-import com.fluxtion.runtime.output.MessageSink;
+import com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered;
+import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
+import com.telamin.fluxtion.runtime.output.MessageSink;
 
 import java.util.Set;
 

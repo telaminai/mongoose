@@ -43,7 +43,7 @@ The example demonstrates:
 
 ## Base class: AbstractMessageSink
 
-All sinks should extend `com.fluxtion.runtime.output.AbstractMessageSink<T>`. This base class:
+All sinks should extend `com.telamin.fluxtion.runtime.output.AbstractMessageSink<T>`. This base class:
 
 - Exposes `accept(Object value)` to upstream processors.
 - Applies an optional `valueMapper` before calling your sink.
@@ -62,8 +62,8 @@ Below is a skeleton you can copy. Replace the TODOs with your target integration
 ```java
 package com.mycompany.connector;
 
-import com.fluxtion.runtime.lifecycle.Lifecycle;
-import com.fluxtion.runtime.output.AbstractMessageSink;
+import com.telamin.fluxtion.runtime.lifecycle.Lifecycle;
+import com.telamin.fluxtion.runtime.output.AbstractMessageSink;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.java.Log;
@@ -262,7 +262,7 @@ static class TestableMySink extends MyCustomMessageSink {
 - In-memory sink (for
   testing): [InMemoryMessageSink.java]({{source_root}}/main/java/com/telamin/mongoose/connector/memory/InMemoryMessageSink.java) —
   accumulates messages in memory.
-- End-to-end usage: [file-and-memory-feeds-example.md](../guide/file-and-memory-feeds-example.md) — shows processor
+- End-to-end usage: [file-and-memory-feeds-example.md](../../guide/file-and-memory-feeds-example.md) — shows processor
   wiring and
   registering sinks with `EventSinkConfig`.
 - [Message Sink Example](https://github.com/telaminai/mongoose-examples/tree/main/plugins/message-sink-example) in the mongoose-examples repository — demonstrates a complete implementation of a custom message sink with configurable formatting options.

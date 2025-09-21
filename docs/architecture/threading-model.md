@@ -202,11 +202,11 @@ public class MySchedulerAwareHandler extends ObjectEventHandlerNode {
 
 ## 8) Related docs
 
-- Using the scheduler service: [using-the-scheduler-service](../how-to/how-to-using-the-scheduler-service.md)
-- Writing an event source plugin: [writing-an-event-source-plugin](../plugin/writing-an-event-source-plugin.md)
-- Writing a service plugin: [writing-a-service-plugin](../plugin/writing-a-service-plugin.md)
-- Writing an admin command: [writing-an-admin-command](../how-to/how-to-write-an-admin-command.md)
-- How to core‑pin agent threads: [how-to-core-pin](../how-to/how-to-core-pin.md)
+- Using the scheduler service: [using-the-scheduler-service](../example/how-to/how-to-using-the-scheduler-service.md)
+- Writing an event source plugin: [writing-an-event-source-plugin](../example/plugin/writing-an-event-source-plugin.md)
+- Writing a service plugin: [writing-a-service-plugin](../example/plugin/writing-a-service-plugin.md)
+- Writing an admin command: [writing-an-admin-command](../example/how-to/how-to-write-an-admin-command.md)
+- How to core‑pin agent threads: [how-to-core-pin](../example/how-to/how-to-core-pin.md)
 - Architecture + sequence diagrams: [architecture](index.md)
 
 ## 9) Optional: Core pinning for agent threads

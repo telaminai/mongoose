@@ -5,8 +5,8 @@
 
 package com.telamin.mongoose.internal;
 
-import com.fluxtion.runtime.DefaultEventProcessor;
-import com.fluxtion.runtime.node.ObjectEventHandlerNode;
+import com.telamin.fluxtion.runtime.DefaultEventProcessor;
+import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
 import com.telamin.mongoose.config.ConfigListener;
 import com.telamin.mongoose.config.ConfigMap;
 import lombok.AccessLevel;

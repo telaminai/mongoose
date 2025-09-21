@@ -6,8 +6,8 @@
 package com.telamin.mongoose.dutycycle;
 
 import com.fluxtion.agrona.concurrent.OneToOneConcurrentArrayQueue;
-import com.fluxtion.runtime.StaticEventProcessor;
-import com.fluxtion.runtime.event.BroadcastEvent;
+import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.event.BroadcastEvent;
 import com.telamin.mongoose.service.EventToInvokeStrategy;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -196,7 +196,7 @@ public class EventQueueToEventProcessorAgentTest {
     }
 
     private static class TestEventToInvokeStrategy implements EventToInvokeStrategy {
-        private final List<StaticEventProcessor> registeredProcessors = new ArrayList<>();
+        private final List<DataFlow> registeredProcessors = new ArrayList<>();
         private Object lastProcessedEvent;
         private long lastProcessedTime;
 
@@ -206,14 +206,14 @@ public class EventQueueToEventProcessorAgentTest {
             if (event instanceof ReplayRecord replayRecord) {
                 this.lastProcessedEvent = replayRecord.getEvent();
                 this.lastProcessedTime = replayRecord.getWallClockTime();
-                for (StaticEventProcessor processor : registeredProcessors) {
+                for (DataFlow processor : registeredProcessors) {
                     processor.onEvent(replayRecord.getEvent());
                 }
                 return;
             }
 
             this.lastProcessedEvent = event;
-            for (StaticEventProcessor processor : registeredProcessors) {
+            for (DataFlow processor : registeredProcessors) {
                 processor.onEvent(event);
             }
         }
@@ -222,18 +222,18 @@ public class EventQueueToEventProcessorAgentTest {
         public void processEvent(Object event, long time) {
             this.lastProcessedEvent = event;
             this.lastProcessedTime = time;
-            for (StaticEventProcessor processor : registeredProcessors) {
+            for (DataFlow processor : registeredProcessors) {
                 processor.onEvent(event);
             }
         }
 
         @Override
-        public void registerProcessor(StaticEventProcessor eventProcessor) {
+        public void registerProcessor(DataFlow eventProcessor) {
             registeredProcessors.add(eventProcessor);
         }
 
         @Override
-        public void deregisterProcessor(StaticEventProcessor eventProcessor) {
+        public void deregisterProcessor(DataFlow eventProcessor) {
             registeredProcessors.remove(eventProcessor);
         }
 
@@ -242,7 +242,7 @@ public class EventQueueToEventProcessorAgentTest {
             return registeredProcessors.size();
         }
 
-        public List<StaticEventProcessor> getRegisteredProcessors() {
+        public List<DataFlow> getRegisteredProcessors() {
             return registeredProcessors;
         }
 
@@ -255,7 +255,7 @@ public class EventQueueToEventProcessorAgentTest {
         }
     }
 
-    private static class TestEventProcessor implements StaticEventProcessor {
+    private static class TestEventProcessor implements DataFlow {
         private final List<Object> receivedEvents = new ArrayList<>();
 
         @Override

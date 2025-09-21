@@ -5,7 +5,7 @@
 
 package com.telamin.mongoose.example;
 
-import com.fluxtion.runtime.audit.LogRecordListener;
+import com.telamin.fluxtion.runtime.audit.LogRecordListener;
 import com.telamin.mongoose.MongooseServer;
 import com.telamin.mongoose.connector.memory.InMemoryEventSource;
 import org.junit.jupiter.api.Assertions;
@@ -83,7 +83,7 @@ public class YamlConfigFeedsExampleTest {
             Files.writeString(inputFile, "file-1\nfile-2\n", StandardCharsets.UTF_8);
 
             // Access the in-memory source via registered services (by name set in YAML: inMemFeed)
-            Map<String, com.fluxtion.runtime.service.Service<?>> services = server.registeredServices();
+            Map<String, com.telamin.fluxtion.runtime.service.Service<?>> services = server.registeredServices();
             @SuppressWarnings("unchecked")
             InMemoryEventSource<String> registeredMem = (InMemoryEventSource<String>) services.get("inMemFeed").instance();
             registeredMem.offer("mem-1");

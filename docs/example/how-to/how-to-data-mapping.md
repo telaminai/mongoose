@@ -81,7 +81,7 @@ Notes:
 ### 3) Implement a processor and subscribe by feed name
 
 ```java
-import com.fluxtion.runtime.node.ObjectEventHandlerNode;
+import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
 
 public class TestEventProcessor extends ObjectEventHandlerNode {
     private volatile TestEvent last;
@@ -163,7 +163,7 @@ Example (based on [PoolingDataMapper.java]({{source_root}}/test/java/com/telamin
 ```java
 package com.telamin.mongoose.pool;
 
-import com.fluxtion.runtime.annotations.runtime.ServiceRegistered;
+import com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered;
 import com.telamin.mongoose.service.pool.ObjectPool;
 import com.telamin.mongoose.service.pool.ObjectPoolsRegistry;
 

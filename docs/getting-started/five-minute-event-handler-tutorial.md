@@ -1,6 +1,7 @@
 # 5‑minute tutorial: Processing events in a handler with business logic
 
-> **Note:** The complete code for this tutorial is available in the [mongoose-examples repository](https://github.com/telaminai/mongoose-examples/tree/main/gettting-started/five-minute-tutorial). For a more detailed explanation, see the [Five Minute Tutorial README](https://github.com/telaminai/mongoose-examples/blob/main/gettting-started/five-minute-tutorial/README.md).
+> **Note:** The complete code for this tutorial is available in the [Five Minute Tutorial README](https://github.com/telaminai/mongoose-examples/tree/main/getting-started/five-minute-tutorial).
+> For all examples, see the [mongoose-examples repository](https://github.com/telaminai/mongoose-examples/).
 
 This quick tutorial shows how to write business logic in an event handler while keeping infrastructure separate. You’ll:
 
@@ -50,8 +51,8 @@ graph TD
 
 End‑to‑end runnable code (available in the mongoose-examples repository):
 
-* Handler: [NamedFeedsFilterHandler.java](https://github.com/telaminai/mongoose-examples/blob/main/gettting-started/five-minute-tutorial/src/main/java/com/telamin/mongoose/example/fivemin/NamedFeedsFilterHandler.java)
-* Main application: [FiveMinuteTutorial.java](https://github.com/telaminai/mongoose-examples/blob/main/gettting-started/five-minute-tutorial/src/main/java/com/telamin/mongoose/example/fivemin/FiveMinuteTutorial.java)
+* Handler: [NamedFeedsFilterHandler.java](https://github.com/telaminai/mongoose-examples/blob/main/getting-started/five-minute-tutorial/src/main/java/com/telamin/mongoose/example/fivemin/NamedFeedsFilterHandler.java)
+* Main application: [FiveMinuteTutorial.java](https://github.com/telaminai/mongoose-examples/blob/main/getting-started/five-minute-tutorial/src/main/java/com/telamin/mongoose/example/fivemin/FiveMinuteTutorial.java)
 
 ## 1) Write the handler (business logic only)
 
@@ -61,9 +62,9 @@ care about by name in start(). Your event handling stays focused on domain logic
 ```java
 package com.telamin.mongoose.example.fivemin;
 
-import com.fluxtion.runtime.annotations.runtime.ServiceRegistered;
-import com.fluxtion.runtime.node.ObjectEventHandlerNode;
-import com.fluxtion.runtime.output.MessageSink;
+import com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered;
+import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
+import com.telamin.fluxtion.runtime.output.MessageSink;
 
 import java.util.Set;
 
@@ -221,7 +222,7 @@ threading—without editing your business logic.
 
 ## Source code
 
-* Handler: [NamedFeedsFilterHandler.java](https://github.com/telaminai/mongoose-examples/blob/main/gettting-started/five-minute-tutorial/src/main/java/com/telamin/mongoose/example/fivemin/NamedFeedsFilterHandler.java)
-* Main application: [FiveMinuteTutorial.java](https://github.com/telaminai/mongoose-examples/blob/main/gettting-started/five-minute-tutorial/src/main/java/com/telamin/mongoose/example/fivemin/FiveMinuteTutorial.java)
-* Tests: [NamedFeedsFilterHandlerTest.java](https://github.com/telaminai/mongoose-examples/blob/main/gettting-started/five-minute-tutorial/src/test/java/com/telamin/mongoose/example/fivemin/NamedFeedsFilterHandlerTest.java)
-* Detailed README: [Five Minute Tutorial README](https://github.com/telaminai/mongoose-examples/blob/main/gettting-started/five-minute-tutorial/README.md)
+* Handler: [NamedFeedsFilterHandler.java](https://github.com/telaminai/mongoose-examples/blob/main/getting-started/five-minute-tutorial/src/main/java/com/telamin/mongoose/example/fivemin/NamedFeedsFilterHandler.java)
+* Main application: [FiveMinuteTutorial.java](https://github.com/telaminai/mongoose-examples/blob/main/getting-started/five-minute-tutorial/src/main/java/com/telamin/mongoose/example/fivemin/FiveMinuteTutorial.java)
+* Tests: [NamedFeedsFilterHandlerTest.java](https://github.com/telaminai/mongoose-examples/blob/main/getting-started/five-minute-tutorial/src/test/java/com/telamin/mongoose/example/fivemin/NamedFeedsFilterHandlerTest.java)
+* Detailed README: [Five Minute Tutorial README](https://github.com/telaminai/mongoose-examples/blob/main/getting-started/five-minute-tutorial/README.md)

@@ -5,10 +5,10 @@
 
 package com.telamin.mongoose.service;
 
-import com.fluxtion.runtime.StaticEventProcessor;
+import com.telamin.fluxtion.runtime.DataFlow;
 
 /**
- * Defines a strategy for processing events and dispatching them to {@link StaticEventProcessor} instances.
+ * Defines a strategy for processing events and dispatching them to {@link DataFlow} instances.
  * Implementations of this interface manage the registration and deregistration of processors,
  * as well as invoking the appropriate processing logic for incoming events.
  */
@@ -35,14 +35,14 @@ public interface EventToInvokeStrategy {
      *
      * @param eventProcessor the processor to register
      */
-    void registerProcessor(StaticEventProcessor eventProcessor);
+    void registerProcessor(DataFlow eventProcessor);
 
     /**
      * Deregister a processor so it no longer receives dispatched events.
      *
      * @param eventProcessor the processor to deregister
      */
-    void deregisterProcessor(StaticEventProcessor eventProcessor);
+    void deregisterProcessor(DataFlow eventProcessor);
 
     /**
      * Return the number of currently registered processors.

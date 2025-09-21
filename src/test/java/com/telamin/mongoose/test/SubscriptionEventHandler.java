@@ -5,7 +5,7 @@
 
 package com.telamin.mongoose.test;
 
-import com.fluxtion.runtime.node.ObjectEventHandlerNode;
+import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
 import com.telamin.mongoose.service.CallBackType;
 import com.telamin.mongoose.service.EventSourceKey;
 import com.telamin.mongoose.service.EventSubscriptionKey;

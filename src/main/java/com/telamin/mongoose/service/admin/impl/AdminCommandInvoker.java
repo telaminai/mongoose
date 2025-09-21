@@ -6,8 +6,8 @@
 
 package com.telamin.mongoose.service.admin.impl;
 
-import com.fluxtion.runtime.StaticEventProcessor;
-import com.fluxtion.runtime.annotations.feature.Experimental;
+import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
 import com.telamin.mongoose.dispatch.AbstractEventToInvocationStrategy;
 
 /**
@@ -24,13 +24,13 @@ public class AdminCommandInvoker extends AbstractEventToInvocationStrategy {
     }
 
     @Override
-    protected void dispatchEvent(Object event, StaticEventProcessor eventProcessor) {
+    protected void dispatchEvent(Object event, DataFlow eventProcessor) {
         AdminCommand adminCommand = (AdminCommand) event;
         adminCommand.executeCommand();
     }
 
     @Override
-    protected boolean isValidTarget(StaticEventProcessor eventProcessor) {
+    protected boolean isValidTarget(DataFlow eventProcessor) {
         return true;
     }
 }

@@ -5,8 +5,8 @@
 
 package com.telamin.mongoose.internal;
 
-import com.fluxtion.runtime.annotations.runtime.ServiceRegistered;
-import com.fluxtion.runtime.service.Service;
+import com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered;
+import com.telamin.fluxtion.runtime.service.Service;
 
 import java.lang.reflect.Method;
 import java.util.*;
@@ -22,7 +22,7 @@ import java.util.logging.Logger;
  * - (ServiceInterface, String name)
  * <p>
  * This injector is intended for non-processor objects (plain services managed by MongooseServer
- * or agent-hosted services). Injection inside StaticEventProcessor graphs is already handled by
+ * or agent-hosted services). Injection inside DataFlow graphs is already handled by
  * the Fluxtion runtime via ServiceRegistryNode.
  */
 public final class ServiceInjector {

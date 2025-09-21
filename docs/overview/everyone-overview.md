@@ -32,6 +32,7 @@ It helps teams build real‑time, event‑driven products (things that react to 
 - Low‑latency domains: trading, pricing, monitoring, control systems.
 - In‑app data pipelines: pre/post‑processing around your messaging or databases.
 - As a component inside larger architectures: run it alongside technologies you already use.
+- Edge processing: lightweight deployment for processing data closer to the source.
 
 ## How it works (in plain language)
 
@@ -46,13 +47,13 @@ You design what should happen with incoming data; Mongoose keeps everything flow
 ## What makes it different
 
 - Embedded and lightweight
-  - Runs inside your application process—fast, simple, and under your control.
+    - Runs inside your application process—fast, simple, and under your control.
 - Focused on events, not clusters
-  - Built for in‑process, real‑time event handling rather than managing a distributed cluster.
+    - Built for in‑process, real‑time event handling rather than managing a distributed cluster.
 - Clean separation of concerns
-  - Business logic stays clean; infrastructure and plumbing are handled for you.
+    - Business logic stays clean; infrastructure and plumbing are handled for you.
 - Extensible by design
-  - Clear plugin points for inputs, outputs, and services.
+    - Clear plugin points for inputs, outputs, and services.
 
 ## Performance, simply stated
 
@@ -61,11 +62,11 @@ Mongoose is built for speed. Internal benchmarks demonstrate the ability to proc
 ## Operating and scaling
 
 - Operability
-  - Administrative controls, scheduling, logging, and audit support are built in.
-  - Add or change handlers over time with confidence.
+    - Administrative controls, scheduling, logging, and audit support are built in.
+    - Add or change handlers over time with confidence.
 - Scaling
-  - Run multiple instances behind a load balancer for horizontal scale.
-  - Cloud‑friendly: deploy like any standard JVM process; tune for ultra‑low latency if needed.
+    - Run multiple instances behind a load balancer for horizontal scale.
+    - Cloud‑friendly: deploy like any standard JVM process; tune for ultra‑low latency if needed.
 
 ## How to evaluate Mongoose
 
@@ -79,13 +80,13 @@ If the answer to several of these is “yes,” Mongoose is likely a strong fit.
 ## Getting started (no heavy lift)
 
 1. Take a 10‑minute tour
-   - Read the high‑level overview and event‑processing architecture pages to see how the pieces fit.
+     - Read the high‑level overview and event‑processing architecture pages to see how the pieces fit.
 2. Try a thin slice
-   - Pick a single input, one or two rules, and a simple output. Measure on your hardware.
+     - Pick a single input, one or two rules, and a simple output. Measure on your hardware.
 3. Expand thoughtfully
-   - Tune for your latency or throughput goals; add additional feeds, handlers, or sinks as needed.
+     - Tune for your latency or throughput goals; add additional feeds, handlers, or sinks as needed.
 4. Talk to us
-   - Open an issue or reach out to discuss patterns, plugins, and roadmap.
+     - Open an issue or reach out to discuss patterns, plugins, and roadmap.
 
 ## The bottom line
 

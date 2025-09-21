@@ -5,7 +5,7 @@
 package com.telamin.mongoose.pool;
 
 import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
-import com.fluxtion.runtime.service.Service;
+import com.telamin.fluxtion.runtime.service.Service;
 import com.telamin.mongoose.MongooseServer;
 import com.telamin.mongoose.config.MongooseServerConfig;
 import com.telamin.mongoose.dispatch.EventToOnEventInvokeStrategy;

@@ -5,7 +5,7 @@
 
 package com.telamin.mongoose.service.admin;
 
-import com.fluxtion.runtime.annotations.feature.Experimental;
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
 
 import java.util.List;
 import java.util.function.Consumer;

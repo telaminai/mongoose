@@ -5,8 +5,8 @@
 
 package com.telamin.mongoose.dispatch;
 
-import com.fluxtion.runtime.StaticEventProcessor;
-import com.fluxtion.runtime.annotations.feature.Experimental;
+import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
 import com.telamin.mongoose.service.EventToInvokeStrategy;
 import lombok.extern.java.Log;
 
@@ -31,11 +31,11 @@ public abstract class AbstractEventToInvocationStrategy implements EventToInvoke
     /**
      * The set of registered target event processors that should receive callbacks from this strategy.
      */
-    protected final List<StaticEventProcessor> eventProcessorSinks = new CopyOnWriteArrayList<>();
+    protected final List<DataFlow> eventProcessorSinks = new CopyOnWriteArrayList<>();
     /**
      * Per-processor synthetic clocks used to supply a custom time source to processors when dispatching with an explicit time.
      */
-    protected static final Map<StaticEventProcessor, AtomicLong> syntheticClocks = new ConcurrentHashMap<>();
+    protected static final Map<DataFlow, AtomicLong> syntheticClocks = new ConcurrentHashMap<>();
     /**
      * Monotonic id generator for instances of this strategy, also used for logging context.
      */
@@ -66,7 +66,7 @@ public abstract class AbstractEventToInvocationStrategy implements EventToInvoke
             log.fine(() -> "invokerId: " + id + " processEvent: " + event + " to " + eventProcessorSinks.size() + " processors");
         }
         for (int i = 0, targetQueuesSize = eventProcessorSinks.size(); i < targetQueuesSize; i++) {
-            StaticEventProcessor eventProcessor = eventProcessorSinks.get(i);
+            DataFlow eventProcessor = eventProcessorSinks.get(i);
             if (fineLogEnabled) {
                 log.fine(() -> "invokerId: " + id + " dispatchEvent to " + eventProcessor);
             }
@@ -79,7 +79,7 @@ public abstract class AbstractEventToInvocationStrategy implements EventToInvoke
     @Override
     public void processEvent(Object event, long time) {
         for (int i = 0, targetQueuesSize = eventProcessorSinks.size(); i < targetQueuesSize; i++) {
-            StaticEventProcessor eventProcessor = eventProcessorSinks.get(i);
+            DataFlow eventProcessor = eventProcessorSinks.get(i);
             syntheticClocks.computeIfAbsent(eventProcessor, k -> {
                 AtomicLong atomicLong = new AtomicLong();
                 eventProcessor.setClockStrategy(atomicLong::get);
@@ -96,10 +96,10 @@ public abstract class AbstractEventToInvocationStrategy implements EventToInvoke
      * @param event          the incoming event to map to a callback method
      * @param eventProcessor the target of the callback method
      */
-    abstract protected void dispatchEvent(Object event, StaticEventProcessor eventProcessor);
+    abstract protected void dispatchEvent(Object event, DataFlow eventProcessor);
 
     @Override
-    public void registerProcessor(StaticEventProcessor eventProcessor) {
+    public void registerProcessor(DataFlow eventProcessor) {
         if (isValidTarget(eventProcessor) && !eventProcessorSinks.contains(eventProcessor)) {
             eventProcessorSinks.add(eventProcessor);
             log.fine(() -> "invokerId: " + id + " registerProcessor: " + eventProcessor + " added to " + eventProcessorSinks.size() + " processors");
@@ -114,10 +114,10 @@ public abstract class AbstractEventToInvocationStrategy implements EventToInvoke
      * @param eventProcessor the potential target of this invocation strategy
      * @return is a valid target
      */
-    abstract protected boolean isValidTarget(StaticEventProcessor eventProcessor);
+    abstract protected boolean isValidTarget(DataFlow eventProcessor);
 
     @Override
-    public void deregisterProcessor(StaticEventProcessor eventProcessor) {
+    public void deregisterProcessor(DataFlow eventProcessor) {
         eventProcessorSinks.remove(eventProcessor);
     }
 

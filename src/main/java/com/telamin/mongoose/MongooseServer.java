@@ -11,11 +11,11 @@ import com.fluxtion.agrona.concurrent.DynamicCompositeAgent;
 import com.fluxtion.agrona.concurrent.IdleStrategy;
 import com.fluxtion.agrona.concurrent.UnsafeBuffer;
 import com.fluxtion.agrona.concurrent.status.AtomicCounter;
-import com.fluxtion.runtime.StaticEventProcessor;
-import com.fluxtion.runtime.annotations.runtime.ServiceRegistered;
-import com.fluxtion.runtime.audit.LogRecordListener;
-import com.fluxtion.runtime.service.Service;
-import com.fluxtion.runtime.service.ServiceRegistryNode;
+import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered;
+import com.telamin.fluxtion.runtime.audit.LogRecordListener;
+import com.telamin.fluxtion.runtime.service.Service;
+import com.telamin.fluxtion.runtime.service.ServiceRegistryNode;
 import com.telamin.mongoose.config.MongooseServerConfig;
 import com.telamin.mongoose.dispatch.EventFlowManager;
 import com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent;
@@ -523,14 +523,14 @@ public class MongooseServer implements MongooseServerController {
      * @param processorName unique name of the processor within the group
      * @param groupName     the logical processor group to host the processor
      * @param idleStrategy  optional idle strategy override for the group (may be {@code null})
-     * @param feedConsumer  supplier creating the {@link StaticEventProcessor} instance
+     * @param feedConsumer  supplier creating the {@link DataFlow} instance
      * @throws IllegalArgumentException if a processor with {@code processorName} already exists in the group
      */
     public void addEventProcessor(
             String processorName,
             String groupName,
             IdleStrategy idleStrategy,
-            Supplier<StaticEventProcessor> feedConsumer) throws IllegalArgumentException {
+            Supplier<DataFlow> feedConsumer) throws IllegalArgumentException {
         IdleStrategy idleStrategyOverride = mongooseServerConfig.getIdleStrategyOrDefault(groupName, idleStrategy);
         ComposingEventProcessorAgentRunner composingEventProcessorAgentRunner = composingEventProcessorAgents.computeIfAbsent(
                 groupName,
@@ -553,7 +553,7 @@ public class MongooseServer implements MongooseServerController {
         }
 
         composingEventProcessorAgentRunner.group().addNamedEventProcessor(() -> {
-            StaticEventProcessor eventProcessor = feedConsumer.get();
+            DataFlow eventProcessor = feedConsumer.get();
             eventProcessor.setAuditLogProcessor(logRecordListener);
             if (started) {
                 log.info("init event processor in already started server processor:'" + eventProcessor + "'");

@@ -64,7 +64,7 @@ Choosing:
 - Use non‑agent when writes block or the target client mandates its own threads.
 
 See also: [Threading model](../architecture/threading-model.md)
-and [Message sink plugin guide](../plugin/writing-a-message-sink-plugin.md).
+and [Message sink plugin guide](../example/plugin/writing-a-message-sink-plugin.md).
 
 ## Lifecycle and publishing patterns
 
@@ -89,7 +89,7 @@ Publishing pathway:
 
 Related:
 
-- [Subscribe to named feeds](../how-to/how-to-subscribing-to-named-event-feeds.md) — for inbound subscription; for
+- [Subscribe to named feeds](../example/how-to/how-to-subscribing-to-named-event-feeds.md) — for inbound subscription; for
   sinks, use explicit registration via EventSinkConfig
 
 ## Backpressure and slow‑consumer policy (sinks)
@@ -121,7 +121,7 @@ Recommendations:
 
 Related docs:
 
-- [Transform events](../how-to/how-to-data-mapping.md)
+- [Transform events](../example/how-to/how-to-data-mapping.md)
 
 ## Batching, flushing, and retries
 
@@ -146,7 +146,7 @@ Use pools to stabilize latency and minimize allocations:
 Resources in this repo:
 
 - [Object pooling architecture](../architecture/object_pooling.md)
-- [Zero‑GC object pooling](../how-to/how-to-object-pool.md)
+- [Zero‑GC object pooling](../example/how-to/how-to-object-pool.md)
 - [Benchmarks and performance](../reports/server-benchmarks-and-performance.md)
 -
 Tests/benchmarks: [EventProcessingBenchmark.java]({{source_root}}/test/java/com/telamin/mongoose/benchmark/objectpool/EventProcessingBenchmark.java)
@@ -167,7 +167,7 @@ Register sinks programmatically with EventSinkConfig:
 
 See:
 
-- [Message sink plugin guide](../plugin/writing-a-message-sink-plugin.md)
+- [Message sink plugin guide](../example/plugin/writing-a-message-sink-plugin.md)
 - [Plugin extension mechanism](plugin_extension_architecture.md)
 
 ## Putting it together: picking a sink design
@@ -204,7 +204,7 @@ See:
 ## See also
 
 - [Event handling and business logic](event-processing-architecture.md)
-- [Message sink plugin guide](../plugin/writing-a-message-sink-plugin.md)
+- [Message sink plugin guide](../example/plugin/writing-a-message-sink-plugin.md)
 - [Object pooling](../architecture/object_pooling.md)
 - [Threading model](../architecture/threading-model.md)
 - [Server benchmarks and performance](../reports/server-benchmarks-and-performance.md)

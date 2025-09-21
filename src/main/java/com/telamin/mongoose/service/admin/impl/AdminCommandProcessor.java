@@ -5,8 +5,8 @@
 
 package com.telamin.mongoose.service.admin.impl;
 
-import com.fluxtion.runtime.StaticEventProcessor;
-import com.fluxtion.runtime.annotations.feature.Experimental;
+import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
 import com.telamin.mongoose.dispatch.EventFlowManager;
 import com.telamin.mongoose.service.*;
 import com.telamin.mongoose.service.admin.AdminCommandRegistry;
@@ -129,8 +129,8 @@ public class AdminCommandProcessor implements AdminCommandRegistry, LifeCycleEve
     }
 
     private void addCommand(String name, String queueKey, AdminCommand adminCommand) {
-        StaticEventProcessor staticEventProcessor = com.telamin.mongoose.dispatch.ProcessorContext.currentProcessor();
-        log.info("registered command:" + name + " queue:" + queueKey + " processor:" + staticEventProcessor);
+        DataFlow DataFlow = com.telamin.mongoose.dispatch.ProcessorContext.currentProcessor();
+        log.info("registered command:" + name + " queue:" + queueKey + " processor:" + DataFlow);
 
         registeredCommandMap.put(name, adminCommand);
 
@@ -139,7 +139,7 @@ public class AdminCommandProcessor implements AdminCommandRegistry, LifeCycleEve
                 AdminCallbackType.class
         );
 
-        staticEventProcessor.getSubscriptionManager().subscribe(subscriptionKey);
+        DataFlow.getSubscriptionManager().subscribe(subscriptionKey);
     }
 
     @Override

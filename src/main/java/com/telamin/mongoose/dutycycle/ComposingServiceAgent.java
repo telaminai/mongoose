@@ -7,9 +7,9 @@ package com.telamin.mongoose.dutycycle;
 
 import com.fluxtion.agrona.concurrent.DynamicCompositeAgent;
 import com.fluxtion.agrona.concurrent.OneToOneConcurrentArrayQueue;
-import com.fluxtion.runtime.annotations.feature.Experimental;
-import com.fluxtion.runtime.service.Service;
-import com.fluxtion.runtime.service.ServiceRegistryNode;
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
+import com.telamin.fluxtion.runtime.service.Service;
+import com.telamin.fluxtion.runtime.service.ServiceRegistryNode;
 import com.telamin.mongoose.MongooseServer;
 import com.telamin.mongoose.dispatch.EventFlowManager;
 import com.telamin.mongoose.internal.ServiceInjector;
@@ -104,7 +104,7 @@ public class ComposingServiceAgent extends DynamicCompositeAgent {
                 serviceRegistry.registerService(schedulerService);
                 mongooseServer.servicesRegistered().forEach(serviceRegistry::registerService);
                 // Inject dependencies into the agent-hosted service instance (scheduler + server services)
-                java.util.List<com.fluxtion.runtime.service.Service<?>> inj = new java.util.ArrayList<>(mongooseServer.servicesRegistered());
+                java.util.List<com.telamin.fluxtion.runtime.service.Service<?>> inj = new java.util.ArrayList<>(mongooseServer.servicesRegistered());
                 inj.add(schedulerService);
                 ServiceInjector.inject(exportedService.instance(), inj);
                 mongooseServer.registerAgentService(exportedService);

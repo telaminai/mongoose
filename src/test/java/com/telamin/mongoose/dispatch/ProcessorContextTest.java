@@ -5,9 +5,8 @@
 
 package com.telamin.mongoose.dispatch;
 
-import com.fluxtion.runtime.EventProcessor;
-import com.fluxtion.runtime.StaticEventProcessor;
-import com.fluxtion.runtime.input.EventFeed;
+import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.input.EventFeed;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -44,7 +43,7 @@ public class ProcessorContextTest {
 
         CountDownLatch started = new CountDownLatch(1);
         CountDownLatch done = new CountDownLatch(1);
-        final StaticEventProcessor[] seenInWorker = new StaticEventProcessor[1];
+        final DataFlow[] seenInWorker = new DataFlow[1];
 
         Thread t = new Thread(() -> {
             try {
@@ -77,9 +76,9 @@ public class ProcessorContextTest {
     }
 
     /**
-     * Minimal StaticEventProcessor for testing ProcessorContext.
+     * Minimal DataFlow for testing ProcessorContext.
      */
-    private static class DummyProcessor implements StaticEventProcessor, EventProcessor<DummyProcessor> {
+    private static class DummyProcessor implements DataFlow {
         private final List<EventFeed> feeds = new ArrayList<>();
         @Override public void onEvent(Object event) { }
         @Override public void addEventFeed(EventFeed eventFeed) { feeds.add(eventFeed); }
