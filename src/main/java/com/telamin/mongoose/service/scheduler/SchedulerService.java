@@ -5,7 +5,7 @@
 
 package com.telamin.mongoose.service.scheduler;
 
-import com.fluxtion.runtime.annotations.feature.Experimental;
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
 
 /**
  * Provides a scheduling service for executing actions at specified times or after delays. The

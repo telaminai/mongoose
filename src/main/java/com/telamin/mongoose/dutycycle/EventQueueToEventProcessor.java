@@ -7,19 +7,19 @@
 package com.telamin.mongoose.dutycycle;
 
 import com.fluxtion.agrona.concurrent.Agent;
-import com.fluxtion.runtime.StaticEventProcessor;
-import com.fluxtion.runtime.annotations.feature.Experimental;
+import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
 
 /**
- * Reads from an event queue and invokes callbacks on registered {@link StaticEventProcessor}'s. Acts as a multiplexer
- * for an event queue to registered StaticEventProcessor
+ * Reads from an event queue and invokes callbacks on registered {@link DataFlow}'s. Acts as a multiplexer
+ * for an event queue to registered DataFlow
  */
 @Experimental
 public interface EventQueueToEventProcessor extends Agent {
 
-    int registerProcessor(StaticEventProcessor eventProcessor);
+    int registerProcessor(DataFlow eventProcessor);
 
-    int deregisterProcessor(StaticEventProcessor eventProcessor);
+    int deregisterProcessor(DataFlow eventProcessor);
 
     int listenerCount();
 }

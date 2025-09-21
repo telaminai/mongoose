@@ -6,11 +6,11 @@
 package com.telamin.mongoose.dutycycle;
 
 import com.fluxtion.agrona.concurrent.OneToOneConcurrentArrayQueue;
-import com.fluxtion.runtime.StaticEventProcessor;
-import com.fluxtion.runtime.annotations.feature.Experimental;
-import com.fluxtion.runtime.event.BroadcastEvent;
-import com.fluxtion.runtime.event.NamedFeedEvent;
-import com.fluxtion.runtime.event.ReplayRecord;
+import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
+import com.telamin.fluxtion.runtime.event.BroadcastEvent;
+import com.telamin.fluxtion.runtime.event.NamedFeedEvent;
+import com.telamin.fluxtion.runtime.event.ReplayRecord;
 import com.telamin.mongoose.service.EventToInvokeStrategy;
 import com.telamin.mongoose.service.pool.PoolAware;
 import com.telamin.mongoose.service.pool.impl.PoolTracker;
@@ -151,7 +151,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     }
 
     @Override
-    public int registerProcessor(StaticEventProcessor eventProcessor) {
+    public int registerProcessor(DataFlow eventProcessor) {
         logger.info("registerProcessor: " + eventProcessor);
         eventToInvokeStrategy.registerProcessor(eventProcessor);
         logger.info("listener count:" + listenerCount());
@@ -159,7 +159,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     }
 
     @Override
-    public int deregisterProcessor(StaticEventProcessor eventProcessor) {
+    public int deregisterProcessor(DataFlow eventProcessor) {
         logger.info("deregisterProcessor: " + eventProcessor);
         eventToInvokeStrategy.deregisterProcessor(eventProcessor);
         int listeners = listenerCount();

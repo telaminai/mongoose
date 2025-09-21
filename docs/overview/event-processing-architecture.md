@@ -168,9 +168,9 @@ registrations.
 Example: injecting a PublishingServiceTyped and a MessageSink<String> into an ObjectEventHandlerNode-based handler:
 
 ```java
-import com.fluxtion.runtime.annotations.runtime.ServiceRegistered;
-import com.fluxtion.runtime.node.ObjectEventHandlerNode;
-import com.fluxtion.runtime.output.MessageSink;
+import com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered;
+import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
+import com.telamin.fluxtion.runtime.output.MessageSink;
 
 public class MyHandler extends ObjectEventHandlerNode {
     private PublishingServiceTyped service;

@@ -4,8 +4,8 @@
  */
 package com.telamin.mongoose;
 
-import com.fluxtion.runtime.lifecycle.Lifecycle;
-import com.fluxtion.runtime.service.Service;
+import com.telamin.fluxtion.runtime.lifecycle.Lifecycle;
+import com.telamin.fluxtion.runtime.service.Service;
 import com.telamin.mongoose.config.MongooseServerConfig;
 import com.telamin.mongoose.dispatch.EventFlowManager;
 import com.telamin.mongoose.service.EventSubscriptionKey;

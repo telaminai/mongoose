@@ -34,16 +34,48 @@ standalone single‑server app — the same APIs support both.
 - See detailed results in the benchmarks
   report: [Server benchmarks and performance](reports/server-benchmarks-and-performance.md).
 
-### Quickstart: Hello Mongoose
+## Build coordinates
+
+=== "Maven"
+
+    ``` xml
+    <dependencies>
+        <dependency>
+            <groupId>com.telamin</groupId>
+            <artifactId>mongoose</artifactId>
+            <version>{{mongoose_version}}</version>
+        </dependency>
+    </dependencies>
+    ```
+
+=== "Gradle"
+
+    ``` groovy
+    implementation 'com.telamin:mongoose:{{mongoose_version}}'
+    ```
+
+## Quickstart: Hello Mongoose
 
 Run the one-file example to see events flowing through a handler:
 
-- Github project: [HelloMongoose](https://github.com/telaminai/hellomongoose)
+- GitHub project: [HelloMongoose](https://github.com/telaminai/hellomongoose)
+
+### Micro Glossary:
+
+- **Event feed**: A source of events (e.g., in‑memory, file, Kafka).
+- **Processor**: Executes your handler on its own agent thread.
+- **Handler**: Your business logic function that receives events.
+- **Agent**: A named execution thread with a configurable idle strategy.
+- **Idle strategy**: Controls how an agent waits (e.g., BusySpin for ultra‑low latency).
+- **Broadcast**: When true, each event is delivered to all processors.
+
+### Example code:
 
 ```java
 public static void main(String[] args) {
     // 1) Business logic handler
-    Consumer<Object> handler = event -> System.out.println("Got event: " + event);
+    Consumer<Object> handler = event -> System.out.println(
+            "thread:'" + Thread.currentThread().getName() + "' event: " + event);
 
     // 2) Create an in-memory event feed (String payloads)
     var feed = new InMemoryEventSource<String>();
@@ -62,37 +94,50 @@ public static void main(String[] args) {
             .agent("feed-agent", new BusySpinIdleStrategy())
             .build();
     
-    // 6) Build the application config and boot the mongooseServer
+    // 5) Build the application config and boot the mongooseServer
     var app = MongooseServerConfig.builder()
             .addProcessor("processor-agent", eventProcessorConfig)
             .addEventFeed(feedConfig)
             .build();
 
-    // 7) boot an embedded MongooseServer instance
+    // 6) boot an embedded MongooseServer instance
     var mongooseServer = MongooseServer.bootServer(app);
 
-    // 8) Publish a few events
+    // 7) Publish a few events
+    System.out.println("thread:'" + Thread.currentThread().getName() + "' publishing events\n");
     feed.offer("hi");
     feed.offer("mongoose");
 
-    // 9) Cleanup (in a real app, keep running)
+    // 8) Cleanup (in a real app, keep running)
     mongooseServer.stop();
 }
 ```
 
-### Start here: Learn path
+### Expected output
+
+```console
+thread:'main' publishing events
+
+thread:'processor-agent' event: hi
+thread:'processor-agent' event: mongoose
+```
+
+## Learning path
 - Step 1: Quickstart — run the one-file example: [Hello Mongoose](https://github.com/telaminai/hellomongoose)
 - Step 2: Learn the basics — [Event handling and business logic](overview/event-processing-architecture.md)
-- Step 3: Do common tasks — [How-to guides](how-to/how-to-subscribing-to-named-event-feeds.md)
+- Step 3: Do common tasks — [How-to guides](example/how-to/how-to-subscribing-to-named-event-feeds.md)
 - Step 4: Understand internals — [Threading model](architecture/threading-model.md) and [Architecture overview](architecture/overview.md)
+
+## Mongoose examples
+GitHub repository [mongoose-examples](https://github.com/telaminai/mongoose-examples/).
 
 ## Documentation is organized into the following sections:
 
 - Start with the [Overview](overview/engineers-overview.md) to learn concepts and architecture.
 - See [Event processing](overview/event-processing-architecture.md) where business logic meets event handling.
 - See [Examples](guide/file-and-memory-feeds-example.md) for quick hands-on guidance.
-- See [Plugins](plugin/writing-a-message-sink-plugin.md) for advice on writing plugins.
-- Use [How-to guides](how-to/how-to-subscribing-to-named-event-feeds.md) for common tasks and extensions.
+- See [Plugins](example/plugin/writing-a-message-sink-plugin.md) for advice on writing plugins.
+- Use [How-to guides](example/how-to/how-to-subscribing-to-named-event-feeds.md) for common tasks and extensions.
 
 ## Architecture and threading model for internals
 

@@ -5,7 +5,7 @@
 
 package com.telamin.mongoose.example.datamapper;
 
-import com.fluxtion.runtime.node.ObjectEventHandlerNode;
+import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
 
 import java.util.concurrent.CountDownLatch;
 

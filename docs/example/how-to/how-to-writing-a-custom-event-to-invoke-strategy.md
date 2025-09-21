@@ -36,7 +36,7 @@ The following example accepts only processors that implement a MarkerProcessor i
 before delivering them via a strongly-typed callback or onEvent(Object) if the event is not a String:
 
 ```java
-import com.fluxtion.runtime.StaticEventProcessor;
+import com.telamin.fluxtion.runtime.StaticEventProcessor;
 import com.telamin.mongoose.dispatch.AbstractEventToInvocationStrategy;
 
 public interface MarkerProcessor {

@@ -6,7 +6,7 @@
 package com.telamin.mongoose.dispatch;
 
 import com.fluxtion.agrona.concurrent.OneToOneConcurrentArrayQueue;
-import com.fluxtion.runtime.event.NamedFeedEvent;
+import com.telamin.fluxtion.runtime.event.NamedFeedEvent;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;

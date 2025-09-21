@@ -5,11 +5,10 @@
 
 package com.telamin.mongoose.stress;
 
-import com.fluxtion.runtime.EventProcessor;
-import com.fluxtion.runtime.StaticEventProcessor;
-import com.fluxtion.runtime.audit.LogRecord;
-import com.fluxtion.runtime.audit.LogRecordListener;
-import com.fluxtion.runtime.input.EventFeed;
+import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.audit.LogRecord;
+import com.telamin.fluxtion.runtime.audit.LogRecordListener;
+import com.telamin.fluxtion.runtime.input.EventFeed;
 import com.telamin.mongoose.MongooseServer;
 import com.telamin.mongoose.config.MongooseServerConfig;
 import com.telamin.mongoose.service.CallBackType;
@@ -580,7 +579,7 @@ public class HighVolumeEventStressTest {
     /**
      * A test event processor that processes TestEvents.
      */
-    private static class TestEventProcessor implements StaticEventProcessor, EventProcessor<TestEventProcessor> {
+    private static class TestEventProcessor implements DataFlow {
         private final String name;
         private final List<TestEvent> processedEvents = new ArrayList<>();
         private volatile CountDownLatch completionLatch;

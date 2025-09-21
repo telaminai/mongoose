@@ -8,7 +8,7 @@ package com.telamin.mongoose.example;
 import com.telamin.mongoose.dispatch.AbstractEventToInvocationStrategy;
 import com.telamin.mongoose.service.CallBackType;
 import com.telamin.mongoose.service.extension.AbstractEventSourceService;
-import com.fluxtion.runtime.StaticEventProcessor;
+import com.telamin.fluxtion.runtime.DataFlow;
 
 /**
  * A publishing service variant that delivers events via a strongly-typed
@@ -35,7 +35,7 @@ public class PublishingServiceTyped extends AbstractEventSourceService<String> {
      */
     static class TypedInvokeStrategy extends AbstractEventToInvocationStrategy {
         @Override
-        protected void dispatchEvent(Object event, StaticEventProcessor eventProcessor) {
+        protected void dispatchEvent(Object event, DataFlow eventProcessor) {
             if (eventProcessor instanceof PublishingServiceListener listener && event instanceof String s) {
                 listener.onServiceEvent(s);
             } else {
@@ -44,7 +44,7 @@ public class PublishingServiceTyped extends AbstractEventSourceService<String> {
         }
 
         @Override
-        protected boolean isValidTarget(StaticEventProcessor eventProcessor) {
+        protected boolean isValidTarget(DataFlow eventProcessor) {
             return eventProcessor instanceof PublishingServiceListener;
         }
     }

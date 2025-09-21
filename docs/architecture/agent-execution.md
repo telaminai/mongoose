@@ -180,4 +180,4 @@ Implications:
 - Threading model: [threading-model.md](threading-model.md)
 - Architecture overview: [overview.md](overview.md)
 - Event flow: [event-flow.md](event-flow.md)
-- How to core-pin agent threads: [how to core pin threads](../how-to/how-to-core-pin.md)
+- How to core-pin agent threads: [how to core pin threads](../example/how-to/how-to-core-pin.md)

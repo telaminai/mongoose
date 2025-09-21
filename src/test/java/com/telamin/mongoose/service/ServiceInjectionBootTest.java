@@ -5,7 +5,7 @@
 
 package com.telamin.mongoose.service;
 
-import com.fluxtion.runtime.annotations.runtime.ServiceRegistered;
+import com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered;
 import com.telamin.mongoose.MongooseServer;
 import com.telamin.mongoose.config.MongooseServerConfig;
 import org.junit.jupiter.api.AfterEach;

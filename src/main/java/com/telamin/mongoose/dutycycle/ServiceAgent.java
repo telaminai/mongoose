@@ -7,7 +7,7 @@ package com.telamin.mongoose.dutycycle;
 
 import com.fluxtion.agrona.concurrent.Agent;
 import com.fluxtion.agrona.concurrent.IdleStrategy;
-import com.fluxtion.runtime.service.Service;
+import com.telamin.fluxtion.runtime.service.Service;
 
 /**
  * Describes a service that is hosted on an Agrona Agent thread and managed by the server.

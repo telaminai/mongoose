@@ -5,7 +5,7 @@ own commands on the fly. It also lists the default commands that are available o
 
 Related reading:
 
-- How-to: Add an admin command → [write an admin command](../how-to/how-to-write-an-admin-command.md)
+- How-to: Add an admin command → [write an admin command](../example/how-to/how-to-write-an-admin-command.md)
 - Programmatic control
   API → [MongooseServerController.java]({{source_root}}/main/java/com/telamin/mongoose/service/servercontrol/MongooseServerController.java)
 
@@ -49,7 +49,7 @@ occur either inside or outside of a processor thread:
 Code sketch (service or handler):
 
 ```java
-import com.fluxtion.runtime.annotations.runtime.ServiceRegistered;
+import com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered;
 import com.telamin.mongoose.service.admin.AdminCommandRegistry;
 
 public class MyHandler /* extends ObjectEventHandlerNode, etc. */ {

@@ -5,7 +5,7 @@
 
 package com.telamin.mongoose.test.util;
 
-import com.fluxtion.runtime.audit.LogRecordListener;
+import com.telamin.fluxtion.runtime.audit.LogRecordListener;
 import com.telamin.mongoose.MongooseServer;
 import com.telamin.mongoose.config.MongooseServerConfig;
 import org.junit.jupiter.api.AfterEach;

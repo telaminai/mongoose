@@ -78,7 +78,7 @@ Analysis:
 - The publish loop targets roughly a 250 ns interval per message (≈4 million messages/second). At this rate, any per‑message heap allocation would quickly trigger GC activity and growing heap usage. The flat heap and Zero‑GC behavior demonstrate that pooled events eliminate per‑operation allocations in the hot path.
 - This behavior directly supports the zero‑GC design: pooled messages (BasePoolAware) are recycled; the framework acquires/releases references across queues and handlers, returning objects to the pool at end‑of‑cycle.
 
-For implementation details of the pooling approach, see the guide: [How to publish pooled events](../how-to/how-to-object-pool.md).
+For implementation details of the pooling approach, see the guide: [How to publish pooled events](../example/how-to/how-to-object-pool.md).
 
 ## Files in this directory
 - HdrHistogram raw distributions (nanoseconds):

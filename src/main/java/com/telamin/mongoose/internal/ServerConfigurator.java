@@ -5,9 +5,9 @@
 package com.telamin.mongoose.internal;
 
 import com.fluxtion.agrona.concurrent.IdleStrategy;
-import com.fluxtion.runtime.audit.EventLogControlEvent;
-import com.fluxtion.runtime.audit.LogRecordListener;
-import com.fluxtion.runtime.service.Service;
+import com.telamin.fluxtion.runtime.audit.EventLogControlEvent;
+import com.telamin.fluxtion.runtime.audit.LogRecordListener;
+import com.telamin.fluxtion.runtime.service.Service;
 import com.telamin.mongoose.MongooseServer;
 import com.telamin.mongoose.config.MongooseServerConfig;
 import com.telamin.mongoose.config.ServiceConfig;

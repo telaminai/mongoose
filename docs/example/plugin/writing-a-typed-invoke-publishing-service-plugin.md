@@ -48,7 +48,7 @@ package com.telamin.mongoose.example;
 import com.telamin.mongoose.dispatch.AbstractEventToInvocationStrategy;
 import com.telamin.mongoose.service.CallBackType;
 import com.telamin.mongoose.service.extension.AbstractEventSourceService;
-import com.fluxtion.runtime.StaticEventProcessor;
+import com.telamin.fluxtion.runtime.StaticEventProcessor;
 
 public class PublishingServiceTyped extends AbstractEventSourceService<String> {
 
@@ -87,10 +87,10 @@ public class PublishingServiceTyped extends AbstractEventSourceService<String> {
 ```java
 package com.telamin.mongoose.example;
 
-import com.fluxtion.runtime.DefaultEventProcessor;
-import com.fluxtion.runtime.annotations.runtime.ServiceRegistered;
-import com.fluxtion.runtime.node.ObjectEventHandlerNode;
-import com.fluxtion.runtime.output.MessageSink;
+import com.telamin.fluxtion.runtime.DefaultEventProcessor;
+import com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered;
+import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
+import com.telamin.fluxtion.runtime.output.MessageSink;
 
 public class PublishingServiceTypedSubscriberHandler extends DefaultEventProcessor
         implements PublishingServiceListener {

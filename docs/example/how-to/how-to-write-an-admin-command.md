@@ -64,8 +64,8 @@ Example (from a processor):
 ```java
 package com.mycompany.ops;
 
-import com.fluxtion.runtime.annotations.runtime.ServiceRegistered;
-import com.fluxtion.runtime.node.ObjectEventHandlerNode;
+import com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered;
+import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
 import com.telamin.mongoose.service.admin.AdminCommandRegistry;
 
 import java.util.List;
@@ -94,10 +94,10 @@ public class OpsHandler extends ObjectEventHandlerNode {
 Example (from a service):
 
 ```java
-public class OpsService implements com.fluxtion.runtime.lifecycle.Lifecycle {
+public class OpsService implements com.telamin.fluxtion.runtime.lifecycle.Lifecycle {
     private com.telamin.mongoose.service.admin.AdminCommandRegistry registry;
 
-    @com.fluxtion.runtime.annotations.runtime.ServiceRegistered
+    @com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered
     public void admin(AdminCommandRegistry registry) { this.registry = registry; }
 
     @Override public void start() {

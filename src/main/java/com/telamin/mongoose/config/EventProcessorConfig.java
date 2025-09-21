@@ -5,9 +5,9 @@
 
 package com.telamin.mongoose.config;
 
-import com.fluxtion.runtime.EventProcessor;
-import com.fluxtion.runtime.audit.EventLogControlEvent;
-import com.fluxtion.runtime.node.ObjectEventHandlerNode;
+import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.audit.EventLogControlEvent;
+import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
 import com.telamin.mongoose.MongooseEventHandler;
 import com.telamin.mongoose.internal.ConfigAwareEventProcessor;
 import lombok.Data;
@@ -25,7 +25,7 @@ import java.util.function.Supplier;
  * @param <T> type of EventProcessor being configured
  */
 @Data
-public class EventProcessorConfig<T extends EventProcessor<?>> {
+public class EventProcessorConfig<T extends DataFlow> {
     /**
      * The configured event processor instance
      */
@@ -86,7 +86,7 @@ public class EventProcessorConfig<T extends EventProcessor<?>> {
     }
 
     // -------- Builder API --------
-    public static <T extends EventProcessor<?>> Builder<T> builder() {
+    public static <T extends DataFlow> Builder<T> builder() {
         return new Builder<>();
     }
 
@@ -95,7 +95,7 @@ public class EventProcessorConfig<T extends EventProcessor<?>> {
      *
      * @param <T> type of EventProcessor being configured
      */
-    public static final class Builder<T extends EventProcessor<?>> {
+    public static final class Builder<T extends DataFlow> {
         private T eventHandler;
         private String name;
         private ObjectEventHandlerNode customHandler;

@@ -39,7 +39,7 @@ to receive the config. At runtime this handler is wrapped in a DefaultEventProce
 and participates like any other processor.
 
 ```java
-import com.fluxtion.runtime.node.ObjectEventHandlerNode;
+import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
 import com.telamin.mongoose.config.ConfigListener;
 import com.telamin.mongoose.config.ConfigMap;
 import com.telamin.mongoose.config.EventProcessorConfig;

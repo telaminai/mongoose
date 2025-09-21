@@ -6,9 +6,9 @@
 package com.telamin.mongoose.dutycycle;
 
 import com.fluxtion.agrona.concurrent.Agent;
-import com.fluxtion.runtime.StaticEventProcessor;
-import com.fluxtion.runtime.lifecycle.Lifecycle;
-import com.fluxtion.runtime.service.Service;
+import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.lifecycle.Lifecycle;
+import com.telamin.fluxtion.runtime.service.Service;
 import com.telamin.mongoose.MongooseServer;
 import com.telamin.mongoose.dispatch.EventFlowManager;
 import com.telamin.mongoose.service.CallBackType;
@@ -211,7 +211,7 @@ public class ComposingEventProcessorAgentTest {
         }
     }
 
-    private static class TestEventProcessor implements StaticEventProcessor, Lifecycle {
+    private static class TestEventProcessor implements DataFlow, Lifecycle {
         private boolean initialized = false;
         private boolean started = false;
         private boolean stopped = false;
@@ -256,7 +256,7 @@ public class ComposingEventProcessorAgentTest {
         }
 
         @Override
-        public void addEventFeed(com.fluxtion.runtime.input.EventFeed eventFeed) {
+        public void addEventFeed(com.telamin.fluxtion.runtime.input.EventFeed eventFeed) {
             eventFeeds.add(eventFeed);
         }
 
@@ -292,17 +292,17 @@ public class ComposingEventProcessorAgentTest {
     // Using the actual NamedEventProcessor record instead of a custom implementation
 
     private static class TestEventQueueToEventProcessor implements EventQueueToEventProcessor {
-        private final List<StaticEventProcessor> registeredProcessors = new ArrayList<>();
+        private final List<DataFlow> registeredProcessors = new ArrayList<>();
         private final String name = "testEventQueueProcessor";
 
         @Override
-        public int registerProcessor(StaticEventProcessor processor) {
+        public int registerProcessor(DataFlow processor) {
             registeredProcessors.add(processor);
             return registeredProcessors.size();
         }
 
         @Override
-        public int deregisterProcessor(StaticEventProcessor processor) {
+        public int deregisterProcessor(DataFlow processor) {
             registeredProcessors.remove(processor);
             return registeredProcessors.size();
         }
@@ -322,7 +322,7 @@ public class ComposingEventProcessorAgentTest {
             return name;
         }
 
-        public List<StaticEventProcessor> getRegisteredProcessors() {
+        public List<DataFlow> getRegisteredProcessors() {
             return registeredProcessors;
         }
     }

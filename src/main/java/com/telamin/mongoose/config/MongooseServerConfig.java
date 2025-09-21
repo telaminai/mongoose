@@ -8,8 +8,8 @@ package com.telamin.mongoose.config;
 import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
 import com.fluxtion.agrona.concurrent.IdleStrategy;
 import com.fluxtion.agrona.concurrent.YieldingIdleStrategy;
-import com.fluxtion.runtime.EventProcessor;
-import com.fluxtion.runtime.node.ObjectEventHandlerNode;
+import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
 import com.telamin.mongoose.MongooseEventHandler;
 import com.telamin.mongoose.service.CallBackType;
 import com.telamin.mongoose.service.EventToInvokeStrategy;
@@ -90,7 +90,7 @@ public class MongooseServerConfig {
 
     /**
      * Default event-processor group that is created on demand and used by
-     * {@link #addProcessor(EventProcessor, String)} when explicit groups are not provided.
+     * {@link #addProcessor(DataFlow, String)} when explicit groups are not provided.
      */
     private EventProcessorGroupConfig defaultHandlerGroupConfig;
 
@@ -229,7 +229,7 @@ public class MongooseServerConfig {
     }
 
     /**
-     * Adds an {@link EventProcessor} to the lazily-created default group.
+     * Adds an {@link DataFlow} to the lazily-created default group.
      * <p>
      * If no default group exists, one is created with:
      * <ul>
@@ -243,7 +243,7 @@ public class MongooseServerConfig {
      * @param name      unique name/key under which to register the processor
      * @return the default {@link EventProcessorGroupConfig} containing the added processor
      */
-    public <T extends EventProcessor<?>> EventProcessorGroupConfig addProcessor(T processor, String name) {
+    public <T extends DataFlow> EventProcessorGroupConfig addProcessor(T processor, String name) {
         if (defaultHandlerGroupConfig == null) {
             defaultHandlerGroupConfig = new EventProcessorGroupConfig();
             defaultHandlerGroupConfig.setAgentName("defaultHandlerGroup");
@@ -262,7 +262,7 @@ public class MongooseServerConfig {
     // ---- Improved service registration API ----
 
     /**
-     * Adds an {@link EventProcessor} to a specified processor group.
+     * Adds an {@link DataFlow} to a specified processor group.
      * If the group does not exist, it will be created.
      *
      * @param <T>       concrete processor type
@@ -271,7 +271,7 @@ public class MongooseServerConfig {
      * @param name      unique name/key under which to register the processor
      * @return this {@link MongooseServerConfig} for fluent chaining
      */
-    public <T extends EventProcessor<?>> MongooseServerConfig addProcessor(String groupName, T processor, String name) {
+    public <T extends DataFlow> MongooseServerConfig addProcessor(String groupName, T processor, String name) {
         var eventProcessorGroupConfig = getGroupConfig(groupName);
 
         EventProcessorConfig<T> processorConfig = new EventProcessorConfig<>();
@@ -292,7 +292,7 @@ public class MongooseServerConfig {
      * @param name            unique name/key under which to register the processor
      * @return this {@link MongooseServerConfig} for fluent chaining
      */
-    public <T extends EventProcessor<?>> MongooseServerConfig addProcessor(
+    public <T extends DataFlow> MongooseServerConfig addProcessor(
             String groupName,
             Consumer<Object> handlerFunction,
             String name) {

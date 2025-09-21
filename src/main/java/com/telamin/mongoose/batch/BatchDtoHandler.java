@@ -5,8 +5,8 @@
 
 package com.telamin.mongoose.batch;
 
-import com.fluxtion.runtime.annotations.OnEventHandler;
-import com.fluxtion.runtime.node.BaseNode;
+import com.telamin.fluxtion.runtime.annotations.OnEventHandler;
+import com.telamin.fluxtion.runtime.node.BaseNode;
 
 public class BatchDtoHandler extends BaseNode {
 
@@ -15,7 +15,7 @@ public class BatchDtoHandler extends BaseNode {
         auditLog.debug("redispatchBatch", batchEvent);
         for (Object eventDto : batchEvent.getBatchData()) {
             auditLog.debug("redispatchEvent", eventDto);
-            context.getStaticEventProcessor().onEvent(eventDto);
+            context.getParentDataFlow().onEvent(eventDto);
         }
         return false;
     }

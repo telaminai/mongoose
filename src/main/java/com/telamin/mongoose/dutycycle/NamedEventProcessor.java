@@ -6,7 +6,7 @@
 
 package com.telamin.mongoose.dutycycle;
 
-import com.fluxtion.runtime.StaticEventProcessor;
+import com.telamin.fluxtion.runtime.DataFlow;
 
-public record NamedEventProcessor(String name, StaticEventProcessor eventProcessor) {
+public record NamedEventProcessor(String name, DataFlow eventProcessor) {
 }
