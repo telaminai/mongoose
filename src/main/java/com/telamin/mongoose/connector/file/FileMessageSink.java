@@ -5,8 +5,8 @@
 
 package com.telamin.mongoose.connector.file;
 
-import com.fluxtion.runtime.lifecycle.Lifecycle;
-import com.fluxtion.runtime.output.AbstractMessageSink;
+import com.telamin.fluxtion.runtime.lifecycle.Lifecycle;
+import com.telamin.fluxtion.runtime.output.AbstractMessageSink;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.SneakyThrows;

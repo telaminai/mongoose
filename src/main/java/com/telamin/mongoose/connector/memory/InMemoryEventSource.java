@@ -5,7 +5,7 @@
 
 package com.telamin.mongoose.connector.memory;
 
-import com.fluxtion.runtime.event.NamedFeedEvent;
+import com.telamin.fluxtion.runtime.event.NamedFeedEvent;
 import com.telamin.mongoose.dispatch.EventToQueuePublisher;
 import com.telamin.mongoose.service.extension.AbstractAgentHostedEventSourceService;
 import lombok.Getter;
@@ -98,9 +98,14 @@ public class InMemoryEventSource<T> extends AbstractAgentHostedEventSourceServic
     }
 
     @Override
-    public <X> NamedFeedEvent<X>[] eventLog() {
+    public NamedFeedEvent<T>[] eventLog() {
         List<NamedFeedEvent> eventLog = (List) output.getEventLog();
         return eventLog.toArray(new NamedFeedEvent[0]);
+    }
+
+    @Override
+    public String getFeedName() {
+        return getName();
     }
 
     // for testing

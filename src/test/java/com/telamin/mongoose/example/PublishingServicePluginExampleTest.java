@@ -5,8 +5,8 @@
 
 package com.telamin.mongoose.example;
 
-import com.fluxtion.runtime.audit.LogRecordListener;
-import com.fluxtion.runtime.output.MessageSink;
+import com.telamin.fluxtion.runtime.audit.LogRecordListener;
+import com.telamin.fluxtion.runtime.output.MessageSink;
 import com.telamin.mongoose.MongooseServer;
 import com.telamin.mongoose.config.*;
 import com.telamin.mongoose.connector.memory.InMemoryMessageSink;

@@ -80,7 +80,7 @@ Wrapping and mapping are applied at dispatch time by EventToQueuePublisher.
 ```java
 package com.mycompany.source;
 
-import com.fluxtion.runtime.event.NamedFeedEvent;
+import com.telamin.fluxtion.runtime.event.NamedFeedEvent;
 import com.telamin.mongoose.service.extension.AbstractAgentHostedEventSourceService;
 import lombok.extern.java.Log;
 

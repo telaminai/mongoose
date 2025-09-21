@@ -49,7 +49,7 @@ Below is the minimal main class used by the quickstart. You don’t need to past
 package com.example.hellomongoose;
 
 import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
-import com.fluxtion.runtime.node.ObjectEventHandlerNode;
+import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
 import com.telamin.mongoose.config.EventFeedConfig;
 import com.telamin.mongoose.config.EventProcessorConfig;
 import com.telamin.mongoose.config.MongooseServerConfig;

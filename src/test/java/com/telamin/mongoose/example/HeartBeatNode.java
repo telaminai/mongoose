@@ -5,8 +5,8 @@
 
 package com.telamin.mongoose.example;
 
-import com.fluxtion.runtime.annotations.OnEventHandler;
-import com.fluxtion.runtime.audit.EventLogNode;
+import com.telamin.fluxtion.runtime.annotations.OnEventHandler;
+import com.telamin.fluxtion.runtime.audit.EventLogNode;
 import com.telamin.mongoose.test.HeartbeatEvent;
 
 public class HeartBeatNode extends EventLogNode {

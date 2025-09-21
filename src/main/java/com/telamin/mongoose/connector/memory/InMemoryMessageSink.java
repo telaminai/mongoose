@@ -5,7 +5,7 @@
 
 package com.telamin.mongoose.connector.memory;
 
-import com.fluxtion.runtime.output.AbstractMessageSink;
+import com.telamin.fluxtion.runtime.output.AbstractMessageSink;
 import lombok.extern.java.Log;
 
 import java.util.ArrayList;

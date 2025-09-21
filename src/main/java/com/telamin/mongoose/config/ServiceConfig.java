@@ -7,7 +7,7 @@ package com.telamin.mongoose.config;
 
 import com.fluxtion.agrona.concurrent.Agent;
 import com.fluxtion.agrona.concurrent.IdleStrategy;
-import com.fluxtion.runtime.service.Service;
+import com.telamin.fluxtion.runtime.service.Service;
 import com.telamin.mongoose.dutycycle.ServiceAgent;
 import lombok.AllArgsConstructor;
 import lombok.Data;

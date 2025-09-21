@@ -90,7 +90,7 @@ public class InitialConfigFluentBootTest {
      * Minimal event handler that extends ObjectEventHandlerNode, implements ConfigListener,
      * and records the last received config and events.
      */
-    static class ConfigAwareHandler extends com.fluxtion.runtime.node.ObjectEventHandlerNode implements ConfigListener {
+    static class ConfigAwareHandler extends com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode implements ConfigListener {
         private final List<Object> received = new ArrayList<>();
         volatile ConfigMap lastConfig;
 

@@ -6,8 +6,8 @@
 package com.telamin.mongoose.service.servercontrol;
 
 import com.fluxtion.agrona.concurrent.IdleStrategy;
-import com.fluxtion.runtime.StaticEventProcessor;
-import com.fluxtion.runtime.service.Service;
+import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.service.Service;
 import com.telamin.mongoose.dutycycle.NamedEventProcessor;
 
 import java.util.Collection;
@@ -25,19 +25,19 @@ public interface MongooseServerController {
     String SERVICE_NAME = "com.telamin.mongoose.service.servercontrol.MongooseServerController";
 
     /**
-     * Adds a StaticEventProcessor to the Fluxtion server for processing events.
+     * Adds a DataFlow to the Fluxtion server for processing events.
      *
      * @param processorName the unique name of the processor being added; must not be null or empty
      * @param groupName     the name of the group this processor belongs to; must not be null or empty
      * @param idleStrategy  the strategy to use to handle idle cycles; must not be null
-     * @param feedConsumer  a supplier function that provides the StaticEventProcessor instance; must not be null
+     * @param feedConsumer  a supplier function that provides the DataFlow instance; must not be null
      * @throws IllegalArgumentException if any of the parameters are invalid, such as being null or empty
      */
     void addEventProcessor(
             String processorName,
             String groupName,
             IdleStrategy idleStrategy,
-            Supplier<StaticEventProcessor> feedConsumer) throws IllegalArgumentException;
+            Supplier<DataFlow> feedConsumer) throws IllegalArgumentException;
 
     /**
      * Stops a service identified by the specified service name. This method
@@ -73,7 +73,7 @@ public interface MongooseServerController {
      * <p>
      * The keys of the map represent the group names, and the values are collections
      * of {@code NamedEventProcessor} objects, which contain details of individual
-     * processors such as their name and associated {@code StaticEventProcessor}.
+     * processors such as their name and associated {@code DataFlow}.
      *
      * @return a map where the keys are group names and the values are collections
      * of {@code NamedEventProcessor} objects representing the registered

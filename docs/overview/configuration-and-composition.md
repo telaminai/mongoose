@@ -42,7 +42,7 @@ You mostly write and test your business logic handler. Feeds, sinks, and many se
 
 ```java
 import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
-import com.fluxtion.runtime.node.ObjectEventHandlerNode;
+import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
 import com.telamin.mongoose.connector.memory.InMemoryEventSource;
 import com.telamin.mongoose.MongooseServer;
 

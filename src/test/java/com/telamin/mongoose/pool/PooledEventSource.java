@@ -5,7 +5,7 @@
 
 package com.telamin.mongoose.pool;
 
-import com.fluxtion.runtime.annotations.runtime.ServiceRegistered;
+import com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered;
 import com.telamin.mongoose.service.extension.AbstractEventSourceService;
 import com.telamin.mongoose.service.pool.ObjectPool;
 import com.telamin.mongoose.service.pool.ObjectPoolsRegistry;

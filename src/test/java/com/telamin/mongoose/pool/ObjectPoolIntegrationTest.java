@@ -86,8 +86,8 @@ public class ObjectPoolIntegrationTest {
 
         // drain queue -> NamedFeedEvent wrapper
         Object e = q.remove();
-        assertTrue(e instanceof com.fluxtion.runtime.event.NamedFeedEvent);
-        com.fluxtion.runtime.event.NamedFeedEvent<?> nfe = (com.fluxtion.runtime.event.NamedFeedEvent<?>) e;
+        assertTrue(e instanceof com.telamin.fluxtion.runtime.event.NamedFeedEvent);
+        com.telamin.fluxtion.runtime.event.NamedFeedEvent<?> nfe = (com.telamin.fluxtion.runtime.event.NamedFeedEvent<?>) e;
         assertSame(msg, nfe.data());
         // consumer done
         msg.getPoolTracker().releaseReference();

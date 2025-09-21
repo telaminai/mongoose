@@ -5,7 +5,7 @@
 
 package com.telamin.mongoose.test;
 
-import com.fluxtion.runtime.node.ObjectEventHandlerNode;
+import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
 import lombok.Getter;
 
 public class NoSubscriptionEventHandler extends ObjectEventHandlerNode {

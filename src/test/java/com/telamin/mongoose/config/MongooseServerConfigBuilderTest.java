@@ -7,8 +7,8 @@ package com.telamin.mongoose.config;
 
 import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
 import com.fluxtion.agrona.concurrent.YieldingIdleStrategy;
-import com.fluxtion.runtime.EventProcessor;
-import com.fluxtion.runtime.audit.EventLogControlEvent;
+import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.audit.EventLogControlEvent;
 import com.telamin.mongoose.MongooseServer;
 import com.telamin.mongoose.connector.memory.InMemoryEventSource;
 import org.junit.jupiter.api.AfterEach;
@@ -31,7 +31,7 @@ public class MongooseServerConfigBuilderTest {
         }
     }
 
-    static class DummyProcessor implements EventProcessor<DummyProcessor> {
+    static class DummyProcessor implements DataFlow {
         @Override
         public void onEvent(Object o) {
         }

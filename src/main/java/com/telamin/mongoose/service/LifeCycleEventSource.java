@@ -5,8 +5,8 @@
 
 package com.telamin.mongoose.service;
 
-import com.fluxtion.runtime.annotations.feature.Experimental;
-import com.fluxtion.runtime.lifecycle.Lifecycle;
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
+import com.telamin.fluxtion.runtime.lifecycle.Lifecycle;
 import com.telamin.mongoose.dispatch.EventToQueuePublisher;
 
 /**

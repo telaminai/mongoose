@@ -5,11 +5,10 @@
 
 package com.telamin.mongoose.test.util;
 
-import com.fluxtion.runtime.EventProcessor;
-import com.fluxtion.runtime.StaticEventProcessor;
-import com.fluxtion.runtime.audit.LogRecord;
-import com.fluxtion.runtime.audit.LogRecordListener;
-import com.fluxtion.runtime.input.EventFeed;
+import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.audit.LogRecord;
+import com.telamin.fluxtion.runtime.audit.LogRecordListener;
+import com.telamin.fluxtion.runtime.input.EventFeed;
 import com.telamin.mongoose.MongooseServer;
 import com.telamin.mongoose.config.MongooseServerConfig;
 import com.telamin.mongoose.config.EventFeedConfig;
@@ -56,7 +55,7 @@ public final class EventFixtures {
      * Wires a single source and processor under unique names and boots the server.
      * Returns a handle with convenient methods for publishing and awaiting.
      */
-    public static <E, S extends EventSourceStub<E>, P extends StaticEventProcessor & EventProcessor<P>>
+    public static <E, S extends EventSourceStub<E>, P extends DataFlow>
     Harness<E, S, P> bootOneSourceOneProcessor(S source,
                                                String feedBaseName,
                                                P processor,
@@ -101,7 +100,7 @@ public final class EventFixtures {
     /**
      * A simple processor stub with latch-based assertions.
      */
-    public static abstract class LatchingProcessor<P extends LatchingProcessor<P>> implements StaticEventProcessor, EventProcessor<P> {
+    public static abstract class LatchingProcessor<P extends LatchingProcessor<P>> implements DataFlow {
         protected final CountDownLatch latch;
         protected final List<EventFeed> feeds = new ArrayList<>();
         protected volatile Object last;
@@ -131,7 +130,7 @@ public final class EventFixtures {
         protected abstract String feedName();
     }
 
-    public static final class Harness<E, S extends EventSourceStub<E>, P extends StaticEventProcessor & EventProcessor<P>> {
+    public static final class Harness<E, S extends EventSourceStub<E>, P extends DataFlow> {
         public final MongooseServer server;
         public final S source;
         public final P processor;

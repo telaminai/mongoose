@@ -5,11 +5,11 @@
 
 package com.telamin.mongoose.service.extension;
 
-import com.fluxtion.runtime.StaticEventProcessor;
-import com.fluxtion.runtime.annotations.runtime.ServiceRegistered;
-import com.fluxtion.runtime.input.NamedFeed;
-import com.fluxtion.runtime.input.SubscriptionManager;
-import com.fluxtion.runtime.node.EventSubscription;
+import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered;
+import com.telamin.fluxtion.runtime.input.NamedFeed;
+import com.telamin.fluxtion.runtime.input.SubscriptionManager;
+import com.telamin.fluxtion.runtime.node.EventSubscription;
 import com.telamin.mongoose.dispatch.EventFlowManager;
 import com.telamin.mongoose.dispatch.EventToQueuePublisher;
 import com.telamin.mongoose.service.*;
@@ -44,7 +44,7 @@ import java.util.function.Supplier;
 @Log
 public abstract class AbstractEventSourceService<T>
         implements
-        NamedFeed,
+        NamedFeed<T>,
         LifeCycleEventSource<T> {
 
     /**
@@ -148,6 +148,11 @@ public abstract class AbstractEventSourceService<T>
 
     }
 
+    @Override
+    public String getFeedName() {
+        return getName();
+    }
+
     /**
      * Subscribe the current processor (from ProcessorContext) to this event source.
      * If no processor is present in context, logs a warning and does nothing.
@@ -169,7 +174,7 @@ public abstract class AbstractEventSourceService<T>
     }
 
     @Override
-    public void registerSubscriber(StaticEventProcessor subscriber) {
+    public void registerSubscriber(DataFlow subscriber) {
         if (eventWrapStrategy == EventWrapStrategy.BROADCAST_NOWRAP || eventWrapStrategy == EventWrapStrategy.BROADCAST_NAMED_EVENT) {
             log.info("registerSubscriber for broadcast receive " + subscriber);
             subscribe();
@@ -177,7 +182,7 @@ public abstract class AbstractEventSourceService<T>
     }
 
     @Override
-    public void subscribe(StaticEventProcessor subscriber, EventSubscription<?> eventSubscription) {
+    public void subscribe(DataFlow subscriber, EventSubscription<?> eventSubscription) {
         log.info("subscribe request for " + eventSubscription + " from " + subscriber);
         if (serviceName.equals(eventSubscription.filterString())) {
             log.info("subscribe request for " + eventSubscription + " from " + subscriber
@@ -190,12 +195,12 @@ public abstract class AbstractEventSourceService<T>
     }
 
     @Override
-    public void unSubscribe(StaticEventProcessor subscriber, EventSubscription<?> eventSubscription) {
+    public void unSubscribe(DataFlow subscriber, EventSubscription<?> eventSubscription) {
         subscriber.getSubscriptionManager().unSubscribe(subscriptionKey);
     }
 
     @Override
-    public void removeAllSubscriptions(StaticEventProcessor subscriber) {
+    public void removeAllSubscriptions(DataFlow subscriber) {
         //do nothing
     }
 

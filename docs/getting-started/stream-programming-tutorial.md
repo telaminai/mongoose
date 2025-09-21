@@ -52,7 +52,7 @@ Snippet from the example main:
 
 ```java
 import com.fluxtion.compiler.builder.dataflow.DataFlow;
-import com.fluxtion.runtime.EventProcessor;
+import com.telamin.fluxtion.runtime.EventProcessor;
 
 // build data stream processor subscribing to prices feed, 
 // with a simple map function and console output

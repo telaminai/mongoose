@@ -6,7 +6,7 @@ package com.telamin.mongoose.internal;
 
 import com.fluxtion.agrona.concurrent.AgentRunner;
 import com.fluxtion.agrona.concurrent.DynamicCompositeAgent;
-import com.fluxtion.runtime.service.Service;
+import com.telamin.fluxtion.runtime.service.Service;
 import com.telamin.mongoose.MongooseServer;
 import com.telamin.mongoose.dispatch.EventFlowManager;
 import com.telamin.mongoose.service.LifeCycleEventSource;
@@ -32,7 +32,7 @@ public final class LifecycleManager {
     public void init(Map<String, Service<?>> registeredServices,
                      Set<Service<?>> registeredAgentServices,
                      EventFlowManager flowManager,
-                     com.fluxtion.runtime.service.ServiceRegistryNode serviceRegistry) {
+                     com.telamin.fluxtion.runtime.service.ServiceRegistryNode serviceRegistry) {
         log.info("init");
         // Init non-LifeCycleEventSource services
         registeredServices.values().forEach(svc -> {

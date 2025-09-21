@@ -21,7 +21,7 @@
  * <p>
  * Allowed dependencies
  * - May depend on: com.telamin.mongoose.dispatch (to interact with event flow),
- * com.telamin.mongoose.exception, com.fluxtion.runtime annotations/services.
+ * com.telamin.mongoose.exception, com.telamin.fluxtion.runtime annotations/services.
  * - Must not depend on: com.telamin.mongoose.config (config is input to MongooseServer only).
  * <p>
  * Notes

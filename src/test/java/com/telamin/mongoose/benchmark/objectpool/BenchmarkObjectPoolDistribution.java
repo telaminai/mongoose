@@ -5,8 +5,8 @@
 package com.telamin.mongoose.benchmark.objectpool;
 
 import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
-import com.fluxtion.runtime.annotations.runtime.ServiceRegistered;
-import com.fluxtion.runtime.node.ObjectEventHandlerNode;
+import com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered;
+import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
 import com.telamin.mongoose.MongooseServer;
 import com.telamin.mongoose.config.MongooseServerConfig;
 import com.telamin.mongoose.config.ThreadConfig;

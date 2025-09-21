@@ -7,7 +7,7 @@ package com.telamin.mongoose.dispatch;
 
 import com.fluxtion.agrona.concurrent.Agent;
 import com.fluxtion.agrona.concurrent.ManyToOneConcurrentArrayQueue;
-import com.fluxtion.runtime.StaticEventProcessor;
+import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.mongoose.dutycycle.EventQueueToEventProcessor;
 import com.telamin.mongoose.service.*;
 import org.junit.jupiter.api.BeforeEach;
@@ -123,7 +123,7 @@ public class EventFlowManagerTest {
         }
     }
 
-    private static class TestEventProcessor implements StaticEventProcessor {
+    private static class TestEventProcessor implements DataFlow {
         private final List<Object> receivedEvents = new ArrayList<>();
 
         @Override
@@ -137,13 +137,13 @@ public class EventFlowManagerTest {
     }
 
     private static class TestEventToInvokeStrategy implements EventToInvokeStrategy {
-        private final List<StaticEventProcessor> processors = new ArrayList<>();
+        private final List<DataFlow> processors = new ArrayList<>();
         private final List<Object> processedEvents = new ArrayList<>();
 
         @Override
         public void processEvent(Object event) {
             processedEvents.add(event);
-            for (StaticEventProcessor processor : processors) {
+            for (DataFlow processor : processors) {
                 processor.onEvent(event);
             }
         }
@@ -151,18 +151,18 @@ public class EventFlowManagerTest {
         @Override
         public void processEvent(Object event, long time) {
             processedEvents.add(event);
-            for (StaticEventProcessor processor : processors) {
+            for (DataFlow processor : processors) {
                 processor.onEvent(event);
             }
         }
 
         @Override
-        public void registerProcessor(StaticEventProcessor eventProcessor) {
+        public void registerProcessor(DataFlow eventProcessor) {
             processors.add(eventProcessor);
         }
 
         @Override
-        public void deregisterProcessor(StaticEventProcessor eventProcessor) {
+        public void deregisterProcessor(DataFlow eventProcessor) {
             processors.remove(eventProcessor);
         }
 
@@ -175,7 +175,7 @@ public class EventFlowManagerTest {
             return processedEvents;
         }
 
-        public List<StaticEventProcessor> getProcessors() {
+        public List<DataFlow> getProcessors() {
             return processors;
         }
     }

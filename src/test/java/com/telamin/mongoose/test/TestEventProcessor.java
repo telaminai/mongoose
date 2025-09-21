@@ -5,8 +5,8 @@
 
 package com.telamin.mongoose.test;
 
-import com.fluxtion.runtime.DefaultEventProcessor;
-import com.fluxtion.runtime.node.ObjectEventHandlerNode;
+import com.telamin.fluxtion.runtime.DefaultEventProcessor;
+import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
 
 public class TestEventProcessor extends DefaultEventProcessor {
 

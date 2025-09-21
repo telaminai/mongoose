@@ -45,13 +45,13 @@ agent-hosted). If it just exposes methods and reacts to calls, a simple `Lifecyc
 
 ## Simple Lifecycle-based service (no agent)
 
-A basic service implements `com.fluxtion.runtime.lifecycle.Lifecycle` (optional but recommended). The server will call
+A basic service implements `com.telamin.fluxtion.runtime.lifecycle.Lifecycle` (optional but recommended). The server will call
 its lifecycle methods in order.
 
 ```java
 package com.mycompany.service;
 
-import com.fluxtion.runtime.lifecycle.Lifecycle;
+import com.telamin.fluxtion.runtime.lifecycle.Lifecycle;
 import lombok.extern.java.Log;
 
 @Log
@@ -102,7 +102,7 @@ optionally `Lifecycle`). Worker services are registered in an agent group with a
 package com.mycompany.service;
 
 import com.fluxtion.agrona.concurrent.Agent;
-import com.fluxtion.runtime.lifecycle.Lifecycle;
+import com.telamin.fluxtion.runtime.lifecycle.Lifecycle;
 import lombok.extern.java.Log;
 
 @Log
@@ -165,8 +165,8 @@ annotation. The server performs reflective injection during `registerService`.
 ```java
 package com.mycompany.processor;
 
-import com.fluxtion.runtime.annotations.runtime.ServiceRegistered;
-import com.fluxtion.runtime.node.ObjectEventHandlerNode;
+import com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered;
+import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
 import com.mycompany.service.MySimpleService;
 
 public class MyHandler extends ObjectEventHandlerNode {
@@ -238,7 +238,7 @@ When booting the server with this `MongooseServerConfig`, `ServerConfigurator` w
 You can also boot programmatically and inspect the registered services map.
 
 ```java
-import com.fluxtion.runtime.audit.LogRecordListener;
+import com.telamin.fluxtion.runtime.audit.LogRecordListener;
 import com.telamin.mongoose.MongooseServer;
 
 LogRecordListener logs = rec -> {};

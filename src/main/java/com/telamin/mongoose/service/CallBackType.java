@@ -5,7 +5,7 @@
 
 package com.telamin.mongoose.service;
 
-import com.fluxtion.runtime.annotations.feature.Experimental;
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
 
 /**
  * Represents a callback type used within the Fluxtion framework for defining and managing callback functionality.

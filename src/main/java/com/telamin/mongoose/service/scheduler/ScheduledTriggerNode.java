@@ -5,9 +5,9 @@
 
 package com.telamin.mongoose.service.scheduler;
 
-import com.fluxtion.runtime.annotations.feature.Experimental;
-import com.fluxtion.runtime.annotations.runtime.ServiceRegistered;
-import com.fluxtion.runtime.callback.AbstractCallbackNode;
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
+import com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered;
+import com.telamin.fluxtion.runtime.callback.AbstractCallbackNode;
 
 /**
  * A node that schedules and triggers event cycles with a specified delay using a {@link SchedulerService}.

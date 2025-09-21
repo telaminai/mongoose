@@ -5,7 +5,7 @@
 
 package com.telamin.mongoose.example.datamapper;
 
-import com.fluxtion.runtime.annotations.runtime.ServiceRegistered;
+import com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered;
 import com.telamin.mongoose.service.pool.ObjectPoolsRegistry;
 import lombok.Getter;
 

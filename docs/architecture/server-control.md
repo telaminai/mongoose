@@ -49,7 +49,7 @@ occur either inside or outside of a processor thread:
 Code sketch (service or handler):
 
 ```java
-import com.fluxtion.runtime.annotations.runtime.ServiceRegistered;
+import com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered;
 import com.telamin.mongoose.service.admin.AdminCommandRegistry;
 
 public class MyHandler /* extends ObjectEventHandlerNode, etc. */ {
