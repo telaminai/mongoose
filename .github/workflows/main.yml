@@ -6,6 +6,7 @@ on:
       - docs/**
       - _sass/**
       - README.md
+      - mkdocs.yml
       - images/**
     branches-ignore:
       - release
