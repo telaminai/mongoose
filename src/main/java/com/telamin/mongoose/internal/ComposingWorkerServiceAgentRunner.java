@@ -4,8 +4,8 @@
  */
 package com.telamin.mongoose.internal;
 
-import com.fluxtion.agrona.concurrent.AgentRunner;
 import com.telamin.mongoose.dutycycle.ComposingServiceAgent;
+import org.agrona.concurrent.AgentRunner;
 
 /**
  * Lightweight holder pairing a {@link ComposingServiceAgent}

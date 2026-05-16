@@ -5,15 +5,15 @@
 
 package com.telamin.mongoose.config;
 
-import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
-import com.fluxtion.agrona.concurrent.IdleStrategy;
-import com.fluxtion.agrona.concurrent.YieldingIdleStrategy;
 import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
 import com.telamin.mongoose.MongooseEventHandler;
 import com.telamin.mongoose.service.CallBackType;
 import com.telamin.mongoose.service.EventToInvokeStrategy;
 import lombok.Data;
+import org.agrona.concurrent.BusySpinIdleStrategy;
+import org.agrona.concurrent.IdleStrategy;
+import org.agrona.concurrent.YieldingIdleStrategy;
 
 import java.util.ArrayList;
 import java.util.HashMap;

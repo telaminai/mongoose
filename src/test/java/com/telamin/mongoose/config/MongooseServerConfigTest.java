@@ -5,10 +5,10 @@
 
 package com.telamin.mongoose.config;
 
-import com.fluxtion.agrona.concurrent.BackoffIdleStrategy;
-import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
-import com.fluxtion.agrona.concurrent.IdleStrategy;
-import com.fluxtion.agrona.concurrent.YieldingIdleStrategy;
+import org.agrona.concurrent.BackoffIdleStrategy;
+import org.agrona.concurrent.BusySpinIdleStrategy;
+import org.agrona.concurrent.IdleStrategy;
+import org.agrona.concurrent.YieldingIdleStrategy;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 

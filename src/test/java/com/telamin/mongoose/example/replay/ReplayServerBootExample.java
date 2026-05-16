@@ -4,7 +4,6 @@
  */
 package com.telamin.mongoose.example.replay;
 
-import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
 import com.telamin.fluxtion.runtime.audit.LogRecordListener;
 import com.telamin.fluxtion.runtime.event.ReplayRecord;
 import com.telamin.fluxtion.runtime.output.MessageSink;
@@ -13,6 +12,7 @@ import com.telamin.mongoose.config.*;
 import com.telamin.mongoose.config.MongooseServerConfig;
 import com.telamin.mongoose.connector.memory.InMemoryEventSource;
 import com.telamin.mongoose.connector.memory.InMemoryMessageSink;
+import org.agrona.concurrent.BusySpinIdleStrategy;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

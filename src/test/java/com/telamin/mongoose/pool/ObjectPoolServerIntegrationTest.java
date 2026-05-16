@@ -4,7 +4,6 @@
  */
 package com.telamin.mongoose.pool;
 
-import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
 import com.telamin.fluxtion.runtime.service.Service;
 import com.telamin.mongoose.MongooseServer;
 import com.telamin.mongoose.config.MongooseServerConfig;
@@ -14,6 +13,7 @@ import com.telamin.mongoose.service.*;
 import com.telamin.mongoose.service.pool.ObjectPool;
 import com.telamin.mongoose.service.pool.ObjectPoolsRegistry;
 import com.telamin.mongoose.service.pool.impl.Pools;
+import org.agrona.concurrent.BusySpinIdleStrategy;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 

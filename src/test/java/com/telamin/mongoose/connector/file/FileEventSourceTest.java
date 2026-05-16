@@ -5,9 +5,9 @@
 
 package com.telamin.mongoose.connector.file;
 
-import com.fluxtion.agrona.concurrent.OneToOneConcurrentArrayQueue;
 import com.telamin.fluxtion.runtime.event.NamedFeedEvent;
 import com.telamin.mongoose.dispatch.EventToQueuePublisher;
+import org.agrona.concurrent.OneToOneConcurrentArrayQueue;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;

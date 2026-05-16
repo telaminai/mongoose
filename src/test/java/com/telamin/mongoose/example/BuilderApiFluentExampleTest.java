@@ -5,13 +5,13 @@
 
 package com.telamin.mongoose.example;
 
-import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
 import com.telamin.fluxtion.runtime.audit.LogRecordListener;
 import com.telamin.mongoose.MongooseServer;
 import com.telamin.mongoose.config.*;
 import com.telamin.mongoose.connector.file.FileEventSource;
 import com.telamin.mongoose.connector.file.FileMessageSink;
 import com.telamin.mongoose.connector.memory.InMemoryEventSource;
+import org.agrona.concurrent.BusySpinIdleStrategy;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;

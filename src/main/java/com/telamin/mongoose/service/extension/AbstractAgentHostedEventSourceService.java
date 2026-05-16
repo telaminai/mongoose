@@ -5,10 +5,10 @@
 
 package com.telamin.mongoose.service.extension;
 
-import com.fluxtion.agrona.concurrent.Agent;
 import com.telamin.mongoose.service.CallBackType;
 import com.telamin.mongoose.service.EventToInvokeStrategy;
 import lombok.extern.java.Log;
+import org.agrona.concurrent.Agent;
 
 import java.util.function.Supplier;
 

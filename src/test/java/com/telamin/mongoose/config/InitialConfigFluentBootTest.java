@@ -4,9 +4,9 @@
  */
 package com.telamin.mongoose.config;
 
-import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
 import com.telamin.mongoose.MongooseServer;
 import com.telamin.mongoose.connector.memory.InMemoryEventSource;
+import org.agrona.concurrent.BusySpinIdleStrategy;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 

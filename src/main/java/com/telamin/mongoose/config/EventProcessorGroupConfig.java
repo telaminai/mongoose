@@ -5,9 +5,9 @@
 
 package com.telamin.mongoose.config;
 
-import com.fluxtion.agrona.concurrent.IdleStrategy;
 import com.telamin.fluxtion.runtime.audit.EventLogControlEvent;
 import lombok.Data;
+import org.agrona.concurrent.IdleStrategy;
 
 import java.util.HashMap;
 import java.util.Map;

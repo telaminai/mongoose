@@ -5,7 +5,6 @@
 
 package com.telamin.mongoose.connector.file;
 
-import com.fluxtion.agrona.IoUtil;
 import com.telamin.fluxtion.runtime.event.NamedFeedEvent;
 import com.telamin.mongoose.config.ReadStrategy;
 import com.telamin.mongoose.dispatch.EventToQueuePublisher;
@@ -13,6 +12,7 @@ import com.telamin.mongoose.service.extension.AbstractAgentHostedEventSourceServ
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.java.Log;
+import org.agrona.IoUtil;
 
 import java.io.*;
 import java.nio.MappedByteBuffer;

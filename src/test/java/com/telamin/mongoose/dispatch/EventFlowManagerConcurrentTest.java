@@ -4,11 +4,11 @@
  */
 package com.telamin.mongoose.dispatch;
 
-import com.fluxtion.agrona.concurrent.Agent;
 import com.telamin.mongoose.service.CallBackType;
 import com.telamin.mongoose.service.EventSource;
 import com.telamin.mongoose.service.EventSourceKey;
 import com.telamin.mongoose.service.EventSubscriptionKey;
+import org.agrona.concurrent.Agent;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;

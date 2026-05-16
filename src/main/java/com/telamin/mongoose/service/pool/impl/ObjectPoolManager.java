@@ -4,9 +4,9 @@
  */
 package com.telamin.mongoose.service.pool.impl;
 
-import com.fluxtion.agrona.concurrent.ManyToManyConcurrentArrayQueue;
 import com.telamin.mongoose.service.pool.ObjectPool;
 import com.telamin.mongoose.service.pool.PoolAware;
+import org.agrona.concurrent.ManyToManyConcurrentArrayQueue;
 
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
