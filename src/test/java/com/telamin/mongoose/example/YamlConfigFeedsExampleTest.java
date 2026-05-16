@@ -49,12 +49,12 @@ public class YamlConfigFeedsExampleTest {
                     name: fileFeed
                     agentName: file-source-agent
                     broadcast: true
-                    idleStrategy: !!com.fluxtion.agrona.concurrent.BusySpinIdleStrategy { }
+                    idleStrategy: !!org.agrona.concurrent.BusySpinIdleStrategy { }
                   - instance: !!com.telamin.mongoose.connector.memory.InMemoryEventSource { cacheEventLog: true }
                     name: inMemFeed
                     agentName: memory-source-agent
                     broadcast: true
-                    idleStrategy: !!com.fluxtion.agrona.concurrent.BusySpinIdleStrategy { }
+                    idleStrategy: !!org.agrona.concurrent.BusySpinIdleStrategy { }
                 # --------- EVENT INPUT FEEDS END CONFIG ---------
 
                 # --------- EVENT SINKS BEGIN CONFIG ---------
@@ -67,7 +67,7 @@ public class YamlConfigFeedsExampleTest {
                 # --------- EVENT HANDLERS BEGIN CONFIG ---------
                 eventHandlers:
                   - agentName: processor-agent
-                    idleStrategy: !!com.fluxtion.agrona.concurrent.BusySpinIdleStrategy { }
+                    idleStrategy: !!org.agrona.concurrent.BusySpinIdleStrategy { }
                     eventHandlers:
                       example-processor:
                         customHandler: !!com.telamin.mongoose.example.BuilderApiExampleHandler { }

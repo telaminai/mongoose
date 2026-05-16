@@ -53,9 +53,9 @@ public class DemonstrationEventProcessor {
             # --------- AGENT THREAD BEGIN CONFIG ---------
             agentThreads:
               - agentName: heartBeatPublisher-thread
-                idleStrategy: !!com.fluxtion.agrona.concurrent.BusySpinIdleStrategy { }
+                idleStrategy: !!org.agrona.concurrent.BusySpinIdleStrategy { }
               - agentName: heartBeatProcessor-thread
-                idleStrategy: !!com.fluxtion.agrona.concurrent.BusySpinIdleStrategy { }
+                idleStrategy: !!org.agrona.concurrent.BusySpinIdleStrategy { }
             # --------- AGENT THREAD END CONFIG ---------
             """;
 
@@ -82,9 +82,9 @@ public class DemonstrationEventProcessor {
             # --------- AGENT THREAD BEGIN CONFIG ---------
             agentThreads:
               - agentName: heartBeatPublisher-thread
-                idleStrategy: !!com.fluxtion.agrona.concurrent.BusySpinIdleStrategy { }
+                idleStrategy: !!org.agrona.concurrent.BusySpinIdleStrategy { }
               - agentName: heartBeatProcessor-thread
-                idleStrategy: !!com.fluxtion.agrona.concurrent.BusySpinIdleStrategy { }
+                idleStrategy: !!org.agrona.concurrent.BusySpinIdleStrategy { }
             # --------- AGENT THREAD END CONFIG ---------
             """;
 }

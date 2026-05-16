@@ -94,7 +94,7 @@ import java.util.function.Supplier;
  * <p>
  * Error handling and observability:
  * <ul>
- *   <li>A default {@link com.fluxtion.agrona.ErrorHandler} can be supplied via {@link #setDefaultErrorHandler(ErrorHandler)}
+ *   <li>A default {@link org.agrona.ErrorHandler} can be supplied via {@link #setDefaultErrorHandler(ErrorHandler)}
  *       and is used by agent runners.</li>
  *   <li>Event processors can be bridged to a {@link LogRecordListener} for audit logging.</li>
  * </ul>
