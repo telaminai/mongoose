@@ -54,25 +54,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *       the subscription routes events from then on.</li>
  * </ol>
  *
- * <h2>TODO — known seam one layer up</h2>
+ * <h2>Companion test</h2>
  *
- * The remaining seam, which this test does NOT exercise, is in the
- * Fluxtion-compile + dynamic-registration combination:
- * <ul>
- *   <li>A handler that extends {@code ObjectEventHandlerNode} and is wrapped
- *       into a {@code DataFlow} by {@code Fluxtion.compile(...)} relies on
- *       compile-time auto-subscription from the {@code @OnEventHandler}
- *       annotation. When that compiled processor is registered statically,
- *       auto-subscription fires during the EventFlowManager wiring phase.
- *       When it is registered dynamically via the loader plugins, the
- *       handler's {@code start()} does not re-subscribe, and events do
- *       not arrive.</li>
- *   <li>That seam is documented and fails noisily in
- *       {@code mongoose-plugins/test-support/mongoose-test-support/.../DynamicProcessorRegistrationTest}.
- *       The fix likely lives in fluxtion-builder's generated
- *       {@code addEventFeed(EventFeed)} implementation rather than in
- *       Mongoose; flag this comment if you move it.</li>
- * </ul>
+ * {@code mongoose-plugins/test-support/mongoose-test-support/.../DynamicProcessorRegistrationTest}
+ * pins the same contract one layer up with a Fluxtion-compiled handler,
+ * confirming the broadcast=true wiring path also works through
+ * {@code Fluxtion.compile(...)} without an explicit {@code subscribeToNamedFeed}
+ * call. The two traps that make this look like a framework bug are
+ * documented there.
  */
 public class DynamicProcessorRegistrationTest {
 
