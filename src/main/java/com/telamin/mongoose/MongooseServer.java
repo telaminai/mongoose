@@ -689,6 +689,19 @@ public class MongooseServer implements MongooseServerController {
         }));
         lifecycleManager.start(registeredServices, serviceGroups, processorGroups, flowManager, registeredAgentServices);
         started = true;
+
+        // Pick up any event processor groups registered DURING service.start() — e.g. by
+        // svc-loader-yaml's EventHandlerLoader, which calls addEventProcessor() from inside
+        // its own start() hook. Those groups land in composingEventProcessorAgents after
+        // the processorGroups snapshot above has already been passed to LifecycleManager,
+        // so without this pass their agent thread would never be started and the loaded
+        // processor would receive no events.
+        composingEventProcessorAgents.forEach((groupName, runner) -> {
+            if (runner.groupRunner().thread() == null) {
+                log.info("late-starting event processor agent registered during boot: " + groupName);
+                AgentRunner.startOnThread(runner.groupRunner());
+            }
+        });
     }
 
     /**
