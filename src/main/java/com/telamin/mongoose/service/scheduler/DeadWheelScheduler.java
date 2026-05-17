@@ -21,6 +21,11 @@ public class DeadWheelScheduler implements SchedulerService, Agent {
     protected final DeadlineTimerWheel timerWheel = new DeadlineTimerWheel(TimeUnit.MILLISECONDS, System.currentTimeMillis(), 1024, 1);
     protected final Long2ObjectHashMap<Runnable> expiryActions = new Long2ObjectHashMap<>();
     protected final EpochNanoClock clock;
+    // Cached as a field so the agent's hot loop doesn't allocate a fresh
+    // TimerHandler lambda per doWork() call — under aggressive idle strategies
+    // (e.g. BackoffIdleStrategy) that's millions of allocations/sec and a
+    // direct path to OutOfMemoryError on the agent thread.
+    private final DeadlineTimerWheel.TimerHandler onTimerExpiryHandler = this::onTimerExpiry;
 
     public DeadWheelScheduler() {
         this(new OffsetEpochNanoClock());
@@ -47,7 +52,7 @@ public class DeadWheelScheduler implements SchedulerService, Agent {
 
     @Override
     public int doWork() {
-        return timerWheel.poll(milliTime(), this::onTimerExpiry, 100);
+        return timerWheel.poll(milliTime(), onTimerExpiryHandler, 100);
     }
 
     @Override
