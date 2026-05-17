@@ -106,7 +106,7 @@ Notes:
 Create the service and processor, wire them into `MongooseServerConfig`, boot the server, then publish events.
 
 ```java
-import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
+import org.agrona.concurrent.BusySpinIdleStrategy;
 import com.telamin.fluxtion.runtime.audit.LogRecordListener;
 import com.telamin.fluxtion.runtime.output.MessageSink;
 import com.telamin.mongoose.MongooseServer;
