@@ -5,8 +5,6 @@
 
 package com.telamin.mongoose.dispatch;
 
-import com.fluxtion.agrona.concurrent.Agent;
-import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
 import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.fluxtion.runtime.input.EventFeed;
 import com.telamin.mongoose.MongooseServer;
@@ -16,6 +14,8 @@ import com.telamin.mongoose.service.CallBackType;
 import com.telamin.mongoose.service.EventSource;
 import com.telamin.mongoose.service.EventSourceKey;
 import com.telamin.mongoose.service.EventSubscriptionKey;
+import org.agrona.concurrent.Agent;
+import org.agrona.concurrent.BusySpinIdleStrategy;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;

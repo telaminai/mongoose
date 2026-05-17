@@ -5,7 +5,6 @@
 
 package com.telamin.mongoose.dispatch;
 
-import com.fluxtion.agrona.concurrent.OneToOneConcurrentArrayQueue;
 import com.telamin.fluxtion.runtime.event.NamedFeedEvent;
 import com.telamin.fluxtion.runtime.event.NamedFeedEventImpl;
 import com.telamin.fluxtion.runtime.event.ReplayRecord;
@@ -17,6 +16,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.Setter;
 import lombok.ToString;
 import lombok.extern.java.Log;
+import org.agrona.concurrent.OneToOneConcurrentArrayQueue;
 
 import java.util.ArrayList;
 import java.util.Collections;

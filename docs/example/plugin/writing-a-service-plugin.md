@@ -95,13 +95,13 @@ public class MySimpleService implements Lifecycle {
 
 ## Worker (agent-hosted) service
 
-If your service needs its own thread to perform a periodic loop, implement `com.fluxtion.agrona.concurrent.Agent` (and
+If your service needs its own thread to perform a periodic loop, implement `org.agrona.concurrent.Agent` (and
 optionally `Lifecycle`). Worker services are registered in an agent group with a chosen idle strategy.
 
 ```java
 package com.mycompany.service;
 
-import com.fluxtion.agrona.concurrent.Agent;
+import org.agrona.concurrent.Agent;
 import com.telamin.fluxtion.runtime.lifecycle.Lifecycle;
 import lombok.extern.java.Log;
 
@@ -201,7 +201,7 @@ Key points:
 Register services using `ServiceConfig`. For worker services, specify an agent group and an idle strategy.
 
 ```java
-import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
+import org.agrona.concurrent.BusySpinIdleStrategy;
 import com.telamin.mongoose.config.MongooseServerConfig;
 import com.telamin.mongoose.config.ServiceConfig;
 
@@ -259,7 +259,7 @@ You may also boot from YAML using `MongooseServer.bootServer(Reader, LogRecordLi
 
 ## Worker services and agent threads
 
-- A worker service must implement `com.fluxtion.agrona.concurrent.Agent`.
+- A worker service must implement `org.agrona.concurrent.Agent`.
 - In `ServiceConfig`, set `agent(groupName, idleStrategy)` to host it in a runner thread.
 - The server selects an idle strategy using `MongooseServerConfig.getIdleStrategyOrDefault(...)` when necessary; per-group
   overrides are supported via `MongooseServerConfig.agentThreads`.

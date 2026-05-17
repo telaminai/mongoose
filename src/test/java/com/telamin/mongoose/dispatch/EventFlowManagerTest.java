@@ -5,11 +5,11 @@
 
 package com.telamin.mongoose.dispatch;
 
-import com.fluxtion.agrona.concurrent.Agent;
-import com.fluxtion.agrona.concurrent.ManyToOneConcurrentArrayQueue;
 import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.mongoose.dutycycle.EventQueueToEventProcessor;
 import com.telamin.mongoose.service.*;
+import org.agrona.concurrent.Agent;
+import org.agrona.concurrent.ManyToOneConcurrentArrayQueue;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 

@@ -81,7 +81,7 @@ Notes:
 Snippet from the test setup:
 
 ```java
-import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
+import org.agrona.concurrent.BusySpinIdleStrategy;
 import com.telamin.fluxtion.runtime.output.MessageSink;
 import com.telamin.mongoose.MongooseServer;
 import com.telamin.mongoose.config.*;

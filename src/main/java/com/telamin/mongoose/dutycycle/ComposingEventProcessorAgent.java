@@ -5,8 +5,6 @@
 
 package com.telamin.mongoose.dutycycle;
 
-import com.fluxtion.agrona.concurrent.DynamicCompositeAgent;
-import com.fluxtion.agrona.concurrent.OneToOneConcurrentArrayQueue;
 import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
 import com.telamin.fluxtion.runtime.input.EventFeed;
@@ -18,6 +16,8 @@ import com.telamin.mongoose.service.EventSubscriptionKey;
 import com.telamin.mongoose.service.scheduler.DeadWheelScheduler;
 import com.telamin.mongoose.service.scheduler.SchedulerService;
 import lombok.extern.java.Log;
+import org.agrona.concurrent.DynamicCompositeAgent;
+import org.agrona.concurrent.OneToOneConcurrentArrayQueue;
 
 import java.util.ArrayList;
 import java.util.Collection;

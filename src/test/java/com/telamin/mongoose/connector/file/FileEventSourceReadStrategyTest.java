@@ -4,10 +4,10 @@
  */
 package com.telamin.mongoose.connector.file;
 
+import org.agrona.concurrent.OneToOneConcurrentArrayQueue;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
-import com.fluxtion.agrona.concurrent.OneToOneConcurrentArrayQueue;
 import com.telamin.mongoose.config.ReadStrategy;
 import com.telamin.mongoose.dispatch.EventToQueuePublisher;
 import org.junit.jupiter.api.AfterEach;

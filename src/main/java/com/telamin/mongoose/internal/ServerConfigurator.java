@@ -4,7 +4,6 @@
  */
 package com.telamin.mongoose.internal;
 
-import com.fluxtion.agrona.concurrent.IdleStrategy;
 import com.telamin.fluxtion.runtime.audit.EventLogControlEvent;
 import com.telamin.fluxtion.runtime.audit.LogRecordListener;
 import com.telamin.fluxtion.runtime.service.Service;
@@ -15,6 +14,7 @@ import com.telamin.mongoose.dutycycle.GlobalErrorHandler;
 import com.telamin.mongoose.service.pool.ObjectPoolsRegistry;
 import com.telamin.mongoose.service.pool.impl.Pools;
 import com.telamin.mongoose.service.servercontrol.MongooseServerController;
+import org.agrona.concurrent.IdleStrategy;
 
 import java.util.Objects;
 

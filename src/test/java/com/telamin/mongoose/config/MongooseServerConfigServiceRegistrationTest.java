@@ -5,10 +5,10 @@
 
 package com.telamin.mongoose.config;
 
-import com.fluxtion.agrona.concurrent.Agent;
-import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
 import com.telamin.fluxtion.runtime.service.Service;
 import com.telamin.mongoose.MongooseServer;
+import org.agrona.concurrent.Agent;
+import org.agrona.concurrent.BusySpinIdleStrategy;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 

@@ -5,7 +5,6 @@
 
 package com.telamin.mongoose;
 
-import com.fluxtion.agrona.concurrent.IdleStrategy;
 import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.fluxtion.runtime.audit.LogRecord;
 import com.telamin.fluxtion.runtime.audit.LogRecordListener;
@@ -17,6 +16,7 @@ import com.telamin.mongoose.dispatch.EventToQueuePublisher;
 import com.telamin.mongoose.dutycycle.NamedEventProcessor;
 import com.telamin.mongoose.service.EventFlowService;
 import com.telamin.mongoose.service.EventSubscriptionKey;
+import org.agrona.concurrent.IdleStrategy;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 

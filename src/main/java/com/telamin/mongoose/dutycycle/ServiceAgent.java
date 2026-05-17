@@ -5,9 +5,9 @@
 
 package com.telamin.mongoose.dutycycle;
 
-import com.fluxtion.agrona.concurrent.Agent;
-import com.fluxtion.agrona.concurrent.IdleStrategy;
 import com.telamin.fluxtion.runtime.service.Service;
+import org.agrona.concurrent.Agent;
+import org.agrona.concurrent.IdleStrategy;
 
 /**
  * Describes a service that is hosted on an Agrona Agent thread and managed by the server.
@@ -21,6 +21,6 @@ import com.telamin.fluxtion.runtime.service.Service;
  * @param delegate        the underlying Agent implementation to be added to the composite agent
  */
 public record ServiceAgent<T>(String agentGroup, IdleStrategy idleStrategy, Service<T> exportedService,
-                             Agent delegate) {
+                              Agent delegate) {
 
 }

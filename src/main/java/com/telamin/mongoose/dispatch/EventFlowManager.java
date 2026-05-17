@@ -5,12 +5,12 @@
 
 package com.telamin.mongoose.dispatch;
 
-import com.fluxtion.agrona.concurrent.Agent;
-import com.fluxtion.agrona.concurrent.ManyToOneConcurrentArrayQueue;
-import com.fluxtion.agrona.concurrent.OneToOneConcurrentArrayQueue;
 import com.telamin.mongoose.dutycycle.EventQueueToEventProcessor;
 import com.telamin.mongoose.dutycycle.EventQueueToEventProcessorAgent;
 import com.telamin.mongoose.service.*;
+import org.agrona.concurrent.Agent;
+import org.agrona.concurrent.ManyToOneConcurrentArrayQueue;
+import org.agrona.concurrent.OneToOneConcurrentArrayQueue;
 
 import java.io.IOException;
 import java.util.Objects;

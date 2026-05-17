@@ -6,9 +6,9 @@
 
 package com.telamin.mongoose.dutycycle;
 
-import com.fluxtion.agrona.concurrent.Agent;
 import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
+import org.agrona.concurrent.Agent;
 
 /**
  * Reads from an event queue and invokes callbacks on registered {@link DataFlow}'s. Acts as a multiplexer

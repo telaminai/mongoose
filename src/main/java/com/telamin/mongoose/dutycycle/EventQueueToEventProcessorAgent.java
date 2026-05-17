@@ -5,7 +5,6 @@
 
 package com.telamin.mongoose.dutycycle;
 
-import com.fluxtion.agrona.concurrent.OneToOneConcurrentArrayQueue;
 import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
 import com.telamin.fluxtion.runtime.event.BroadcastEvent;
@@ -15,6 +14,7 @@ import com.telamin.mongoose.service.EventToInvokeStrategy;
 import com.telamin.mongoose.service.pool.PoolAware;
 import com.telamin.mongoose.service.pool.impl.PoolTracker;
 import lombok.extern.java.Log;
+import org.agrona.concurrent.OneToOneConcurrentArrayQueue;
 
 import java.util.logging.Logger;
 

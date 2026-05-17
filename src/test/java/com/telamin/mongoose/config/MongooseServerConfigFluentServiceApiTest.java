@@ -5,7 +5,7 @@
 
 package com.telamin.mongoose.config;
 
-import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
+import org.agrona.concurrent.BusySpinIdleStrategy;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
