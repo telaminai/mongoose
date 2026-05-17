@@ -6,8 +6,8 @@
 
 package com.telamin.mongoose.dutycycle;
 
-import com.fluxtion.agrona.ErrorHandler;
 import lombok.extern.java.Log;
+import org.agrona.ErrorHandler;
 
 import java.util.logging.Level;
 

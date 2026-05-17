@@ -5,8 +5,6 @@
 
 package com.telamin.mongoose.config;
 
-import com.fluxtion.agrona.concurrent.Agent;
-import com.fluxtion.agrona.concurrent.IdleStrategy;
 import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
 import com.telamin.fluxtion.runtime.output.MessageSink;
 import com.telamin.fluxtion.runtime.service.Service;
@@ -15,6 +13,8 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.SneakyThrows;
+import org.agrona.concurrent.Agent;
+import org.agrona.concurrent.IdleStrategy;
 
 import java.util.function.Function;
 

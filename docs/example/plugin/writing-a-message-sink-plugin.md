@@ -223,7 +223,7 @@ MongooseServerConfig app = MongooseServerConfig.builder()
         .build();
 ```
 
-Note: For this to work, the `instance` must also implement `com.fluxtion.agrona.concurrent.Agent` (or be wrapped in a
+Note: For this to work, the `instance` must also implement `org.agrona.concurrent.Agent` (or be wrapped in a
 custom ServiceAgent). If your sink does not implement `Agent`, omit the `agent(...)` configuration.
 
 ## Testing your sink

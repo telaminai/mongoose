@@ -52,12 +52,12 @@ eventFeeds:
     name: fileFeed
     agentName: file-source-agent
     broadcast: true
-    idleStrategy: !!com.fluxtion.agrona.concurrent.BusySpinIdleStrategy { }
+    idleStrategy: !!org.agrona.concurrent.BusySpinIdleStrategy { }
   - instance: !!com.telamin.mongoose.connector.memory.InMemoryEventSource { cacheEventLog: true }
     name: inMemFeed
     agentName: memory-source-agent
     broadcast: true
-    idleStrategy: !!com.fluxtion.agrona.concurrent.BusySpinIdleStrategy { }
+    idleStrategy: !!org.agrona.concurrent.BusySpinIdleStrategy { }
 # --------- EVENT INPUT FEEDS END CONFIG ---------
 
 # --------- EVENT SINKS BEGIN CONFIG ---------
@@ -70,7 +70,7 @@ eventSinks:
 # --------- EVENT HANDLERS BEGIN CONFIG ---------
 eventHandlers:
   - agentName: processor-agent
-    idleStrategy: !!com.fluxtion.agrona.concurrent.BusySpinIdleStrategy { }
+    idleStrategy: !!org.agrona.concurrent.BusySpinIdleStrategy { }
     eventHandlers:
       example-processor:
         customHandler: !!com.telamin.mongoose.example.BuilderApiExampleHandler { }
@@ -120,4 +120,4 @@ stimulates both sources, and asserts the sink content.
   before `startComplete` is not lost.
 - You can declare additional services using `services:` in YAML if your handler needs more dependencies.
 - If you want to run a sink or source on its own agent thread, ensure the instance implements
-- `com.fluxtion.agrona.concurrent.Agent` and add `agentName` and `idleStrategy` to the respective config section.
+- `org.agrona.concurrent.Agent` and add `agentName` and `idleStrategy` to the respective config section.

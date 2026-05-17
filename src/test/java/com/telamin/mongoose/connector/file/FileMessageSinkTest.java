@@ -55,6 +55,45 @@ class FileMessageSinkTest {
         cleanupIfNeeded();
     }
 
+    @Test
+    void start_with_bare_basename_does_not_throw() throws IOException {
+        // Arrange: filename has no parent path (bare basename) — previously NPE on getParentFile().mkdirs()
+        // Use working dir-relative file so we can clean up reliably
+        Path bareFile = Path.of("file-message-sink-bare-basename.tmp");
+        Files.deleteIfExists(bareFile);
+        try {
+            TestableFileMessageSink sink = new TestableFileMessageSink();
+            sink.setFilename(bareFile.toString());
+
+            // Act + Assert
+            sink.init();
+            Assertions.assertDoesNotThrow(sink::start);
+            sink.write("hello");
+            sink.stop();
+
+            Assertions.assertEquals(List.of("hello"),
+                    Files.readAllLines(bareFile, StandardCharsets.UTF_8));
+        } finally {
+            Files.deleteIfExists(bareFile);
+        }
+    }
+
+    @Test
+    void start_with_empty_filename_throws() {
+        TestableFileMessageSink sink = new TestableFileMessageSink();
+        sink.setFilename("");
+        sink.init();
+        Assertions.assertThrows(IllegalStateException.class, sink::start);
+    }
+
+    @Test
+    void start_with_null_filename_throws() {
+        TestableFileMessageSink sink = new TestableFileMessageSink();
+        sink.setFilename(null);
+        sink.init();
+        Assertions.assertThrows(IllegalStateException.class, sink::start);
+    }
+
     private void cleanupIfNeeded() {
         if (TEST_KEEP_FILES) {
             System.out.println("TEST_KEEP_FILES=true; keeping artifacts at: " + tempDir);

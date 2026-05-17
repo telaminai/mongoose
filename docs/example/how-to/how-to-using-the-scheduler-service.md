@@ -34,7 +34,7 @@ public interface SchedulerService {
 ```
 
 The default implementation is `com.telamin.mongoose.service.scheduler.DeadWheelScheduler`, which also implements
-`com.fluxtion.agrona.concurrent.Agent` and polls timers on an agent thread.
+`org.agrona.concurrent.Agent` and polls timers on an agent thread.
 
 ## How the scheduler is wired in
 

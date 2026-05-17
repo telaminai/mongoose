@@ -233,7 +233,7 @@ Configure via fluent builder:
 ```java
 import com.telamin.mongoose.config.MongooseServerConfig;
 import com.telamin.mongoose.config.ThreadConfig;
-import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
+import org.agrona.concurrent.BusySpinIdleStrategy;
 
 MongooseServerConfig mongooseServerConfig = MongooseServerConfig.builder()
     // Configure processor agent group thread
@@ -278,7 +278,7 @@ Agent threads in Mongoose server run a continuous doWork() loop governed by an I
 significant effects on latency, CPU utilization, power/thermal behavior, and how the OS or container schedules your
 application. Choose deliberately per agent group.
 
-Common strategies (from com.fluxtion.agrona.concurrent, compatible with Agrona styles):
+Common strategies (from org.agrona.concurrent):
 
 - BusySpinIdleStrategy — tight loop, no yielding. Lowest median latency when work arrives, highest constant CPU usage.
 - YieldingIdleStrategy — spin briefly, then Thread.yield(). Lower CPU pressure than pure busy spin; more scheduler
@@ -332,17 +332,17 @@ YAML-style (conceptual):
 ```yaml
 agentThreads:
   - agentName: market-data
-    idleStrategy: !!com.fluxtion.agrona.concurrent.BusySpinIdleStrategy {}
+    idleStrategy: !!org.agrona.concurrent.BusySpinIdleStrategy {}
   - agentName: background-workers
-    idleStrategy: !!com.fluxtion.agrona.concurrent.BackoffIdleStrategy { }
+    idleStrategy: !!org.agrona.concurrent.BackoffIdleStrategy { }
 ```
 
 Java builder:
 
 ```java
 import com.telamin.mongoose.config.ThreadConfig;
-import com.fluxtion.agrona.concurrent.BackoffIdleStrategy;
-import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
+import org.agrona.concurrent.BackoffIdleStrategy;
+import org.agrona.concurrent.BusySpinIdleStrategy;
 
 mongooseServerConfig = mongooseServerConfig.toBuilder()
     .addThread(ThreadConfig.builder()

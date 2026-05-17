@@ -5,15 +5,15 @@
 
 package com.telamin.mongoose.service.extension;
 
-import com.fluxtion.agrona.concurrent.Agent;
 import com.telamin.mongoose.service.CallBackType;
 import com.telamin.mongoose.service.EventToInvokeStrategy;
 import lombok.extern.java.Log;
+import org.agrona.concurrent.Agent;
 
 import java.util.function.Supplier;
 
 /**
- * Convenience base class for event-source services that also run as an Agrona {@link com.fluxtion.agrona.concurrent.Agent}.
+ * Convenience base class for event-source services that also run as an Agrona {@link org.agrona.concurrent.Agent}.
  * <p>
  * Use this when your source needs its own agent thread and lifecycle callbacks. It inherits
  * the event-flow integration from {@link AbstractEventSourceService} and exposes the service

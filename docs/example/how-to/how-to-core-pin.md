@@ -29,7 +29,7 @@ Pinning is configured per agent group using ThreadConfig.coreId (zero‑based CP
 the agent thread during onStart.
 
 ```java
-import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
+import org.agrona.concurrent.BusySpinIdleStrategy;
 import com.telamin.mongoose.config.MongooseServerConfig;
 import com.telamin.mongoose.config.ThreadConfig;
 

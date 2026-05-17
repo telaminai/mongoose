@@ -5,7 +5,6 @@
 
 package com.telamin.mongoose.example.handlerpipe;
 
-import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
 import com.telamin.fluxtion.runtime.audit.LogRecordListener;
 import com.telamin.fluxtion.runtime.output.MessageSink;
 import com.telamin.mongoose.MongooseServer;
@@ -17,6 +16,7 @@ import com.telamin.mongoose.config.EventSinkConfig;
 import com.telamin.mongoose.connector.memory.HandlerPipe;
 import com.telamin.mongoose.connector.memory.InMemoryMessageSink;
 import com.telamin.mongoose.example.NamedFeedsFilterHandler;
+import org.agrona.concurrent.BusySpinIdleStrategy;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

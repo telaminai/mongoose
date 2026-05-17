@@ -35,7 +35,7 @@ public class InitialConfigYamlBootTest {
                 # --------- EVENT HANDLERS BEGIN CONFIG ---------
                 eventHandlers:
                   - agentName: processor-agent
-                    idleStrategy: !!com.fluxtion.agrona.concurrent.BusySpinIdleStrategy { }
+                    idleStrategy: !!org.agrona.concurrent.BusySpinIdleStrategy { }
                     eventHandlers:
                       config-processor:
                         customHandler: !!com.telamin.mongoose.config.ConfigAwareYamlHandler { }
