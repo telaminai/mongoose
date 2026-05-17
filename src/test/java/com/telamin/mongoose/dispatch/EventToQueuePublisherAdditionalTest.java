@@ -4,12 +4,12 @@
  */
 package com.telamin.mongoose.dispatch;
 
-import com.fluxtion.agrona.concurrent.OneToOneConcurrentArrayQueue;
 import com.telamin.fluxtion.runtime.event.NamedFeedEvent;
 import com.telamin.mongoose.service.EventSource;
 import com.telamin.mongoose.service.error.ErrorEvent;
 import com.telamin.mongoose.service.error.ErrorReporter;
 import com.telamin.mongoose.service.error.ErrorReporting;
+import org.agrona.concurrent.OneToOneConcurrentArrayQueue;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

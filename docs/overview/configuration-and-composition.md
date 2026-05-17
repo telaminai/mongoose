@@ -41,7 +41,7 @@ You mostly write and test your business logic handler. Feeds, sinks, and many se
 ## Minimal example with builders
 
 ```java
-import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
+import org.agrona.concurrent.BusySpinIdleStrategy;
 import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
 import com.telamin.mongoose.connector.memory.InMemoryEventSource;
 import com.telamin.mongoose.MongooseServer;
@@ -113,12 +113,12 @@ eventFeeds:
     name: hello-feed
     agentName: feed-agent
     broadcast: true
-    idleStrategy: !!com.fluxtion.agrona.concurrent.BusySpinIdleStrategy { }
+    idleStrategy: !!org.agrona.concurrent.BusySpinIdleStrategy { }
 
 # Handlers (processor on agent thread)
 eventHandlers:
   - agentName: processor-agent
-    idleStrategy: !!com.fluxtion.agrona.concurrent.BusySpinIdleStrategy { }
+    idleStrategy: !!org.agrona.concurrent.BusySpinIdleStrategy { }
     eventHandlers:
       hello-handler:
         customHandler: !!com.telamin.mongoose.example.BuilderApiExampleHandler { }

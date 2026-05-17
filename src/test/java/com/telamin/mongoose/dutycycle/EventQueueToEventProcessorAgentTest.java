@@ -5,10 +5,10 @@
 
 package com.telamin.mongoose.dutycycle;
 
-import com.fluxtion.agrona.concurrent.OneToOneConcurrentArrayQueue;
 import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.fluxtion.runtime.event.BroadcastEvent;
 import com.telamin.mongoose.service.EventToInvokeStrategy;
+import org.agrona.concurrent.OneToOneConcurrentArrayQueue;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 

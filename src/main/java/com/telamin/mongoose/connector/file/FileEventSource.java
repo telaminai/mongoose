@@ -5,7 +5,6 @@
 
 package com.telamin.mongoose.connector.file;
 
-import com.fluxtion.agrona.IoUtil;
 import com.telamin.fluxtion.runtime.event.NamedFeedEvent;
 import com.telamin.mongoose.config.ReadStrategy;
 import com.telamin.mongoose.dispatch.EventToQueuePublisher;
@@ -13,6 +12,7 @@ import com.telamin.mongoose.service.extension.AbstractAgentHostedEventSourceServ
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.java.Log;
+import org.agrona.IoUtil;
 
 import java.io.*;
 import java.nio.MappedByteBuffer;
@@ -78,6 +78,10 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
         if (infoEnabled) {
             log.log(Level.INFO, "start FileEventSource " + serviceName + " file:" + filename);
         }
+        if (filename == null || filename.isEmpty()) {
+            throw new IllegalStateException(
+                    "FileEventSource " + serviceName + " has no filename configured");
+        }
         tail = readStrategy == ReadStrategy.COMMITED | readStrategy == ReadStrategy.EARLIEST | readStrategy == ReadStrategy.LATEST;
         once = !tail;
         commitRead = readStrategy == ReadStrategy.COMMITED;
@@ -87,6 +91,14 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
         }
 
         File committedReadFile = new File(filename + ".readPointer");
+        File committedReadFileParent = committedReadFile.getParentFile();
+        if (committedReadFileParent != null && !committedReadFileParent.exists()) {
+            if (!committedReadFileParent.mkdirs() && !committedReadFileParent.exists() && warningEnabled) {
+                log.log(Level.WARNING, "could not create parent directory for "
+                        + committedReadFile.getAbsolutePath()
+                        + " — subsequent mapping may fail");
+            }
+        }
         if (readStrategy == ReadStrategy.ONCE_EARLIEST | readStrategy == ReadStrategy.EARLIEST) {
             streamOffset = 0;
         } else if (committedReadFile.exists()) {
@@ -121,9 +133,6 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
             }
         }
 
-        if (filename == null || filename.isEmpty()) {
-            //throw an  error
-        }
         connectReader();
         // preserve once/tail semantics as derived above; do not unconditionally force tailing
 

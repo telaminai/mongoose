@@ -4,12 +4,12 @@
  */
 package com.telamin.mongoose.internal;
 
-import com.fluxtion.agrona.concurrent.AgentRunner;
 import com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent;
+import org.agrona.concurrent.AgentRunner;
 
 /**
  * Lightweight holder pairing a {@link ComposingEventProcessorAgent}
- * with its executing {@link com.fluxtion.agrona.concurrent.AgentRunner}.
+ * with its executing {@link org.agrona.concurrent.AgentRunner}.
  * <p>
  * Used by MongooseServer to track event processor agent groups and their runners
  * for lifecycle management (start/stop).

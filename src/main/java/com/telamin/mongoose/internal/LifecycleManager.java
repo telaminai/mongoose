@@ -4,13 +4,13 @@
  */
 package com.telamin.mongoose.internal;
 
-import com.fluxtion.agrona.concurrent.AgentRunner;
-import com.fluxtion.agrona.concurrent.DynamicCompositeAgent;
 import com.telamin.fluxtion.runtime.service.Service;
 import com.telamin.mongoose.MongooseServer;
 import com.telamin.mongoose.dispatch.EventFlowManager;
 import com.telamin.mongoose.service.LifeCycleEventSource;
 import lombok.extern.java.Log;
+import org.agrona.concurrent.AgentRunner;
+import org.agrona.concurrent.DynamicCompositeAgent;
 
 import java.util.Map;
 import java.util.Set;
@@ -145,9 +145,9 @@ public final class LifecycleManager {
      * Simple view wrapper to avoid depending on concrete runner classes.
      */
     public interface GroupRunner {
-        com.fluxtion.agrona.concurrent.AgentRunner getGroupRunner();
+        AgentRunner getGroupRunner();
 
-        com.fluxtion.agrona.concurrent.DynamicCompositeAgent getGroup();
+        DynamicCompositeAgent getGroup();
 
         default void startCompleteIfSupported() { /* no-op by default */ }
     }

@@ -5,10 +5,10 @@
 
 package com.telamin.mongoose.service.servercontrol;
 
-import com.fluxtion.agrona.concurrent.IdleStrategy;
 import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.fluxtion.runtime.service.Service;
 import com.telamin.mongoose.dutycycle.NamedEventProcessor;
+import org.agrona.concurrent.IdleStrategy;
 
 import java.util.Collection;
 import java.util.Map;

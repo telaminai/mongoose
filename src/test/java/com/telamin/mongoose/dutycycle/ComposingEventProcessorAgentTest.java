@@ -5,7 +5,6 @@
 
 package com.telamin.mongoose.dutycycle;
 
-import com.fluxtion.agrona.concurrent.Agent;
 import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.fluxtion.runtime.lifecycle.Lifecycle;
 import com.telamin.fluxtion.runtime.service.Service;
@@ -15,6 +14,7 @@ import com.telamin.mongoose.service.CallBackType;
 import com.telamin.mongoose.service.EventSourceKey;
 import com.telamin.mongoose.service.EventSubscriptionKey;
 import com.telamin.mongoose.service.scheduler.DeadWheelScheduler;
+import org.agrona.concurrent.Agent;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 

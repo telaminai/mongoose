@@ -80,7 +80,7 @@ import com.telamin.mongoose.config.EventProcessorGroupConfig;
 import com.telamin.mongoose.config.EventProcessorConfig;
 import com.telamin.mongoose.config.EventFeedConfig;
 import com.telamin.mongoose.config.ThreadConfig;
-import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
+import org.agrona.concurrent.BusySpinIdleStrategy;
 
 MongooseServerConfig mongooseServerConfig = MongooseServerConfig.builder()
     .addThread(ThreadConfig.builder()

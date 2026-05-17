@@ -40,7 +40,7 @@ flowchart TB
 ## Capacity, partitions, and queues
 
 - Capacity: the total number of instances that may be created for a given class. The pool will create on demand up to the configured capacity.
-- Partitions: the pool’s free list is partitioned to reduce cross-thread contention; each partition is a bounded, lock-free MPMC queue using com.fluxtion.agrona.concurrent.ManyToManyConcurrentArrayQueue.
+- Partitions: the pool’s free list is partitioned to reduce cross-thread contention; each partition is a bounded, lock-free MPMC queue using org.agrona.concurrent.ManyToManyConcurrentArrayQueue.
 - Default partitions: by default, partitions ~= min(available processors, 8) rounded to a power of two. You can specify both capacity and partitions explicitly via ObjectPools.getOrCreate(type, factory, reset, capacity, partitions).
 
 ### Free list

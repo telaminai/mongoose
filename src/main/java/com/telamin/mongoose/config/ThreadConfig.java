@@ -5,9 +5,9 @@
 
 package com.telamin.mongoose.config;
 
-import com.fluxtion.agrona.concurrent.IdleStrategy;
-import com.fluxtion.agrona.concurrent.YieldingIdleStrategy;
 import lombok.Data;
+import org.agrona.concurrent.IdleStrategy;
+import org.agrona.concurrent.YieldingIdleStrategy;
 
 /**
  * Configuration for an agent thread in the Fluxtion server.

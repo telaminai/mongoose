@@ -47,7 +47,7 @@ from an external library callback (and you don’t need your own loop), a non-ag
     - You get lifecycle hooks (init/start/stop/tearDown) and are wired into the event flow.
 
 - AbstractAgentHostedEventSourceService<T>
-    - Extends AbstractEventSourceService and implements com.fluxtion.agrona.concurrent.Agent.
+    - Extends AbstractEventSourceService and implements org.agrona.concurrent.Agent.
     - Use when your source runs its own work loop (doWork), like file tailing, network reads, or periodic polling.
     - Provides roleName() for agent diagnostics.
 
@@ -210,7 +210,7 @@ Data mapping lets you transform T->U before dispatch (e.g., parse lines, decode 
 Use EventFeedConfig to add your source, control wrapping/broadcast, and optionally host it on an agent thread.
 
 ```java
-import com.fluxtion.agrona.concurrent.BusySpinIdleStrategy;
+import org.agrona.concurrent.BusySpinIdleStrategy;
 import com.telamin.mongoose.config.MongooseServerConfig;
 import com.telamin.mongoose.config.EventFeedConfig;
 
