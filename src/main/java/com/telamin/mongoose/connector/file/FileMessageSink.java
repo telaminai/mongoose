@@ -12,6 +12,7 @@ import lombok.Setter;
 import lombok.SneakyThrows;
 import lombok.extern.java.Log;
 
+import java.io.File;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -35,8 +36,14 @@ public class FileMessageSink extends AbstractMessageSink<Object>
     @SneakyThrows
     @Override
     public void start() {
+        if (filename == null || filename.isEmpty()) {
+            throw new IllegalStateException("FileMessageSink has no filename configured");
+        }
         Path path = Paths.get(filename);
-        path.toFile().getParentFile().mkdirs();
+        File parent = path.toFile().getParentFile();
+        if (parent != null) {
+            parent.mkdirs();
+        }
         printStream = new PrintStream(
                 Files.newOutputStream(path, StandardOpenOption.CREATE, StandardOpenOption.APPEND),
                 false,

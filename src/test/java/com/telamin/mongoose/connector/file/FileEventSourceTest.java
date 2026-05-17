@@ -6,6 +6,7 @@
 package com.telamin.mongoose.connector.file;
 
 import com.telamin.fluxtion.runtime.event.NamedFeedEvent;
+import com.telamin.mongoose.config.ReadStrategy;
 import com.telamin.mongoose.dispatch.EventToQueuePublisher;
 import org.agrona.concurrent.OneToOneConcurrentArrayQueue;
 import org.junit.jupiter.api.Assertions;
@@ -95,6 +96,55 @@ class FileEventSourceTest {
 
         // Cleanup files (unless user asked to keep them)
         cleanupIfNeeded();
+    }
+
+    @Test
+    void start_creates_readpointer_parent_dir_if_missing() {
+        // Arrange: target file sits in a directory that doesn't exist yet
+        Path missingDir = tempDir.resolve("missing").resolve("nested");
+        dataFile = missingDir.resolve("events.txt");
+        readPointerFile = Paths.get(dataFile.toString() + ".readPointer");
+
+        Assertions.assertFalse(Files.exists(missingDir),
+                "precondition: parent dir should not exist yet");
+
+        FileEventSource fileEventSource = new FileEventSource();
+        fileEventSource.setFilename(dataFile.toString());
+        fileEventSource.setReadStrategy(ReadStrategy.COMMITED);
+
+        EventToQueuePublisher<String> eventToQueue = new EventToQueuePublisher<>("fileEventFeed");
+        fileEventSource.setOutput(eventToQueue);
+
+        // Act + Assert: start() must not crash on the missing parent
+        Assertions.assertDoesNotThrow(fileEventSource::start);
+        Assertions.assertTrue(Files.exists(readPointerFile),
+                "readPointer file should exist after start()");
+
+        // Teardown
+        fileEventSource.stop();
+        fileEventSource.tearDown();
+
+        cleanupIfNeeded();
+    }
+
+    @Test
+    void start_with_empty_filename_throws() {
+        FileEventSource fileEventSource = new FileEventSource();
+        fileEventSource.setFilename("");
+        EventToQueuePublisher<String> eventToQueue = new EventToQueuePublisher<>("fileEventFeed");
+        fileEventSource.setOutput(eventToQueue);
+
+        Assertions.assertThrows(IllegalStateException.class, fileEventSource::start);
+    }
+
+    @Test
+    void start_with_null_filename_throws() {
+        FileEventSource fileEventSource = new FileEventSource();
+        fileEventSource.setFilename(null);
+        EventToQueuePublisher<String> eventToQueue = new EventToQueuePublisher<>("fileEventFeed");
+        fileEventSource.setOutput(eventToQueue);
+
+        Assertions.assertThrows(IllegalStateException.class, fileEventSource::start);
     }
 
     private void cleanupIfNeeded() {
