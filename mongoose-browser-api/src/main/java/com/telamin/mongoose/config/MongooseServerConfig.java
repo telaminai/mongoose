@@ -5,17 +5,16 @@
 
 package com.telamin.mongoose.config;
 
-import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.mongoose.browser.Stub;
 
 /**
  * Compile-only stub of {@code com.telamin.mongoose.config.MongooseServerConfig}.
  * <p>
- * Scoped to the {@code mongoose-hosted} playground example: the fluent
- * {@link Builder} ({@code addEventFeed} / {@code addEventSink} / {@code build})
- * and the {@code addProcessor(String, T, String)} group-attach overload. The
- * real class carries further {@code addProcessor} overloads and builder methods
- * — mirror them here only as the example grows, guarded by the drift test.
+ * Scoped to the {@code mongoose-hosted} example's top-level wiring: the fluent
+ * {@link Builder} with {@code addEventFeed} / {@code addProcessorGroup} /
+ * {@code addEventSink} / {@code build}. The real class carries further
+ * {@code addProcessor} convenience overloads — mirror them here only as the
+ * example grows, guarded by the drift test.
  */
 public class MongooseServerConfig {
 
@@ -23,14 +22,6 @@ public class MongooseServerConfig {
      * Stub of {@code MongooseServerConfig.builder()}.
      */
     public static Builder builder() {
-        throw Stub.notRunnable();
-    }
-
-    /**
-     * Stub of {@code addProcessor(String groupName, T processor, String name)} —
-     * attaches a generated Fluxtion processor to a named group.
-     */
-    public <T extends DataFlow> MongooseServerConfig addProcessor(String groupName, T processor, String name) {
         throw Stub.notRunnable();
     }
 
@@ -43,6 +34,10 @@ public class MongooseServerConfig {
         }
 
         public Builder addEventFeed(EventFeedConfig<?> feed) {
+            throw Stub.notRunnable();
+        }
+
+        public Builder addProcessorGroup(EventProcessorGroupConfig group) {
             throw Stub.notRunnable();
         }
 

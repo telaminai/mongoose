@@ -3,19 +3,19 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-package com.telamin.mongoose.plugin.connector.file;
+package com.telamin.mongoose.connector.file;
 
 import com.telamin.mongoose.browser.Stub;
+import com.telamin.mongoose.config.ReadStrategy;
 
 /**
- * Compile-only stub of the file-connector plugin's
- * {@code com.telamin.mongoose.plugin.connector.file.FileEventSource}.
+ * Compile-only stub of the core file connector
+ * {@code com.telamin.mongoose.connector.file.FileEventSource}.
  * <p>
  * The real class extends {@code AbstractAgentHostedEventSourceService}; the
- * playground example only constructs it and calls {@code setFilename}, and
- * passes it to {@code EventFeedConfig.Builder.instance(Object)} — so the stub
- * needs no supertype. Note the {@code plugin.connector} package: the 0.2.12
- * rename retired the old {@code com.telamin.mongoose.connector} path.
+ * example only constructs it and calls {@code setFilename} / {@code setReadStrategy},
+ * then passes it to {@code EventFeedConfig.Builder.instance(Object)} — so the
+ * stub needs no supertype.
  */
 public class FileEventSource {
 
@@ -30,6 +30,10 @@ public class FileEventSource {
     }
 
     public String getFilename() {
+        throw Stub.notRunnable();
+    }
+
+    public void setReadStrategy(ReadStrategy readStrategy) {
         throw Stub.notRunnable();
     }
 }
