@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.telamin</groupId>
+    <artifactId>mongoose-browser-api</artifactId>
+    <version>1.0.11-SNAPSHOT</version>
+    <name>telamin :: mongoose-browser-api</name>
+    <description>
+        Signature-only Java 8 (class file v52) stub of the Mongoose API surface
+        used by the Fluxtion playground's "mongoose-hosted" example. Lets that
+        example's MongooseMain.java type-check in CheerpJ's Java 8 javac. Every
+        method body throws — the stub never runs. Run Mongoose locally against
+        the real com.telamin:mongoose artifact.
+
+        Standalone pom: the mongoose repo is single-module, so this is built on
+        its own with `mvn -f mongoose-browser-api/pom.xml install`, not via a
+        reactor.
+    </description>
+    <url>https://github.com/telaminai/mongoose</url>
+
+    <licenses>
+        <license>
+            <distribution>repo</distribution>
+            <name>GNU AFFERO GENERAL PUBLIC LICENSE, Version 3.0</name>
+            <url>https://www.gnu.org/licenses/agpl-3.0.en.html</url>
+        </license>
+    </licenses>
+
+    <properties>
+        <maven.compiler.release>8</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- Unshaded Fluxtion line; 0.9.33 fluxtion-runtime ships class v52. -->
+        <fluxtion.version>0.9.33</fluxtion.version>
+        <!-- agrona 1.21.2 = class v52 (CheerpJ-loadable). Never agrona 2.x (v61). -->
+        <agrona.version>1.21.2</agrona.version>
+    </properties>
+
+    <dependencies>
+        <!--
+            Supplies the few real types the stub signatures reference:
+            DataFlow and MessageSink (com.telamin.fluxtion.runtime.*).
+            `provided` — the playground supplies these separately in the
+            browser; they are never bundled with or imposed by this stub.
+            agrona 2.x is excluded so the v52 1.21.2 line is used instead.
+        -->
+        <dependency>
+            <groupId>com.telamin.fluxtion</groupId>
+            <artifactId>fluxtion-runtime</artifactId>
+            <version>${fluxtion.version}</version>
+            <scope>provided</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.agrona</groupId>
+                    <artifactId>agrona</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <!-- org.agrona.concurrent.IdleStrategy, referenced by builder agent(...). -->
+        <dependency>
+            <groupId>org.agrona</groupId>
+            <artifactId>agrona</artifactId>
+            <version>${agrona.version}</version>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+</project>
