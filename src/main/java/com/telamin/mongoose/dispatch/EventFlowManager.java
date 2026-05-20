@@ -161,6 +161,21 @@ public class EventFlowManager {
                 .forEach(action);
     }
 
+    /**
+     * Returns {@code true} when {@code candidate} has been registered with this
+     * manager as an event source (via {@link #registerEventSource(String, EventSource)}).
+     * Used by lifecycle plumbing to detect {@code LifeCycleEventSource} services
+     * that the {@code LifecycleManager} deliberately skips but the flow manager
+     * never picked up either — those would otherwise silently miss their
+     * {@code init()} / {@code start()} calls.
+     */
+    public boolean knowsEventSource(Object candidate) {
+        if (candidate == null) return false;
+        return eventSourceToQueueMap.values().stream()
+                .map(EventSource_QueuePublisher::eventSource)
+                .anyMatch(src -> src == candidate);
+    }
+
     private <T> EventSource_QueuePublisher<T> getEventSourceQueuePublisherOrThrow(EventSourceKey<T> eventSourceKey) {
         @SuppressWarnings("unchecked")
         EventSource_QueuePublisher<T> publisher = (EventSource_QueuePublisher<T>) eventSourceToQueueMap.get(eventSourceKey);

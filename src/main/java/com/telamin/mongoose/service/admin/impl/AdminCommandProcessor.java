@@ -71,6 +71,14 @@ public class AdminCommandProcessor implements AdminCommandRegistry, LifeCycleEve
     @Override
     public void setEventFlowManager(EventFlowManager eventFlowManager, String serviceName) {
         this.eventFlowManager = eventFlowManager;
+        // Honour the EventFlowService.setEventFlowManager default's contract —
+        // register ourselves as an event source with the flow manager. Without
+        // this call the LifecycleManager skip (because we implement
+        // LifeCycleEventSource) leaves us with no lifecycle owner: nobody
+        // calls init() / start() / stop() and any setup tied to those phases
+        // is silently lost. Registering here also lets the boot-time sweep
+        // in LifecycleManager.init confirm we're known to the flow manager.
+        eventFlowManager.registerEventSource(serviceName, this);
         eventFlowManager.registerEventMapperFactory(AdminCommandInvoker::new, AdminCallbackType.class);
     }
 

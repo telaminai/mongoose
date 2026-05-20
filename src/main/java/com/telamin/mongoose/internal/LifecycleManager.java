@@ -42,6 +42,17 @@ public final class LifecycleManager {
         });
         // Init event sources via flow manager
         flowManager.init();
+        // Warn loudly about any LifeCycleEventSource service that fell into the
+        // contract trap: it was skipped above (deliberately — flow manager owns
+        // its lifecycle) AND flow manager never heard of it (its
+        // setEventFlowManager didn't call registerEventSource(name, this)).
+        // The net effect is that its init() / start() never run, which
+        // historically surfaced as silent "command not found" from the admin
+        // surfaces. The standard AbstractEventSourceService superclass
+        // self-registers, so any new direct LifeCycleEventSource implementor
+        // must do the same — or implement Lifecycle directly and stop wearing
+        // the marker.
+        warnOnOrphanLifeCycleEventSources(registeredServices, flowManager);
         // Register non-agent services with registry and inject dependencies
         registeredServices.values().forEach(svc -> {
             if (!(registeredAgentServices.contains(svc))) {
@@ -49,6 +60,24 @@ public final class LifecycleManager {
                 server.servicesRegistered().forEach(serviceRegistry::registerService);
             }
         });
+    }
+
+    private static void warnOnOrphanLifeCycleEventSources(Map<String, Service<?>> registeredServices,
+                                                          EventFlowManager flowManager) {
+        for (Service<?> svc : registeredServices.values()) {
+            Object instance = svc.instance();
+            if (instance instanceof LifeCycleEventSource && !flowManager.knowsEventSource(instance)) {
+                log.warning("Service '" + svc.serviceName() + "' (" + instance.getClass().getName()
+                        + ") implements LifeCycleEventSource but was never registered with the"
+                        + " EventFlowManager — its init() / start() / stop() will never run."
+                        + " The implementation should call"
+                        + " EventFlowManager.registerEventSource(name, this) during"
+                        + " setEventFlowManager(...) (the AbstractEventSourceService"
+                        + " superclass does this automatically) — otherwise drop the"
+                        + " LifeCycleEventSource marker and implement Lifecycle directly so"
+                        + " the LifecycleManager picks it up.");
+            }
+        }
     }
 
     public void start(Map<String, Service<?>> registeredServices,
