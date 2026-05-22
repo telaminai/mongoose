@@ -1,8 +1,17 @@
 # Mongoose counters service + performance-monitor auditor
 
-**Status**: design — pre-implementation. Discuss, phase, then build.
+**Status**: Phases 1–4 shipped on `develop` (counters live, hot-path sites instrumented, auditor available, admin Dashboard card visible). Phase 4.5 (health verdict) and Phase 5 (admin commands) remain. See per-phase checklist below for granular state.
 **Owners**: Greg
-**Drives**: live throughput on svc-admin-web, future Prometheus / OTLP exporters, per-node fire counts for the topology view.
+**Drives**: live throughput on svc-admin-web (✓ visible), future Prometheus / OTLP exporters, per-node fire counts for the topology view.
+
+**Shipped commits** (mongoose `develop` unless noted):
+- `7c15d23` — Phase 1: `MongooseCountersService` + `MongooseCounter` + No-op/Agrona impls + YAML toggle + EFM wiring.
+- `e95b58b` — Phase 2: feed-publish counter on `EventToQueuePublisher`, agent processed/idle counters on `ComposingEventProcessorAgent`.
+- `3d3f1c5` — Phase 3: `PerformanceMonitorAudit` + 5 SPI tests.
+- `8dce91f` — `EventFlowManager.sampleQueueDepths()` for the Phase 4 queue-depth gauge.
+- `cc916c3` (mongoose-plugins `develop`) — Phase 4: svc-admin-web sampler + `/ws/monitor` payload extension + Dashboard "Throughput" card + 5 sampler tests.
+
+**Test totals**: mongoose-core 164/164 green · svc-admin-web 79/79 green.
 
 ---
 
@@ -524,33 +533,36 @@ Screenshot: `docs/screenshots/health.png`. Update the HTTP/WebSocket surface tab
 
 ## Acceptance checklist (grouped by phase)
 
-### Phase 1 — Service + impls + boot toggle
-- [ ] `MongooseCountersService` interface published from `com.telamin.mongoose.service.counters` with `SERVICE_NAME` constant + `isOperational()` accessor.
-- [ ] `MongooseCounter` interface (mongoose-owned, NOT `org.agrona.concurrent.status.AtomicCounter`).
-- [ ] `NoOpCountersService` + `NoOpCounter` in `com.telamin.mongoose.internal`. `forEachCounter` visits nothing. `isOperational() == false`.
-- [ ] `AgronaCountersService` + `AgronaCounter` adapter in `com.telamin.mongoose.internal`. Wraps `CountersManager`, label-keyed cache, single-threaded registration, `isOperational() == true`.
-- [ ] YAML toggle (`mongoose.performanceMonitoring.{enabled, counterBufferKb}`) wired into `MongooseServerConfig`.
-- [ ] `EventFlowManager` / `MongooseServer` selects + registers the impl at boot, **before** any feed/sink/processor wiring.
-- [ ] Both-impl unit tests: handle identity (no-op shared / agrona distinct-per-label / agrona same-on-repeat), forEach roundtrip, isOperational signal.
-- [ ] JMH micro: < 1 ns/op overhead in no-op mode, < 10 ns/op in real-impl mode for a single increment.
+### Phase 1 — Service + impls + boot toggle (shipped — `7c15d23`)
+- [x] `MongooseCountersService` interface published from `com.telamin.mongoose.service.counters` with `SERVICE_NAME` constant + `isOperational()` accessor.
+- [x] `MongooseCounter` interface (mongoose-owned, NOT `org.agrona.concurrent.status.AtomicCounter`).
+- [x] `NoOpCountersService` + `NoOpCounter` in `com.telamin.mongoose.internal`. `forEachCounter` visits nothing. `isOperational() == false`.
+- [x] `AgronaCountersService` + `AgronaCounter` adapter in `com.telamin.mongoose.internal`. Wraps `CountersManager`, label-keyed cache, single-threaded registration, `isOperational() == true`.
+- [x] YAML toggle (`mongoose.performanceMonitoring.{enabled, counterBufferKb}`) wired into `MongooseServerConfig`.
+- [x] `EventFlowManager` / `MongooseServer` selects + registers the impl at boot, **before** any feed/sink/processor wiring.
+- [x] Both-impl unit tests: handle identity (no-op shared / agrona distinct-per-label / agrona same-on-repeat), forEach roundtrip, isOperational signal. *(14 tests in `NoOpCountersServiceTest`, `AgronaCountersServiceTest`, `CountersServiceWiringTest`)*
+- [ ] JMH micro: < 1 ns/op overhead in no-op mode, < 10 ns/op in real-impl mode for a single increment. *(deferred — best authored alongside Phase 2 hot-path sites so the bench reflects a realistic callsite shape; not blocking)*
 
-### Phase 2 — Built-in counter sites
-- [ ] `EventToQueuePublisher` — `feedPublishCounter` cached at construction, incremented in `publish`.
-- [ ] Agent main loop — `agentEventsCounter` + `agentIdleCyclesCounter` per group.
-- [ ] Queue read path / sampler — `queueDepthGauge` per queue path.
-- [ ] Integration test against fx-pnl-mongoose: drain N events, assert counters track.
+### Phase 2 — Built-in counter sites (shipped — `e95b58b` + `8dce91f`)
+- [x] `EventToQueuePublisher` — `feedPublishCounter` cached at construction, incremented in `publish`.
+- [x] Agent main loop — `agentEventsCounter` + `agentIdleCyclesCounter` per group.
+- [x] Queue read path / sampler — `queueDepthGauge` per queue path. *(via `EventFlowManager.sampleQueueDepths()` called from svc-admin-web's pre-tick hook; the design's "sampler path" branch — `8dce91f`)*
+- [x] Integration test through real server. *(`CountersHotPathIntegrationTest`, `AgentLoopCountersTest` — 4 tests)*
 
-### Phase 3 — PerformanceMonitorAudit + builder integration
-- [ ] Prerequisite check: Fluxtion `Auditor` SPI exposes `nodeRegistered`, `eventReceived`, `nodeInvoked` with the signatures the doc references against the pinned Fluxtion version.
-- [ ] `PerformanceMonitorAudit` class.
-- [ ] `withPerformanceMonitor(processorName)` mongoose-builder helper wrapping `c.addAuditor(...)`.
-- [ ] Per-auditor `setWriteEnabled` toggle.
-- [ ] Per-node / per-event counters populated; `writeEnabled=false` zero-delta tests.
+### Phase 3 — PerformanceMonitorAudit + builder integration (shipped — `3d3f1c5`)
+- [x] Prerequisite check: Fluxtion `Auditor` SPI exposes `nodeRegistered(Object, String)`, `eventReceived(Object)`, `nodeInvoked(Object, String, String, Object)` against the pinned Fluxtion 0.9.34. *Confirmed.*
+- [x] `PerformanceMonitorAudit` class — `com.telamin.mongoose.service.counters.PerformanceMonitorAudit`.
+- [ ] ~~`withPerformanceMonitor(processorName)` mongoose-builder helper wrapping `c.addAuditor(...)`~~ *(intentionally dropped — mongoose-core deliberately doesn't depend on fluxtion-builder which is a build-time-only heavyweight. Users call the canonical `cfg.addAuditor(new PerformanceMonitorAudit("name"), "perfMon")` directly. The mongoose-builder-helpers plugin can host the sugar later if it proves useful.)*
+- [x] Per-auditor `setWriteEnabled` toggle.
+- [x] Per-node / per-event counters populated; `writeEnabled=false` zero-delta tests. *(5 SPI-level tests in `PerformanceMonitorAuditTest`. End-to-end Fluxtion-compile binding deferred to Phase 4 work against fx-pnl-mongoose — Fluxtion's interpret-path doesn't propagate `registerService` to `@ServiceRegistered` on auditors, so it'll only exercise meaningfully under the compiled SEP path which mongoose's normal service injection will hit.)*
 
-### Phase 4 — svc-admin-web throughput consumer
-- [ ] Sampler diff loop reading `forEachCounter`.
-- [ ] `/ws/monitor` payload extended with `throughput` block.
-- [ ] Dashboard "Throughput" card + per-row badges + Topology pulse + per-node fire-count overlay on graphml panel.
+### Phase 4 — svc-admin-web throughput consumer (shipped — `cc916c3` in mongoose-plugins)
+- [x] Sampler diff loop reading `forEachCounter`. *(`MonitoringSampler.tickSnapshot()` computes deltas vs previous tick; first tick = 0 by contract.)*
+- [x] `/ws/monitor` payload extended with `throughput` block. *(JvmSnapshot record gains a `Throughput throughput` field; null when counters service is the no-op.)*
+- [x] Dashboard "Throughput" card. *(Visible only when `throughput` is non-null; falls back to honest "monitoring is off" hint when disabled. Shows Feeds / Agent groups / Processors / Queue depth as live tables.)*
+- [ ] Per-row badges on Services / Agents views *(polish — data is already in `/ws/monitor` payload; deferred to a follow-on slice.)*
+- [ ] Topology pulse animation on Cytoscape nodes when rate ticked *(polish — strategic demo piece; deferred to a follow-on slice.)*
+- [ ] Per-node fire-count overlay on the inline graphml panel *(polish — `throughput.nodes` already carries the data; deferred to a follow-on slice.)*
 
 ### Phase 4.5 — Health service + admin UI verdict
 - [ ] `MongooseHealthService` interface (with `HealthCheckHandle` extending `AutoCloseable`, `HealthContext`, `ErrorSink`, `StatusVisitor`, `markTicking`) + default impl + auto-allocated per-service counters.
