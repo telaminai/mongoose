@@ -151,6 +151,26 @@ public class MongooseServer implements MongooseServerController {
      */
     public MongooseServer(MongooseServerConfig mongooseServerConfig) {
         this.mongooseServerConfig = mongooseServerConfig;
+
+        // Counters service — register FIRST, before any other service or
+        // hot-path component construction. Per design-doc/mongoose-counters-
+        // and-performance-monitor.md: hot-path components (publishers, agent
+        // loops) receive the counter handles at construction time, not via
+        // deferred @ServiceRegistered injection, so the impl must exist by
+        // the time any feed / sink / processor wiring happens. Default is
+        // the no-op; the Agrona-backed impl is selected via
+        // performanceMonitoring.enabled in MongooseServerConfig.
+        com.telamin.mongoose.config.PerformanceMonitoringConfig perfCfg =
+                mongooseServerConfig == null ? null : mongooseServerConfig.getPerformanceMonitoring();
+        com.telamin.mongoose.service.counters.MongooseCountersService counters =
+                (perfCfg != null && perfCfg.isEnabled())
+                        ? new com.telamin.mongoose.internal.AgronaCountersService(perfCfg.getCounterBufferKb())
+                        : com.telamin.mongoose.internal.NoOpCountersService.INSTANCE;
+        registerService(new Service<>(
+                counters,
+                com.telamin.mongoose.service.counters.MongooseCountersService.class,
+                com.telamin.mongoose.service.counters.MongooseCountersService.SERVICE_NAME));
+
         // Self-register the introspection service so consumers can pick it up
         // via @ServiceRegistered regardless of how the server is constructed
         // (programmatic or YAML-driven). The impl reads the composing-agent
