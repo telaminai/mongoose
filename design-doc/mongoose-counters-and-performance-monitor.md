@@ -1,0 +1,471 @@
+# Mongoose counters service + performance-monitor auditor
+
+**Status**: design — pre-implementation. Discuss, phase, then build.
+**Owners**: Greg
+**Drives**: live throughput on svc-admin-web, future Prometheus / OTLP exporters, per-node fire counts for the topology view.
+
+---
+
+## Motivation
+
+Right now Mongoose's admin surface (`svc-admin-web`) shows JVM health and a static dispatch topology, but nothing about **whether the pipeline is actually doing work**. An operator sees the graph and the heap but can't answer "is the FX feed firing? is anything backed up?". Adding this matters for three independent reasons:
+
+1. **Operations** — a heartbeat signal is table-stakes for any pipeline runtime.
+2. **Demo / sales** — `svc-admin-web`'s Topology view rendering live event-flow against a running server is the screenshot that lands the "same artefact in playground → production" story.
+3. **Moat exhibit** — per-node fire counts via Fluxtion's audit listener is something **no competitor's admin surface can show**, because no competitor compiles to a per-node-introspectable artefact. It's the deterministic-replay narrative made tangible.
+
+This work introduces:
+
+- `MongooseCountersService` — published interface for fast-path counter writes + sampling reads.
+- Two implementations: a **no-op** (default) and an **Agrona-backed real** one. Switched at JVM boot — call sites stay monomorphic so the JIT can inline the no-op away.
+- `PerformanceMonitorAudit` — a Fluxtion `Auditor` that, when bound at processor build time, writes per-event and per-node counts into `MongooseCountersService`.
+- Two layers of opt-in: **build-time** (does the auditor exist in the generated processor?) and **runtime** (is the service real, and is each auditor writing?).
+
+---
+
+## Architecture
+
+### Service interface — single hot-path surface
+
+```java
+package com.telamin.mongoose.service.counters;
+
+public interface MongooseCountersService {
+
+    // Allocate-once handles. Callers cache the reference for the
+    // lifetime of the feed / group / processor / node.
+    AtomicCounter feedPublishCounter(String feed);
+    AtomicCounter agentEventsCounter(String group);
+    AtomicCounter agentIdleCyclesCounter(String group);
+    AtomicCounter queueDepthGauge(String path);
+    AtomicCounter processorEventsCounter(String processor);
+    AtomicCounter nodeInvocationCounter(String processor, String node);
+
+    // Sampler-side walk. Called ~1 Hz from svc-admin-web /ws/monitor
+    // and any other observability plugin. No allocation per visit.
+    void forEachCounter(CounterVisitor visitor);
+
+    @FunctionalInterface
+    interface CounterVisitor {
+        void visit(int id, String label, long value);
+    }
+}
+```
+
+Counter labels are flat strings of the form `feed.fx-market-data.published`, `group.priceCalculator.processed`, `queue./agent/priceCalculator/eventQueue.depth`, `processor.priceCalc.events`, `node.priceCalc.FxLineHandler.invocations`. Categorisable from the label prefix — no parallel enum.
+
+### Two implementations
+
+**`NoOpCountersService`** — every method returns a singleton `AtomicCounter` whose `increment()` / `set()` / `getOrdered()` are empty / fixed. Singleton instance, registered as the service when performance monitoring is disabled. Because the implementation class is uniquely loaded across the JVM and **call sites are monomorphic**, the JIT inlines the no-op increment to nothing. C2's inlining heuristic + dead-store elimination give us zero residual cost.
+
+**`AgronaCountersService`** — wraps `org.agrona.concurrent.status.CountersManager` over an on-heap `UnsafeBuffer` (~256 KB; sizes thousands of counters). Each public method either allocates a new counter and caches the returned `AtomicCounter` in a `ConcurrentHashMap<String, AtomicCounter>` keyed by label, or returns the cached handle. **Lookup happens once at registration, never on the fast path.** `forEachCounter` delegates to `CountersReader.forEach`, walking the buffer directly.
+
+### Global toggle
+
+One JVM-wide switch chooses the impl at boot:
+
+```yaml
+mongoose:
+  performanceMonitoring:
+    enabled: true        # default: false
+    counterBufferKb: 256 # default: 256
+```
+
+The switch is also exposable as an admin command (`mongoose.perf.enable` / `disable`) — but **the switch only flips between the two singleton instances at startup**. Mid-life swap is a separate problem we're not solving today (would re-introduce bimorphism at every callsite). Mid-life toggling happens **per auditor** instead — see below.
+
+### Wire-up in EventFlowManager
+
+`EventFlowManager` owns the singleton implementation, registers it into the service registry at boot, and hands counter references to the hot-path components it already owns:
+
+- `EventToQueuePublisher` — cache `feedPublishCounter(feedName)` at construction; `.increment()` in `publish(...)`.
+- Agent main loop — cache `agentEventsCounter(group)` + `agentIdleCyclesCounter(group)` at agent start.
+- Queue reader — gauge `queueDepthGauge(path)` set via `setOrdered` at the read site, or sampled by the sampler poking the underlying `RingBuffer`'s `producerPosition - consumerPosition`.
+
+Any other plugin / service that wants counters injects `MongooseCountersService` via `@ServiceRegistered` — same pattern as `AdminCommandRegistry`.
+
+### PerformanceMonitorAudit
+
+A standard Fluxtion `Auditor`, bound at processor build time (opt-in). Implements:
+
+```java
+public final class PerformanceMonitorAudit implements Auditor {
+
+    private MongooseCountersService counters; // injected via @ServiceRegistered
+    private AtomicCounter eventCounter;       // for this processor
+    private final Map<String, AtomicCounter> nodeCounters = new HashMap<>();
+    private volatile boolean writeEnabled = true; // per-auditor toggle
+    private final String processorName;
+
+    public PerformanceMonitorAudit(String processorName) {
+        this.processorName = processorName;
+    }
+
+    @ServiceRegistered
+    public void countersService(MongooseCountersService svc, String name) {
+        this.counters = svc;
+    }
+
+    @Override
+    public void init() {
+        eventCounter = counters.processorEventsCounter(processorName);
+    }
+
+    @Override
+    public void nodeRegistered(Object node, String nodeName) {
+        nodeCounters.put(nodeName, counters.nodeInvocationCounter(processorName, nodeName));
+    }
+
+    @Override
+    public void eventReceived(Object event) {
+        if (writeEnabled) eventCounter.increment();
+    }
+
+    @Override
+    public void nodeInvoked(Object node, String nodeName, String methodName, Object event) {
+        if (writeEnabled) {
+            AtomicCounter c = nodeCounters.get(nodeName);
+            if (c != null) c.increment();
+        }
+    }
+
+    @Override
+    public boolean auditInvocations() { return true; } // need per-node callbacks
+
+    public void setWriteEnabled(boolean enabled) { this.writeEnabled = enabled; }
+}
+```
+
+**Build-time opt-in** — added to the processor builder:
+
+```java
+Fluxtion.compile(c -> {
+    c.addNode(...);
+    c.addAuditor(new PerformanceMonitorAudit("priceCalculator"), "perfMon");
+});
+```
+
+No auditor → no extra bytecode in the generated SEP → zero overhead, ever.
+
+**Runtime opt-in** — `setWriteEnabled(false)` short-circuits the increments. The `if (writeEnabled)` branch is a single volatile read + predictable branch (always-true or always-false in steady state), so the impact is minimal — and when the global service is the no-op anyway, the JIT eliminates the call regardless.
+
+### Why the JIT inlines the no-op (the load-bearing claim)
+
+C2 inlines virtual calls when the call site is monomorphic — i.e., the JVM has only ever seen one concrete implementation through that callsite. If `MongooseCountersService` resolves to **one and only one** impl per JVM lifetime, every `.feedPublishCounter().increment()` site is monomorphic. C2:
+
+1. Inlines `feedPublishCounter` → returns a cached `AtomicCounter` field.
+2. Inlines `.increment()`.
+3. If the impl is `NoOpCountersService`, both bodies are empty / trivially side-effect-free → dead-store elimination drops the whole sequence.
+
+The constraint this imposes on us: **don't load both impls into the same JVM**. The toggle picks one at boot and that's the only impl seen. Don't try to mid-life swap; don't try to make a "decorating" wrapper. One impl, one classloader, one JIT compilation per callsite.
+
+This is the same technique SLF4J's NOP-binding uses to make `log.debug(...)` free when debug is off.
+
+### Sampling path (svc-admin-web side)
+
+`MonitoringSampler` gains a tick (existing 1 s timer): call `countersService.forEachCounter(...)` into a `Long2LongHashMap` snapshot. Diff against previous snapshot for rates. Push as JSON over the existing `/ws/monitor` payload:
+
+```json
+{
+  "jvm": {...},
+  "throughput": {
+    "feeds":      [{"name":"fx-market-data", "rate": 12345, "total": 9876543}],
+    "groups":     [{"name":"priceCalculator", "rate": 12000, "idle": 200}],
+    "queues":     [{"path":"/agent/priceCalculator/eventQueue", "depth": 0}],
+    "processors": [{"name":"priceCalc", "rate": 12000}],
+    "nodes":      [{"processor":"priceCalc", "node":"FxLineHandler", "rate": 8000}]
+  }
+}
+```
+
+UI consumes via the existing Alpine WebSocket subscriber, surfaces:
+
+- New "Throughput" card on Dashboard (sparkline per agent group).
+- Numeric badges on Services (feed rows) and Agent cards.
+- Pulse animation on Topology nodes where rate ticked.
+- Per-node fire-count badges in the inline graphml panel (when `PerformanceMonitorAudit` is bound).
+
+### Health service — thin layer on top of counters
+
+Counters give the **numeric signal**; an operator wants the **verdict**: "is this service UP?". A separate small service exposes that verdict and reuses 80% of the counters infrastructure for the data.
+
+```java
+package com.telamin.mongoose.service.health;
+
+public interface MongooseHealthService {
+
+    // Many checks per service is normal — a Kafka feed might register
+    // "connected", "lag", "deserialize-errors". Check name is free-form;
+    // serviceName is the registry key for aggregation. registerCheck
+    // returns the handle so domain code can opt the check in/out at runtime.
+    HealthCheckHandle registerCheck(String serviceName, String checkName, HealthCheck check);
+
+    // Per-check status (drill-down view).
+    HealthStatus statusOfCheck(String serviceName, String checkName);
+
+    // Aggregated per-service verdict — worst-of across every check
+    // registered for that service. This is what the admin UI badge and
+    // /api/health surface; statusOfCheck is for the detail drill-down.
+    // Aggregation order: DOWN > DEGRADED > UNKNOWN > UP.
+    HealthStatus aggregatedVerdict(String serviceName);
+
+    // Walk every check (drill-down) — visitor matches the counters idiom
+    // so admin sampler code reads symmetrically across the two services.
+    void forEachStatus(StatusVisitor visitor);
+
+    // Per-service error sink — same handle-cached pattern counters use.
+    // Service caches the returned reference at registration; the bounded
+    // ring (~16 entries) holds the last-N errors as {message, class,
+    // epochMs}. Throwable's stack is dropped; class + message only.
+    ErrorSink errorSink(String serviceName);
+
+    @FunctionalInterface
+    interface HealthCheck {
+        HealthStatus evaluate(HealthContext ctx);
+    }
+
+    @FunctionalInterface
+    interface StatusVisitor {
+        void visit(String serviceName, String checkName, HealthStatus status);
+    }
+
+    /** Read-only view passed to a HealthCheck. Counters + last-errors for
+     *  the service the check belongs to. The check shouldn't reach beyond
+     *  its own service (no global counter walk) — keeps checks composable. */
+    interface HealthContext {
+        long counter(String label);              // 0 if absent
+        long counterDelta(String label, long windowMs); // value(now) − value(now−windowMs)
+        Iterable<ErrorRecord> recentErrors();    // newest-first, up to ring capacity
+        long nowEpochMs();
+    }
+
+    interface ErrorSink {
+        void record(String message, Throwable cause);
+    }
+
+    record ErrorRecord(long epochMs, String errorClass, String message) {}
+}
+
+public record HealthStatus(Verdict verdict, String reason, long asOfEpochMs) {
+    public enum Verdict { UP, DEGRADED, DOWN, UNKNOWN }
+    public static HealthStatus up()              { return new HealthStatus(Verdict.UP, null, System.currentTimeMillis()); }
+    public static HealthStatus down(String why)  { return new HealthStatus(Verdict.DOWN, why, System.currentTimeMillis()); }
+    public static HealthStatus degraded(String why) { return new HealthStatus(Verdict.DEGRADED, why, System.currentTimeMillis()); }
+    public static HealthStatus unknown(String why)  { return new HealthStatus(Verdict.UNKNOWN, why, System.currentTimeMillis()); }
+}
+```
+
+**Per-check vs per-service.** Each service can register multiple checks (e.g. `connected`, `lag`, `error-rate`). `statusOfCheck` returns one check's result; `aggregatedVerdict` returns the worst result for that service — `DOWN > DEGRADED > UNKNOWN > UP`. Admin UI badges and `/api/health` surface the aggregated verdict; the detail drill-down shows every individual check.
+
+**What's free from the counters layer:**
+
+- "Service ticked in last N seconds?" → counter delta over a window.
+- Error / disconnect / retry counts → existing counters.
+- Connected state → `0/1` gauge.
+- Throughput / lag → already exposed.
+- Auto-allocated **per-service counters at registration**: when a service registers via `setEventFlowManager`, EFM mints `service.{name}.lastTickEpoch`, `.eventsProcessed`, `.errors`, `.up`. The service updates them; health checks read them. Standard surface for every service for free.
+
+**What's new in the health layer:**
+
+- The `HealthCheck` predicate registry.
+- A small bounded **last-error ring** per service (8–16 entries; `Throwable` truncated to message + class). Counters can't hold strings; this is the only structural addition.
+- A structured `HealthStatus` returned to consumers — admin UI badge, future Slack alerter, future `/healthz/detailed` endpoint.
+
+**Built-in checks** (registered by EFM at boot, applied to every service):
+
+- **Liveness** — DOWN if `lastTickEpoch` delta over the last `livenessWindowMs` is zero AND the service registered with `ticking=true`. Non-ticking services emit UNKNOWN for this check (RPC-style services don't have a heartbeat — they respond when asked).
+- **Error spike** — DEGRADED if `errors` delta over the window exceeds a threshold; DOWN if `up == 0`.
+- **Connected** — convention-driven: if a service publishes `service.{name}.connected` (an explicit 0/1 gauge), this check reads it. `0` → DOWN, `1` → UP. Absent gauge → check skipped entirely (not even UNKNOWN — the service isn't claiming this dimension).
+
+User services add domain-specific checks via the same registry:
+
+```java
+@ServiceRegistered
+public void healthService(MongooseHealthService h, String name) {
+    h.registerCheck(name, "staleness",
+        ctx -> ctx.counterDelta("feed." + name + ".published", 30_000) == 0
+                ? HealthStatus.degraded("no events in 30s")
+                : HealthStatus.up());
+}
+```
+
+**Why this is a sibling service, not bolted onto counters:**
+
+- Different read pattern — health is request/response ("give me current status"), counters are streaming/sampling.
+- Different consumers — `svc-prometheus` wants raw counters, a future Slack alerter wants the structured verdict stream.
+- User-defined checks are domain code, which doesn't belong in the counters interface.
+
+**svc-admin-web surface (Phase 4.5):**
+
+- Status badge per row in the Services list (`UP` / `DEGRADED` / `DOWN` / `UNKNOWN`) — shows the aggregated verdict.
+- Service detail view expands to a per-check breakdown ("`connected`: UP · `lag`: DEGRADED — backlog 2.4k events"), sourced from `statusOfCheck`.
+- "Last errors" panel in the service detail view, sourced from the per-service error ring.
+- New navigation pill in the topbar — `12 UP · 1 DEGRADED · 0 DOWN` — clickable to filter Services view.
+- `/api/health` — `200` when every aggregated verdict is UP or UNKNOWN, `503` if any is DOWN, `200` with `degraded: true` flag if any DEGRADED. JSON body lists per-service aggregated verdict + per-check breakdown. Shape is intentionally k8s-readiness-probe compatible: a probe configured with `failureThreshold: 1, path: /api/health` flips the pod NotReady the moment any service goes DOWN.
+
+---
+
+## Phasing
+
+Each phase is independently shippable and independently demoable. Stop after any phase if the next one slips.
+
+### Phase 1 — Service + no-op + agrona impl (no consumers yet)
+
+**Goal**: published `MongooseCountersService` interface, both impls, EFM wires the no-op by default and the real impl when the YAML flag is set. **No counters are incremented anywhere yet.** Pure plumbing.
+
+- New package `com.telamin.mongoose.service.counters`.
+- `MongooseCountersService` interface.
+- `NoOpCountersService` impl.
+- `AgronaCountersService` impl (with config-driven buffer size).
+- `EventFlowManager` instantiates the chosen impl at boot, registers as a Service.
+- YAML toggle in the main config.
+- Unit tests: forEach over a small set of counters; no-op returns the same handle every call; real impl returns distinct handles per label and the same handle for repeated label lookups.
+
+**Exit criterion**: a test that registers the service, fetches handles, increments them, and reads them back via `forEachCounter` — for both impls.
+
+### Phase 2 — Built-in counter sites
+
+**Goal**: the four built-in counter sites incrementing in hot paths. Still no UI.
+
+- `EventToQueuePublisher` — `feedPublishCounter` per feed; increment in `publish`.
+- Agent loop — `agentEventsCounter` + `agentIdleCyclesCounter` per group.
+- Queue read site or sampler — `queueDepthGauge` per queue path.
+- Unit tests: drive a small Mongoose harness, drain N events through a stub processor, assert counters land at N (real impl) and zero (no-op).
+
+**Exit criterion**: an integration test that boots a real Mongoose with the FX P&L example, runs 1k events through, and `forEachCounter` returns sane values.
+
+### Phase 3 — PerformanceMonitorAudit + builder integration
+
+**Goal**: opt-in auditor that records per-processor / per-node counts.
+
+- `PerformanceMonitorAudit` class.
+- Convenience helper on the Mongoose builder side: `withPerformanceMonitor(processorName)`.
+- Per-auditor `setWriteEnabled` toggle.
+- Unit tests: build a tiny processor with the auditor bound, fire N events, assert per-node counters are populated. Re-run with `writeEnabled=false` and assert counters don't move.
+
+**Exit criterion**: the existing fx-pnl-mongoose example documented in its README to optionally add `withPerformanceMonitor` and see per-node counts.
+
+### Phase 4 — svc-admin-web throughput consumer
+
+**Goal**: the operator-facing payoff. svc-admin-web shows live throughput.
+
+- Extend `MonitoringSampler` to read counters + diff against prev snapshot.
+- Extend `/ws/monitor` payload with the `throughput` block.
+- New Dashboard "Throughput" card.
+- Badges on Services / Agents rows.
+- Pulse animation on Topology nodes.
+- Per-node fire-count overlay on the inline graphml panel (only visible when auditor counters are present for that processor).
+
+**Exit criterion**: load the FX P&L example, browse to admin, see live counters incrementing on dashboard and topology.
+
+### Phase 4.5 — Health service + admin UI verdict
+
+**Goal**: turn the raw counter signal into an operator-facing UP / DEGRADED / DOWN verdict per service.
+
+- New package `com.telamin.mongoose.service.health`.
+- `MongooseHealthService` interface + `HealthStatus` record + `HealthCheck` functional interface.
+- Default impl owned by EFM; registered into the service registry alongside `MongooseCountersService`.
+- EFM auto-allocates `service.{name}.lastTickEpoch / .eventsProcessed / .errors / .up` counters at service registration time.
+- Built-in checks (liveness, error spike, connected) registered at boot.
+- Last-error ring per service (bounded, ~16 entries, lock-free SPSC for ingest).
+- `/api/health` Javalin endpoint in `svc-admin-web` returning the status table.
+- Services view in svc-admin-web: status badge per row + topbar counter pill (`12 UP · 1 DEGRADED · 0 DOWN`).
+- "Last errors" panel in the service detail view.
+- Unit tests: register a stub service, advance time, assert liveness flips DOWN after the window; record an error, assert it shows up in the ring; build the verdict, assert reason string is correct.
+- Integration test against the FX P&L example: kill the FX feed mid-run, watch the badge flip to DOWN within `livenessWindowMs`.
+
+**Exit criterion**: in svc-admin-web, the Services list shows live status badges; the topbar pill aggregates the count; the service detail view shows the last 16 errors with timestamps; `/api/health` returns sane JSON that a k8s probe could consume.
+
+**Cost estimate**: a full phase, but a cheap one — most of the data is already flowing through counters. New surface is the predicate registry + verdict aggregator, the per-service error ring, three built-in checks, `/api/health`, and three small admin-UI pieces (badge, topbar pill, per-check drill-down + last-errors panel). No new hot-path code.
+
+### Phase 5 — Admin command + per-auditor runtime toggle
+
+**Goal**: ops surface.
+
+- `mongoose.perf.list` — list known counters + current values.
+- `mongoose.perf.auditor.enable {processor}` / `disable {processor}` — flip a specific auditor's `writeEnabled`.
+- Surface these in svc-admin-web's Commands view (automatic — they appear because they're registered).
+
+**Exit criterion**: from the admin UI, can pause per-node tracking for a noisy processor while keeping global feed/group counts live.
+
+### Phase 6 (future, not in scope for this design)
+
+- Latency histograms via HdrHistogram (separate allocation + contention story).
+- Prometheus exporter plugin (`svc-prometheus`) consuming `MongooseCountersService`.
+- OTLP exporter plugin.
+- Persistent counter snapshots for crash diagnostics.
+
+---
+
+## README + example documentation plan
+
+When Phase 3 lands, three README updates:
+
+### `mongoose-core/README.md` — new "Performance monitoring" section
+
+Short intro: counters service, two impls, JIT-inlines-when-disabled, YAML toggle. Code snippet showing the YAML enable + the builder `withPerformanceMonitor`.
+
+### `mongoose-plugins/service/svc-admin-web/README.md` — extension to existing "What you get"
+
+After the Dashboard / Commands / Console / Logs bullets, a new bullet:
+
+> **Throughput** (when `mongoose.performanceMonitoring.enabled: true`) — live event rates per feed, agent group, processor, and (with `PerformanceMonitorAudit` bound) per node. Topology view pulses nodes as they fire.
+
+Screenshot: `docs/screenshots/throughput.png`.
+
+### `mongoose-examples/fx-pnl-mongoose/README.md` — new "Observing the pipeline" section
+
+Walk-through of enabling perf monitoring on the existing example. Two-line YAML change + one-line builder change. Screenshot of the resulting svc-admin-web view with rates ticking.
+
+### When Phase 4.5 lands — `mongoose-plugins/service/svc-admin-web/README.md` extension
+
+After the Throughput bullet, add:
+
+> **Health** — aggregated UP / DEGRADED / DOWN verdict per service, sourced from `MongooseHealthService`. Topbar pill summarises the fleet; Services view shows per-row badges; service detail expands to per-check breakdown + last 16 errors. `/api/health` mirrors the same data in k8s-readiness-probe shape (`200` healthy, `503` any DOWN).
+
+Screenshot: `docs/screenshots/health.png`. Update the HTTP/WebSocket surface table with the `/api/health` row.
+
+---
+
+## Open questions
+
+1. **Counter buffer location** — on-heap UnsafeBuffer or off-heap DirectByteBuffer? On-heap is simpler and adequate for this scope; off-heap matters only if we ever want a separate process reading the same buffer (Aeron's pattern). **Default: on-heap. Revisit if/when we want out-of-process monitoring.**
+2. **Counter cardinality limit** — what happens if user code registers 10k labels via repeated unique strings (a label-explosion bug)? `CountersManager` has a maxCounters parameter; we should set a sane default (~4096) and log a warning before the cap hits.
+3. **Counter persistence across restarts** — currently counters reset to zero on restart. Acceptable for v1. Persistent counters are a Phase 6 concern.
+4. **Should the auditor's `writeEnabled` flag also be a no-op-impl swap?** No. Per-auditor swap re-introduces bimorphism (multiple processors holding different impls). The branch is fine.
+5. **Sampler rate** — 1 Hz default for `/ws/monitor`. Operators may want 100 ms for debugging or 10 s for cluster summaries. Already configurable via `metricsIntervalMs`; counter pulls inherit it.
+6. **Naming** — `MongooseCountersService` vs `MongooseMetricsService` vs `MongooseTelemetryService`. The Agrona world calls these "counters" (matching `CountersManager`); telemetry/metrics often imply latency + traces. **Default: counters. We can add a separate `MongooseLatencyService` later if/when histograms land.**
+7. **Health window default** — `livenessWindowMs` default (5 s? 30 s?) depends on the slowest legitimate tick interval across services. Need a sane default that doesn't false-alarm idle services. **Default: 30 s; per-check overridable.**
+8. **What counts as "should tick"?** — pure RPC services don't tick, they respond. The liveness check should opt-in via a `ticking=true` flag at service registration, otherwise it returns UNKNOWN rather than DOWN. **Default: opt-in; non-ticking services emit UNKNOWN for liveness unless they register a custom check.**
+9. **Per-check enable/disable parallel to `setWriteEnabled`?** — yes. `registerCheck` returns a `HealthCheckHandle` whose `setEnabled(false)` makes the check return `UNKNOWN` (not skipped — the operator still wants to see it's been silenced). Surfaced as an admin command `mongoose.health.check.{enable,disable} {service} {check}` in Phase 5. Avoids the "alert-storm-during-known-degradation" anti-pattern.
+10. **Should `aggregatedVerdict` treat UNKNOWN as worse than UP?** Yes, UNKNOWN ranks between UP and DEGRADED. Rationale: an UNKNOWN says "we tried, but couldn't establish state" — a real signal that's masked if it gets rolled up as UP. The /api/health response treats UNKNOWN as 200-with-warning (not 503) so probes don't false-alarm during startup.
+
+---
+
+## Acceptance checklist (for the eventual implementation conversation)
+
+- [ ] `MongooseCountersService` interface published from `com.telamin.mongoose.service.counters`.
+- [ ] `NoOpCountersService` — measurable as zero-overhead via JMH micro (see test plan).
+- [ ] `AgronaCountersService` — wraps `CountersManager`, label-keyed cache, sub-µs allocation-free increment.
+- [ ] YAML toggle wired into existing main config loader.
+- [ ] `EventFlowManager` selects + registers the impl at boot.
+- [ ] Phase-2 hot-path increments land at four sites listed above.
+- [ ] `PerformanceMonitorAudit` available; opt-in via builder.
+- [ ] svc-admin-web `/ws/monitor` payload extended with `throughput`.
+- [ ] `MongooseHealthService` interface (with `HealthCheckHandle`, `HealthContext`, `ErrorSink`, `StatusVisitor`) + default impl + auto-allocated per-service counters.
+- [ ] Verdict-rollup logic: aggregatedVerdict = worst-of across a service's checks; UNKNOWN ranked between UP and DEGRADED.
+- [ ] Built-in liveness / error-spike / connected checks registered at boot. `connected` reads `service.{name}.connected` by convention; missing gauge → check skipped.
+- [ ] svc-admin-web `/api/health` endpoint (k8s-probe shape — `200` healthy, `503` DOWN-present, JSON body with per-service + per-check breakdown) + Services-view status badges + topbar verdict pill + per-check detail panel + last-errors panel.
+- [ ] `svc-admin-web` README extended with the Health bullet (per Phase 4.5 plan above).
+- [ ] Admin commands `mongoose.perf.list` + `mongoose.perf.auditor.{enable,disable}` registered.
+- [ ] JMH micro showing < 1 ns/op overhead in no-op mode, < 10 ns/op in real-impl mode for a single increment.
+- [ ] Three READMEs updated as per "documentation plan" above.
+
+---
+
+## Notes for future conversations
+
+- The JIT no-op claim is **the design's load-bearing performance argument**. If Phase 1 JMH shows it's not actually free (e.g., the indirection through the service registry breaks monomorphism), revisit before Phase 2. Without it, the case for default-disabled gets weaker and we should consider default-enabled with a smaller built-in counter set.
+- The Auditor pattern (Phase 3) is **independent** of Phases 1–2. Phases 1–2 give us the operator dashboard. Phase 3 gives us the Fluxtion-specific moat exhibit. Either is shippable alone.
+- Don't extend `MongooseIntrospectionService` for this — different lifecycle (continuous-write vs request-response), different freshness semantics. They're peers, not parent/child.
+- Phase 4.5 (Health) is **also independent** of Phase 3 (Auditor) — health derives from Phase 1–2 counters and doesn't need per-node tracing. You can ship 1 → 2 → 4 → 4.5 and skip Phase 3 if the moat-demo work is deprioritised.
+- `/api/health` in Phase 4.5 is intentionally shaped to be **k8s-readiness-probe compatible** (200 = healthy, 503 = unhealthy, JSON body with details). This makes the same surface usable for ops automation, not just the human UI.
