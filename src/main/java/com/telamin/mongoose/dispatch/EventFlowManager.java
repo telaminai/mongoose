@@ -76,6 +76,34 @@ public class EventFlowManager {
         return countersService;
     }
 
+    /**
+     * Sample the depth of every per-subscriber dispatch queue and write the
+     * value to the {@code queue.{path}.depth} gauge on the supplied counters
+     * service. Called from a monitoring sampler tick — once per ~1 s — so
+     * the cost of {@link OneToOneConcurrentArrayQueue#size()} (a producer/
+     * consumer position read) doesn't multiply across the hot path.
+     *
+     * <p>Queue path is rendered as
+     * {@code /feed/{sourceName}/subscriber/{subscriberType}#{identityHashCode}}
+     * so each (source, subscriber) pair gets a unique stable label. This
+     * lets the front-end correlate gauges across ticks without needing the
+     * subscriber's full identity in the wire payload.
+     */
+    public void sampleQueueDepths(MongooseCountersService countersService) {
+        if (countersService == null || !countersService.isOperational()) return;
+        subscriberKeyToQueueMap.forEach((key, queue) -> {
+            String path = queuePathFor(key);
+            countersService.queueDepthGauge(path).setOrdered(queue.size());
+        });
+    }
+
+    private static String queuePathFor(EventSourceKey_Subscriber<?> key) {
+        String src = key.eventSourceKey().sourceName();
+        Object sub = key.subscriber();
+        String subRef = sub.getClass().getSimpleName() + "#" + Integer.toHexString(System.identityHashCode(sub));
+        return "/feed/" + src + "/subscriber/" + subRef;
+    }
+
     public void init() {
         forEachLifeCycleEventSource(LifeCycleEventSource::init);
     }
