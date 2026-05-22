@@ -7,6 +7,9 @@ package com.telamin.mongoose.service;
 
 import com.telamin.fluxtion.runtime.DataFlow;
 
+import java.util.Collection;
+import java.util.Collections;
+
 /**
  * Defines a strategy for processing events and dispatching them to {@link DataFlow} instances.
  * Implementations of this interface manage the registration and deregistration of processors,
@@ -50,4 +53,17 @@ public interface EventToInvokeStrategy {
      * @return number of listeners
      */
     int listenerCount();
+
+    /**
+     * Return a read-only view of the processors currently registered as
+     * targets for dispatch. Returned for introspection only — callers must
+     * not assume modification of the returned collection affects subscription
+     * state. The default implementation returns an empty collection so
+     * pre-existing custom strategies remain wire-compatible.
+     *
+     * @return read-only collection of registered processors
+     */
+    default Collection<DataFlow> registeredProcessors() {
+        return Collections.emptyList();
+    }
 }

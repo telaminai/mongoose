@@ -189,4 +189,43 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     public boolean isProcessorRegistered(String processorName) {
         return registeredEventProcessors.containsKey(processorName);
     }
+
+    /**
+     * Snapshot of which processors in this group are subscribed to which
+     * {@link EventSubscriptionKey}s. Built by cross-referencing the per-
+     * subscription processor list (held by {@link EventQueueToEventProcessor})
+     * against the {@code DataFlow} → name map kept here. Returned for
+     * introspection only.
+     * <p>
+     * Outer key is the processor name, value is a list of subscription keys
+     * (feed + callback) that the processor receives via this agent group.
+     * Processors that don't appear in any subscription are still present
+     * with an empty list, so admin UIs can show "no feeds subscribed"
+     * without re-merging registry views.
+     *
+     * @return mutable, ordered map from processor name to subscription keys
+     */
+    public java.util.Map<String, java.util.List<EventSubscriptionKey<?>>> subscriptionsByProcessorName() {
+        // Identity-keyed reverse map: which DataFlow corresponds to which named
+        // processor. registeredEventProcessors is keyed by name, so we invert.
+        java.util.Map<DataFlow, String> namesByFlow = new java.util.IdentityHashMap<>();
+        for (NamedEventProcessor np : registeredEventProcessors.values()) {
+            namesByFlow.put(np.eventProcessor(), np.name());
+        }
+        java.util.Map<String, java.util.List<EventSubscriptionKey<?>>> out = new java.util.LinkedHashMap<>();
+        // Seed every known processor so empty-subscription rows are visible.
+        for (NamedEventProcessor np : registeredEventProcessors.values()) {
+            out.put(np.name(), new java.util.ArrayList<>());
+        }
+        for (java.util.Map.Entry<EventSubscriptionKey<?>, EventQueueToEventProcessor> e : queueProcessorMap.entrySet()) {
+            EventSubscriptionKey<?> key = e.getKey();
+            for (DataFlow flow : e.getValue().subscribers()) {
+                String name = namesByFlow.get(flow);
+                if (name != null) {
+                    out.computeIfAbsent(name, k -> new java.util.ArrayList<>()).add(key);
+                }
+            }
+        }
+        return out;
+    }
 }

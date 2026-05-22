@@ -151,6 +151,17 @@ public class MongooseServer implements MongooseServerController {
      */
     public MongooseServer(MongooseServerConfig mongooseServerConfig) {
         this.mongooseServerConfig = mongooseServerConfig;
+        // Self-register the introspection service so consumers can pick it up
+        // via @ServiceRegistered regardless of how the server is constructed
+        // (programmatic or YAML-driven). The impl reads the composing-agent
+        // maps and flow manager by reference, so every call sees current state.
+        com.telamin.mongoose.service.introspection.MongooseIntrospectionService introspection =
+                new com.telamin.mongoose.internal.DefaultMongooseIntrospection(
+                        composingEventProcessorAgents, composingServiceAgents, flowManager);
+        registerService(new Service<>(
+                introspection,
+                com.telamin.mongoose.service.introspection.MongooseIntrospectionService.class,
+                com.telamin.mongoose.service.introspection.MongooseIntrospectionService.SERVICE_NAME));
     }
 
     /**
@@ -502,7 +513,7 @@ public class MongooseServer implements MongooseServerController {
                             errorHandler,
                             errorCounter,
                             group);
-                    return new ComposingWorkerServiceAgentRunner(group, groupRunner);
+                    return new ComposingWorkerServiceAgentRunner(group, groupRunner, idleStrategy);
                 });
 
         composingAgentRunner.group().registerServer(service);
@@ -546,7 +557,7 @@ public class MongooseServer implements MongooseServerController {
                             errorHandler,
                             errorCounter,
                             group);
-                    return new ComposingEventProcessorAgentRunner(group, groupRunner);
+                    return new ComposingEventProcessorAgentRunner(group, groupRunner, idleStrategyOverride);
                 });
 
         if (composingEventProcessorAgentRunner.group().isProcessorRegistered(processorName)) {
@@ -582,6 +593,7 @@ public class MongooseServer implements MongooseServerController {
         });
         return result;
     }
+
 
     /**
      * Stop and remove an event processor from the specified group.

@@ -178,6 +178,11 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
         return eventToInvokeStrategy.listenerCount();
     }
 
+    @Override
+    public java.util.Collection<DataFlow> subscribers() {
+        return eventToInvokeStrategy.registeredProcessors();
+    }
+
     private PoolTracker<?> trackerOf(Object event) {
         if (event == null) return null;
         Object candidate = event;
