@@ -4,6 +4,7 @@
  */
 package com.telamin.mongoose.service.counters;
 
+import com.telamin.fluxtion.runtime.service.Service;
 import com.telamin.mongoose.internal.AgronaCountersService;
 import com.telamin.mongoose.internal.NoOpCountersService;
 import org.junit.jupiter.api.Test;
@@ -28,7 +29,7 @@ class PerformanceMonitorAuditTest {
     void event_and_node_callbacks_increment_their_counters() {
         AgronaCountersService counters = new AgronaCountersService(64);
         PerformanceMonitorAudit audit = new PerformanceMonitorAudit("priceCalc");
-        audit.countersService(counters, "counters");
+        audit.registerService(new Service<>(counters, MongooseCountersService.class, "counters"));
         audit.init();
         audit.nodeRegistered(new Object(), "fxLineHandler");
         audit.nodeRegistered(new Object(), "pnlAggregator");
@@ -52,7 +53,7 @@ class PerformanceMonitorAuditTest {
     void setWriteEnabled_false_freezes_counters_even_under_continued_callbacks() {
         AgronaCountersService counters = new AgronaCountersService(64);
         PerformanceMonitorAudit audit = new PerformanceMonitorAudit("priceCalc");
-        audit.countersService(counters, "counters");
+        audit.registerService(new Service<>(counters, MongooseCountersService.class, "counters"));
         audit.init();
         audit.nodeRegistered(new Object(), "fxLineHandler");
 
@@ -88,7 +89,7 @@ class PerformanceMonitorAuditTest {
         // and forEachCounter should still report nothing (the no-op tracks
         // no state, by contract).
         PerformanceMonitorAudit audit = new PerformanceMonitorAudit("priceCalc");
-        audit.countersService(NoOpCountersService.INSTANCE, "counters");
+        audit.registerService(new Service<>(NoOpCountersService.INSTANCE, MongooseCountersService.class, "counters"));
         audit.init();
         audit.nodeRegistered(new Object(), "n1");
 
@@ -103,9 +104,9 @@ class PerformanceMonitorAuditTest {
     @Test
     void auditor_survives_callbacks_before_service_injection() {
         // Defensive: even if Fluxtion delivers a callback before our
-        // @ServiceRegistered fires (shouldn't happen but the contract is
-        // worth pinning), the auditor uses the default no-op counter and
-        // doesn't NPE.
+        // ServiceListener.registerService fires (shouldn't happen but the
+        // contract is worth pinning), the auditor uses the default no-op
+        // counter and doesn't NPE.
         PerformanceMonitorAudit audit = new PerformanceMonitorAudit("priceCalc");
         audit.eventReceived(new Object());
         audit.nodeInvoked(null, "missingNode", "onEvent", null);

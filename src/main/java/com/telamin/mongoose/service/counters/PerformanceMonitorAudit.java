@@ -4,9 +4,11 @@
  */
 package com.telamin.mongoose.service.counters;
 
+import com.telamin.fluxtion.runtime.annotations.ExportService;
 import com.telamin.fluxtion.runtime.annotations.builder.FluxtionIgnore;
-import com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered;
 import com.telamin.fluxtion.runtime.audit.Auditor;
+import com.telamin.fluxtion.runtime.service.Service;
+import com.telamin.fluxtion.runtime.service.ServiceListener;
 import com.telamin.mongoose.internal.NoOpCountersService;
 
 import java.util.HashMap;
@@ -44,13 +46,21 @@ import java.util.Objects;
  *     on each {@code nodeInvoked(...)} callback.</li>
  * </ul>
  *
- * <p>The {@code @ServiceRegistered} method picks up the
- * {@code MongooseCountersService} from the running data flow. Until it
- * arrives, the auditor uses the no-op service as a safe default — so
- * holding a stale auditor reference in tests, or running the auditor
- * inside a flow that never has the service registered, doesn't NPE.
+ * <p>The auditor receives the {@link MongooseCountersService} via
+ * {@link ServiceListener#registerService(com.telamin.fluxtion.runtime.service.Service)}.
+ * It is exported with {@code @ExportService(propagate = false)} so the
+ * runtime container dispatches every registered service to it directly —
+ * the canonical service-injection path for auditors (Fluxtion's
+ * {@code ServiceRegistryNode} only scans <em>nodes</em> for
+ * {@code @ServiceRegistered} methods, so that annotation on an auditor
+ * is dead code). Until the real service arrives, the auditor uses the
+ * no-op service as a safe default — holding a stale auditor reference
+ * in tests, or running inside a flow that never registers the counters
+ * service, doesn't NPE.
  */
-public final class PerformanceMonitorAudit implements Auditor {
+public final class PerformanceMonitorAudit
+        implements Auditor,
+        @ExportService(propagate = false) ServiceListener {
 
     // processorName carries no @FluxtionIgnore: Fluxtion source-gen reads
     // it and emits `new PerformanceMonitorAudit("<value>")` into the
@@ -71,14 +81,33 @@ public final class PerformanceMonitorAudit implements Auditor {
         this.eventCounter = counters.processorEventsCounter(processorName);
     }
 
-    @ServiceRegistered
-    public void countersService(MongooseCountersService svc, String name) {
-        this.counters = Objects.requireNonNull(svc, "counters service must be non-null");
-        // Re-allocate the per-processor handle against the real service.
-        // Per-node handles are allocated lazily in nodeRegistered, which
-        // Fluxtion invokes after init() — by then the real service is in
-        // place and we don't need to re-walk anything.
-        this.eventCounter = counters.processorEventsCounter(processorName);
+    // Service injection path. Auditors are NOT scanned by ServiceRegistryNode
+    // for @ServiceRegistered methods (that scanning only runs against graph
+    // nodes via Auditor.nodeRegistered) — so an @ServiceRegistered method on
+    // an Auditor is dead code. Implementing ServiceListener with
+    // @ExportService(propagate = false) is the canonical path: the runtime
+    // container invokes registerService(...) directly on every exported
+    // ServiceListener whenever any service is bound.
+    @Override
+    public void registerService(Service<?> service) {
+        if (MongooseCountersService.class.isAssignableFrom(service.serviceClass())) {
+            MongooseCountersService svc = (MongooseCountersService) service.instance();
+            this.counters = Objects.requireNonNull(svc, "counters service must be non-null");
+            // Re-allocate the per-processor handle against the real service.
+            // Per-node handles are allocated lazily in nodeRegistered, which
+            // Fluxtion invokes after init() — by then the real service is in
+            // place and we don't need to re-walk anything.
+            this.eventCounter = counters.processorEventsCounter(processorName);
+        }
+    }
+
+    @Override
+    public void deRegisterService(Service<?> service) {
+        if (MongooseCountersService.class.isAssignableFrom(service.serviceClass())) {
+            // Service went away — fall back to the no-op so we don't NPE.
+            this.counters = NoOpCountersService.INSTANCE;
+            this.eventCounter = counters.processorEventsCounter(processorName);
+        }
     }
 
     @Override
