@@ -61,6 +61,11 @@ public final class NoOpCountersService implements MongooseCountersService {
     }
 
     @Override
+    public MongooseCounter counter(String label) {
+        return NO_OP_COUNTER;
+    }
+
+    @Override
     public void forEachCounter(CounterVisitor visitor) {
         // intentional no-op — nothing to visit
     }

@@ -504,6 +504,55 @@ public class MongooseServer implements MongooseServerController {
                     ServiceInjector.inject(existingInstance, Collections.singleton(service));
                 }
             }
+            // Phase 4.5b: auto-allocate the standard per-service counters and
+            // register the built-in "up" check. Guarded against bootstrap
+            // order — counters + health get registered first, but this
+            // method also runs for them; skip self-registration cycles.
+            ensureServiceCountersAndHealth(serviceName, instance);
+        }
+    }
+
+    /**
+     * Allocate the per-service {@code service.{name}.up} gauge (and the
+     * {@code lastTickEpoch / eventsProcessed / errors} write convention
+     * counters) on the counters service, and register the built-in "up"
+     * health check via the health service. Both services live in
+     * {@code registeredServices} — looked up dynamically so this works
+     * regardless of registration order during bootstrap.
+     *
+     * <p>Skips when:
+     * <ul>
+     *     <li>the service being registered IS the counters or health service
+     *         (bootstrap cycle);</li>
+     *     <li>counters or health service isn't registered yet (won't happen
+     *         in normal boot, but defensive against alternative orderings).</li>
+     * </ul>
+     */
+    private void ensureServiceCountersAndHealth(String serviceName, Object instance) {
+        if (instance instanceof com.telamin.mongoose.service.counters.MongooseCountersService
+                || instance instanceof com.telamin.mongoose.service.health.MongooseHealthService) {
+            return; // bootstrap services don't get their own auto-counters
+        }
+        Service<?> countersSvc = registeredServices.get(
+                com.telamin.mongoose.service.counters.MongooseCountersService.SERVICE_NAME);
+        Service<?> healthSvc = registeredServices.get(
+                com.telamin.mongoose.service.health.MongooseHealthService.SERVICE_NAME);
+        if (countersSvc == null || healthSvc == null) return;
+        var counters = (com.telamin.mongoose.service.counters.MongooseCountersService) countersSvc.instance();
+        var health = (com.telamin.mongoose.service.health.MongooseHealthService) healthSvc.instance();
+
+        // Allocate all four standard counter handles. Even with the no-op
+        // service this is cheap — the no-op returns the shared sentinel
+        // counter. .up starts at 0 (service hasn't started yet).
+        counters.counter(com.telamin.mongoose.internal.DefaultMongooseHealth.upGaugeLabel(serviceName));
+        counters.counter(com.telamin.mongoose.internal.DefaultMongooseHealth.lastTickEpochLabel(serviceName));
+        counters.counter(com.telamin.mongoose.internal.DefaultMongooseHealth.eventsProcessedLabel(serviceName));
+        counters.counter(com.telamin.mongoose.internal.DefaultMongooseHealth.errorsLabel(serviceName));
+
+        // Register the built-in checks. Currently just "up"; liveness +
+        // error-spike + connected land in a follow-up.
+        if (health instanceof com.telamin.mongoose.internal.DefaultMongooseHealth dh) {
+            dh.registerBuiltinChecks(serviceName);
         }
     }
 
@@ -660,6 +709,9 @@ public class MongooseServer implements MongooseServerController {
         log.info("start service:" + serviceName);
         if (registeredServices.containsKey(serviceName)) {
             registeredServices.get(serviceName).start();
+            // Per Phase 4.5b: up == 1 from startService return → stopService
+            // call; 0 before/after. Built-in "up" check reads this gauge.
+            flipServiceUp(serviceName, 1);
         }
     }
 
@@ -676,7 +728,23 @@ public class MongooseServer implements MongooseServerController {
         //check if registered and started
         if (registeredServices.containsKey(serviceName)) {
             registeredServices.get(serviceName).stop();
+            flipServiceUp(serviceName, 0);
         }
+    }
+
+    /**
+     * Set the {@code service.{name}.up} gauge. No-op when the counters
+     * service isn't operational — keeps this method cheap on the cold path
+     * of start/stopService regardless of the performance-monitoring flag.
+     */
+    private void flipServiceUp(String serviceName, long value) {
+        Service<?> countersSvc = registeredServices.get(
+                com.telamin.mongoose.service.counters.MongooseCountersService.SERVICE_NAME);
+        if (countersSvc == null) return;
+        var counters = (com.telamin.mongoose.service.counters.MongooseCountersService) countersSvc.instance();
+        if (!counters.isOperational()) return;
+        counters.counter(com.telamin.mongoose.internal.DefaultMongooseHealth.upGaugeLabel(serviceName))
+                .setOrdered(value);
     }
 
     /**
@@ -738,6 +806,13 @@ public class MongooseServer implements MongooseServerController {
             }
         }));
         lifecycleManager.start(registeredServices, serviceGroups, processorGroups, flowManager, registeredAgentServices);
+        // Flip the per-service "up" gauge to 1 for every service that's been
+        // started via the lifecycle manager. The startService() entry point
+        // handles per-call flips; this covers the global start() path that
+        // the lifecycle uses on boot.
+        for (String name : registeredServices.keySet()) {
+            flipServiceUp(name, 1);
+        }
         started = true;
 
         // Pick up any event processor groups registered DURING service.start() — e.g. by

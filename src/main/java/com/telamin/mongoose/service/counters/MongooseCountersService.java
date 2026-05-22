@@ -75,6 +75,21 @@ public interface MongooseCountersService {
     MongooseCounter nodeInvocationCounter(String processor, String node);
 
     /**
+     * Allocate (or fetch the cached handle for) an arbitrary-label counter.
+     * Use for counter labels that don't fit the typed accessors above —
+     * notably the {@code service.{name}.*} family written by
+     * {@link com.telamin.mongoose.MongooseServer} for per-service health
+     * gauges, or any user-defined counter where the caller wants direct
+     * control over the label.
+     *
+     * <p>Callers are responsible for label hygiene: use dotted prefixes
+     * so the throughput consumer can bucket counters by category, and avoid
+     * collisions with the reserved {@code feed.* / group.* / processor.* /
+     * node.* / queue.* / service.*} prefixes used by the built-in sites.
+     */
+    MongooseCounter counter(String label);
+
+    /**
      * Walk every registered counter. Called by sampling consumers (svc-admin-web,
      * future Prometheus / OTLP exporters) on a 1 Hz tick. No allocation per
      * visit; the visitor receives an internal counter id, the flat label, and

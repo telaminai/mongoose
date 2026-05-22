@@ -105,6 +105,7 @@ public final class AgronaCountersService implements MongooseCountersService {
         return counter("node." + processor + "." + node + ".invocations");
     }
 
+
     @Override
     public void forEachCounter(CounterVisitor visitor) {
         // Iterate the local cache rather than the CountersManager — the cache
@@ -121,7 +122,8 @@ public final class AgronaCountersService implements MongooseCountersService {
         return true;
     }
 
-    private MongooseCounter counter(String label) {
+    @Override
+    public MongooseCounter counter(String label) {
         return cache.computeIfAbsent(label, this::allocate);
     }
 

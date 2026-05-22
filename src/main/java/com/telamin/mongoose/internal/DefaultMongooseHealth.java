@@ -38,6 +38,21 @@ public final class DefaultMongooseHealth implements MongooseHealthService {
     private final ConcurrentMap<String, BoundedErrorSink> errorSinks = new ConcurrentHashMap<>();
 
     /**
+     * Standard label prefix for auto-allocated per-service counters. Read by
+     * the built-in checks and reserved as part of the public API surface —
+     * user code should not squat in {@code service.{name}.*}.
+     */
+    public static final String SERVICE_COUNTER_PREFIX = "service.";
+    /** Per-service "up" gauge — flipped by MongooseServer's start/stopService. */
+    public static String upGaugeLabel(String serviceName) { return SERVICE_COUNTER_PREFIX + serviceName + ".up"; }
+    /** Per-service liveness counter — services that opt in via markTicking write to this. */
+    public static String lastTickEpochLabel(String serviceName) { return SERVICE_COUNTER_PREFIX + serviceName + ".lastTickEpoch"; }
+    /** Per-service events-processed counter (write convention for services that process events). */
+    public static String eventsProcessedLabel(String serviceName) { return SERVICE_COUNTER_PREFIX + serviceName + ".eventsProcessed"; }
+    /** Per-service errors counter (write convention for services that record errors). */
+    public static String errorsLabel(String serviceName) { return SERVICE_COUNTER_PREFIX + serviceName + ".errors"; }
+
+    /**
      * Bounded ring of counter snapshots, used by {@link HealthContext#counterDelta}.
      * Sampled at ~1 Hz by {@link #recordCounterSnapshot()} — typically driven
      * by an external scheduler (e.g. svc-admin-web's MonitoringSampler tick).
@@ -52,6 +67,33 @@ public final class DefaultMongooseHealth implements MongooseHealthService {
 
     public DefaultMongooseHealth(MongooseCountersService counters) {
         this.counters = counters;
+    }
+
+    /**
+     * Register the standard built-in checks for a service. Called by
+     * {@link com.telamin.mongoose.MongooseServer#registerService(com.telamin.fluxtion.runtime.service.Service[])}
+     * for every service registered.
+     *
+     * <p>Phase 4.5b ships one built-in: <b>up</b> — reads the
+     * {@code service.{name}.up} gauge that MongooseServer flips on start /
+     * stop. UP when 1, DOWN when 0. Liveness + error-spike + connected
+     * remain to be added in a follow-up — they need cooperating service-side
+     * write conventions that aren't yet codified.
+     *
+     * @return the handle for the "up" check (callers can {@code setEnabled
+     *         (false)} to silence it, e.g. during planned drains).
+     */
+    public HealthCheckHandle registerBuiltinChecks(String serviceName) {
+        return registerCheck(serviceName, "up", ctx -> {
+            // If counters aren't operational, every up gauge reads as 0 →
+            // we can't distinguish "service is down" from "monitoring is
+            // off". Emit UNKNOWN with a clear reason rather than synthesise.
+            if (!ctx.countersOperational()) {
+                return HealthStatus.unknown("counters disabled");
+            }
+            long up = ctx.counter(upGaugeLabel(serviceName));
+            return up == 1 ? HealthStatus.up() : HealthStatus.down("service not started");
+        });
     }
 
     /**
