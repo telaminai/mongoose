@@ -100,8 +100,17 @@ public class EventFlowManager {
     private static String queuePathFor(EventSourceKey_Subscriber<?> key) {
         String src = key.eventSourceKey().sourceName();
         Object sub = key.subscriber();
+        // When the subscriber is an Agrona Agent (which is the common case in
+        // Mongoose — ComposingEventProcessorAgent / ComposingServiceAgent both
+        // are), embed roleName() so downstream consumers (svc-admin-web's
+        // Throughput card) can identify the consuming agent group without an
+        // extra lookup. Falls back to the class name when the subscriber
+        // isn't an Agent.
+        String group = (sub instanceof org.agrona.concurrent.Agent agent)
+                ? agent.roleName()
+                : sub.getClass().getSimpleName();
         String subRef = sub.getClass().getSimpleName() + "#" + Integer.toHexString(System.identityHashCode(sub));
-        return "/feed/" + src + "/subscriber/" + subRef;
+        return "/feed/" + src + "/group/" + group + "/subscriber/" + subRef;
     }
 
     public void init() {
