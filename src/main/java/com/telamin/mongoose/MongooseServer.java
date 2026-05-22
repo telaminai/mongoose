@@ -176,6 +176,19 @@ public class MongooseServer implements MongooseServerController {
                 com.telamin.mongoose.service.counters.MongooseCountersService.class,
                 com.telamin.mongoose.service.counters.MongooseCountersService.SERVICE_NAME));
 
+        // Health service — sibling to counters. Verdict (UP/DEGRADED/DOWN/
+        // UNKNOWN) per service that the admin UI badges + /api/health
+        // surface. Phase 4.5a: skeleton (registration, silencing,
+        // aggregation, error sinks). Phase 4.5b adds built-in checks +
+        // counter-snapshot ring. Registered now so consumers can rely on
+        // it being present even with the skeleton in place.
+        com.telamin.mongoose.service.health.MongooseHealthService health =
+                new com.telamin.mongoose.internal.DefaultMongooseHealth(counters);
+        registerService(new Service<>(
+                health,
+                com.telamin.mongoose.service.health.MongooseHealthService.class,
+                com.telamin.mongoose.service.health.MongooseHealthService.SERVICE_NAME));
+
         // Self-register the introspection service so consumers can pick it up
         // via @ServiceRegistered regardless of how the server is constructed
         // (programmatic or YAML-driven). The impl reads the composing-agent
