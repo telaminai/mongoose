@@ -166,6 +166,11 @@ public class MongooseServer implements MongooseServerController {
                 (perfCfg != null && perfCfg.isEnabled())
                         ? new com.telamin.mongoose.internal.AgronaCountersService(perfCfg.getCounterBufferKb())
                         : com.telamin.mongoose.internal.NoOpCountersService.INSTANCE;
+        // Wire the chosen impl into EventFlowManager BEFORE any event source
+        // registration happens — registerEventSource allocates the per-feed
+        // counter handle at construction, and publishers cache the reference.
+        // Doing the bind here keeps every publish-counter callsite monomorphic.
+        flowManager.setCountersService(counters);
         registerService(new Service<>(
                 counters,
                 com.telamin.mongoose.service.counters.MongooseCountersService.class,

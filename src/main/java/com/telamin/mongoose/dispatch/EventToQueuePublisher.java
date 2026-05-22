@@ -8,11 +8,12 @@ package com.telamin.mongoose.dispatch;
 import com.telamin.fluxtion.runtime.event.NamedFeedEvent;
 import com.telamin.fluxtion.runtime.event.NamedFeedEventImpl;
 import com.telamin.fluxtion.runtime.event.ReplayRecord;
+import com.telamin.mongoose.internal.NoOpCountersService;
 import com.telamin.mongoose.service.EventSource;
+import com.telamin.mongoose.service.counters.MongooseCounter;
 import com.telamin.mongoose.service.pool.PoolAware;
 import com.telamin.mongoose.service.pool.impl.PoolTracker;
 import lombok.Getter;
-import lombok.RequiredArgsConstructor;
 import lombok.Setter;
 import lombok.ToString;
 import lombok.extern.java.Log;
@@ -32,7 +33,6 @@ import java.util.logging.Level;
  *
  * @param <T> the type of event that this publisher handles
  */
-@RequiredArgsConstructor
 @ToString
 @Log
 @Getter
@@ -41,6 +41,22 @@ public class EventToQueuePublisher<T> {
     private final List<NamedQueue> targetQueues = new CopyOnWriteArrayList<>();
     private final List<NamedFeedEvent<?>> eventLog = new ArrayList<>();
     private final String name;
+    /**
+     * Per-feed publish counter. Hot-path field — incremented once per
+     * successful {@link #publish(Object)}. Defaults to a no-op handle so the
+     * publisher works in any test harness that constructs it directly without
+     * going through EventFlowManager.
+     */
+    private final MongooseCounter publishCounter;
+
+    public EventToQueuePublisher(String name, MongooseCounter publishCounter) {
+        this.name = name;
+        this.publishCounter = publishCounter;
+    }
+
+    public EventToQueuePublisher(String name) {
+        this(name, NoOpCountersService.INSTANCE.feedPublishCounter(name));
+    }
     @Setter
     private boolean cacheEventLog;
     private long sequenceNumber = 0;
@@ -75,6 +91,7 @@ public class EventToQueuePublisher<T> {
             return;
         }
 
+        publishCounter.increment();
         sequenceNumber++;
 
         if (log.isLoggable(Level.FINE)) {

@@ -7,7 +7,9 @@ package com.telamin.mongoose.dispatch;
 
 import com.telamin.mongoose.dutycycle.EventQueueToEventProcessor;
 import com.telamin.mongoose.dutycycle.EventQueueToEventProcessorAgent;
+import com.telamin.mongoose.internal.NoOpCountersService;
 import com.telamin.mongoose.service.*;
+import com.telamin.mongoose.service.counters.MongooseCountersService;
 import org.agrona.concurrent.Agent;
 import org.agrona.concurrent.ManyToOneConcurrentArrayQueue;
 import org.agrona.concurrent.OneToOneConcurrentArrayQueue;
@@ -50,9 +52,28 @@ public class EventFlowManager {
     private final ConcurrentHashMap<EventSinkKey<?>, ManyToOneConcurrentArrayQueue<?>> eventSinkToQueueMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<CallBackType, Supplier<EventToInvokeStrategy>> eventToInvokerFactoryMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<EventSourceKey_Subscriber<?>, OneToOneConcurrentArrayQueue<Object>> subscriberKeyToQueueMap = new ConcurrentHashMap<>();
+    // Counters service — default no-op, swapped to the Agrona impl by MongooseServer
+    // during construction before any source registration happens. The reference
+    // settles to the chosen impl before any publisher / agent loop reads it, so
+    // hot-path call sites stay monomorphic and the no-op JIT-inlines away.
+    private MongooseCountersService countersService = NoOpCountersService.INSTANCE;
 
     public EventFlowManager() {
         eventToInvokerFactoryMap.put(CallBackType.ON_EVENT_CALL_BACK, EventToOnEventInvokeStrategy::new);
+    }
+
+    /**
+     * Bind the counters service. Called once by {@link com.telamin.mongoose.MongooseServer}
+     * during its constructor, before any feed / sink / processor wiring. The
+     * default before this call is the no-op service, so any pre-binding access
+     * (typically only test harnesses) still returns a valid handle.
+     */
+    public void setCountersService(MongooseCountersService countersService) {
+        this.countersService = Objects.requireNonNull(countersService, "countersService must be non-null");
+    }
+
+    public MongooseCountersService getCountersService() {
+        return countersService;
     }
 
     public void init() {
@@ -96,7 +117,9 @@ public class EventFlowManager {
 
         EventSource_QueuePublisher<?> eventSourceQueuePublisher = eventSourceToQueueMap.computeIfAbsent(
                 new EventSourceKey<>(sourceName),
-                eventSourceKey -> new EventSource_QueuePublisher<>(new EventToQueuePublisher<>(sourceName), eventSource));
+                eventSourceKey -> new EventSource_QueuePublisher<>(
+                        new EventToQueuePublisher<>(sourceName, countersService.feedPublishCounter(sourceName)),
+                        eventSource));
 
         EventToQueuePublisher<T> queuePublisher = (EventToQueuePublisher<T>) eventSourceQueuePublisher.queuePublisher();
         eventSource.setEventToQueuePublisher(queuePublisher);
