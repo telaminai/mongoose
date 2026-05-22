@@ -196,8 +196,17 @@ public interface MongooseHealthService {
     // Many checks per service is normal — a Kafka feed might register
     // "connected", "lag", "deserialize-errors". Check name is free-form;
     // serviceName is the registry key for aggregation. registerCheck
-    // returns the handle so domain code can opt the check in/out at runtime.
+    // returns the handle so domain code can opt the check in/out at
+    // runtime — or fully remove it via close() when the dimension no
+    // longer applies (e.g. a feed has been disconnected permanently).
     HealthCheckHandle registerCheck(String serviceName, String checkName, HealthCheck check);
+
+    // Opt-in to the built-in liveness check. Services that tick (feeds,
+    // periodic workers) call this once at registration so the liveness
+    // check evaluates `lastTickEpoch` delta against `livenessWindowMs`.
+    // Pure RPC services don't call it; the liveness check is skipped
+    // for them rather than emitting a permanent UNKNOWN.
+    void markTicking(String serviceName);
 
     // Per-check status (drill-down view).
     HealthStatus statusOfCheck(String serviceName, String checkName);
@@ -205,7 +214,9 @@ public interface MongooseHealthService {
     // Aggregated per-service verdict — worst-of across every check
     // registered for that service. This is what the admin UI badge and
     // /api/health surface; statusOfCheck is for the detail drill-down.
-    // Aggregation order: DOWN > DEGRADED > UNKNOWN > UP.
+    // Aggregation order: DOWN > DEGRADED > UNKNOWN > UP. Operator-
+    // silenced checks (handle.setEnabled(false)) are excluded from the
+    // rollup — see "Silenced checks" below.
     HealthStatus aggregatedVerdict(String serviceName);
 
     // Walk every check (drill-down) — visitor matches the counters idiom
@@ -216,6 +227,8 @@ public interface MongooseHealthService {
     // Service caches the returned reference at registration; the bounded
     // ring (~16 entries) holds the last-N errors as {message, class,
     // epochMs}. Throwable's stack is dropped; class + message only.
+    // Backed by a MPSC ring (Agrona ManyToOneRingBuffer or equivalent)
+    // since errors can arrive from any thread.
     ErrorSink errorSink(String serviceName);
 
     @FunctionalInterface
@@ -226,6 +239,12 @@ public interface MongooseHealthService {
     @FunctionalInterface
     interface StatusVisitor {
         void visit(String serviceName, String checkName, HealthStatus status);
+    }
+
+    interface HealthCheckHandle extends AutoCloseable {
+        void setEnabled(boolean enabled); // silence/unsilence; rollup excludes silenced
+        boolean isEnabled();
+        @Override void close();           // fully unregister; verdict drops this dimension
     }
 
     /** Read-only view passed to a HealthCheck. Counters + last-errors for
@@ -255,6 +274,10 @@ public record HealthStatus(Verdict verdict, String reason, long asOfEpochMs) {
 ```
 
 **Per-check vs per-service.** Each service can register multiple checks (e.g. `connected`, `lag`, `error-rate`). `statusOfCheck` returns one check's result; `aggregatedVerdict` returns the worst result for that service — `DOWN > DEGRADED > UNKNOWN > UP`. Admin UI badges and `/api/health` surface the aggregated verdict; the detail drill-down shows every individual check.
+
+**Silenced checks.** When an operator silences a check via `handle.setEnabled(false)`, that check is **excluded from `aggregatedVerdict`** rather than reported as UNKNOWN. Rationale: silencing is an affirmative "ignore this dimension" decision — a k8s probe reading `/api/health` shouldn't see a non-healthy verdict because of a check the operator has chosen to suppress. The UI still surfaces silenced checks in the per-check drill-down with a distinct "silenced" badge, so operators can see exactly what's been muted. If every check on a service is silenced, the aggregated verdict falls back to UNKNOWN with reason "all checks silenced" — that's a real signal worth surfacing.
+
+**Evaluation cadence.** `HealthCheck.evaluate(ctx)` is **lazy with a per-check cache** (~1 s by default, configurable per check). On a call to `statusOfCheck` or during a `forEachStatus` walk, the registry returns the cached `HealthStatus` if its `asOfEpochMs` is within the cache window; otherwise it re-evaluates and updates the cache. This keeps the admin UI cheap under rapid polling — `/ws/monitor` push at 1 Hz triggers at most one evaluation per check per second, regardless of how many subscribers are watching. Checks that need fresher data can request `cacheMs=0` (always re-evaluate) at registration; checks that are expensive to compute can request longer windows.
 
 **What's free from the counters layer:**
 
@@ -366,7 +389,7 @@ Each phase is independently shippable and independently demoable. Stop after any
 - Default impl owned by EFM; registered into the service registry alongside `MongooseCountersService`.
 - EFM auto-allocates `service.{name}.lastTickEpoch / .eventsProcessed / .errors / .up` counters at service registration time.
 - Built-in checks (liveness, error spike, connected) registered at boot.
-- Last-error ring per service (bounded, ~16 entries, lock-free SPSC for ingest).
+- Last-error ring per service (bounded, ~16 entries, **MPSC** ingest — errors arrive from any thread; Agrona `ManyToOneRingBuffer` or equivalent).
 - `/api/health` Javalin endpoint in `svc-admin-web` returning the status table.
 - Services view in svc-admin-web: status badge per row + topbar counter pill (`12 UP · 1 DEGRADED · 0 DOWN`).
 - "Last errors" panel in the service detail view.
@@ -436,8 +459,9 @@ Screenshot: `docs/screenshots/health.png`. Update the HTTP/WebSocket surface tab
 6. **Naming** — `MongooseCountersService` vs `MongooseMetricsService` vs `MongooseTelemetryService`. The Agrona world calls these "counters" (matching `CountersManager`); telemetry/metrics often imply latency + traces. **Default: counters. We can add a separate `MongooseLatencyService` later if/when histograms land.**
 7. **Health window default** — `livenessWindowMs` default (5 s? 30 s?) depends on the slowest legitimate tick interval across services. Need a sane default that doesn't false-alarm idle services. **Default: 30 s; per-check overridable.**
 8. **What counts as "should tick"?** — pure RPC services don't tick, they respond. The liveness check should opt-in via a `ticking=true` flag at service registration, otherwise it returns UNKNOWN rather than DOWN. **Default: opt-in; non-ticking services emit UNKNOWN for liveness unless they register a custom check.**
-9. **Per-check enable/disable parallel to `setWriteEnabled`?** — yes. `registerCheck` returns a `HealthCheckHandle` whose `setEnabled(false)` makes the check return `UNKNOWN` (not skipped — the operator still wants to see it's been silenced). Surfaced as an admin command `mongoose.health.check.{enable,disable} {service} {check}` in Phase 5. Avoids the "alert-storm-during-known-degradation" anti-pattern.
-10. **Should `aggregatedVerdict` treat UNKNOWN as worse than UP?** Yes, UNKNOWN ranks between UP and DEGRADED. Rationale: an UNKNOWN says "we tried, but couldn't establish state" — a real signal that's masked if it gets rolled up as UP. The /api/health response treats UNKNOWN as 200-with-warning (not 503) so probes don't false-alarm during startup.
+9. **Per-check enable/disable parallel to `setWriteEnabled`?** — yes. `registerCheck` returns a `HealthCheckHandle` with `setEnabled(false)` (silence — UI still shows it with a "silenced" badge but the rollup excludes it) and `close()` (full unregister — verdict drops the dimension entirely). Silenced checks are excluded from `aggregatedVerdict` rather than reported as UNKNOWN — silencing is affirmative "ignore" intent, and a k8s probe shouldn't fail on a muted dimension. Surfaced as admin commands `mongoose.health.check.{enable,disable} {service} {check}` in Phase 5.
+10. **Should `aggregatedVerdict` treat UNKNOWN as worse than UP?** Yes, UNKNOWN ranks between UP and DEGRADED in the *active* rollup. Rationale: an UNKNOWN says "we tried, but couldn't establish state" — a real signal that's masked if it gets rolled up as UP. The /api/health response treats UNKNOWN as 200-with-warning (not 503) so probes don't false-alarm during startup. Silenced checks don't participate in the rollup at all (see #9).
+11. **Check evaluation cadence** — lazy with a ~1 s per-check cache (configurable via the registration call). Re-evaluation happens on access only, not on a background timer. Keeps cost predictable: a 100 Hz admin-UI poll still triggers at most 1 Hz of `evaluate()` calls per check. Checks needing fresher data can request `cacheMs=0`.
 
 ---
 
@@ -451,9 +475,11 @@ Screenshot: `docs/screenshots/health.png`. Update the HTTP/WebSocket surface tab
 - [ ] Phase-2 hot-path increments land at four sites listed above.
 - [ ] `PerformanceMonitorAudit` available; opt-in via builder.
 - [ ] svc-admin-web `/ws/monitor` payload extended with `throughput`.
-- [ ] `MongooseHealthService` interface (with `HealthCheckHandle`, `HealthContext`, `ErrorSink`, `StatusVisitor`) + default impl + auto-allocated per-service counters.
-- [ ] Verdict-rollup logic: aggregatedVerdict = worst-of across a service's checks; UNKNOWN ranked between UP and DEGRADED.
-- [ ] Built-in liveness / error-spike / connected checks registered at boot. `connected` reads `service.{name}.connected` by convention; missing gauge → check skipped.
+- [ ] `MongooseHealthService` interface (with `HealthCheckHandle` extending `AutoCloseable`, `HealthContext`, `ErrorSink`, `StatusVisitor`, `markTicking`) + default impl + auto-allocated per-service counters.
+- [ ] Verdict-rollup logic: aggregatedVerdict = worst-of across a service's *active* (non-silenced) checks; UNKNOWN ranked between UP and DEGRADED; all-silenced → UNKNOWN with reason.
+- [ ] Per-check lazy evaluation with ~1 s cache (configurable, including `cacheMs=0` for always-fresh checks).
+- [ ] Last-error ring per service is **MPSC**-safe (Agrona `ManyToOneRingBuffer` or equivalent; never a single-producer structure).
+- [ ] Built-in liveness / error-spike / connected checks registered at boot. Liveness only evaluates for services that called `markTicking`; absent → check skipped. `connected` reads `service.{name}.connected` by convention; missing gauge → check skipped.
 - [ ] svc-admin-web `/api/health` endpoint (k8s-probe shape — `200` healthy, `503` DOWN-present, JSON body with per-service + per-check breakdown) + Services-view status badges + topbar verdict pill + per-check detail panel + last-errors panel.
 - [ ] `svc-admin-web` README extended with the Health bullet (per Phase 4.5 plan above).
 - [ ] Admin commands `mongoose.perf.list` + `mongoose.perf.auditor.{enable,disable}` registered.
