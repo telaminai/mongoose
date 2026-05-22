@@ -101,6 +101,13 @@ public class MongooseServerConfig {
     private Map<CallBackType, Supplier<EventToInvokeStrategy>> eventInvokeStrategies;
 
     /**
+     * Optional performance-monitoring configuration. When absent or
+     * {@code enabled = false} (the default), the no-op counters service
+     * is installed and call-site overhead is zero after JIT compilation.
+     */
+    private PerformanceMonitoringConfig performanceMonitoring;
+
+    /**
      * Gets the list of event handler groups, initializing if {@code null} and adding
      * {@link #defaultHandlerGroupConfig} if present and not already included.
      *

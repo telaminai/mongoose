@@ -29,12 +29,6 @@ import java.util.stream.Collectors;
 @Log
 public class AdminCommandProcessor implements AdminCommandRegistry, LifeCycleEventSource<AdminCommand> {
 
-    /**
-     * Create a new AdminCommandProcessor.
-     */
-    public AdminCommandProcessor() {
-    }
-
     private final Map<String, AdminCommand> registeredCommandMap = new HashMap<>();
     private EventFlowManager eventFlowManager;
 
@@ -47,6 +41,28 @@ public class AdminCommandProcessor implements AdminCommandRegistry, LifeCycleEve
             eventSources - list event sources
             """;
 
+    /**
+     * Create a new AdminCommandProcessor. The built-in commands are registered
+     * here rather than in {@link #start()} because
+     * {@link com.telamin.mongoose.internal.LifecycleManager} explicitly skips
+     * {@code init()} / {@code start()} for services that implement
+     * {@link LifeCycleEventSource} (it expects the flow manager to drive their
+     * lifecycle). When this class is registered via {@code addService(...)} —
+     * which is the documented way to expose the admin command registry —
+     * start() therefore never fires and the built-in {@code help} / {@code ?} /
+     * {@code commands} / {@code eventSources} entries used to be missing from
+     * {@code registeredCommandMap}, surfacing as
+     * {@code "command not found: ?"} on every telnet / REST / web admin
+     * invocation. Constructor registration is unconditional: it runs whether
+     * the class is loaded via YAML, the builder API, or {@code new}.
+     */
+    public AdminCommandProcessor() {
+        registerCommand("help", this::printHelp);
+        registerCommand("?", this::printHelp);
+        registerCommand("eventSources", this::printQueues);
+        registerCommand("commands", this::registeredCommands);
+    }
+
     @Override
     public void init() {
         log.info("init");
@@ -55,16 +71,20 @@ public class AdminCommandProcessor implements AdminCommandRegistry, LifeCycleEve
     @Override
     public void setEventFlowManager(EventFlowManager eventFlowManager, String serviceName) {
         this.eventFlowManager = eventFlowManager;
+        // Honour the EventFlowService.setEventFlowManager default's contract —
+        // register ourselves as an event source with the flow manager. Without
+        // this call the LifecycleManager skip (because we implement
+        // LifeCycleEventSource) leaves us with no lifecycle owner: nobody
+        // calls init() / start() / stop() and any setup tied to those phases
+        // is silently lost. Registering here also lets the boot-time sweep
+        // in LifecycleManager.init confirm we're known to the flow manager.
+        eventFlowManager.registerEventSource(serviceName, this);
         eventFlowManager.registerEventMapperFactory(AdminCommandInvoker::new, AdminCallbackType.class);
     }
 
     @Override
     public void start() {
         log.info("start");
-        registerCommand("help", this::printHelp);
-        registerCommand("?", this::printHelp);
-        registerCommand("eventSources", this::printQueues);
-        registerCommand("commands", this::registeredCommands);
     }
 
     @Override

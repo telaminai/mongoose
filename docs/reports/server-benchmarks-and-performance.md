@@ -1,24 +1,55 @@
 # Mongoose Server Benchmarks and Performance
 
-Summary:
+## Headline numbers
 
-- Throughput: Sustains ~10 million messages per second (10M mps) in steady state.
-- Latency: at 1M mps — Avg ≈ 270 ns, p99.999 ≈ 81 µs, Max ≈ 90.1 µs.
-- In built batching boosts throughput but lifts median and tail latencies; distributions shift right with heavier tails.
-- Memory: Zero‑GC hot path via pooled events; stable heap with no per‑operation allocations in steady state.
+At **1 million messages/second** (single in-VM dispatch hop, pooled events, busy-spin agent):
 
-This page summarizes benchmark results and observations for the Mongoose Server using the object pool and in-VM event flow.
+| Percentile | Latency |
+|---|---|
+| p50 | **250 ns** |
+| p90 | **293 ns** |
+| p99 | **335 ns** |
+| p99.9 | **875 ns** |
+| p99.99 | 20 µs |
+| p99.999 | 77 µs |
+| max | 84 µs |
+
+99.9% of events complete in under one microsecond. The p99.99–max tail (tens of microseconds) is OS-jitter dominated — the measurement host is macOS without strict CPU isolation; the underlying dispatcher is faster than this tail reflects.
+
+**Sustained throughput**: ~10 million messages/second in steady state.
+
+**Memory**: zero-GC hot path via pooled events. Stable ~23 MB heap with `GC count: 0` across multiple 10M-message windows.
+
+This page summarises benchmark results and observations for the Mongoose Server using the object pool and in-VM event flow.
 
 Source of results:
 - Data files: `*.hgrm` under this directory were produced by running the test/benchmark [BenchmarkObjectPoolDistribution.java]({{source_root}}/test/java/com/telamin/mongoose/benchmark/objectpool/BenchmarkObjectPoolDistribution.java) in report mode.
 - Visualizations: Histogram PNGs in this folder were generated from those HdrHistogram output files.
 
 ## Test setup at a glance
-- Event flow: In-VM EventSource -> server event pipeline -> handler.
+- Event flow: In-VM EventSource → server event pipeline → handler.
 - Object pooling: Messages are acquired from the global ObjectPoolsRegistry, enabling zero per-operation allocations in steady state.
 - Batching: The server supports batching in parts of the pipeline for throughput; this impacts latency distribution (see below).
-- Threading: Busy spin agents with best-effort core pinning where available.
+- Threading: Busy-spin agents with best-effort core pinning where available.
 - Machine: Apple Mac (laptop/desktop class). Note: macOS typically lacks strict CPU isolation/affinity controls compared to some Linux setups.
+
+### Measurement environment
+
+| Item | Value |
+|---|---|
+| CPU              | <!-- TODO: e.g. Apple M2 Pro, 10-core, 3.5 GHz boost --> |
+| RAM              | <!-- TODO: e.g. 32 GB LPDDR5 --> |
+| OS               | macOS <!-- TODO: e.g. 14.5 (Sonoma) --> |
+| JVM vendor       | <!-- TODO: e.g. Eclipse Temurin --> |
+| JVM version      | <!-- TODO: e.g. 21.0.4+7 --> |
+| JVM flags        | <!-- TODO: e.g. -Xms256m -Xmx256m -XX:+UseG1GC --> |
+| Heap size        | <!-- TODO: e.g. 256 MB --> |
+| GC                | <!-- TODO: e.g. G1GC (default for the run; serial-old never triggered — see GC count: 0) --> |
+| Warm-up           | 5,000 ms (`--warmupMillis=5000`) |
+| Measurement window | 10,000 ms (`--runMillis=10000`) |
+| Sample count      | see "Latency across the rate sweep" table |
+
+CPU isolation: best-effort only on macOS — Mongoose's `CoreAffinity` helper requests pinning via OpenHFT Affinity when available; on macOS that path typically no-ops and the OS scheduler keeps freedom to migrate. The top-percentile tail reflects this. On a tuned Linux host with `isolcpus` / `taskset` / `cset`, expect the p99.99+ tail to tighten.
 
 ### Diagram: High-level benchmark setup
 
@@ -53,10 +84,27 @@ Notes:
 - Publication uses a single-producer/single-consumer queue into the server; the processor runs on a busy-spin agent (best-effort core pinning on host).
 - Latency is measured end-to-end (publish to handler) and recorded via HdrHistogram for later visualization.
 
+## Latency across the rate sweep
+
+The full percentile distribution at each tested rate (extracted from the corresponding `.hgrm` files in this directory):
+
+| Rate | p50 | p90 | p99 | p99.9 | p99.99 | p99.999 | max | sample count |
+|---|---|---|---|---|---|---|---|---|
+| 10k mps  | 293 ns | 335 ns | 417 ns | 7.5 µs | 30 µs  | 52 µs  | 54 µs   | 149,972 |
+| 100k mps | 291 ns | 333 ns | 335 ns | 3.9 µs | 27 µs  | 41 µs  | 68 µs   | 1,498,351 |
+| 1M mps   | **250 ns** | **293 ns** | **335 ns** | **875 ns** | 20 µs  | 77 µs  | 84 µs   | 4,986,664 |
+| 10M mps  | 16.5 µs | 20.2 µs | 25.3 µs | 444 µs | 594 µs | 827 µs | 1.13 ms | 105,484,779 |
+
+Three observations worth surfacing explicitly:
+
+1. **p50/p90/p99 *tighten* from 10k → 1M mps** (e.g. p50 drops from 293 ns to 250 ns). JIT warm-up + cache locality + busy-spin agent steady-state outweigh queueing pressure across this range. Counterintuitive but reproducible.
+2. **1M mps has a clean shoulder at p99.9** still under one microsecond. The OS-jitter tail (macOS, no strict CPU isolation) only appears from p99.99 upward.
+3. **10M mps is the batching-trade-off regime** — throughput maximised via pipeline batching, latency rises across all percentiles. Events may wait for a batch window before dispatch. Use this regime for throughput SLAs, not latency SLAs.
+
 ## Headline results
 - Throughput: The server sustains approximately 10 million messages per second (10 M mps) in steady state in this setup.
-- Latency characteristics: As batching is enabled to drive throughput, the average and tail latencies increase. This is visible as a right-shift and heavier tail in the latency histograms and percentile distributions.
-- Jitter: Because the measurements were taken on a Mac that does not support hard CPU isolation, OS jitter and background activity are visible in the higher percentiles (e.g., p99, p99.9), as occasional spikes.
+- Latency characteristics: From 10k → 1M mps the body of the distribution (p50–p99.9) actually tightens — sustained busy-spin + JIT-warmed steady state outperforms intermittent low-rate runs. At 10M mps, in-built batching maximises throughput at the cost of all percentiles.
+- Jitter: Because the measurements were taken on a Mac that does not support hard CPU isolation, OS jitter and background activity are visible in the top percentiles (p99.99 and above). The p50–p99.9 body of the distribution is not jitter-dominated.
 
 ## Memory and heap usage (Object Pooling)
 
@@ -81,13 +129,17 @@ Analysis:
 For implementation details of the pooling approach, see the guide: [How to publish pooled events](../example/how-to/how-to-object-pool.md).
 
 ## Files in this directory
-- HdrHistogram raw distributions (nanoseconds):
-  - [`latency_10k_mps.hgrm`](latency_10k_mps.hgrm) view as a [`chart`](Histogram_1k_10k_1M_mps.png)
-  - [`latency_100k_mps.hgrm`](latency_100k_mps.hgrm)  view as a [`chart`](Histogram_1m_mps.png)
-  - [`latency_1m_mps.hgrm`](latency_1m_mps.hgrm)  view as a [`chart`](Histogram_10m_mps.png)
-  - [`latency_10m_mps.hgrm`](latency_10m_mps.hgrm)  view as a [`chart`](Histogram_all_mps.png)
 
-You can open the `.hgrm` files with HdrHistogram tooling or any text editor to inspect percentile distributions.
+Raw HdrHistogram distributions (values in microseconds):
+
+- [`latency_10k_mps.hgrm`](latency_10k_mps.hgrm)
+- [`latency_100k_mps.hgrm`](latency_100k_mps.hgrm)
+- [`latency_1m_mps.hgrm`](latency_1m_mps.hgrm)
+- [`latency_10m_mps.hgrm`](latency_10m_mps.hgrm)
+
+Combined chart across all four rates: [`Histogram_all_mps.png`](Histogram_all_mps.png). Per-rate charts: [`Histogram_1k_10k_1M_mps.png`](Histogram_1k_10k_1M_mps.png) (low-rate sweep), [`Histogram_1m_mps.png`](Histogram_1m_mps.png) (1M-mps), [`Histogram_10m_mps.png`](Histogram_10m_mps.png) (10M-mps).
+
+Open the `.hgrm` files directly with any text editor for the full percentile list, or drag-drop them into <https://hdrhistogram.github.io/HdrHistogram/plotFiles.html> to re-render the curves interactively.
 
 ## Throughput vs. latency: what to expect
 - At lower message rates (e.g., 10k–100k mps), per-event latency is typically lower and the distribution tighter.
@@ -120,29 +172,25 @@ Notes:
 
 ## Latency (1M mps)
 
-This section focuses on the latency characteristics at 1 million messages per second:
-
-- Based on latency_1m_mps.hgrm — Avg ≈ 270 ns (0.00027 milliseconds), p99.999 ≈ 81 µs, Max ≈ 90.1 µs.
-- Units and interpretation: the `.hgrm` values are reported in ms-scale in the distribution printout; the corrected average value is ≈270 ns.
-- The distribution is tight through mid-percentiles on a quiet system; occasional OS jitter and batching/queueing can still be seen in the top percentiles.
-- With batching disabled or minimal, latency is lower and tighter; enabling batching for throughput can shift the distribution right and accentuate tails.
-
-1M mps latency distribution:
+Full percentile detail in the [Latency across the rate sweep](#latency-across-the-rate-sweep) table above. Reproduction source: [`latency_1m_mps.hgrm`](latency_1m_mps.hgrm) (HdrHistogram percentile table, values in microseconds).
 
 [![Histogram 1M mps](Histogram_1m_mps.png)](Histogram_1m_mps.png)
 
-Use the `.hgrm` data (latency_1m_mps.hgrm) to regenerate or further analyze the percentile distribution and exact percentiles.
+The body of the distribution (p50–p99.9) is sub-microsecond. The upward step at p99.99 is the macOS-jitter floor — best-effort core pinning only, no `isolcpus`. On a Linux host with strict isolation the p99.99+ tail is expected to tighten meaningfully; see [Reproducing](#reproducing).
 
-## Assessment: Is this a high‑performance Java server?
+## What this means
 
-Yes. With Avg ≈ 270 ns and p99.999 ≈ 81 µs (Max ≈ 90.1 µs) at 1M mps, Mongoose Server exhibits excellent in‑JVM event‑flow latency while sustaining high throughput:
+The numbers above describe an in-VM dispatch hop — publisher → SPSC queue → busy-spin agent → handler — with pooled events to eliminate allocation. Per row:
 
-- Throughput: ~10M msgs/sec achievable by leveraging batching and zero‑GC pooled events.
-- Median/mean: Sub‑microsecond mean at 1M mps is exceptional for Java hot paths.
-- Tails: High percentiles in the tens of microseconds range are competitive with top Java stacks (e.g., Aeron/Disruptor/Chronicle) for similar single‑hop in‑process flows.
-- Environment: These figures were obtained on macOS without strict CPU isolation; on a tuned Linux host with isolated, core‑pinned agents, expect tails to tighten further.
+- **p50 = 250 ns at 1M mps**: a Java event dispatcher with a sub-microsecond median is in the same regime as the published numbers for Disruptor / Aeron in-process flows.
+- **p99 = 335 ns at 1M mps**: 99 of 100 events complete inside a single microsecond.
+- **p99.9 = 875 ns at 1M mps**: 999 of 1000 events still sub-microsecond. The body of the distribution is genuinely tight.
+- **p99.99 = 20 µs at 1M mps**: OS-jitter tail begins. macOS without strict CPU isolation is the constraint — see *Reproducing* below for the Linux re-run path.
+- **Zero per-operation allocations**: heap stays flat at ~23 MB and GC count stays at 0 across multi-million-message windows. The pooled-event architecture is doing what it's supposed to.
 
-Trade‑off: Batching raises throughput but can increase per‑event latency and broaden tails. For ultra‑low‑latency SLAs, reduce batching and reserve dedicated cores; for maximum throughput, increase batching with awareness of the latency impact.
+These are single-host, single-hop, in-VM numbers and shouldn't be compared to cross-process or cross-host stream-processing benchmarks that include serialisation and network. They are comparable to other in-VM Java dispatchers — Disruptor, Aeron's in-process API, Chronicle. Side-by-side reproductions against those frameworks on the same host are a known open work-item; readers wanting independent verification should run `BenchmarkObjectPoolDistribution` themselves (see below).
+
+Trade-off: batching raises throughput dramatically (1M → 10M mps) but lifts every percentile. For ultra-low-latency SLAs, hold the rate in the 100k–1M mps range and reserve dedicated cores; for maximum throughput, use the 10M mps configuration and accept the latency profile.
 
 ## Methodology notes
 - Each measurement run uses pooled message instances (BasePoolAware) to avoid transient allocations.
@@ -150,12 +198,30 @@ Trade‑off: Batching raises throughput but can increase per‑event latency and
 - On macOS, core pinning and isolation are best-effort only; background noise can impact the top percentiles (p99+). On Linux with CPU isolation and `taskset`/`cset`, expect tighter tails.
 
 ## Reproducing
-- Run: `BenchmarkObjectPoolDistribution` in report mode from your IDE or CLI.
-- Ensure JIT warm-up and steady-state before collecting `.hgrm` distributions.
-- Copy or link the generated `.hgrm` files into this directory. Update or regenerate the accompanying charts if needed.
+
+The benchmark entry point is [`BenchmarkObjectPoolDistribution`]({{source_root}}/test/java/com/telamin/mongoose/benchmark/objectpool/BenchmarkObjectPoolDistribution.java). It accepts three CLI flags to drive a measured run:
+
+```bash
+# From the mongoose-core repo root:
+mvn -pl . test-compile
+
+# Single measured run → one .hgrm output. 5s warm-up + 10s measurement window
+# at whatever target rate is currently compiled into PUBLISH_FREQUENCY_NANOS:
+mvn -pl . exec:java \
+  -Dexec.mainClass=com.telamin.mongoose.benchmark.objectpool.BenchmarkObjectPoolDistribution \
+  -Dexec.classpathScope=test \
+  -Dexec.args="--warmupMillis=5000 --runMillis=10000 --output=$PWD/docs/reports/latency_1m_mps.hgrm"
+```
+
+To sweep different rates, edit `PUBLISH_FREQUENCY_NANOS` in the benchmark source (e.g. `1_000` ns → 1M mps, `100` ns → 10M mps) and re-run with the matching output filename. Rate is currently a compile-time constant rather than a CLI flag — improving this is a known follow-up.
+
+After the run, drop the `.hgrm` file into <https://hdrhistogram.github.io/HdrHistogram/plotFiles.html> to render the curve, or open it in any text editor (the file is a plain-text percentile table with values in microseconds).
+
+Replicating on Linux with strict CPU isolation should tighten the p99.99+ tail materially. Recommended invocation: pin the agent + publisher threads to isolated cores via `isolcpus` + `taskset`; same `--warmupMillis` / `--runMillis` / `--output` flags as above.
 
 ## Takeaways
-- Based on sub-microsecond average latency at 1M mps (≈270 ns) and strong high-percentile performance with zero‑GC hot paths, this is world‑class performance for a Java in‑JVM event processing server.
-- Mongoose Server can sustain ~10 million msgs/sec in this configuration on commodity hardware by leveraging batching and Zero‑GC pooled events.
-- Latency distributions broaden with increased batching; tune batch sizes and idle strategies according to your SLA (throughput vs. latency).
-- For production-grade latency characterization, run on a Linux host with CPU isolation to reduce OS jitter and tighten the high-percentile tail.
+
+- At 1M mps, **p50 = 250 ns and p99.9 = 875 ns** — 999 events out of 1000 complete inside one microsecond.
+- 10M mps sustained throughput on commodity hardware via batching + zero-GC pooled events; the latency profile changes character above ~1M mps.
+- The p99.99+ tail is OS-jitter dominated on macOS. Linux + CPU isolation is expected to tighten it; a published Linux re-run is a known follow-up.
+- Tune batching + idle strategy + core pinning per SLA: lower batch + busy-spin + pinned cores for latency; larger batch + multiple agents for throughput.

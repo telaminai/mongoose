@@ -22,4 +22,13 @@ public interface EventQueueToEventProcessor extends Agent {
     int deregisterProcessor(DataFlow eventProcessor);
 
     int listenerCount();
+
+    /**
+     * Read-only snapshot of the processors currently subscribed to this queue,
+     * for introspection (admin UIs, diagnostics). The default returns an empty
+     * collection so external implementations remain wire-compatible.
+     */
+    default java.util.Collection<DataFlow> subscribers() {
+        return java.util.Collections.emptyList();
+    }
 }
