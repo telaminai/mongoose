@@ -7,7 +7,9 @@ package com.telamin.mongoose.dispatch;
 
 import com.telamin.mongoose.dutycycle.EventQueueToEventProcessor;
 import com.telamin.mongoose.dutycycle.EventQueueToEventProcessorAgent;
+import com.telamin.mongoose.internal.NoOpCountersService;
 import com.telamin.mongoose.service.*;
+import com.telamin.mongoose.service.counters.MongooseCountersService;
 import org.agrona.concurrent.Agent;
 import org.agrona.concurrent.ManyToOneConcurrentArrayQueue;
 import org.agrona.concurrent.OneToOneConcurrentArrayQueue;
@@ -50,9 +52,65 @@ public class EventFlowManager {
     private final ConcurrentHashMap<EventSinkKey<?>, ManyToOneConcurrentArrayQueue<?>> eventSinkToQueueMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<CallBackType, Supplier<EventToInvokeStrategy>> eventToInvokerFactoryMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<EventSourceKey_Subscriber<?>, OneToOneConcurrentArrayQueue<Object>> subscriberKeyToQueueMap = new ConcurrentHashMap<>();
+    // Counters service — default no-op, swapped to the Agrona impl by MongooseServer
+    // during construction before any source registration happens. The reference
+    // settles to the chosen impl before any publisher / agent loop reads it, so
+    // hot-path call sites stay monomorphic and the no-op JIT-inlines away.
+    private MongooseCountersService countersService = NoOpCountersService.INSTANCE;
 
     public EventFlowManager() {
         eventToInvokerFactoryMap.put(CallBackType.ON_EVENT_CALL_BACK, EventToOnEventInvokeStrategy::new);
+    }
+
+    /**
+     * Bind the counters service. Called once by {@link com.telamin.mongoose.MongooseServer}
+     * during its constructor, before any feed / sink / processor wiring. The
+     * default before this call is the no-op service, so any pre-binding access
+     * (typically only test harnesses) still returns a valid handle.
+     */
+    public void setCountersService(MongooseCountersService countersService) {
+        this.countersService = Objects.requireNonNull(countersService, "countersService must be non-null");
+    }
+
+    public MongooseCountersService getCountersService() {
+        return countersService;
+    }
+
+    /**
+     * Sample the depth of every per-subscriber dispatch queue and write the
+     * value to the {@code queue.{path}.depth} gauge on the supplied counters
+     * service. Called from a monitoring sampler tick — once per ~1 s — so
+     * the cost of {@link OneToOneConcurrentArrayQueue#size()} (a producer/
+     * consumer position read) doesn't multiply across the hot path.
+     *
+     * <p>Queue path is rendered as
+     * {@code /feed/{sourceName}/subscriber/{subscriberType}#{identityHashCode}}
+     * so each (source, subscriber) pair gets a unique stable label. This
+     * lets the front-end correlate gauges across ticks without needing the
+     * subscriber's full identity in the wire payload.
+     */
+    public void sampleQueueDepths(MongooseCountersService countersService) {
+        if (countersService == null || !countersService.isOperational()) return;
+        subscriberKeyToQueueMap.forEach((key, queue) -> {
+            String path = queuePathFor(key);
+            countersService.queueDepthGauge(path).setOrdered(queue.size());
+        });
+    }
+
+    private static String queuePathFor(EventSourceKey_Subscriber<?> key) {
+        String src = key.eventSourceKey().sourceName();
+        Object sub = key.subscriber();
+        // When the subscriber is an Agrona Agent (which is the common case in
+        // Mongoose — ComposingEventProcessorAgent / ComposingServiceAgent both
+        // are), embed roleName() so downstream consumers (svc-admin-web's
+        // Throughput card) can identify the consuming agent group without an
+        // extra lookup. Falls back to the class name when the subscriber
+        // isn't an Agent.
+        String group = (sub instanceof org.agrona.concurrent.Agent agent)
+                ? agent.roleName()
+                : sub.getClass().getSimpleName();
+        String subRef = sub.getClass().getSimpleName() + "#" + Integer.toHexString(System.identityHashCode(sub));
+        return "/feed/" + src + "/group/" + group + "/subscriber/" + subRef;
     }
 
     public void init() {
@@ -96,7 +154,9 @@ public class EventFlowManager {
 
         EventSource_QueuePublisher<?> eventSourceQueuePublisher = eventSourceToQueueMap.computeIfAbsent(
                 new EventSourceKey<>(sourceName),
-                eventSourceKey -> new EventSource_QueuePublisher<>(new EventToQueuePublisher<>(sourceName), eventSource));
+                eventSourceKey -> new EventSource_QueuePublisher<>(
+                        new EventToQueuePublisher<>(sourceName, countersService.feedPublishCounter(sourceName)),
+                        eventSource));
 
         EventToQueuePublisher<T> queuePublisher = (EventToQueuePublisher<T>) eventSourceQueuePublisher.queuePublisher();
         eventSource.setEventToQueuePublisher(queuePublisher);
@@ -159,6 +219,21 @@ public class EventFlowManager {
                 .filter(LifeCycleEventSource.class::isInstance)
                 .map(LifeCycleEventSource.class::cast)
                 .forEach(action);
+    }
+
+    /**
+     * Returns {@code true} when {@code candidate} has been registered with this
+     * manager as an event source (via {@link #registerEventSource(String, EventSource)}).
+     * Used by lifecycle plumbing to detect {@code LifeCycleEventSource} services
+     * that the {@code LifecycleManager} deliberately skips but the flow manager
+     * never picked up either — those would otherwise silently miss their
+     * {@code init()} / {@code start()} calls.
+     */
+    public boolean knowsEventSource(Object candidate) {
+        if (candidate == null) return false;
+        return eventSourceToQueueMap.values().stream()
+                .map(EventSource_QueuePublisher::eventSource)
+                .anyMatch(src -> src == candidate);
     }
 
     private <T> EventSource_QueuePublisher<T> getEventSourceQueuePublisherOrThrow(EventSourceKey<T> eventSourceKey) {

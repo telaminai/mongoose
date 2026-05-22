@@ -102,6 +102,7 @@ nav:
           - Event source read strategy: guide/read-strategy.md
           - Zero‑GC object pooling: example/how-to/how-to-object-pool.md
           - Core pin agent threads: example/how-to/how-to-core-pin.md
+          - Performance monitoring: example/how-to/how-to-performance-monitoring.md
   - Reference guide:
       - Glossary: reference/glossary.md
       - Architecture and design:

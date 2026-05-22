@@ -125,4 +125,9 @@ public abstract class AbstractEventToInvocationStrategy implements EventToInvoke
     public int listenerCount() {
         return eventProcessorSinks.size();
     }
+
+    @Override
+    public java.util.Collection<DataFlow> registeredProcessors() {
+        return java.util.Collections.unmodifiableList(eventProcessorSinks);
+    }
 }
