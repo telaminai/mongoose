@@ -4,6 +4,7 @@
  */
 package com.telamin.mongoose.service.counters;
 
+import com.telamin.fluxtion.runtime.annotations.builder.FluxtionIgnore;
 import com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered;
 import com.telamin.fluxtion.runtime.audit.Auditor;
 import com.telamin.mongoose.internal.NoOpCountersService;
@@ -51,11 +52,17 @@ import java.util.Objects;
  */
 public final class PerformanceMonitorAudit implements Auditor {
 
+    // processorName carries no @FluxtionIgnore: Fluxtion source-gen reads
+    // it and emits `new PerformanceMonitorAudit("<value>")` into the
+    // generated SEP source. Every other field is runtime state —
+    // @FluxtionIgnore tells source-gen to skip rendering them (the Map /
+    // interface refs aren't source-renderable anyway), so the generated
+    // constructor call is a clean single-arg ctor invocation.
     private final String processorName;
-    private MongooseCountersService counters = NoOpCountersService.INSTANCE;
-    private MongooseCounter eventCounter;
-    private final Map<String, MongooseCounter> nodeCounters = new HashMap<>();
-    private volatile boolean writeEnabled = true;
+    @FluxtionIgnore private MongooseCountersService counters = NoOpCountersService.INSTANCE;
+    @FluxtionIgnore private MongooseCounter eventCounter;
+    @FluxtionIgnore private final Map<String, MongooseCounter> nodeCounters = new HashMap<>();
+    @FluxtionIgnore private volatile boolean writeEnabled = true;
 
     public PerformanceMonitorAudit(String processorName) {
         this.processorName = Objects.requireNonNull(processorName, "processorName must be non-null");
