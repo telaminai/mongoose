@@ -171,4 +171,143 @@ class DefaultMongooseHealthTest {
         assertTrue(h.isTicking("fx-feed"));
         assertFalse(h.isTicking("rpc-pool"));
     }
+
+    // ── Phase 4.5b: ring + cache ────────────────────────────────────────
+
+    @Test
+    void counterDelta_returns_MIN_VALUE_when_history_is_empty() {
+        AgronaCountersService counters = new AgronaCountersService(16);
+        counters.feedPublishCounter("fx").increment();
+        DefaultMongooseHealth h = new DefaultMongooseHealth(counters);
+
+        // NO recordCounterSnapshot calls — ring is empty.
+
+        long[] captured = {0L};
+        h.registerCheck("fx-feed", "probe", ctx -> {
+            captured[0] = ctx.counterDelta("feed.fx.published", 5_000);
+            return HealthStatus.up();
+        });
+        h.statusOfCheck("fx-feed", "probe");
+
+        assertEquals(Long.MIN_VALUE, captured[0],
+                "empty ring → MIN_VALUE so callers can emit UNKNOWN rather than synthesise");
+    }
+
+    @Test
+    void counterDelta_over_60s_window_returns_MIN_VALUE_per_contract() {
+        AgronaCountersService counters = new AgronaCountersService(16);
+        DefaultMongooseHealth h = new DefaultMongooseHealth(counters);
+        h.recordCounterSnapshot();
+
+        long[] captured = {0L};
+        h.registerCheck("svc", "probe", ctx -> {
+            captured[0] = ctx.counterDelta("anything", 90_000);
+            return HealthStatus.up();
+        });
+        h.statusOfCheck("svc", "probe");
+        assertEquals(Long.MIN_VALUE, captured[0],
+                "windowMs > 60_000 explicitly returns MIN_VALUE; ring's only 60s deep");
+    }
+
+    @Test
+    void counterDelta_returns_zero_for_non_positive_window() {
+        AgronaCountersService counters = new AgronaCountersService(16);
+        counters.feedPublishCounter("fx").increment();
+        DefaultMongooseHealth h = new DefaultMongooseHealth(counters);
+        h.recordCounterSnapshot();
+
+        long[] captured = {-1L};
+        h.registerCheck("svc", "probe", ctx -> {
+            captured[0] = ctx.counterDelta("feed.fx.published", 0);
+            return HealthStatus.up();
+        });
+        h.statusOfCheck("svc", "probe");
+        assertEquals(0L, captured[0], "windowMs <= 0 returns 0");
+    }
+
+    @Test
+    void counterDelta_against_history_computes_correctly() throws InterruptedException {
+        AgronaCountersService counters = new AgronaCountersService(16);
+        DefaultMongooseHealth h = new DefaultMongooseHealth(counters);
+
+        // Snapshot @ t0 with value = 100
+        for (int i = 0; i < 100; i++) counters.feedPublishCounter("fx").increment();
+        h.recordCounterSnapshot();
+
+        // Wait so the next snapshot's ts > current; then take it.
+        Thread.sleep(30);
+        // Snapshot @ t1 with value = 150
+        for (int i = 0; i < 50; i++) counters.feedPublishCounter("fx").increment();
+        h.recordCounterSnapshot();
+
+        // Now read with a window that covers t0 — should see delta from t0
+        // to now = 50 (or whatever the current value is).
+        Thread.sleep(30);
+        for (int i = 0; i < 25; i++) counters.feedPublishCounter("fx").increment();
+
+        long[] captured = {0L};
+        // disable cache for this probe so we evaluate every call.
+        var handle = h.registerCheck("svc", "probe", ctx -> {
+            captured[0] = ctx.counterDelta("feed.fx.published", 50_000);
+            return HealthStatus.up();
+        });
+        ((DefaultMongooseHealth.Handle) handle).entry.cacheMs = 0;
+        h.statusOfCheck("svc", "probe");
+
+        // counter total = 175; oldest in-window snapshot = 100 → delta = 75
+        // (the ring's first snapshot is at t0 which is within the 50s window).
+        assertEquals(75L, captured[0], "delta should equal current value minus oldest-in-window snapshot");
+    }
+
+    @Test
+    void check_evaluation_is_cached_for_1s_by_default() {
+        DefaultMongooseHealth h = new DefaultMongooseHealth(NoOpCountersService.INSTANCE);
+        int[] evals = {0};
+        h.registerCheck("svc", "counted", ctx -> {
+            evals[0]++;
+            return HealthStatus.up();
+        });
+
+        // Three calls within the 1s window — check fires exactly once.
+        h.statusOfCheck("svc", "counted");
+        h.statusOfCheck("svc", "counted");
+        h.statusOfCheck("svc", "counted");
+        assertEquals(1, evals[0], "lazy cache should serve the same value for 3 calls within 1s");
+    }
+
+    @Test
+    void cacheMs_zero_disables_the_cache() {
+        DefaultMongooseHealth h = new DefaultMongooseHealth(NoOpCountersService.INSTANCE);
+        int[] evals = {0};
+        var handle = h.registerCheck("svc", "always-fresh", ctx -> {
+            evals[0]++;
+            return HealthStatus.up();
+        });
+        ((DefaultMongooseHealth.Handle) handle).entry.cacheMs = 0;
+
+        h.statusOfCheck("svc", "always-fresh");
+        h.statusOfCheck("svc", "always-fresh");
+        h.statusOfCheck("svc", "always-fresh");
+        assertEquals(3, evals[0], "cacheMs=0 means every call re-evaluates");
+    }
+
+    @Test
+    void recordCounterSnapshot_is_no_op_when_counters_service_is_no_op() {
+        DefaultMongooseHealth h = new DefaultMongooseHealth(NoOpCountersService.INSTANCE);
+        h.recordCounterSnapshot();
+        h.recordCounterSnapshot();
+        h.recordCounterSnapshot();
+
+        // The ring stays empty — counterDelta should still return MIN_VALUE
+        // for any non-empty window.
+        long[] captured = {0L};
+        h.registerCheck("svc", "probe", ctx -> {
+            captured[0] = ctx.counterDelta("any", 5_000);
+            return HealthStatus.up();
+        });
+        h.statusOfCheck("svc", "probe");
+        assertEquals(Long.MIN_VALUE, captured[0],
+                "no-op counters service means recordCounterSnapshot does nothing, " +
+                "so the ring stays empty and counterDelta reports insufficient history");
+    }
 }
