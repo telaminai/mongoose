@@ -32,33 +32,52 @@ package com.telamin.mongoose.service.counters;
 
 public interface MongooseCountersService {
 
+    String SERVICE_NAME = "com.telamin.mongoose.service.counters.MongooseCountersService";
+
     // Allocate-once handles. Callers cache the reference for the
     // lifetime of the feed / group / processor / node.
-    AtomicCounter feedPublishCounter(String feed);
-    AtomicCounter agentEventsCounter(String group);
-    AtomicCounter agentIdleCyclesCounter(String group);
-    AtomicCounter queueDepthGauge(String path);
-    AtomicCounter processorEventsCounter(String processor);
-    AtomicCounter nodeInvocationCounter(String processor, String node);
+    MongooseCounter feedPublishCounter(String feed);
+    MongooseCounter agentEventsCounter(String group);
+    MongooseCounter agentIdleCyclesCounter(String group);
+    MongooseCounter queueDepthGauge(String path);
+    MongooseCounter processorEventsCounter(String processor);
+    MongooseCounter nodeInvocationCounter(String processor, String node);
 
     // Sampler-side walk. Called ~1 Hz from svc-admin-web /ws/monitor
     // and any other observability plugin. No allocation per visit.
+    // No-op impl walks nothing — it tracks nothing to visit.
     void forEachCounter(CounterVisitor visitor);
+
+    // True when the impl is real (Agrona-backed); false for the no-op.
+    // Health-service checks consult this to decide whether to emit
+    // UNKNOWN (counters disabled) vs evaluate against counter data.
+    boolean isOperational();
 
     @FunctionalInterface
     interface CounterVisitor {
         void visit(int id, String label, long value);
     }
 }
+
+public interface MongooseCounter {
+    long increment();         // monotonic
+    long incrementRelease();  // release semantics
+    void setOrdered(long v);  // gauge write
+    long get();               // read
+}
 ```
+
+**Counter abstraction — own type, not Agrona's.** The interface returns a mongoose-owned `MongooseCounter`, not `org.agrona.concurrent.status.AtomicCounter`. Two reasons: (1) the JIT-monomorphism claim is what carries the no-op-is-free argument, and it applies at the `MongooseCounter` callsite level — `NoOpCounter.increment()` is `{}`, the JIT inlines it to nothing; (2) decouples the public service contract from Agrona's API so we can swap the backing store later (off-heap, JFR, OTLP shim) without breaking callers. The real impl wraps Agrona's `AtomicCounter`; the no-op is a singleton final class with empty methods.
 
 Counter labels are flat strings of the form `feed.fx-market-data.published`, `group.priceCalculator.processed`, `queue./agent/priceCalculator/eventQueue.depth`, `processor.priceCalc.events`, `node.priceCalc.FxLineHandler.invocations`. Categorisable from the label prefix — no parallel enum.
 
 ### Two implementations
 
-**`NoOpCountersService`** — every method returns a singleton `AtomicCounter` whose `increment()` / `set()` / `getOrdered()` are empty / fixed. Singleton instance, registered as the service when performance monitoring is disabled. Because the implementation class is uniquely loaded across the JVM and **call sites are monomorphic**, the JIT inlines the no-op increment to nothing. C2's inlining heuristic + dead-store elimination give us zero residual cost.
+Both impls live in `com.telamin.mongoose.internal` — only the interface in `com.telamin.mongoose.service.counters` is part of the published API surface.
 
-**`AgronaCountersService`** — wraps `org.agrona.concurrent.status.CountersManager` over an on-heap `UnsafeBuffer` (~256 KB; sizes thousands of counters). Each public method either allocates a new counter and caches the returned `AtomicCounter` in a `ConcurrentHashMap<String, AtomicCounter>` keyed by label, or returns the cached handle. **Lookup happens once at registration, never on the fast path.** `forEachCounter` delegates to `CountersReader.forEach`, walking the buffer directly.
+**`NoOpCountersService`** — every method returns a singleton `NoOpCounter` (a final class) whose `increment()` / `setOrdered()` / `get()` are empty/zero. Singleton service instance, registered when performance monitoring is disabled. Because the implementation class is uniquely loaded across the JVM and **call sites are monomorphic**, the JIT inlines the no-op increment to nothing. C2's inlining heuristic + dead-store elimination give us zero residual cost. `forEachCounter` visits nothing — there's nothing to visit.
+
+**`AgronaCountersService`** — wraps `org.agrona.concurrent.status.CountersManager` over an on-heap `UnsafeBuffer` (~256 KB; sizes thousands of counters). Each public method either allocates a new Agrona `AtomicCounter`, wraps it in an `AgronaCounter` adapter, caches the wrapper in a `ConcurrentHashMap<String, MongooseCounter>` keyed by label, or returns the cached handle. **Lookup happens once at registration, never on the fast path.** `forEachCounter` delegates to `CountersReader.forEach`, walking the buffer directly. Note: `CountersManager.allocate(label)` is **not thread-safe** — `ConcurrentHashMap.computeIfAbsent`'s callback must serialise via `synchronized` on the manager, or registration must be confined to a single thread (EFM-only, never user-code threads). Phase 1 takes the latter approach for simplicity; revisit if a plugin ever needs to register counters from a worker thread.
 
 ### Global toggle
 
@@ -80,6 +99,8 @@ The switch is also exposable as an admin command (`mongoose.perf.enable` / `disa
 - `EventToQueuePublisher` — cache `feedPublishCounter(feedName)` at construction; `.increment()` in `publish(...)`.
 - Agent main loop — cache `agentEventsCounter(group)` + `agentIdleCyclesCounter(group)` at agent start.
 - Queue reader — gauge `queueDepthGauge(path)` set via `setOrdered` at the read site, or sampled by the sampler poking the underlying `RingBuffer`'s `producerPosition - consumerPosition`.
+
+**Construction ordering — load-bearing.** The counters service is the **first** service constructed and registered by `MongooseServer` / `EventFlowManager`, before any feed / sink / processor / agent wiring. Hot-path components receive the counters-service reference at **construction time**, not via deferred `@ServiceRegistered` injection — that way `EventToQueuePublisher.publish(...)` can never fire before its counter handle is allocated. No nullable counter field, no inject-later path, no `if (counter != null)` checks in the publish loop. Plugins that aren't hot-path participants (admin UIs, exporters) continue to receive the service via `@ServiceRegistered` as normal.
 
 Any other plugin / service that wants counters injects `MongooseCountersService` via `@ServiceRegistered` — same pattern as `AdminCommandRegistry`.
 
@@ -294,7 +315,7 @@ public record HealthStatus(Verdict verdict, String reason, long asOfEpochMs) {
 - Error / disconnect / retry counts → existing counters.
 - Connected state → `0/1` gauge.
 - Throughput / lag → already exposed.
-- Auto-allocated **per-service counters at registration**: when a service is registered via `MongooseServer.registerService` (the universal registration path — covers event-flow services *and* pure RPC services like JDBC pools and caches), the server mints `service.{name}.lastTickEpoch`, `.eventsProcessed`, `.errors`, `.up`. `MongooseServer` flips `.up` to `1` in `startService` and `0` in `stopService` — services don't write to `.up` directly. Health checks read all four. Standard surface for every service for free, whether it's event-flow or RPC.
+- Auto-allocated **per-service counters at registration**: when a service is registered via `MongooseServer.registerService` (the universal registration path — covers event-flow services *and* pure RPC services like JDBC pools and caches), the server mints `service.{name}.lastTickEpoch`, `.eventsProcessed`, `.errors`, `.up`. `MongooseServer` flips `.up` to `1` in `startService` and `0` in `stopService` — services don't write to `.up` directly. **`up == 1` from the moment `startService(name)` returns to the moment `stopService(name)` is called; `0` before start and after stop.** Health checks read all four. Standard surface for every service for free, whether it's event-flow or RPC.
 
 **What's new in the health layer:**
 
@@ -395,8 +416,9 @@ Each phase is independently shippable and independently demoable. Stop after any
 
 **Goal**: opt-in auditor that records per-processor / per-node counts.
 
+- **Prerequisite**: verify the pinned Fluxtion `Auditor` SPI exposes `nodeRegistered(Object, String)`, `eventReceived(Object)`, and `nodeInvoked(Object, String, String, Object)` with these exact signatures. If anything diverges, file an upstream ticket and gate Phase 3 on it — don't paper over a signature drift in mongoose code.
 - `PerformanceMonitorAudit` class.
-- Convenience helper on the Mongoose builder side: `withPerformanceMonitor(processorName)`.
+- Convenience helper on the Mongoose builder side: `withPerformanceMonitor(processorName)`. This is a thin mongoose-side wrapper around Fluxtion's `c.addAuditor(new PerformanceMonitorAudit(name), "perfMon")` — the underlying Fluxtion API is what bakes the auditor into the generated SEP. The helper exists so mongoose users don't have to reach across into Fluxtion's builder API for the common case.
 - Per-auditor `setWriteEnabled` toggle.
 - Unit tests: build a tiny processor with the auditor bound, fire N events, assert per-node counters are populated. Re-run with `writeEnabled=false` and assert counters don't move.
 
@@ -500,16 +522,37 @@ Screenshot: `docs/screenshots/health.png`. Update the HTTP/WebSocket surface tab
 
 ---
 
-## Acceptance checklist (for the eventual implementation conversation)
+## Acceptance checklist (grouped by phase)
 
-- [ ] `MongooseCountersService` interface published from `com.telamin.mongoose.service.counters`.
-- [ ] `NoOpCountersService` — measurable as zero-overhead via JMH micro (see test plan).
-- [ ] `AgronaCountersService` — wraps `CountersManager`, label-keyed cache, sub-µs allocation-free increment.
-- [ ] YAML toggle wired into existing main config loader.
-- [ ] `EventFlowManager` selects + registers the impl at boot.
-- [ ] Phase-2 hot-path increments land at four sites listed above.
-- [ ] `PerformanceMonitorAudit` available; opt-in via builder.
-- [ ] svc-admin-web `/ws/monitor` payload extended with `throughput`.
+### Phase 1 — Service + impls + boot toggle
+- [ ] `MongooseCountersService` interface published from `com.telamin.mongoose.service.counters` with `SERVICE_NAME` constant + `isOperational()` accessor.
+- [ ] `MongooseCounter` interface (mongoose-owned, NOT `org.agrona.concurrent.status.AtomicCounter`).
+- [ ] `NoOpCountersService` + `NoOpCounter` in `com.telamin.mongoose.internal`. `forEachCounter` visits nothing. `isOperational() == false`.
+- [ ] `AgronaCountersService` + `AgronaCounter` adapter in `com.telamin.mongoose.internal`. Wraps `CountersManager`, label-keyed cache, single-threaded registration, `isOperational() == true`.
+- [ ] YAML toggle (`mongoose.performanceMonitoring.{enabled, counterBufferKb}`) wired into `MongooseServerConfig`.
+- [ ] `EventFlowManager` / `MongooseServer` selects + registers the impl at boot, **before** any feed/sink/processor wiring.
+- [ ] Both-impl unit tests: handle identity (no-op shared / agrona distinct-per-label / agrona same-on-repeat), forEach roundtrip, isOperational signal.
+- [ ] JMH micro: < 1 ns/op overhead in no-op mode, < 10 ns/op in real-impl mode for a single increment.
+
+### Phase 2 — Built-in counter sites
+- [ ] `EventToQueuePublisher` — `feedPublishCounter` cached at construction, incremented in `publish`.
+- [ ] Agent main loop — `agentEventsCounter` + `agentIdleCyclesCounter` per group.
+- [ ] Queue read path / sampler — `queueDepthGauge` per queue path.
+- [ ] Integration test against fx-pnl-mongoose: drain N events, assert counters track.
+
+### Phase 3 — PerformanceMonitorAudit + builder integration
+- [ ] Prerequisite check: Fluxtion `Auditor` SPI exposes `nodeRegistered`, `eventReceived`, `nodeInvoked` with the signatures the doc references against the pinned Fluxtion version.
+- [ ] `PerformanceMonitorAudit` class.
+- [ ] `withPerformanceMonitor(processorName)` mongoose-builder helper wrapping `c.addAuditor(...)`.
+- [ ] Per-auditor `setWriteEnabled` toggle.
+- [ ] Per-node / per-event counters populated; `writeEnabled=false` zero-delta tests.
+
+### Phase 4 — svc-admin-web throughput consumer
+- [ ] Sampler diff loop reading `forEachCounter`.
+- [ ] `/ws/monitor` payload extended with `throughput` block.
+- [ ] Dashboard "Throughput" card + per-row badges + Topology pulse + per-node fire-count overlay on graphml panel.
+
+### Phase 4.5 — Health service + admin UI verdict
 - [ ] `MongooseHealthService` interface (with `HealthCheckHandle` extending `AutoCloseable`, `HealthContext`, `ErrorSink`, `StatusVisitor`, `markTicking`) + default impl + auto-allocated per-service counters.
 - [ ] Verdict-rollup logic: aggregatedVerdict = worst-of across a service's *active* (non-silenced) checks; UNKNOWN ranked between UP and DEGRADED; all-silenced → UNKNOWN with reason.
 - [ ] Per-check lazy evaluation with ~1 s cache (configurable, including `cacheMs=0` for always-fresh checks).
@@ -521,9 +564,12 @@ Screenshot: `docs/screenshots/health.png`. Update the HTTP/WebSocket surface tab
 - [ ] Built-in liveness / error-spike / connected checks registered at boot. Liveness only evaluates for services that called `markTicking`; absent → check skipped. `connected` reads `service.{name}.connected` by convention; missing gauge → check skipped.
 - [ ] svc-admin-web `/api/health` endpoint (k8s-probe shape — `200` healthy, `503` DOWN-present, JSON body with per-service + per-check breakdown) + Services-view status badges + topbar verdict pill + per-check detail panel + last-errors panel.
 - [ ] `svc-admin-web` README extended with the Health bullet (per Phase 4.5 plan above).
-- [ ] Admin commands `mongoose.perf.list` + `mongoose.perf.auditor.{enable,disable}` registered.
-- [ ] JMH micro showing < 1 ns/op overhead in no-op mode, < 10 ns/op in real-impl mode for a single increment.
-- [ ] Three READMEs updated as per "documentation plan" above.
+
+### Phase 5 — Admin commands
+- [ ] `mongoose.perf.list` + `mongoose.perf.auditor.{enable,disable}` + `mongoose.health.check.{enable,disable}` registered.
+
+### Documentation
+- [ ] Three READMEs updated as per "documentation plan" above (mongoose-core, svc-admin-web, fx-pnl-mongoose).
 
 ---
 
