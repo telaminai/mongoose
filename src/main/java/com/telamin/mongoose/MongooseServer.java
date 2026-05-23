@@ -191,6 +191,35 @@ public class MongooseServer implements MongooseServerController {
                 com.telamin.mongoose.service.counters.MongooseLatencyService.class,
                 com.telamin.mongoose.service.counters.MongooseLatencyService.SERVICE_NAME));
 
+        // Audit-log capture + introspection services — siblings of
+        // counters and latency in the performanceMonitoring YAML block.
+        // Phase 0 of the audit-log-viewer plugin ships only the NoOp
+        // impls; the Chronicle-backed impl + the autoStart wiring arrive
+        // in Phase 1. Registering the NoOps unconditionally means
+        // downstream consumers (svc-admin-web REST + WS surfaces) can
+        // depend on the services being present and either succeed or
+        // 503 cleanly when isOperational-equivalent semantics indicate
+        // the feature is off.
+        com.telamin.mongoose.config.AuditCaptureConfig auditCfg =
+                perfCfg == null ? null : perfCfg.getAuditCapture();
+        // Phase 0: NoOps regardless of the YAML flag. Phase 1 will swap
+        // these for the Chronicle-backed impls when auditCfg.isEnabled().
+        com.telamin.mongoose.service.audit.MongooseAuditCaptureService auditCapture =
+                com.telamin.mongoose.internal.NoOpAuditCaptureService.INSTANCE;
+        com.telamin.mongoose.service.audit.MongooseAuditIntrospectionService auditIntrospection =
+                com.telamin.mongoose.internal.NoOpAuditIntrospectionService.INSTANCE;
+        if (auditCfg != null && auditCfg.isEnabled()) {
+            log.info("audit-capture is enabled in YAML but Phase 1 (Chronicle backend) has not landed yet — installing NoOps");
+        }
+        registerService(new Service<>(
+                auditCapture,
+                com.telamin.mongoose.service.audit.MongooseAuditCaptureService.class,
+                com.telamin.mongoose.service.audit.MongooseAuditCaptureService.SERVICE_NAME));
+        registerService(new Service<>(
+                auditIntrospection,
+                com.telamin.mongoose.service.audit.MongooseAuditIntrospectionService.class,
+                com.telamin.mongoose.service.audit.MongooseAuditIntrospectionService.SERVICE_NAME));
+
         // Health service — sibling to counters. Verdict (UP/DEGRADED/DOWN/
         // UNKNOWN) per service that the admin UI badges + /api/health
         // surface. Phase 4.5a: skeleton (registration, silencing,
