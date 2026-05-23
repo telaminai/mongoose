@@ -5,6 +5,7 @@
 package com.telamin.mongoose.service.counters;
 
 import com.telamin.fluxtion.runtime.annotations.ExportService;
+import com.telamin.fluxtion.runtime.annotations.builder.AssignToField;
 import com.telamin.fluxtion.runtime.annotations.builder.FluxtionIgnore;
 import com.telamin.fluxtion.runtime.audit.Auditor;
 import com.telamin.fluxtion.runtime.service.Service;
@@ -108,7 +109,25 @@ public final class PerformanceMonitorAudit
     @FluxtionIgnore private String lastNodeName;
     @FluxtionIgnore private long lastNodeStartTs;
 
-    public PerformanceMonitorAudit(String processorName) {
+    /**
+     * Default constructor — used by Fluxtion source-gen when reconstructing
+     * the auditor in a generated SEP. processorName is not final (mongoose's
+     * setProcessorName overrides it at runtime to match the YAML processor
+     * name), so source-gen prefers a no-arg ctor + setter over the single-
+     * arg form unless explicitly directed. We keep both ctors viable: this
+     * one for source-gen, the single-arg form for end-user code that wants
+     * an explicit name. The placeholder is overwritten in either case.
+     */
+    public PerformanceMonitorAudit() {
+        this("unnamed");
+    }
+
+    /**
+     * @AssignToField tells source-gen this ctor arg maps to the
+     * {@code processorName} field, so it can use this constructor path
+     * even though the field is not final.
+     */
+    public PerformanceMonitorAudit(@AssignToField("processorName") String processorName) {
         this.processorName = Objects.requireNonNull(processorName, "processorName must be non-null");
         // Pre-populate with the default no-op so a stray callback before
         // init/service-injection doesn't NPE.
