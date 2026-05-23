@@ -176,6 +176,21 @@ public class MongooseServer implements MongooseServerController {
                 com.telamin.mongoose.service.counters.MongooseCountersService.class,
                 com.telamin.mongoose.service.counters.MongooseCountersService.SERVICE_NAME));
 
+        // Latency histograms — sibling of counters under the same YAML
+        // block. Latency capture is meaningful only when the auditor is
+        // bound (which is part of performanceMonitoring.enabled), so the
+        // flag is gated on enabled=true too. When off, the no-op service
+        // is registered so PerformanceMonitorAudit's recordNodeLatency
+        // calls inline to nothing.
+        com.telamin.mongoose.service.counters.MongooseLatencyService latency =
+                (perfCfg != null && perfCfg.isEnabled() && perfCfg.isLatencyHistograms())
+                        ? new com.telamin.mongoose.internal.HdrLatencyService()
+                        : com.telamin.mongoose.internal.NoOpLatencyService.INSTANCE;
+        registerService(new Service<>(
+                latency,
+                com.telamin.mongoose.service.counters.MongooseLatencyService.class,
+                com.telamin.mongoose.service.counters.MongooseLatencyService.SERVICE_NAME));
+
         // Health service — sibling to counters. Verdict (UP/DEGRADED/DOWN/
         // UNKNOWN) per service that the admin UI badges + /api/health
         // surface. Phase 4.5a: skeleton (registration, silencing,
@@ -654,6 +669,12 @@ public class MongooseServer implements MongooseServerController {
         composingEventProcessorAgentRunner.group().addNamedEventProcessor(() -> {
             DataFlow eventProcessor = feedConsumer.get();
             eventProcessor.setAuditLogProcessor(logRecordListener);
+            // Auto-bind the PerformanceMonitorAudit (if present) to the YAML
+            // processor name. Without this the audit's counter labels use
+            // whatever string the SEP author passed to the ctor — which is
+            // usually a different namespace from the YAML processorName and
+            // breaks any UI / metric that joins the two by name.
+            applyProcessorNameToPerfMonAuditor(eventProcessor, processorName);
             if (started) {
                 log.info("init event processor in already started server processor:'" + eventProcessor + "'");
 //                eventProcessor.setAuditLogLevel(EventLogControlEvent.LogLevel.INFO);
@@ -664,6 +685,45 @@ public class MongooseServer implements MongooseServerController {
         if (started && composingEventProcessorAgentRunner.groupRunner().thread() == null) {
             log.info("staring event processor group:'" + groupName + "' for running server");
             AgentRunner.startOnThread(composingEventProcessorAgentRunner.groupRunner());
+        }
+    }
+
+    /**
+     * Look up the conventional {@code perfMon} auditor on the processor and,
+     * if it's a {@link com.telamin.mongoose.service.counters.PerformanceMonitorAudit},
+     * (a) align its counter-label prefix with the YAML processor name and
+     * (b) bind it to the processor's own {@code clock} auditor as the
+     * latency time source — so latency samples use the same replay-safe,
+     * data-driven clock that the rest of the SEP uses, rather than the
+     * static {@code Clock.DEFAULT_CLOCK} fallback.
+     *
+     * <p>Silent no-op when the auditor is absent (the user simply didn't
+     * enable performance monitoring on this processor) or is some other
+     * type.
+     */
+    private static void applyProcessorNameToPerfMonAuditor(DataFlow eventProcessor, String processorName) {
+        try {
+            Object auditor = eventProcessor.getAuditorById("perfMon");
+            if (auditor instanceof com.telamin.mongoose.service.counters.PerformanceMonitorAudit pm) {
+                pm.setProcessorName(processorName);
+                // Bind the processor's clock as the latency time source.
+                // Each generated SEP has a "clock" auditor; using it (rather
+                // than Clock.DEFAULT_CLOCK) keeps latency samples coherent
+                // with the processor's replay/data-driven clock policy.
+                try {
+                    Object clockAuditor = eventProcessor.getAuditorById("clock");
+                    if (clockAuditor instanceof com.telamin.fluxtion.runtime.time.Clock clock) {
+                        pm.setTimeSource(clock::getWallClockTime);
+                    }
+                } catch (NoSuchFieldException | IllegalAccessException ignored) {
+                    // No "clock" on this processor — leave the auditor with
+                    // its default time source (Clock.DEFAULT_CLOCK).
+                }
+            }
+        } catch (NoSuchFieldException | IllegalAccessException ignored) {
+            // No "perfMon" auditor — performance monitoring not wired on this
+            // processor. Counter writes go to the no-op service and stay
+            // silent, which is the documented zero-overhead default.
         }
     }
 
