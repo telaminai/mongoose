@@ -8,6 +8,7 @@ package com.telamin.mongoose.service.servercontrol;
 import com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered;
 import com.telamin.fluxtion.runtime.lifecycle.Lifecycle;
 import com.telamin.mongoose.service.admin.AdminCommandRegistry;
+import com.telamin.mongoose.service.counters.MongooseLatencyService;
 import lombok.extern.java.Log;
 
 import java.util.List;
@@ -49,6 +50,7 @@ public class MongooseServerAdmin implements Lifecycle {
 
     private AdminCommandRegistry registry;
     private MongooseServerController serverController;
+    private MongooseLatencyService latencyService;
 
     @ServiceRegistered
     public void admin(AdminCommandRegistry registry) {
@@ -60,6 +62,12 @@ public class MongooseServerAdmin implements Lifecycle {
     public void server(MongooseServerController serverController) {
         this.serverController = serverController;
         log.info("Server command registry");
+    }
+
+    @ServiceRegistered
+    public void latencyService(MongooseLatencyService latencyService) {
+        this.latencyService = latencyService;
+        log.info("Latency service available for admin toggle: " + latencyService);
     }
 
     @Override
@@ -76,11 +84,66 @@ public class MongooseServerAdmin implements Lifecycle {
 
         registry.registerCommand("server.processors.list", this::listProcessors);
         registry.registerCommand("server.processors.stop", this::stopProcessors);
+
+        // Latency capture toggle. Exposed on the admin command surface so
+        // ops can flip it from CLI, and consumed by the per-node stats
+        // tab in svc-admin-web. No-op (with a clear message) when no
+        // MongooseLatencyService is bound (latencyHistograms: false).
+        registry.registerCommand("latency.status", this::latencyStatus);
+        registry.registerCommand("latency.enable", this::latencyEnable);
+        registry.registerCommand("latency.disable", this::latencyDisable);
+        registry.registerCommand("latency.toggle", this::latencyToggle);
+        registry.registerCommand("latency.reset", this::latencyReset);
     }
 
     @Override
     public void tearDown() {
         log.info("Fluxtion Server admin tearDown");
+    }
+
+    private void latencyStatus(List<String> args, Consumer<String> out, Consumer<String> err) {
+        if (latencyService == null || !latencyService.isOperational()) {
+            out.accept("latency: not installed (set performanceMonitoring.latencyHistograms: true in YAML)");
+            return;
+        }
+        out.accept("latency: " + (latencyService.isEnabled() ? "ENABLED" : "DISABLED"));
+    }
+
+    private void latencyEnable(List<String> args, Consumer<String> out, Consumer<String> err) {
+        if (latencyService == null || !latencyService.isOperational()) {
+            err.accept("latency: not installed — set performanceMonitoring.latencyHistograms: true and restart");
+            return;
+        }
+        latencyService.setEnabled(true);
+        out.accept("latency: ENABLED");
+    }
+
+    private void latencyDisable(List<String> args, Consumer<String> out, Consumer<String> err) {
+        if (latencyService == null || !latencyService.isOperational()) {
+            err.accept("latency: not installed");
+            return;
+        }
+        latencyService.setEnabled(false);
+        out.accept("latency: DISABLED");
+    }
+
+    private void latencyToggle(List<String> args, Consumer<String> out, Consumer<String> err) {
+        if (latencyService == null || !latencyService.isOperational()) {
+            err.accept("latency: not installed");
+            return;
+        }
+        boolean next = !latencyService.isEnabled();
+        latencyService.setEnabled(next);
+        out.accept("latency: " + (next ? "ENABLED" : "DISABLED"));
+    }
+
+    private void latencyReset(List<String> args, Consumer<String> out, Consumer<String> err) {
+        if (latencyService == null || !latencyService.isOperational()) {
+            err.accept("latency: not installed");
+            return;
+        }
+        latencyService.reset();
+        out.accept("latency: histograms reset");
     }
 
     private void listServices(List<String> args, Consumer<String> out, Consumer<String> err) {

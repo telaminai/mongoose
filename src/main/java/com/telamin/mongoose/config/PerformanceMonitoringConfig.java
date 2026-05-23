@@ -31,4 +31,16 @@ public class PerformanceMonitoringConfig {
 
     /** Values-buffer size in KB; ~2048 counters at the default 256 KB. */
     private int counterBufferKb = 256;
+
+    /**
+     * Whether to install the HdrHistogram-backed {@link
+     * com.telamin.mongoose.service.counters.MongooseLatencyService}. Default:
+     * {@code false}. Has no effect unless {@link #enabled} is also true —
+     * counters are the prerequisite (the auditor that drives latency
+     * sampling lives behind the same flag).
+     *
+     * <p>When off, the {@code NoOpLatencyService} is installed and the
+     * auditor's latency hot path is a JIT-elided no-op.
+     */
+    private boolean latencyHistograms = false;
 }
