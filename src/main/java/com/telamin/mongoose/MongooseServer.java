@@ -118,6 +118,11 @@ public class MongooseServer implements MongooseServerController {
     private final ConcurrentHashMap<String, ComposingEventProcessorAgentRunner> composingEventProcessorAgents = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, ComposingWorkerServiceAgentRunner> composingServiceAgents = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Service<?>> registeredServices = new ConcurrentHashMap<>();
+    /** Audit capture service — used during processor registration to attach + auto-start. NoOp when capture is off. */
+    private com.telamin.mongoose.service.audit.MongooseAuditCaptureService auditCaptureService =
+            com.telamin.mongoose.internal.NoOpAuditCaptureService.INSTANCE;
+    /** Audit capture config — read for autoStart at processor registration. */
+    private com.telamin.mongoose.config.AuditCaptureConfig auditCaptureConfig;
     private final Set<Service<?>> registeredAgentServices = ConcurrentHashMap.newKeySet();
     private ErrorHandler errorHandler = m -> log.severe(m.getMessage());
     private final ServiceRegistryNode serviceRegistry = new ServiceRegistryNode();
@@ -193,23 +198,22 @@ public class MongooseServer implements MongooseServerController {
 
         // Audit-log capture + introspection services — siblings of
         // counters and latency in the performanceMonitoring YAML block.
-        // Phase 0 of the audit-log-viewer plugin ships only the NoOp
-        // impls; the Chronicle-backed impl + the autoStart wiring arrive
-        // in Phase 1. Registering the NoOps unconditionally means
-        // downstream consumers (svc-admin-web REST + WS surfaces) can
-        // depend on the services being present and either succeed or
-        // 503 cleanly when isOperational-equivalent semantics indicate
-        // the feature is off.
+        // Phase 1 of the audit-log-viewer plugin installs the Chronicle
+        // backend when auditCfg.isEnabled(); otherwise the NoOps stay so
+        // downstream consumers (svc-admin-web REST + WS surfaces, admin
+        // commands) can depend on the services being present.
         com.telamin.mongoose.config.AuditCaptureConfig auditCfg =
                 perfCfg == null ? null : perfCfg.getAuditCapture();
-        // Phase 0: NoOps regardless of the YAML flag. Phase 1 will swap
-        // these for the Chronicle-backed impls when auditCfg.isEnabled().
-        com.telamin.mongoose.service.audit.MongooseAuditCaptureService auditCapture =
-                com.telamin.mongoose.internal.NoOpAuditCaptureService.INSTANCE;
-        com.telamin.mongoose.service.audit.MongooseAuditIntrospectionService auditIntrospection =
-                com.telamin.mongoose.internal.NoOpAuditIntrospectionService.INSTANCE;
+        com.telamin.mongoose.service.audit.MongooseAuditCaptureService auditCapture;
+        com.telamin.mongoose.service.audit.MongooseAuditIntrospectionService auditIntrospection;
         if (auditCfg != null && auditCfg.isEnabled()) {
-            log.info("audit-capture is enabled in YAML but Phase 1 (Chronicle backend) has not landed yet — installing NoOps");
+            com.telamin.mongoose.internal.ChronicleAuditCaptureService chronicle =
+                    new com.telamin.mongoose.internal.ChronicleAuditCaptureService(auditCfg, counters);
+            auditCapture = chronicle;
+            auditIntrospection = new com.telamin.mongoose.internal.DirAuditIntrospectionService(auditCfg, chronicle);
+        } else {
+            auditCapture = com.telamin.mongoose.internal.NoOpAuditCaptureService.INSTANCE;
+            auditIntrospection = com.telamin.mongoose.internal.NoOpAuditIntrospectionService.INSTANCE;
         }
         registerService(new Service<>(
                 auditCapture,
@@ -219,6 +223,8 @@ public class MongooseServer implements MongooseServerController {
                 auditIntrospection,
                 com.telamin.mongoose.service.audit.MongooseAuditIntrospectionService.class,
                 com.telamin.mongoose.service.audit.MongooseAuditIntrospectionService.SERVICE_NAME));
+        this.auditCaptureService = auditCapture;
+        this.auditCaptureConfig = auditCfg;
 
         // Health service — sibling to counters. Verdict (UP/DEGRADED/DOWN/
         // UNKNOWN) per service that the admin UI badges + /api/health
@@ -704,6 +710,16 @@ public class MongooseServer implements MongooseServerController {
             // usually a different namespace from the YAML processorName and
             // breaks any UI / metric that joins the two by name.
             applyProcessorNameToPerfMonAuditor(eventProcessor, processorName);
+
+            // Attach the audit-capture service to this processor. NoOp when
+            // capture is disabled; the Chronicle impl remembers the DataFlow
+            // so a later start(name) call can install a LogRecordListener
+            // without the runtime needing to hand the DataFlow over again.
+            auditCaptureService.attach(eventProcessor, processorName);
+            if (auditCaptureConfig != null && auditCaptureConfig.getAutoStart() != null
+                    && auditCaptureConfig.getAutoStart().contains(processorName)) {
+                auditCaptureService.start(processorName);
+            }
             if (started) {
                 log.info("init event processor in already started server processor:'" + eventProcessor + "'");
 //                eventProcessor.setAuditLogLevel(EventLogControlEvent.LogLevel.INFO);

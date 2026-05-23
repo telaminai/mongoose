@@ -64,17 +64,17 @@ class AuditPhase0ServiceRegistrationTest {
     }
 
     @Test
-    void both_audit_services_are_registered_when_auditCapture_is_enabled() {
-        // Phase 0 ships only the NoOps regardless of the flag — Phase 1
-        // will replace these with Chronicle-backed impls when enabled.
-        // The test pins the Phase-0 behaviour explicitly so a future
-        // change that conditionally registers DIFFERENT impls is forced
-        // to update the assertion (and the doc).
+    void chronicle_backend_is_installed_when_auditCapture_is_enabled() {
+        // Phase 1 contract: with the YAML flag on, MongooseServer
+        // installs the Chronicle-backed capture + introspection impls.
+        // Both must still be discoverable via the service registry.
         MongooseServerConfig cfg = new MongooseServerConfig();
         PerformanceMonitoringConfig pm = new PerformanceMonitoringConfig();
         pm.setEnabled(true);
         AuditCaptureConfig audit = new AuditCaptureConfig();
         audit.setEnabled(true);
+        // point at a temp dir so the test isn't writing into ./audit
+        audit.setDirectory(System.getProperty("java.io.tmpdir") + "/mongoose-audit-test-" + System.nanoTime());
         pm.setAuditCapture(audit);
         cfg.setPerformanceMonitoring(pm);
 
@@ -83,9 +83,15 @@ class AuditPhase0ServiceRegistrationTest {
             Map<String, Service<?>> services = server.registeredServices();
             assertNotNull(services.get(MongooseAuditCaptureService.SERVICE_NAME));
             assertNotNull(services.get(MongooseAuditIntrospectionService.SERVICE_NAME));
-            assertSame(NoOpAuditCaptureService.INSTANCE,
+            // Phase 1: Chronicle-backed impl, NOT the NoOp.
+            org.junit.jupiter.api.Assertions.assertNotSame(
+                    NoOpAuditCaptureService.INSTANCE,
                     services.get(MongooseAuditCaptureService.SERVICE_NAME).instance(),
-                    "Phase 0 always installs the NoOp — Phase 1 will lift this");
+                    "Phase 1: with the flag on, the Chronicle impl replaces the NoOp");
+            assertTrue(
+                    services.get(MongooseAuditCaptureService.SERVICE_NAME).instance()
+                            instanceof com.telamin.mongoose.internal.ChronicleAuditCaptureService,
+                    "Phase 1 installs the Chronicle-backed capture service");
         } finally {
             server.stop();
         }

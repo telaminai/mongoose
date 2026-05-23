@@ -4,6 +4,8 @@
  */
 package com.telamin.mongoose.service.audit;
 
+import com.telamin.fluxtion.runtime.DataFlow;
+
 /**
  * CONTROL surface for the audit-log capture plugin. Starts and stops
  * per-processor audit recording into a persistent backend (Chronicle
@@ -37,9 +39,29 @@ public interface MongooseAuditCaptureService {
     String SERVICE_NAME = "com.telamin.mongoose.service.audit.MongooseAuditCaptureService";
 
     /**
+     * Register a processor with the capture service. Called by the
+     * mongoose runtime from {@code MongooseServer.addEventProcessor}
+     * once per processor, BEFORE any call to {@link #start(String)}.
+     * The capture service remembers the {@code DataFlow} reference so
+     * {@code start} can install a {@code LogRecordListener} on it
+     * later without needing the runtime to pass the DataFlow again.
+     *
+     * <p>Default implementation is a no-op so the NoOp service ignores
+     * the call without overhead.
+     *
+     * @param dataFlow      the live processor instance.
+     * @param processorName the YAML name (as it appears in
+     *                      {@code eventHandlers.&lt;name&gt;}).
+     */
+    default void attach(DataFlow dataFlow, String processorName) {
+        // no-op default — NoOp impl ignores
+    }
+
+    /**
      * Begin capturing audit records for the named processor. The
      * processor must already be registered with the mongoose runtime
-     * (i.e. live in {@code MongooseServer.registeredProcessors()}).
+     * (i.e. live in {@code MongooseServer.registeredProcessors()}) AND
+     * previously attached via {@link #attach(DataFlow, String)}.
      * Idempotent — calling on an already-recording processor is a no-op
      * and does not roll the underlying sink.
      *
