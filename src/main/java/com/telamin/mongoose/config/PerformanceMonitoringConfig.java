@@ -43,4 +43,17 @@ public class PerformanceMonitoringConfig {
      * auditor's latency hot path is a JIT-elided no-op.
      */
     private boolean latencyHistograms = false;
+
+    /**
+     * Audit-log capture plugin configuration. Sibling subsystem to the
+     * counters + latency services, sharing the same enabled-by-default-
+     * false philosophy. Nested config so the YAML stays grouped under
+     * {@code performanceMonitoring}.
+     *
+     * <p>See {@link AuditCaptureConfig} for the field-by-field details.
+     * When {@link AuditCaptureConfig#isEnabled()} is false (default),
+     * the NoOp capture + introspection services are installed and the
+     * audit path is JIT-elided to nothing.
+     */
+    private AuditCaptureConfig auditCapture = new AuditCaptureConfig();
 }
