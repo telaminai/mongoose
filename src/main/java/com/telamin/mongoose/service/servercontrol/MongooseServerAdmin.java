@@ -8,6 +8,9 @@ package com.telamin.mongoose.service.servercontrol;
 import com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered;
 import com.telamin.fluxtion.runtime.lifecycle.Lifecycle;
 import com.telamin.mongoose.service.admin.AdminCommandRegistry;
+import com.telamin.mongoose.service.audit.AuditSinkHandle;
+import com.telamin.mongoose.service.audit.MongooseAuditCaptureService;
+import com.telamin.mongoose.service.audit.MongooseAuditIntrospectionService;
 import com.telamin.mongoose.service.counters.MongooseLatencyService;
 import lombok.extern.java.Log;
 
@@ -51,6 +54,8 @@ public class MongooseServerAdmin implements Lifecycle {
     private AdminCommandRegistry registry;
     private MongooseServerController serverController;
     private MongooseLatencyService latencyService;
+    private MongooseAuditCaptureService auditCapture;
+    private MongooseAuditIntrospectionService auditIntrospection;
 
     @ServiceRegistered
     public void admin(AdminCommandRegistry registry) {
@@ -68,6 +73,18 @@ public class MongooseServerAdmin implements Lifecycle {
     public void latencyService(MongooseLatencyService latencyService) {
         this.latencyService = latencyService;
         log.info("Latency service available for admin toggle: " + latencyService);
+    }
+
+    @ServiceRegistered
+    public void auditCaptureService(MongooseAuditCaptureService svc) {
+        this.auditCapture = svc;
+        log.info("Audit capture service available for admin commands: " + svc);
+    }
+
+    @ServiceRegistered
+    public void auditIntrospectionService(MongooseAuditIntrospectionService svc) {
+        this.auditIntrospection = svc;
+        log.info("Audit introspection service available for admin commands: " + svc);
     }
 
     @Override
@@ -94,6 +111,14 @@ public class MongooseServerAdmin implements Lifecycle {
         registry.registerCommand("latency.disable", this::latencyDisable);
         registry.registerCommand("latency.toggle", this::latencyToggle);
         registry.registerCommand("latency.reset", this::latencyReset);
+
+        // Audit-log capture commands (Phase 2 of the audit-log-viewer
+        // plugin). Mirror the latency.* shape — every command checks
+        // the service is installed and emits a clear message when not.
+        registry.registerCommand("audit.start", this::auditStart);
+        registry.registerCommand("audit.stop", this::auditStop);
+        registry.registerCommand("audit.status", this::auditStatus);
+        registry.registerCommand("audit.list", this::auditList);
     }
 
     @Override
@@ -144,6 +169,80 @@ public class MongooseServerAdmin implements Lifecycle {
         }
         latencyService.reset();
         out.accept("latency: histograms reset");
+    }
+
+    private boolean auditUnavailable(Consumer<String> err) {
+        if (auditCapture == null) {
+            err.accept("audit: capture service not installed (set performanceMonitoring.auditCapture.enabled: true and restart)");
+            return true;
+        }
+        return false;
+    }
+
+    private void auditStart(List<String> args, Consumer<String> out, Consumer<String> err) {
+        if (auditUnavailable(err)) return;
+        if (args.size() < 2) {
+            err.accept("usage: audit.start <processorName>");
+            return;
+        }
+        String processor = args.get(1);
+        try {
+            auditCapture.start(processor);
+            out.accept("audit: RECORDING " + processor);
+        } catch (IllegalArgumentException e) {
+            err.accept("audit: " + e.getMessage());
+        }
+    }
+
+    private void auditStop(List<String> args, Consumer<String> out, Consumer<String> err) {
+        if (auditUnavailable(err)) return;
+        if (args.size() < 2) {
+            err.accept("usage: audit.stop <processorName>");
+            return;
+        }
+        String processor = args.get(1);
+        auditCapture.stop(processor);
+        out.accept("audit: STOPPED " + processor);
+    }
+
+    private void auditStatus(List<String> args, Consumer<String> out, Consumer<String> err) {
+        if (auditUnavailable(err)) return;
+        if (args.size() >= 2) {
+            String processor = args.get(1);
+            out.accept("audit: " + processor + " " + (auditCapture.isRecording(processor) ? "RECORDING" : "idle"));
+            return;
+        }
+        // No processor — list state for every active processor we know about.
+        if (auditIntrospection == null) {
+            out.accept("audit: introspection service not bound — cannot list");
+            return;
+        }
+        StringBuilder sb = new StringBuilder("audit status:");
+        auditIntrospection.currentSinks().forEach((proc, handle) ->
+                sb.append("\n\t").append(proc).append("  RECORDING  ").append(handle.path()));
+        out.accept(sb.toString());
+    }
+
+    private void auditList(List<String> args, Consumer<String> out, Consumer<String> err) {
+        if (auditIntrospection == null) {
+            err.accept("audit: introspection service not installed");
+            return;
+        }
+        List<AuditSinkHandle> all = auditIntrospection.listAvailable();
+        if (all.isEmpty()) {
+            out.accept("audit: no captures available");
+            return;
+        }
+        StringBuilder sb = new StringBuilder("audit files:");
+        for (AuditSinkHandle h : all) {
+            sb.append("\n\t")
+                    .append(h.isLive() ? "● " : "  ")
+                    .append(h.processorName())
+                    .append("  ").append(h.recordCount() < 0 ? "?" : h.recordCount()).append(" records")
+                    .append("  ").append(h.sizeBytes() < 0 ? "?" : (h.sizeBytes() + " bytes"))
+                    .append("  ").append(h.path());
+        }
+        out.accept(sb.toString());
     }
 
     private void listServices(List<String> args, Consumer<String> out, Consumer<String> err) {

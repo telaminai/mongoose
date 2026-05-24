@@ -11,7 +11,7 @@
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <fluxtion.version>1.0.0</fluxtion.version>
+        <fluxtion.version>1.0.1</fluxtion.version>
     </properties>
     <description>
         A high-performance opinionated event processing server, connecting event source and event sinks to event handlers
@@ -40,6 +40,22 @@
         <url>https://github.com/telaminai/mongoose</url>
       <tag>HEAD</tag>
   </scm>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- Chronicle BOM aligns chronicle-queue's transitive deps
+                 (chronicle-core, chronicle-bytes, posix, …) so the
+                 mongoose pom's dependencyConvergence rule is satisfied.
+                 Same pattern the connector-chronicle plugin already uses. -->
+            <dependency>
+                <groupId>net.openhft</groupId>
+                <artifactId>chronicle-bom</artifactId>
+                <version>2.27ea5</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
     <dependencies>
         <dependency>
@@ -99,6 +115,18 @@
                  flag. When the flag is off the NoOpLatencyService is
                  installed and HdrHistogram is never touched at runtime,
                  but the classes still need to load. -->
+            <scope>compile</scope>
+        </dependency>
+        <!-- Chronicle Queue: backs ChronicleAuditCaptureService (Phase 1
+             of the audit-log-viewer plugin). When the auditCapture YAML
+             flag is off the NoOp service is installed and Chronicle is
+             never touched at runtime, but the classes need to load.
+             Same pattern as HdrHistogram above. Version line matches the
+             connector-chronicle plugin (chronicle-bom 2.27ea5). -->
+        <dependency>
+            <groupId>net.openhft</groupId>
+            <artifactId>chronicle-queue</artifactId>
+            <!-- Version supplied by the chronicle-bom dependencyManagement above. -->
             <scope>compile</scope>
         </dependency>
     </dependencies>
@@ -203,6 +231,12 @@
                 <configuration>
                     <argLine>
                         --add-opens java.base/jdk.internal.misc=ALL-UNNAMED
+                        --add-opens java.base/java.lang.reflect=ALL-UNNAMED
+                        --add-opens java.base/java.io=ALL-UNNAMED
+                        --add-opens java.base/java.nio=ALL-UNNAMED
+                        --add-opens java.base/sun.nio.ch=ALL-UNNAMED
+                        --add-opens java.base/jdk.internal.ref=ALL-UNNAMED
+                        --add-opens java.base/jdk.internal.util=ALL-UNNAMED
                     </argLine>
                 </configuration>
             </plugin>
