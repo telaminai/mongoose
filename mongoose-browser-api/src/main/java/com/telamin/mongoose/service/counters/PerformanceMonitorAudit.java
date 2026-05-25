@@ -16,8 +16,19 @@ package com.telamin.mongoose.service.counters;
 public final class PerformanceMonitorAudit
         implements com.telamin.fluxtion.runtime.audit.Auditor {
 
+    // No-arg ctor — Fluxtion source-gen emits `new PerformanceMonitorAudit()`
+    // in the generated processor (the processorName field is set separately
+    // at runtime via setProcessorName); the type-check has to pass for the
+    // browser builder phase even though this stub never executes.
+    public PerformanceMonitorAudit() {
+    }
+
     public PerformanceMonitorAudit(String processorName) {
     }
+
+    public void setProcessorName(String name) { }
+
+    public void tearDown() { }
 
     @Override public void nodeRegistered(Object node, String nodeName) { }
 }
