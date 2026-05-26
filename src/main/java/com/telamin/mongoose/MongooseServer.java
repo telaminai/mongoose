@@ -434,6 +434,7 @@ public class MongooseServer implements MongooseServerController {
      * @see #registerEventSource(String, EventSource, Function)
      * @see EventSource
      */
+    @Override
     public <T> void registerEventSource(String sourceName, EventSource<T> eventSource) {
         registerEventSource(sourceName, eventSource, null);
     }
@@ -532,6 +533,14 @@ public class MongooseServer implements MongooseServerController {
      * @param services services to register
      * @throws com.telamin.mongoose.exception.ServiceRegistrationException if a service name is already in use
      */
+    /** Single-service variant required by {@link MongooseServerController}.
+     *  Delegates to the varargs form so the broadcast + injection
+     *  logic stays in one place. */
+    @Override
+    public void registerService(Service<?> service) {
+        registerService(new Service<?>[] { service });
+    }
+
     public void registerService(Service<?>... services) {
         for (Service<?> service : services) {
             String serviceName = service.serviceName();
@@ -559,7 +568,45 @@ public class MongooseServer implements MongooseServerController {
             // order — counters + health get registered first, but this
             // method also runs for them; skip self-registration cycles.
             ensureServiceCountersAndHealth(serviceName, instance);
+            // Dynamic-service broadcast: notify every already-running
+            // processor group so processor-internal nodes carrying
+            // @ServiceRegistered receive the new service via their own
+            // agent thread. No-op for the boot path because no agents
+            // are running yet — those groups pick up registeredServices
+            // at processor-join time via ComposingEventProcessorAgent.
+            // checkForAdded.
+            composingEventProcessorAgents.values().forEach(runner ->
+                    runner.group().broadcastServiceRegistered(service));
         }
+    }
+
+    /**
+     * Deregister a previously registered service.
+     * <p>
+     * Removes the service from the global registry, calls {@code stop()}
+     * on it, flips the {@code service.{name}.up} gauge to 0, and
+     * broadcasts {@code @ServiceDeregistered} to every running processor
+     * group so processor-internal nodes (SubscriptionManagerNode,
+     * SinkPublisher, custom nodes) can unbind.
+     * <p>
+     * Distinct from {@link #stopService(String)}: stopService is the
+     * lifecycle-pause callback (service can be restarted, stays in the
+     * registry), removeService is the destructive deregistration.
+     * <p>
+     * No-op if {@code serviceName} isn't registered.
+     */
+    public void removeService(String serviceName) {
+        log.info("removeService:" + serviceName);
+        Service<?> removed = registeredServices.remove(serviceName);
+        if (removed == null) return;
+        try {
+            removed.stop();
+        } catch (Exception ex) {
+            log.warning("error stopping service '" + serviceName + "' during remove: " + ex);
+        }
+        flipServiceUp(serviceName, 0);
+        composingEventProcessorAgents.values().forEach(runner ->
+                runner.group().broadcastServiceDeregistered(removed));
     }
 
     /**
