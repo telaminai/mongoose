@@ -90,4 +90,48 @@ public interface MongooseServerController {
      * @param processorName the name of the processor to be stopped
      */
     void stopProcessor(String groupName, String processorName);
+
+    /**
+     * Register a service dynamically with the running server.
+     * <p>
+     * The service is added to the global registry, has dependencies
+     * injected from existing services, and is broadcast to every
+     * already-running event processor — every processor-internal node
+     * carrying {@code @ServiceRegistered} for the service's type
+     * receives the callback live (subject to per-group agent-thread
+     * scheduling).
+     * <p>
+     * Symmetric with {@link #removeService(String)}. Use this when an
+     * operator wants to wire a new feed, sink, or general service into
+     * a running server.
+     *
+     * @param service the service to register; must not be null and must
+     *                carry a unique service name
+     * @throws com.telamin.mongoose.exception.ServiceRegistrationException
+     *         if a service with the same name is already registered
+     */
+    void registerService(com.telamin.fluxtion.runtime.service.Service<?> service);
+
+    /**
+     * Register a named event source (feed) dynamically with the running
+     * server. Convenience for wrapping {@code eventSource} in a
+     * {@link com.telamin.fluxtion.runtime.service.Service} and
+     * delegating to {@link #registerService}.
+     */
+    <T> void registerEventSource(String sourceName, com.telamin.mongoose.service.EventSource<T> eventSource);
+
+    /**
+     * Deregister a previously registered service.
+     * <p>
+     * Removes from the global registry, stops the service, and
+     * broadcasts {@code @ServiceDeregistered} to every running
+     * processor — processor-internal nodes with matching
+     * {@code @ServiceDeregistered} handlers unbind. No-op when
+     * {@code serviceName} isn't registered.
+     * <p>
+     * Distinct from {@link #stopService(String)} which is the
+     * lifecycle-pause callback (the service stays in the registry and
+     * can be restarted).
+     */
+    void removeService(String serviceName);
 }

@@ -48,6 +48,15 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     private final ConcurrentHashMap<EventSubscriptionKey<?>, EventQueueToEventProcessor> queueProcessorMap = new ConcurrentHashMap<>();
     private final OneToOneConcurrentArrayQueue<Supplier<NamedEventProcessor>> toStartList = new OneToOneConcurrentArrayQueue<>(128);
     private final OneToOneConcurrentArrayQueue<String> toStopList = new OneToOneConcurrentArrayQueue<>(128);
+    // Dynamic-service broadcast queues. MongooseServer.registerService /
+    // removeService publish onto these so the agent thread (and only the
+    // agent thread) calls eventProcessor.registerService /
+    // deRegisterService on every running DataFlow in this group — that's
+    // what fires @ServiceRegistered / @ServiceDeregistered on processor-
+    // internal nodes (SubscriptionManagerNode for feeds, SinkPublisher
+    // for sinks, plus any operator-defined node carrying the annotation).
+    private final OneToOneConcurrentArrayQueue<Service<?>> servicesToBroadcastRegister = new OneToOneConcurrentArrayQueue<>(128);
+    private final OneToOneConcurrentArrayQueue<Service<?>> servicesToBroadcastDeregister = new OneToOneConcurrentArrayQueue<>(128);
     private final List<EventQueueToEventProcessor> queueReadersToAdd = new ArrayList<>();
     private final MongooseServer mongooseServer;
     private final DeadWheelScheduler scheduler;
@@ -82,6 +91,24 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         toStopList.add(name);
     }
 
+    /** Queue a service for broadcast {@code @ServiceRegistered} dispatch
+     *  on every processor in this group. Called from arbitrary threads
+     *  (typically the MongooseServer thread handling an admin call); the
+     *  actual {@code eventProcessor.registerService(...)} happens on the
+     *  agent thread via {@link #checkForBroadcasts()} so processor-
+     *  internal state stays single-threaded. */
+    public void broadcastServiceRegistered(Service<?> service) {
+        servicesToBroadcastRegister.add(service);
+    }
+
+    /** Symmetric to {@link #broadcastServiceRegistered}. Fires
+     *  {@code @ServiceDeregistered} callbacks on every processor in this
+     *  group — that's how SubscriptionManagerNode unbinds a feed and how
+     *  SinkPublisher nulls its consumer reference. */
+    public void broadcastServiceDeregistered(Service<?> service) {
+        servicesToBroadcastDeregister.add(service);
+    }
+
     @Override
     public void onStart() {
         // Best-effort core pinning if configured for this agent group (guard for null during unit tests)
@@ -100,6 +127,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     public int doWork() throws Exception {
         checkForStopped();
         checkForAdded();
+        checkForBroadcasts();
         int work = super.doWork();
         // Counter accounting:
         //   work > 0  → events were dispatched through the composed agents
@@ -207,6 +235,37 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
                 }
             }
         });
+    }
+
+    /** Drains pending service-broadcast queues onto every running
+     *  processor in this group. Runs on the agent thread so the
+     *  per-processor {@code registerService} / {@code deRegisterService}
+     *  call (which mutates the processor's internal
+     *  {@code ServiceRegistryNode} bookkeeping) inherits the same
+     *  threading guarantees as event dispatch. */
+    private void checkForBroadcasts() {
+        if (!servicesToBroadcastRegister.isEmpty()) {
+            servicesToBroadcastRegister.drain(svc ->
+                    registeredEventProcessors.values().forEach(np -> {
+                        com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(np.eventProcessor());
+                        try {
+                            np.eventProcessor().registerService(svc);
+                        } finally {
+                            com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
+                        }
+                    }));
+        }
+        if (!servicesToBroadcastDeregister.isEmpty()) {
+            servicesToBroadcastDeregister.drain(svc ->
+                    registeredEventProcessors.values().forEach(np -> {
+                        com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(np.eventProcessor());
+                        try {
+                            np.eventProcessor().deRegisterService(svc);
+                        } finally {
+                            com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
+                        }
+                    }));
+        }
     }
 
     public boolean isProcessorRegistered(String processorName) {
