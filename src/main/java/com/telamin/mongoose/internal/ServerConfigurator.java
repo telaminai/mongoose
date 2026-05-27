@@ -8,12 +8,14 @@ import com.telamin.fluxtion.runtime.audit.EventLogControlEvent;
 import com.telamin.fluxtion.runtime.audit.LogRecordListener;
 import com.telamin.fluxtion.runtime.service.Service;
 import com.telamin.mongoose.MongooseServer;
+import com.telamin.mongoose.config.HandlerPipeConfig;
 import com.telamin.mongoose.config.MongooseServerConfig;
 import com.telamin.mongoose.config.ServiceConfig;
 import com.telamin.mongoose.dutycycle.GlobalErrorHandler;
 import com.telamin.mongoose.service.pool.ObjectPoolsRegistry;
 import com.telamin.mongoose.service.pool.impl.Pools;
 import com.telamin.mongoose.service.servercontrol.MongooseServerController;
+import com.telamin.mongoose.service.servercontrol.PipeRegistration;
 import org.agrona.concurrent.IdleStrategy;
 
 import java.util.Objects;
@@ -76,6 +78,17 @@ public final class ServerConfigurator {
             });
         }
 
+        //in-VM pipes — each entry produces TWO service registrations under
+        //the same name (a NamedFeed for subscribers + a MessageSink for
+        //publishers). Both halves share the underlying InMemoryEventSource
+        //queue. ServiceInjector handles the rest: @ServiceRegistered on
+        //either type resolves to the correct half by service-class match.
+        if (mongooseServerConfig.getPipes() != null) {
+            for (com.telamin.mongoose.config.HandlerPipeConfig<?> pipeCfg : mongooseServerConfig.getPipes()) {
+                registerPipe(mongooseServer, pipeCfg);
+            }
+        }
+
         //services
         if (mongooseServerConfig.getServices() != null) {
             for (ServiceConfig<?> serviceConfig : mongooseServerConfig.getServices()) {
@@ -129,5 +142,28 @@ public final class ServerConfigurator {
         mongooseServer.start();
 
         return mongooseServer;
+    }
+
+    /** Registers both halves of a configured pipe under one shared name.
+     *  Generic helper so the wildcard {@code HandlerPipeConfig<?>} captures
+     *  cleanly into a concrete T at this call site. Also records the pipe
+     *  in MongooseServer's pipe registry so admin / introspection surfaces
+     *  can render it as a single logical entity. */
+    private static <T> void registerPipe(MongooseServer mongooseServer,
+                                         HandlerPipeConfig<T> pipeCfg) {
+        HandlerPipeConfig.Built<T> built = pipeCfg.build();
+        if (pipeCfg.isAgent()) {
+            mongooseServer.registerEventFeedWorker(pipeCfg.toFeedServiceAgent(built), pipeCfg.getValueMapper());
+        } else {
+            mongooseServer.registerEventFeed(built.feedService, pipeCfg.getValueMapper());
+        }
+        mongooseServer.registerEventSink(built.sinkService, null);
+        mongooseServer.recordPipeRegistration(new PipeRegistration(
+                built.feedService.serviceName(),
+                built.sinkService.serviceName(),
+                pipeCfg.getAgentName(),
+                pipeCfg.isBroadcast(),
+                pipeCfg.isCacheEventLog()
+        ));
     }
 }

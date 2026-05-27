@@ -11,7 +11,88 @@ It couples:
 - You want lifecycle-aware dispatch: cache events before startComplete and replay them once the system is ready.
 - You want to reuse Mongoose’s subscription, wrapping, and data-mapping features.
 
-## Quick start
+## Two configuration shapes
+
+There are two ways to wire a `HandlerPipe` into a Mongoose server. Both produce
+the same runtime; pick the one that reads better for your call site.
+
+### Declarative — `HandlerPipeConfig` (recommended for boot-time wiring)
+
+A single `addPipe(...)` call on the server builder registers **both halves** of
+the pipe under one logical name:
+
+```java
+MongooseServerConfig cfg = MongooseServerConfig.builder()
+        .addPipe(HandlerPipeConfig.builder()
+                .name("orders")                                  // feed-side name
+                .broadcast(true)
+                .cacheEventLog(true)
+                .agent("pipe-agent", new SleepingMillisIdleStrategy(1))
+                .build())
+        .addProcessorGroup(...)                                  // publishers + subscribers
+        .build();
+```
+
+After boot:
+
+- **Subscribers** reach the pipe via `subscribeToNamedFeed("orders")`.
+- **Publishers** receive the sink via
+  `@ServiceRegistered void onSink(MessageSink<?> sink, String name)` with
+  `name = "orders.sink"` (default `.sink` suffix; override with `sinkName(...)`
+  on the builder).
+
+The two-name convention works around Mongoose's name-keyed service registry —
+which rejects same-name registrations even with different service classes. The
+suffix is small operator-facing cost; the upside is one config entry per pipe
+instead of separate `addEventFeed` + `addEventSink` calls that must stay in sync.
+
+YAML equivalent — drop into `config/server.yml`:
+
+```yaml
+pipes:
+  - name: orders
+    broadcast: true
+    cacheEventLog: true
+    agentName: pipe-agent
+    idleStrategy: !!org.agrona.concurrent.SleepingMillisIdleStrategy {}
+    # sinkName: orders-in   # optional override of the default ".sink" suffix
+```
+
+Cross-thread safe — the underlying `InMemoryEventSource` extends
+`AbstractAgentHostedEventSourceService`, so the publisher's agent thread
+enqueues, the pipe's agent thread drains, and the subscriber's agent thread
+receives. Producer and consumer can sit on independent agent groups without
+explicit synchronization.
+
+### How pipes appear in the admin web
+
+Pipes are tracked separately from regular services so the admin surface
+can render them as one logical entity rather than two unrelated
+`<name>` + `<name>.sink` rows:
+
+- **`/api/pipes`** returns the list of configured pipes:
+  `{name, sinkName, agentName, broadcast, cacheEventLog}`. The admin
+  fetches this alongside `/api/services` + `/api/agents`.
+- **Overview · Pipes card** lists one row per pipe with both endpoint
+  names, agent, and flags (broadcast / cache).
+- **Topology** view collapses the two halves into a single
+  diamond-shaped `pipe` node with both directions wired — incoming
+  arrows from publisher processors (sink-side), outgoing arrows to
+  subscriber agent groups (feed-side). The two underlying service
+  rows in the Feeds + Sinks Overview cards are suppressed so they
+  aren't double-counted; they're still discoverable in the Services
+  list view if an operator wants the raw view.
+
+`MongooseServerController` adds a `registeredPipes()` method (default
+returns empty for any controller that hasn't been updated). Operators
+building custom admin surfaces consume the same list to render pipes
+in their own way.
+
+### Programmatic — direct `HandlerPipe` construction
+
+When you need the pipe instance available at boot time (e.g. to inject it into
+a service constructor), construct it directly and wire the source side as an
+`EventFeedConfig`:
 
 ```java
 // Create a pipe for a logical feed name
@@ -29,8 +110,9 @@ pipe.sink().accept("order-123-created");
 ```
 
 Notes:
-- cacheEventLog(true) will cache any events published before startComplete and replay them automatically when the source calls startComplete().
-- You can customize data mapping and wrapping like other EventSource services.
+- `cacheEventLog(true)` will cache any events published before `startComplete`
+  and replay them automatically when the source calls `startComplete()`.
+- You can customise data mapping and wrapping like other `EventSource` services.
 
 ## Sample code
 

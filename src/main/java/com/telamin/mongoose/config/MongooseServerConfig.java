@@ -74,6 +74,16 @@ public class MongooseServerConfig {
     private List<EventSinkConfig<?>> eventSinks;
 
     /**
+     * In-VM pipes between event processors. Each entry produces two service
+     * registrations under the same name: a {@link com.telamin.fluxtion.runtime.input.NamedFeed}
+     * for subscribers and a {@link com.telamin.fluxtion.runtime.output.MessageSink}
+     * for publishers, both sharing the same internal queue. Cross-thread safe
+     * by construction — the underlying {@code InMemoryEventSource} is agent-
+     * hosted, so producer + consumer can sit on different agent groups.
+     */
+    private List<HandlerPipeConfig<?>> pipes;
+
+    /**
      * Service registrations (standard and worker/agent-backed).
      */
     private List<ServiceConfig<?>> services;
@@ -454,6 +464,7 @@ public class MongooseServerConfig {
         private final List<EventProcessorGroupConfig> eventHandlers = new ArrayList<>();
         private final List<EventFeedConfig<?>> eventFeeds = new ArrayList<>();
         private final List<EventSinkConfig<?>> eventSinks = new ArrayList<>();
+        private final List<HandlerPipeConfig<?>> pipes = new ArrayList<>();
         private final List<ServiceConfig<?>> services = new ArrayList<>();
         private final List<ThreadConfig> agentThreads = new ArrayList<>();
         private IdleStrategy idleStrategy;
@@ -503,6 +514,19 @@ public class MongooseServerConfig {
          */
         public Builder addEventSink(EventSinkConfig<?> sink) {
             this.eventSinks.add(sink);
+            return this;
+        }
+
+        /**
+         * Add an in-VM pipe between event processors. Both halves
+         * (the publish-side sink + the subscribe-side feed) are
+         * registered under the same name at boot.
+         *
+         * @param pipe pipe configuration to add
+         * @return this builder
+         */
+        public Builder addPipe(HandlerPipeConfig<?> pipe) {
+            this.pipes.add(pipe);
             return this;
         }
 
@@ -606,6 +630,7 @@ public class MongooseServerConfig {
             if (!eventHandlers.isEmpty()) cfg.setEventHandlers(new ArrayList<>(eventHandlers));
             if (!eventFeeds.isEmpty()) cfg.setEventFeeds(new ArrayList<>(eventFeeds));
             if (!eventSinks.isEmpty()) cfg.setEventSinks(new ArrayList<>(eventSinks));
+            if (!pipes.isEmpty()) cfg.setPipes(new ArrayList<>(pipes));
             if (!services.isEmpty()) cfg.setServices(new ArrayList<>(services));
             if (!agentThreads.isEmpty()) cfg.setAgentThreads(new ArrayList<>(agentThreads));
             if (idleStrategy != null) cfg.setIdleStrategy(idleStrategy);

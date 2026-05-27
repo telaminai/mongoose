@@ -115,6 +115,26 @@ eventFeeds:
     broadcast: true
     idleStrategy: !!org.agrona.concurrent.BusySpinIdleStrategy { }
 
+# In-VM pipes between processors — each entry registers both halves
+# of a HandlerPipe under one logical name (a NamedFeed for
+# subscribers, a MessageSink with the ".sink" suffix for publishers).
+# See: how-to/handler-pipe-config.
+pipes:
+  - name: orders
+    broadcast: true
+    cacheEventLog: true
+    agentName: pipe-agent
+    idleStrategy: !!org.agrona.concurrent.SleepingMillisIdleStrategy { }
+
+l# FanOutSink — policy layer over N downstream sinks. Processor
+# writes once; FanOutSink forwards to every target with per-target
+# failure / circuit-breaker semantics. See: how-to/fan-out-sink.
+eventSinks:
+  - name: trade-fanout
+    instance: !!com.telamin.mongoose.plugin.lib.fanout.FanOutSink
+      targetSinkNames: [ audit-file, kafka-out ]
+      failurePolicy: CONTINUE
+
 # Handlers (processor on agent thread)
 eventHandlers:
   - agentName: processor-agent
