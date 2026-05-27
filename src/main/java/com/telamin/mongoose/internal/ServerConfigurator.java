@@ -76,6 +76,17 @@ public final class ServerConfigurator {
             });
         }
 
+        //in-VM pipes — each entry produces TWO service registrations under
+        //the same name (a NamedFeed for subscribers + a MessageSink for
+        //publishers). Both halves share the underlying InMemoryEventSource
+        //queue. ServiceInjector handles the rest: @ServiceRegistered on
+        //either type resolves to the correct half by service-class match.
+        if (mongooseServerConfig.getPipes() != null) {
+            for (com.telamin.mongoose.config.HandlerPipeConfig<?> pipeCfg : mongooseServerConfig.getPipes()) {
+                registerPipe(mongooseServer, pipeCfg);
+            }
+        }
+
         //services
         if (mongooseServerConfig.getServices() != null) {
             for (ServiceConfig<?> serviceConfig : mongooseServerConfig.getServices()) {
@@ -129,5 +140,19 @@ public final class ServerConfigurator {
         mongooseServer.start();
 
         return mongooseServer;
+    }
+
+    /** Registers both halves of a configured pipe under one shared name.
+     *  Generic helper so the wildcard {@code HandlerPipeConfig<?>} captures
+     *  cleanly into a concrete T at this call site. */
+    private static <T> void registerPipe(MongooseServer mongooseServer,
+                                         com.telamin.mongoose.config.HandlerPipeConfig<T> pipeCfg) {
+        com.telamin.mongoose.config.HandlerPipeConfig.Built<T> built = pipeCfg.build();
+        if (pipeCfg.isAgent()) {
+            mongooseServer.registerEventFeedWorker(pipeCfg.toFeedServiceAgent(built), pipeCfg.getValueMapper());
+        } else {
+            mongooseServer.registerEventFeed(built.feedService, pipeCfg.getValueMapper());
+        }
+        mongooseServer.registerEventSink(built.sinkService, null);
     }
 }
