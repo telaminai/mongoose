@@ -25,6 +25,7 @@ import com.telamin.mongoose.service.EventToInvokeStrategy;
 import com.telamin.mongoose.service.admin.AdminCommandRegistry;
 import com.telamin.mongoose.service.scheduler.DeadWheelScheduler;
 import com.telamin.mongoose.service.servercontrol.MongooseServerController;
+import com.telamin.mongoose.service.servercontrol.PipeRegistration;
 import lombok.SneakyThrows;
 import lombok.extern.java.Log;
 import org.agrona.ErrorHandler;
@@ -124,6 +125,10 @@ public class MongooseServer implements MongooseServerController {
     /** Audit capture config — read for autoStart at processor registration. */
     private com.telamin.mongoose.config.AuditCaptureConfig auditCaptureConfig;
     private final Set<Service<?>> registeredAgentServices = ConcurrentHashMap.newKeySet();
+    /** Configured pipes — tracked separately from registeredServices because
+     *  a pipe is one logical config entry but two service registrations.
+     *  Order-preserving so the admin surface lists pipes in declaration order. */
+    private final List<PipeRegistration> registeredPipes = Collections.synchronizedList(new ArrayList<>());
     private ErrorHandler errorHandler = m -> log.severe(m.getMessage());
     private final ServiceRegistryNode serviceRegistry = new ServiceRegistryNode();
     private volatile boolean started = false;
@@ -907,6 +912,18 @@ public class MongooseServer implements MongooseServerController {
     @Override
     public Map<String, Service<?>> registeredServices() {
         return registeredServices;
+    }
+
+    /** Records a configured pipe so {@link #registeredPipes()} can
+     *  return it. Called by {@code ServerConfigurator} after both
+     *  underlying service registrations succeed. */
+    public void recordPipeRegistration(PipeRegistration registration) {
+        registeredPipes.add(registration);
+    }
+
+    @Override
+    public List<PipeRegistration> registeredPipes() {
+        return Collections.unmodifiableList(new ArrayList<>(registeredPipes));
     }
 
     /**

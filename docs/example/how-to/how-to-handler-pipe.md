@@ -64,6 +64,30 @@ enqueues, the pipe's agent thread drains, and the subscriber's agent thread
 receives. Producer and consumer can sit on independent agent groups without
 explicit synchronization.
 
+### How pipes appear in the admin web
+
+Pipes are tracked separately from regular services so the admin surface
+can render them as one logical entity rather than two unrelated
+`<name>` + `<name>.sink` rows:
+
+- **`/api/pipes`** returns the list of configured pipes:
+  `{name, sinkName, agentName, broadcast, cacheEventLog}`. The admin
+  fetches this alongside `/api/services` + `/api/agents`.
+- **Overview · Pipes card** lists one row per pipe with both endpoint
+  names, agent, and flags (broadcast / cache).
+- **Topology** view collapses the two halves into a single
+  diamond-shaped `pipe` node with both directions wired — incoming
+  arrows from publisher processors (sink-side), outgoing arrows to
+  subscriber agent groups (feed-side). The two underlying service
+  rows in the Feeds + Sinks Overview cards are suppressed so they
+  aren't double-counted; they're still discoverable in the Services
+  list view if an operator wants the raw view.
+
+`MongooseServerController` adds a `registeredPipes()` method (default
+returns empty for any controller that hasn't been updated). Operators
+building custom admin surfaces consume the same list to render pipes
+in their own way.
+
 ### Programmatic — direct `HandlerPipe` construction
 
 When you need the pipe instance available at boot time (e.g. to inject it into

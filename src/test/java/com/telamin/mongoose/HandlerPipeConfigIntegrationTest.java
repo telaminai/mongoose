@@ -125,6 +125,30 @@ public class HandlerPipeConfigIntegrationTest {
     }
 
     @Test
+    void registered_pipes_surfaces_the_configured_pipe() throws Exception {
+        MongooseServerConfig cfg = new MongooseServerConfig();
+        cfg.setPipes(java.util.List.of(
+                HandlerPipeConfig.builder()
+                        .name(PIPE_NAME)
+                        .broadcast(true)
+                        .agent("pipe-agent", new SleepingMillisIdleStrategy(1))
+                        .build()));
+
+        MongooseServer server = MongooseServer.bootServer(cfg);
+        try {
+            var pipes = server.registeredPipes();
+            assertEquals(1, pipes.size(), "one configured pipe should appear in registeredPipes()");
+            var p = pipes.get(0);
+            assertEquals(PIPE_NAME, p.name(), "feed-side name matches the config");
+            assertEquals(PIPE_NAME + ".sink", p.sinkName(), "sink-side name uses the default .sink suffix");
+            assertEquals("pipe-agent", p.agentName());
+            assertTrue(p.broadcast());
+        } finally {
+            server.stop();
+        }
+    }
+
+    @Test
     void config_builder_addPipe_round_trip() {
         MongooseServerConfig cfg = MongooseServerConfig.builder()
                 .addPipe(HandlerPipeConfig.builder().name("p1").build())
