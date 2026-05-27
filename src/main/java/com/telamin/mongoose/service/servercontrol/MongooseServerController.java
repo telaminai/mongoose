@@ -121,6 +121,21 @@ public interface MongooseServerController {
     <T> void registerEventSource(String sourceName, com.telamin.mongoose.service.EventSource<T> eventSource);
 
     /**
+     * Returns the list of pipes configured for this server. A pipe is
+     * a single logical {@code HandlerPipeConfig} entry that produced
+     * two underlying service registrations (a {@link com.telamin.fluxtion.runtime.input.NamedFeed}
+     * for subscribers + a {@link com.telamin.fluxtion.runtime.output.MessageSink}
+     * for publishers). Surfaced for admin / introspection use cases
+     * that want to render the pairing as one entity rather than
+     * guessing at the sink-name suffix convention.
+     * <p>
+     * Empty when no pipes were declared via {@code MongooseServerConfig.pipes}.
+     */
+    default java.util.List<PipeRegistration> registeredPipes() {
+        return java.util.Collections.emptyList();
+    }
+
+    /**
      * Deregister a previously registered service.
      * <p>
      * Removes from the global registry, stops the service, and

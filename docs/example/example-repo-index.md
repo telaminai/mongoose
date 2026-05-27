@@ -35,7 +35,9 @@ These examples range from simple "getting started" tutorials to more complex cas
 - [Data Mapping]({{example_root}}/how-to/data-mapping) - Demonstrates how to transform incoming feed events to a different type using value mapping with Function<Input, ?> mappers.
 - [Using the Scheduler Service]({{example_root}}/how-to/using-the-scheduler-service) - Shows how to use the built-in SchedulerService for delayed actions, periodic jobs, and scheduled triggers.
 - [Injecting Config into a Processor]({{example_root}}/how-to/injecting-config-into-a-processor) - Demonstrates how to inject configuration data into event processors for customizable behavior.
-- [Handler Pipe]({{example_root}}/how-to/handler-pipe) - Shows how to use HandlerPipe for in-VM communication between handlers, enabling message passing patterns.
+- [Handler Pipe]({{example_root}}/how-to/handler-pipe) - Shows how to use HandlerPipe for in-VM communication between handlers, enabling message passing patterns. Programmatic shape — build the pipe instance + wire each side as separate config entries.
+- [Handler Pipe Config]({{example_root}}/how-to/handler-pipe-config) - Same outcome as the Handler Pipe example, declared with a single `HandlerPipeConfig` entry on the server builder. One call registers both halves of the pipe. Recommended shape for boot-time wiring.
+- [Fan-Out Sink](../example/how-to/how-to-fan-out-sink.md) - Policy layer over N downstream sinks: one processor write fans out to many targets with per-target failure / retry / circuit-breaker semantics. Right place for compliance routing, cross-tier deployment, parallel-write migration.
 - [Object Pool]({{example_root}}/how-to/object-pool) - Demonstrates zero-GC object pooling techniques for high-performance event processing with minimal garbage collection.
 - [Replay]({{example_root}}/how-to/replay) - Shows how to implement deterministic replay with ReplayRecord and the data-driven clock for testing and debugging.
 - [Core Pin]({{example_root}}/how-to/core-pin) - Shows how to pin agent threads to specific CPU cores for optimal performance in latency-sensitive applications.
