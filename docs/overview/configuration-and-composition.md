@@ -126,6 +126,15 @@ pipes:
     agentName: pipe-agent
     idleStrategy: !!org.agrona.concurrent.SleepingMillisIdleStrategy { }
 
+l# FanOutSink — policy layer over N downstream sinks. Processor
+# writes once; FanOutSink forwards to every target with per-target
+# failure / circuit-breaker semantics. See: how-to/fan-out-sink.
+eventSinks:
+  - name: trade-fanout
+    instance: !!com.telamin.mongoose.plugin.lib.fanout.FanOutSink
+      targetSinkNames: [ audit-file, kafka-out ]
+      failurePolicy: CONTINUE
+
 # Handlers (processor on agent thread)
 eventHandlers:
   - agentName: processor-agent
