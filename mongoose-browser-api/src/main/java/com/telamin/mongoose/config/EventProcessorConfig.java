@@ -6,6 +6,7 @@
 package com.telamin.mongoose.config;
 
 import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
 import com.telamin.mongoose.browser.Stub;
 
 /**
@@ -19,6 +20,12 @@ import com.telamin.mongoose.browser.Stub;
  * @param <T> the {@link DataFlow} processor type being configured
  */
 public class EventProcessorConfig<T extends DataFlow> {
+
+    public EventProcessorConfig() {
+    }
+
+    public EventProcessorConfig(ObjectEventHandlerNode customHandler) {
+    }
 
     /**
      * Stub of {@code EventProcessorConfig.builder()}.
@@ -38,6 +45,10 @@ public class EventProcessorConfig<T extends DataFlow> {
         }
 
         public Builder<T> handler(T handler) {
+            throw Stub.notRunnable();
+        }
+
+        public Builder<T> customHandler(ObjectEventHandlerNode node) {
             throw Stub.notRunnable();
         }
 
