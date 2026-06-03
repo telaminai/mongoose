@@ -1,6 +1,6 @@
 # Backpressure & slow-consumer handling
 
-**Status**: Draft / problem-framing — rev 3 (two review rounds + consumer-side-replay reframe incorporated). No code yet — this doc exists to settle the design before touching the dispatch hot path.
+**Status**: Draft / problem-framing — rev 4 (three review rounds + consumer-side-replay reframe; implementation-precision pass). No code yet — this doc exists to settle the design before touching the dispatch hot path.
 **Headline reframe (rev 3)**: deterministic replay is **consumer-side event sourcing** (a Fluxtion `Auditor` records the realised post-merge order + data-driven clock; replay re-drives it, bypassing the bus). So **backpressure is NOT the determinism lever** — it governs the separate, opt-in *input-completeness / chain-of-custody* guarantee. Determinism is structural and policy-independent; losslessness (`BLOCK`) is the add-on that makes the audit record complete.
 **Owners**: Greg
 **Drives**: deterministic startup replay of large sources, an off-heap (Chronicle-backed) replay log with `durableReplay` / `maxMessageHistorySize` config, a *lossless* mode for regulated/audit deployments, making `SlowConsumerStrategy` a real knob instead of a dead field, and a clear split between the error-retry axis (`RetryPolicy`) and the flow-control axis (`SlowConsumerStrategy`).
@@ -24,6 +24,17 @@ With that cut, the things this doc must fix are narrower and clearer:
 - We ship two config surfaces that *look* like backpressure control (`SlowConsumerStrategy`, `RetryPolicy`) but neither does what an operator would assume.
 
 This doc inventories what exists, separates the two guarantees cleanly, and proposes a design to decide on.
+
+### Terminology (read this first — the four terms are easy to blur)
+
+| Term | Meaning | Mechanism |
+|------|---------|-----------|
+| **Faithful replay / replay-equivalence** | Reproduce exactly what a processor saw and did (incl. data-driven time). | **Consumer-side** `Auditor` replay. **No bus.** Policy-independent. |
+| **Input completeness / chain of custody** | Every event accepted at the boundary reaches the processor. | `BLOCK` (don't drop) + drop counters, or an ingress audit. |
+| **Consumer-side audit replay** | Per-processor `ReplayRecord` stream captured *after* merge; direct `onEvent` replay. | The determinism/recovery artifact. Durable = Chronicle audit store. |
+| **Feed-side catch-up** | Retained feed records used to *prime a late subscriber* through the normal queues. | `EventToQueuePublisher` cache. Subject to backpressure. The **only** place `BLOCK` applies. |
+
+Wherever the words "replay" / "recovery" / "catch-up" appear below, they mean exactly one of these. Determinism = row 1/3 (no bus); backpressure = row 2/4 (the bus).
 
 ---
 
@@ -63,7 +74,7 @@ OneToOneConcurrentArrayQueue<Object> targetQueue = namedQueue.targetQueue();
 targetQueue.offer(record);   // return value ignored — no spin, no retry, no log
 ```
 
-A full queue on the replay path **loses the record with no spin and no log line**. This is exactly the startup-large-source path. It is the single most determinism-hostile line in the dispatch layer.
+A full queue on this path **loses the record with no spin and no log line**. *(Corrected framing, rev 3:)* this is the **feed-side catch-up** path (priming a late subscriber), **not** the deterministic-recovery mechanism — recovery is the consumer-side audit path and bypasses the bus. So this is not "determinism-hostile"; it is a serious **late-subscriber catch-up completeness bug**, made worse by being silent.
 
 ### 3. Queue sizing — fixed at 1024
 
@@ -203,6 +214,12 @@ The consequence is large:
 - **All processor inputs — and time — must flow through the audited event path.** Replay fidelity requires that everything the processor reacts to arrives as an event the auditor sees, and that time comes from the data-driven clock. Mongoose's service-injection model makes it easy to violate: a processor driven by a **direct injected-service method call** or a **scheduler tick** *outside* the event path is an "external dependency" (the exact failure mode the Fluxtion troubleshooting docs name) — invisible to the auditor, so replay diverges. Constraint: route all processor inputs and time through the event/clock path. Worth a lint/validation check.
 - **Where is the completeness boundary sold?** The auditor sits at **processor input — *after* backpressure has dropped.** So the audit log faithfully records *what the processor saw*, i.e. "what survived." If a regulated buyer needs "everything that arrived at the **system boundary**," a queue-dropped event is invisible to the processor auditor — only the drop counter witnesses it. For true ingress chain-of-custody you therefore need either `BLOCK` (nothing dropped before the processor audits it, so "arrived" == "audited") **or** a second auditor/record at ingress. State explicitly which boundary the guarantee is sold at — this is precisely the `BLOCK`/completeness justification, now correctly located.
 
+**Ingress audit is a first-class alternative to `BLOCK`, not just a footnote.** Two distinct chain-of-custody models, and some regulated buyers prefer the second:
+- **`BLOCK`** — a boundary-accepted event *cannot be dropped* before the processor audits it. Custody via guaranteed delivery.
+- **Ingress audit log** — record every accepted input at the system boundary *before* any queue/drop decision. Custody via guaranteed *recording*, even if processing later (intentionally) drops stale data. `BLOCK` then becomes the narrower mode that guarantees every *ingress-audited* event is also *processor-audited*.
+
+The ingress-audit model is often the cleaner compliance story for systems that legitimately drop stale data but must prove what was received. Worth offering as an explicit option alongside `BLOCK`.
+
 **Pooled events into the audit log (first-order requirement, not a footnote).** `eventReceived` serialises the live event object; for `PoolAware` events the audit-writer must serialise a **detached copy**, or a recycled instance corrupts the record (same hazard as the heap cache's `String.valueOf` workaround, Q7). For a durable Chronicle audit-writer this is mandatory, not optional.
 
 ---
@@ -247,8 +264,8 @@ Lift `1024` and `maxSpinNs = 10ms` into config (`EventFeedConfig` / `HandlerPipe
 
 Steady-state and catch-up are different regimes and should not share a policy:
 
-- At startup there is **no real-time deadline**, so **drop is never the right answer** — the whole point of replay is faithful reconstruction.
-- A fast producer re-driving a large cached source into a 1024 queue will always outrun a per-event processor. Spin-then-drop guarantees loss; the current `publishReplay` guarantees *silent* loss.
+- For **late-subscriber catch-up** there is usually no real-time deadline, so **drop is usually the wrong answer** — the goal is to *prime the new subscriber from retained feed history*. (Deterministic recovery is separate, uses the consumer-side audit path, and bypasses this entirely.)
+- A fast producer re-driving a large cached source into a 1024 queue will always outrun a per-event processor. Spin-then-drop guarantees an incomplete prime; the current `publishReplay` guarantees *silent* incompleteness.
 
 Options for the replay regime (pick one or make it configurable):
 1. **Bounded-blocking replay** — replay publishes with `BLOCK`: `offer()` in a loop with `Thread.onSpinWait()` / park, never dropping. Simplest; correctness-complete; replay just takes as long as the consumer needs. Requires producer thread ≠ consumer agent thread (true for agent-hosted sources draining on a different agent — verify per source).
@@ -283,15 +300,27 @@ So *"replay from event feeds is not important"* is right **for the determinism s
 
 The replay cache today is an **unbounded `ArrayList<NamedFeedEvent>` on heap** inside `EventToQueuePublisher` (smell #5). For the startup-large-source scenario that is a memory bomb: caching millions of events to enable replay grows the heap without bound and adds GC pressure to the exact path we want deterministic. The fix is to move the replay log **off heap and behind an interface**, with Chronicle Queue as the default backend — *hidden from users*, exposed only as a couple of config knobs.
 
-**Shape:**
-- Extract a `ReplayLog` interface (append + replay-from-position + truncate/bound) from the publisher — this is the "extract caching" layering principle made concrete. `EventToQueuePublisher` calls `replayLog.append(...)` instead of `eventLog.add(...)`; `publishReplay`/`dispatchCachedEventLog` read from it.
-- Default implementation = **Chronicle Queue**, memory-mapped off-heap, replay-by-index. Users never see Chronicle in their config or API — it's an implementation detail of the runtime, the same way Agrona queues are. (We already depend on Chronicle via the mongoose-plugins connector, so no new external surface.)
-- A trivial in-heap/no-op implementation stays available for tiny/ephemeral feeds and tests (monomorphic call site, JIT inlines it away when replay is off).
+**Shape — TWO distinct stores, do not call both `ReplayLog`:**
 
-**Config knobs (the only user-visible surface):**
-- **`durableReplay: true|false`** (default `false`). When `true`, the Chronicle log persists across restarts → restart-and-replay reconstructs full state from the on-disk log (Kafka-by-offset semantics, in-process). When `false`, the log is a roll-on-shutdown scratch file (off-heap, but not survivor of a restart) — solves the heap-growth problem without promising durability.
-- **`maxMessageHistorySize`** (count or bytes; default bounded, *not* unbounded). Caps retained history; Chronicle roll-cycle / truncation enforces it. Past the bound, oldest records age out. This makes "replay the last N" cheap and bounds disk the way the queue bounds memory.
-- These are likely **per-feed** (some feeds need full durable history, others want a small ring) but may also have a server-level default. Mirrors the per-subscriber-vs-global question for `SlowConsumerStrategy` (Q2).
+| Interface | Owner | Holds | Purpose |
+|-----------|-------|-------|---------|
+| **`AuditReplayStore`** | a durable `Auditor` (Chronicle-backed `ReplayRecordWriter`) | per-processor `ReplayRecord` stream (post-merge, ordered, +clock) | **deterministic recovery / audit** — the determinism artifact |
+| **`FeedCatchUpStore`** | `EventToQueuePublisher` (replaces the `eventLog` `ArrayList`) | per-feed retained published records | **late-subscriber catch-up priming** — bounded, lossy-OK |
+
+Conflating them in the implementation will cause confusion immediately. `durableReplay` attaches to `AuditReplayStore`; the feed-side bound attaches to `FeedCatchUpStore`.
+
+- Default `AuditReplayStore` = **Chronicle Queue**, memory-mapped off-heap, replay-by-index — a durable backend for the `ReplayRecordWriter` `Auditor` (the Fluxtion docs explicitly invite custom backends). A trivial in-heap/no-op impl stays for tests (monomorphic; JIT inlines when off).
+- `FeedCatchUpStore` replaces the unbounded `eventLog` for its smaller priming job; bound it; off-heap optional.
+
+**Config knobs (split by artifact — they are NOT the same setting):**
+- **Consumer-side audit (per *processor* / group, server default + override):**
+  - `processor.durableAuditReplay: true|false` — persist this processor's audit stream to Chronicle (survives restart → recovery = rebuild + replay-tail + snapshot).
+  - `processor.auditReplayRetention: unbounded | bounded+snapshot` — *unbounded* for the regulated/full-recovery posture; *bounded+snapshot* uses Fluxtion checkpoints (recovery = snapshot + tail since its position) to cap both disk and per-restart replay cost. **`durableAuditReplay` + bounded-without-snapshot = last-N, not full state → reject at config validation** (the named conflict).
+  - `processor.auditReplayStore: chronicle | yaml | noop`.
+- **Feed-side catch-up (per *feed* / subscription):**
+  - `feed.catchUpHistorySize` (count/bytes/time), `feed.catchUpHistoryDurable: false` (default — in-memory/off-heap scratch; durable only if late-subscriber catch-up must survive restart, which is rare).
+
+`durableReplay` (per-processor audit) and `feed.catchUpHistorySize` are **different settings for different artifacts** — the old single `maxMessageHistorySize` knob conflated them and is retired.
 
 **These two knobs conflict, and the conflict must be designed out, not left implicit.** `durableReplay: true` promises "reconstruct state on restart"; a bounded, aging-out `maxMessageHistorySize` means the oldest records are gone — so restart-replay reconstructs **last-N**, not full state. For an audit/ledger buyer, last-N is exactly the thing they can't accept. The two are only compatible via one of:
 - **Unbounded-durable** — `durableReplay: true` forces `maxMessageHistorySize = unbounded` (the regulated posture; accept the disk cost). Reject the contradictory combination at config-validation time rather than silently truncating an "audit" log.
@@ -304,7 +333,7 @@ The replay cache today is an **unbounded `ArrayList<NamedFeedEvent>` on heap** i
 - It upgrades the replay story from "in-memory Kafka-lite" to **"actual durable replay log, optional"** — closing the one capability gap vs Kafka/Chronicle in the comparison table, while keeping the in-process zero-copy hot path.
 - `durableReplay` + a bounded `maxMessageHistorySize` is the operator-facing expression of the lossless/governance posture: a regulated deployment sets `durableReplay: true` and gets restart-survivable, position-addressable audit history for free.
 
-**Interaction with backpressure:** the replay log is the *source* of a startup replay; the slow-consumer strategy (section A/C) governs the *publish* of those replayed records into the subscriber queues. A durable Chronicle log + `BLOCK`/credit replay = fully lossless startup: read from disk only as fast as the consumer drains. The two designs compose — that's the point.
+**Interaction with backpressure:** the **consumer-side audit replay store has *no* queue-backpressure interaction** — it drives the processor directly via `onEvent`, bypassing queues. Only the **feed-side catch-up store** publishes retained records into subscriber queues, and *that* path is governed by the slow-consumer strategy (a late subscriber primed under `BLOCK` reads its backlog only as fast as it drains, no loss). Keep these separate: durable audit ≠ feed catch-up.
 
 ---
 
@@ -328,24 +357,32 @@ package com.telamin.mongoose.dispatch;
  * default BACKOFF/DROP strategy is a stateless singleton so the call site stays
  * monomorphic and the JIT inlines it (same discipline as the counters no-op).
  */
+public enum PublishMode { LIVE, CATCH_UP }   // CATCH_UP = late-subscriber priming; drop = first-class failure
+
 public interface BackpressureStrategy {
 
-    // A PURE decision — the strategy does NOT block. It returns how long
-    // writeToQueue should wait before retrying. Sentinels keep it allocation-free:
-    long SPIN  = 0L;    // retry immediately (Thread.onSpinWait)
-    long DROP  = -1L;   // abandon the item
+    // A PURE decision — the strategy does NOT block and does NOT read the clock.
+    // It returns an ACTION as an allocation-free encoded long:
+    long SPIN       =  0L;   // retry immediately (Thread.onSpinWait)
+    long DROP       = -1L;   // abandon the item (LIVE: drop; CATCH_UP: mark catch-up incomplete)
+    long DISCONNECT = -2L;   // unsubscribe this consumer (sustained overflow) — handled by the supervisor
+    long FAIL       = -3L;   // STRICT_LOSSLESS unsafe-topology: fatal invariant violation (see strict semantics)
     // any value > 0  => park that many nanos, then retry (LockSupport.parkNanos)
 
-    /** @return SPIN, DROP, or a positive park-nanos. Must not block or touch
-     *  threads — keeps the policy a trivially-testable pure function, and keeps
-     *  ALL blocking in writeToQueue, the one place the global invariant polices. */
-    long onQueueFull(QueueBinding binding, int attempt, long firstFailNanos);
+    /** @return SPIN / DROP / DISCONNECT / FAIL, or a positive park-nanos. Must
+     *  not block, touch threads, or read the clock — a trivially-testable pure
+     *  function. ALL blocking + the clock read live in writeToQueue, the one
+     *  place the global invariant polices. `nowNanos` is supplied so e.g.
+     *  BestEffortDropStrategy can compute elapsed = nowNanos - firstFailNanos. */
+    long onQueueFull(QueueBinding binding, int attempt, long firstFailNanos,
+                     long nowNanos, PublishMode mode);
 
     default String id() { return getClass().getSimpleName(); }
 }
 ```
 
-> **Layering note (review):** an earlier sketch had the strategy `parkNanos()` internally and return `PARKED_RETRY`. That violates the doc's own mechanism/policy split (smell #1) — parking is a *mechanism* action. The pure-function form above keeps the strategy testable with no thread games and concentrates every blocking call in `writeToQueue`, which is exactly where the **global invariant** ("no unbounded wait on a shared agent loop") must be enforced and audited.
+> **Layering note (review):** an earlier sketch had the strategy `parkNanos()` internally and return `PARKED_RETRY`. That violates the doc's own mechanism/policy split (smell #1) — parking is a *mechanism* action. The pure-function form keeps the strategy testable with no thread games and concentrates every blocking call in `writeToQueue`.
+> **Decision-model note (review):** the encoded-`long` stays allocation-free but compresses a lot into one value. It covers SPIN/PARK/DROP/DISCONNECT/FAIL. If we later need to carry a *reason* or distinguish more drop causes on the hot path, graduate to an `enum Action` + a **reusable, per-thread mutable** decision object (still allocation-free) rather than overloading more sentinels. Strategy-specific diagnostics (`sameThreadUnsafe`, `poolCapExceeded`, `undeployDrop`) are recorded by the strategy via `QueueBinding`; the *common* drop counter + log/`ErrorEvent` are recorded once, centrally, in `writeToQueue` keyed on `PublishMode` — single owner, no duplication.
 
 `QueueBinding` carries the per-binding context — created once at attach, held by the `NamedQueue`, never allocated on the hot path:
 
@@ -383,52 +420,62 @@ private void writeToQueue(NamedQueue namedQueue, Object itemToPublish) {
     final PoolTracker<?> tracker = trackerOf(itemToPublish);
     int attempt = 0;
     long firstFailNanos = -1;
-    if (tracker != null) tracker.acquireReference();                  // base ref — hoisted OUT of the loop
+    boolean handedOff = false;                                        // OWNERSHIP: did the queue take the ref?
+    if (tracker != null) tracker.acquireReference();                  // one queue-handoff ref, hoisted out of the loop
     try {
         while (true) {
-            if (targetQueue.offer(itemToPublish)) return;             // FAST PATH — unchanged
+            if (targetQueue.offer(itemToPublish)) { handedOff = true; return; }   // SUCCESS: ref transfers to queue/consumer
             attempt++;
-            if (firstFailNanos < 0) firstFailNanos = System.nanoTime();
-            long wait = strategy.onQueueFull(binding, attempt, firstFailNanos);   // PURE decision
-            if (wait == BackpressureStrategy.DROP) { binding.recordDrop(sequenceNumber); return; }
-            else if (wait == BackpressureStrategy.SPIN) Thread.onSpinWait();
-            else LockSupport.parkNanos(wait);                          // BLOCKING lives here, not in the strategy
+            long now = System.nanoTime();
+            if (firstFailNanos < 0) firstFailNanos = now;
+            long act = strategy.onQueueFull(binding, attempt, firstFailNanos, now, mode);   // PURE — passes `now` + mode
+            if (act == BackpressureStrategy.SPIN)  Thread.onSpinWait();
+            else if (act > 0)                      LockSupport.parkNanos(act);      // BLOCKING lives here, not in the strategy
+            else { writeToQueueDecision(act, namedQueue, mode); return; }           // DROP/DISCONNECT/FAIL handled centrally
         }
     } catch (Throwable t) {
         // ... existing CRITICAL error-report + QueuePublishException path ...
     } finally {
-        if (tracker != null) tracker.releaseReference();              // single release, success or abandon
+        // CRITICAL ownership rule: release ONLY if the item was never handed off.
+        // On a successful offer the queue/consumer owns the ref — the producer
+        // must NOT release it, or a pooled instance could be recycled while still
+        // sitting in the queue. (This corrects an earlier finally-always-release sketch.)
+        if (tracker != null && !handedOff) tracker.releaseReference();
     }
 }
 ```
 
 Notes:
-- **`publishReplay` routes through the same `writeToQueue`** (fixing its current bare `offer()`), so replay inherits the configured strategy automatically.
-- **Pool-ref churn fixed (review):** the per-attempt `acquireReference()`/`releaseReference()` is gone — the base ownership ref is taken once before the loop and released once in `finally`. Under a long `BLOCK` of many park slices the old form did acquire/release per slice for no benefit (the base ref is what pins the slot; Q1a). This also makes the pool-slot accounting honest: exactly one slot pinned per in-flight item, for its whole lifetime.
-- **Queue-depth caution (review):** `QueueBinding.size()` may be O(n)/approximate on Agrona queues — it is for telemetry and *coarse* strategy decisions, **not** to be called on every failed spin. Strategies key off `attempt`/`firstFailNanos`, not per-iteration `size()`.
+- **Pool-reference handoff (review — implementation-critical):** the current code acquires a ref per `offer()` attempt and, on success, deliberately leaves it outstanding for the consumer. The hoisted form must preserve that: acquire **one** ref before the loop; on success set `handedOff` and do **not** release (ownership transfers to the queue/consumer); on drop/abandon/throw-before-handoff, release the one ref in `finally`. Exactly one slot pinned per in-flight item; the per-attempt churn is gone (Q1a) without breaking handoff ownership.
+- **`PublishMode mode` (LIVE vs CATCH_UP)** is threaded through so the central drop handler can treat a **catch-up** drop as a first-class failure (counter + `ErrorEvent` + mark-incomplete) distinct from a **live** drop (counter + WARNING). It also lets phase 1 give `publishReplay` a *dedicated safe path* without enabling `BLOCK` (see phasing).
+- **`now` is passed in**, not read inside the strategy — keeping `onQueueFull` a genuinely pure function (it can't call `System.nanoTime()` and still be pure). `BestEffortDropStrategy` needs `now - firstFailNanos` to honour `maxOfferWait`.
+- **Drop/disconnect/fail handled centrally** in `writeToQueueDecision(...)` (records the common `publish.drop.{live,replay}` counter + log/`ErrorEvent` keyed on `mode`); the strategy records only *strategy-specific* diagnostics (`sameThreadUnsafe`, `poolCapExceeded`). Single owner for the common drop accounting — no duplication.
+- **`QueueBinding.size()` may be O(n)/approximate on Agrona** — telemetry/coarse only, **never** per failed spin. Strategies key off `attempt`/`firstFailNanos`/`now`.
 
 ### The strategies
 
-- **`BestEffortDropStrategy` (default singleton, == today's behaviour made explicit):** return `SPIN` while `now - firstFailNanos <= maxSpinNs`; else `recordDrop` + `WARNING` and return `DROP`. `maxSpinNs` is now config (section B), defaulting to 10 ms.
-- **`BlockStrategy` (pure function; the unsafe-topology handling depends on safety mode, section A):**
+- **`BestEffortDropStrategy` (default singleton, == today's behaviour made explicit):** return `SPIN` while `nowNanos - firstFailNanos <= maxOfferWait`; else return `DROP` (the central handler in `writeToQueue` records `publish.drop.live` + `WARNING`). `maxOfferWait` is config (section B), defaulting to 10 ms.
+- **`BlockStrategy` (pure function; unsafe-topology handling depends on safety mode, section A):**
   ```java
-  public long onQueueFull(QueueBinding b, int attempt, long firstFailNanos) {
-      if (b.drainsOnCurrentThread()) {        // would deadlock (boot check missed it, or a dynamic edge created it)
-          if (STRICT) throw new UnsafeBlockTopologyException(b);   // STRICT_LOSSLESS: fail, never drop
-          b.recordSameThreadDegrade();        // SAFE_DEGRADE: counted (part of attestation surface), logged loudly
-          return DROP;
+  public long onQueueFull(QueueBinding b, int attempt, long firstFailNanos, long now, PublishMode mode) {
+      if (b.drainsOnCurrentThread()) {                 // would deadlock (boot missed it, or a dynamic edge created it)
+          if (STRICT) return FAIL;                     // STRICT_LOSSLESS: fatal invariant — NOT a drop (see below)
+          b.recordSameThreadDegrade();  return DROP;   // SAFE_DEGRADE: counted, logged loudly
       }
-      if (!b.isLive()) { b.recordUndeployDrop(); return DROP; }    // undeploy mid-park — counted, NOT silent
-      if (b.parkedProducersForPool() >= b.poolParkCap()) {         // Q1a pool-slot cap
-          if (STRICT) throw new PoolCapExceededException(b);
-          b.recordPoolCapDrop(); return DROP;
+      if (!b.isLive())                                 // subscriber undeployed mid-park
+          { b.recordUndeployDrop();     return DROP; } // (always a drop — the consumer is gone; counted, not silent)
+      if (b.parkedProducersForPool() >= b.poolParkCap()) {            // Q1a pool-slot cap
+          if (STRICT) return FAIL;
+          b.recordPoolCapDrop();        return DROP;
       }
-      return parkSliceNs;                     // pure: return the wait; writeToQueue does the actual park
+      return parkSliceNs;                              // pure: return the wait; writeToQueue does the actual park
   }
   ```
-  The three guards — `drainsOnCurrentThread`, `isLive`, pool-slot-cap (Q1a) — are what make `BLOCK` safe under dynamic deployment. **Under `STRICT_LOSSLESS` they reject (throw / fail the subscription) rather than drop**, preserving the lossless contract; under `SAFE_DEGRADE` they drop but **every degrade path is counted** (`recordSameThreadDegrade` / `recordUndeployDrop` / `recordPoolCapDrop`) so the drops are visible and feed attestation (section D) — none is a silent drop on a "lossless" feed.
-- **`DisconnectStrategy`:** on sustained overflow (Q3 trigger — *not* a single failed offer), unsubscribe the queue (remove the `NamedQueue` via the existing `removeTargetQueueByName`) + error event.
-- **`EXIT_PROCESS` is not a strategy here** — it's the escalation tier (section A). The per-queue strategy set is `{BEST_EFFORT_DROP, DISCONNECT, BLOCK}`; process-exit is a separate deployment-level rule layered above `DISCONNECT`.
+  The three guards — `drainsOnCurrentThread`, `isLive`, pool-slot-cap (Q1a) — make `BLOCK` safe under dynamic deployment. **Under `STRICT_LOSSLESS` an unsafe topology returns `FAIL`, which `writeToQueue` treats as a *fatal invariant violation*, not a drop** (next bullet). Under `SAFE_DEGRADE` the guards drop but **every degrade path is counted** (`recordSameThreadDegrade` / `recordUndeployDrop` / `recordPoolCapDrop`) — none is a silent drop on a "lossless" feed; these counters are part of the attestation surface (section D).
+
+**Strict `FAIL` semantics (review — must be precise).** In `STRICT_LOSSLESS`, runtime detection of an unsafe `BLOCK` topology is a **fatal configuration/topology violation**, not a convertible drop — you are holding an input event that cannot be enqueued *and* cannot be dropped without breaking the contract. The honest responses, in order of preference: (1) **reject before events flow** — refuse the dynamic subscription / fail boot validation so this path is never reached at runtime; (2) if detected live, **stop the affected feed/server with a fatal error** (and, if an `AuditReplayStore`/ingress log exists, the event is already captured there); (3) never silently downgrade to a normal drop. So `writeToQueue` maps `FAIL` to "report fatal + stop source/server", *not* to `recordDrop`. The design goal is that `FAIL` is essentially unreachable at runtime because boot + attach-time validation already rejected the topology.
+- **`DisconnectStrategy`:** on sustained overflow (Q3 trigger — *not* a single failed offer), return `DISCONNECT`. **Ownership (review):** `EventToQueuePublisher` must **not** own unsubscribe semantics (it's already a god-object). `writeToQueue` reports `DISCONNECT` to a **`SlowConsumerSupervisor`**, which coordinates: removal across `EventFlowManager` (`removeTargetQueueByName` **and** the `subscriberKeyToQueueMap` / queue-processor mappings — `removeTargetQueueByName` alone is *not* enough), a lifecycle/error event to the subscriber, and any reconnect/escalation. Open contract (Q3/Q10): does reconnect catch-up from feed history (losslessness-preserving) or is `DISCONNECT` pure containment?
+- **`EXIT_PROCESS` is not a strategy here** — it's the escalation tier (section A), owned by the supervisor above `DISCONNECT`. The per-queue strategy set is `{BEST_EFFORT_DROP, DISCONNECT, BLOCK}`.
 
 ### How dynamic deployment is handled (the load-bearing part)
 
@@ -501,7 +548,7 @@ The topology needed to validate `BLOCK` safety statically is fully materialised 
 **The clean crystallisation:** *a `BLOCK` feed must publish from a thread that none of its subscribers drain on.* Agent-hosted sources already satisfy this unless a subscriber is wrongly colocated in the source's own group (a trivial set-intersection to check). The only structurally exposed case is the **inline pipe** — so the targeted fix is: when a pipe's strategy is `BLOCK`, route `HandlerPipe.forward` through `offer()`/`doWork` (staged, on the pipe's own agent thread) instead of `publishNow` (inline on the publisher's thread). That moves the publish off both the publisher's and subscriber's threads, after which the residual boot check is just "no subscriber shares the pipe's own agent group."
 
 **Important — boot validation is necessary but NOT sufficient.** The codebase supports adding processors and subscriptions *after* boot (`addEventProcessor` on a started server, the 128-slot lifecycle queues, `queueReadersToAdd`). A processor subscribing at runtime can colocate with a `BLOCK` publisher's thread *after* the boot check has passed. So the static check is an **optimisation** (catch the common case early, give a clean error or auto-decouple), while the **guarantee** lives at runtime: the `BlockStrategy` same-thread guard (Q1) plus the pool-slot cap (Q1a). Pick the posture explicitly — either (a) BLOCK-feed topology is *frozen at boot* (reject any runtime subscription that would touch a BLOCK feed), or (b) runtime subscriptions are allowed and the runtime guards carry the safety. This doc assumes (b); the dynamic-deployment section below makes it concrete. Do **not** describe the boot check alone as making this "provable" — it doesn't, once hot deploy is in play.
-- **Q2** — Should `SlowConsumerStrategy` be per-feed only, or also per-subscriber (one slow processor shouldn't force drop policy on a fast one sharing the feed)? The queues are already per-subscriber (`subscriberKeyToQueueMap`), so per-subscriber is feasible.
+- **Q2 — recommend per-subscriber override.** Queues are already per-subscriber (`subscriberKeyToQueueMap`), so support the hierarchy **server default → feed default → subscription override**. This lets one audit-critical subscriber use `BLOCK` without forcing every other subscriber on the same feed to block — the per-subscriber queue isolation makes this natural. Same hierarchy as queue capacity (section B).
 - **Q3** — `DISCONNECT` trigger (must not fire on a single failed `offer()` — transient contention would disconnect healthy consumers). Proposed: trigger on **sustained** overflow — queue-full duration `> slowConsumerDisconnectAfter` (e.g. 1s) **or** depth above `slowConsumerHighWaterMark` (e.g. 0.9) for `slowConsumerWindow` consecutive samples (e.g. 10). All three configurable. `EXIT_PROCESS` is the escalation tier above this, not a peer (section A).
 - **Q4** — Do we reuse `RetryPolicy`'s backoff schedule (initial/max/multiplier) as the shape of a `BACKOFF` wait, or keep them fully separate? Reusing the *math* (not the semantics) avoids a second backoff config.
 - **Q5 — this is a *live bug today*, not just adjacent.** `RetryPolicy.backoff()` does `Thread.sleep` on the shared agent loop, so a single retrying processor already head-of-line-blocks every co-hosted feed/processor — independent of any backpressure work. It is the *same root cause* as the `BLOCK` same-thread hazard: an unbounded blocking wait on a shared duty-cycle thread (the **global invariant** in the header). Fix direction: move processing-retry off the hot loop (defer + requeue with backoff as a scheduled wake, not a sleep). Promote from "out of scope" to "must fix; same family as BLOCK."
@@ -514,13 +561,16 @@ The topology needed to validate `BLOCK` safety statically is fully materialised 
 ## Proposed phasing (straw man)
 
 0. **Replay contract — RESOLVED (consumer-side audit-replay).** Deterministic replay is captured at the **consumer** via an `Auditor` (`YamlReplayRecordWriter` pattern) recording the post-merge `ReplayRecord` stream + data-driven time, and re-driven via `YamlReplayRunner`. **No global cross-feed order key is needed**; replay does not go through feeds/queues/dispatch. This decouples *faithful reconstruction* (guaranteed by the audit record, policy-independent) from *losslessness* (the separate thing `BLOCK` provides). Remaining task here is not a data-model decision but plumbing: provide a mongoose **audit-replay-writer** (Chronicle-backed, section E) and a replay-drive path that feeds a processor's recorded stream into a fresh instance.
-1. **Stop the silent bleed** — `publishReplay` honours `offer()` with **bounded-spin + drop-counter ONLY (no block)**. Smallest correctness win; makes loss visible and bounded. ⚠️ Do *not* introduce blocking here — blocking needs the same-thread guard (phase 3/5) and pool cap (Q1a); a blocking replay on the source's own drain thread deadlocks with no escape. Lossless replay is phase 5, after the guards exist.
-2. **Extract policy + cache as injectables** — pull a `BackpressureStrategy` and a `ReplayLog` interface out of `EventToQueuePublisher` (layering principles). No behaviour change; this is the refactor that makes 3–6 clean instead of more enums threaded through the hot path.
-3. **Wire `SlowConsumerStrategy`** — `writeToQueue` consults the injected strategy; implement `BACKOFF` (= today) + `BLOCK`. Make capacity + spin-bound configurable. Default unchanged → no behaviour change unless opted in.
-4. **Durable consumer-side audit replay** — Chronicle-backed `ReplayRecordWriter` (a durable `Auditor` sink, section E); `durableReplay` = persist the per-processor audit stream; reference Fluxtion snapshots for bounded+full recovery. Serialise detached copies of `PoolAware` events. *(This — not the feed cache — is the determinism/recovery artifact.)* Separately: bound `EventToQueuePublisher.eventLog` for its catch-up job.
-5. **Late-subscriber catch-up over the bus** — the only place feed-side replay + `BLOCK` apply; implement the chosen catch-up regime over the (bounded) `eventLog`/`publishReplay`; resolve Q1 thread-safety per source. (Deterministic *recovery* needs nothing here — it's the audit path from phase 4.)
-6. **`DISCONNECT` / `EXIT_PROCESS`** — implement the trigger condition (Q3) and the disconnect/exit actions.
-7. **Lossless attestation** — boot-time **config** validation (every feed BLOCK/DISCONNECT, durable history unbounded/snapshotted) + admin/audit signal. Key on config, not the drop counter (hook D); the drop count is corroborating telemetry only.
+1. **Make `publishReplay` failure visible (no block)** — check `offer()`; bounded-spin only via a **dedicated `CATCH_UP`-mode safe path** (NOT the full configured strategy — which could be `BLOCK` before guards exist). On overflow: increment `publish.drop.replay`, emit an `ErrorEvent`, **mark catch-up incomplete** (optionally abort). Smallest correctness win.
+2. **Extract `BackpressureStrategy` + split the stores** — pull `BackpressureStrategy` out of `EventToQueuePublisher`; rename/split `AuditReplayStore` (consumer-side) vs `FeedCatchUpStore` (feed-side) — do not call both `ReplayLog`. **No behaviour change.** Fix the pool-reference handoff ownership carefully (the `handedOff` rule). Keep the hot path allocation-free.
+3. **Wire config + `BEST_EFFORT_DROP` only** — `writeToQueue` consults the injected strategy; implement `BEST_EFFORT_DROP` (legacy `BACKOFF`). Make capacity + `maxOfferWait` configurable; per-feed **and** per-subscription overrides (Q2). **`BLOCK` is NOT enabled yet.** Default unchanged.
+4. **BLOCK safety infrastructure (before any blocking)** — `QueueBinding`, draining-thread *supplier* (null = not-started), `isLive()`, bounded park slices, same-thread guard, pool-slot cap (Q1a), boot **and** attach-time dynamic topology validation. Build the guards; still don't enable `BLOCK`.
+5. **Enable strict `BLOCK`** — `STRICT_LOSSLESS` **rejects** unsafe topology (runtime detection = fatal/refuse-subscription, **not** a normal drop); `SAFE_DEGRADE` is opt-in and visibly counted. Catch-up replay may now route through `writeToQueue` (guards exist).
+6. **Durable consumer-side audit replay** — Chronicle-backed `ReplayRecordWriter` / `AuditReplayStore`; `durableAuditReplay` per-processor; detached-copy serialisation of `PoolAware`; snapshot integration by *reference* to Fluxtion state-recovery. *(The determinism/recovery artifact — independent of the bus.)*
+7. **Bound the feed-side catch-up store** — replace the unbounded `eventLog` with a bounded `FeedCatchUpStore`; decide durable vs in-memory/off-heap scratch (default scratch).
+8. **Late-subscriber catch-up policy** — `BLOCK`/credit catch-up over the bus, *after* the safety guards (phase 4/5); a catch-up drop = incomplete catch-up (`ErrorEvent`), not warning-only.
+9. **`DISCONNECT` + escalation** — sustained-overflow trigger (Q3); a `SlowConsumerSupervisor` owns removal/error/reconnect; `EXIT_PROCESS` as escalation, not a queue-level strategy.
+10. **Lossless attestation** — static **config** validation for `STRICT_LOSSLESS`; under `SAFE_DEGRADE`, runtime degrade counters invalidate it; drop counters are corroborating telemetry, not proof (hook D).
 
 ---
 
