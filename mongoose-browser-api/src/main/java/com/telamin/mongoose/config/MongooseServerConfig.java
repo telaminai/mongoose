@@ -45,6 +45,18 @@ public class MongooseServerConfig {
             throw Stub.notRunnable();
         }
 
+        public Builder addPipe(HandlerPipeConfig<?> pipe) {
+            throw Stub.notRunnable();
+        }
+
+        public Builder addService(ServiceConfig<?> service) {
+            throw Stub.notRunnable();
+        }
+
+        public Builder addProcessor(String agentName, EventProcessorConfig<?> processor) {
+            throw Stub.notRunnable();
+        }
+
         public MongooseServerConfig build() {
             throw Stub.notRunnable();
         }
