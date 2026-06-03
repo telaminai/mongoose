@@ -44,6 +44,10 @@ public class EventProcessorGroupConfig {
             throw Stub.notRunnable();
         }
 
+        public Builder put(String name, EventProcessorConfig<?> cfg) {
+            throw Stub.notRunnable();
+        }
+
         public EventProcessorGroupConfig build() {
             throw Stub.notRunnable();
         }
