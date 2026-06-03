@@ -224,6 +224,129 @@ The replay cache today is an **unbounded `ArrayList<NamedFeedEvent>` on heap** i
 
 ---
 
+## API sketch — `BackpressureStrategy` + `writeToQueue`, dynamic-deployment-aware
+
+This is the concrete shape for phases 2–3. The governing constraint is **dynamic deployment**: event processors, feeds, and sinks can be added to (and removed from) a *running* container — `MongooseServer.addEventProcessor` already handles "server started, group thread not yet running → start it", services broadcast onto the agent thread via the dynamic-registration queues, and subscriptions wire through `queueReadersToAdd` at runtime. So the publisher↔subscriber↔thread topology is **mutable at runtime**, and the boot-time check (previous section) is necessary but not sufficient. The design must degrade safely when a dynamically-added edge violates a static guarantee.
+
+### The interface
+
+```java
+package com.telamin.mongoose.dispatch;
+
+/**
+ * Policy applied when a publish cannot immediately enqueue into ONE target
+ * queue. One instance per (publisher, target-queue) binding, resolved when the
+ * queue is attached — at boot OR on a dynamic subscription — and never mutated
+ * thereafter (re-subscription = re-attach with a fresh binding).
+ *
+ * Hot-path contract: allocation-free. onQueueFull is only ever called AFTER an
+ * offer() has already failed, so it is off the steady-state fast path. The
+ * default BACKOFF/DROP strategy is a stateless singleton so the call site stays
+ * monomorphic and the JIT inlines it (same discipline as the counters no-op).
+ */
+public interface BackpressureStrategy {
+
+    enum Decision { RETRY, PARKED_RETRY, DROP }   // RETRY: spin now; PARKED_RETRY: already parked/yielded; DROP: abandon item
+
+    Decision onQueueFull(QueueBinding binding, int attempt, long firstFailNanos);
+
+    default String id() { return getClass().getSimpleName(); }
+}
+```
+
+`QueueBinding` carries the per-binding context — created once at attach, held by the `NamedQueue`, never allocated on the hot path:
+
+```java
+public interface QueueBinding {
+    String name();
+    int size();                       // targetQueue.size()
+    int capacity();
+
+    /** True iff the thread that DRAINS this queue is the current (publishing)
+     *  thread — the BLOCK deadlock condition. Lazy: reads the draining agent's
+     *  thread via a supplier, because the agent may not have started yet, or
+     *  may have restarted, since attach. */
+    boolean drainsOnCurrentThread();
+
+    /** False once the subscriber has been dynamically undeployed / the queue
+     *  removed. A parked BLOCK must re-check this so undeploying a stuck
+     *  consumer wakes the producer instead of hanging it forever. */
+    boolean isLive();
+
+    void recordDrop(long sequenceNumber);          // MongooseCounter — visibility
+    void recordSameThreadDegrade();                // distinct counter — "BLOCK degraded to avoid deadlock"
+}
+```
+
+### Integration into `writeToQueue`
+
+The hardcoded spin-10 ms-then-drop becomes a strategy dispatch. The fast path (successful `offer`) is unchanged; only the contended branch changes:
+
+```java
+private void writeToQueue(NamedQueue namedQueue, Object itemToPublish) {
+    final OneToOneConcurrentArrayQueue<Object> targetQueue = namedQueue.targetQueue();
+    final BackpressureStrategy strategy = namedQueue.backpressure();   // never null; default = BACKOFF singleton
+    final QueueBinding binding = namedQueue.binding();
+    final PoolTracker<?> tracker = trackerOf(itemToPublish);
+    int attempt = 0;
+    long firstFailNanos = -1;
+    try {
+        while (true) {
+            if (tracker != null) tracker.acquireReference();
+            if (targetQueue.offer(itemToPublish)) return;             // FAST PATH — unchanged
+            if (tracker != null) tracker.releaseReference();          // release per-attempt ref
+            attempt++;
+            if (firstFailNanos < 0) firstFailNanos = System.nanoTime();
+            switch (strategy.onQueueFull(binding, attempt, firstFailNanos)) {
+                case RETRY        -> Thread.onSpinWait();
+                case PARKED_RETRY -> { /* strategy already parked; loop and retry */ }
+                case DROP         -> { binding.recordDrop(sequenceNumber); return; }
+            }
+        }
+    } catch (Throwable t) {
+        if (tracker != null) tracker.returnToPool();
+        // ... existing CRITICAL error-report + QueuePublishException path ...
+    }
+}
+```
+
+`publishReplay` routes through the **same** `writeToQueue` (fixing its current bare `offer()`), so replay inherits the configured strategy automatically.
+
+### The strategies
+
+- **`BackoffDropStrategy` (default singleton, == today's behaviour made explicit):** `RETRY` while `now - firstFailNanos <= maxSpinNs`; else `recordDrop` + `WARNING` and `DROP`. `maxSpinNs` is now config (section B), defaulting to 10 ms.
+- **`BlockStrategy` (lossless):**
+  ```java
+  public Decision onQueueFull(QueueBinding b, int attempt, long firstFailNanos) {
+      if (b.drainsOnCurrentThread()) {      // would deadlock (boot check missed it, or a dynamic edge created it)
+          b.recordSameThreadDegrade();
+          return Decision.DROP;             // degrade rather than hang; logged loudly
+      }
+      if (!b.isLive()) return Decision.DROP; // subscriber undeployed mid-park → abandon, don't hang
+      parkNanos(parkSliceNs);                // bounded park (LockSupport / idle strategy), NOT indefinite
+      return Decision.PARKED_RETRY;
+  }
+  ```
+  The two guards — `drainsOnCurrentThread()` and bounded-park-+-`isLive()` — are precisely what make `BLOCK` safe under dynamic deployment: a runtime-added colocated subscriber degrades instead of deadlocking, and a runtime-removed subscriber wakes the producer.
+- **`DisconnectStrategy` / `ExitProcessStrategy`:** on sustained overflow (Q3 trigger), unsubscribe the queue (remove the `NamedQueue` via the existing `removeTargetQueueByName`) + error event, or fail-stop.
+
+### How dynamic deployment is handled (the load-bearing part)
+
+1. **Strategy + binding are resolved at *attach*, not at boot.** `EventToQueuePublisher.addTargetQueue(...)` gains the source's configured `SlowConsumerStrategy` and a `QueueBinding`. The single caller that wires a subscriber queue to both a publisher and a draining group is **`EventFlowManager`** — and *runtime* subscriptions flow through the same path as boot ones. So a processor deployed into a running container gets its strategy + same-thread context wired identically; there is no separate dynamic code path to keep in sync.
+2. **Draining thread is a supplier, not a snapshot.** `QueueBinding.drainsOnCurrentThread()` reads the draining `ComposingEventProcessorAgentRunner.thread()` lazily, tolerating "group created but not yet started", stop/restart, and rebind.
+3. **`isLive()` + bounded park** make undeploy safe: removing a subscriber flips the binding dead; the next park slice abandons. Indefinite parking is never used.
+4. **`targetQueues` is already a `CopyOnWriteArrayList`** — add/remove of subscriber queues during concurrent publish is already safe; the per-binding strategy/context is immutable, so no extra synchronisation on the hot path.
+5. **Validation runs on every topology change, not just boot.** `validateBackpressureTopology()` (previous section) becomes a function invoked from the dynamic-registration/subscription path too. For a dynamic add it can't "reject the boot", so its options are: (a) refuse the subscription with an error event, (b) auto-decouple the feed onto its own thread, or (c) accept and rely on the runtime `BlockStrategy` guard to degrade. The runtime guard is the backstop that keeps the system **safe-by-default even if validation is bypassed or races a concurrent deploy** — which is exactly the property a hot-deployable container needs.
+
+### Call sites that change
+
+- `EventToQueuePublisher.NamedQueue` record gains `backpressure()` + `binding()` (or a small holder); `addTargetQueue` takes them.
+- `EventToQueuePublisher.writeToQueue` — as above; `publishReplay` delegates to it.
+- `EventFlowManager` — constructs the `QueueBinding` (with the draining-agent thread supplier + liveness flag) at subscribe time; passes the feed's `SlowConsumerStrategy` through. This is the one seam shared by boot and dynamic subscription.
+- `MongooseServer` / dynamic-registration path — invoke `validateBackpressureTopology()` on processor/feed/subscription add; flip binding liveness on remove.
+
+---
+
 ## Open questions
 
 - **Q1 — RESOLVED by audit (see below).** `BLOCK` is *not* universally safe: it deadlocks whenever the thread doing the blocking publish is also the thread that drains the target (subscriber) queue. Today's spin-then-drop is deadlock-proof only because it gives up after 10 ms. `BLOCK` removes that escape hatch and therefore needs a same-thread guard.
@@ -273,6 +396,7 @@ The topology needed to validate `BLOCK` safety statically is fully materialised 
 - **Q5** — `RetryPolicy.backoff()` sleeps on the agent thread, stalling co-hosted feeds. Is that acceptable, or should processing-retry move off the hot agent loop (defer + requeue)? Out of scope for backpressure proper, but adjacent and worth noting.
 - **Q6** — Queue-depth metrics already exist (`EventFlowManager.sampleQueueDepths()`, counters service). Should the backpressure policy *drive* off live depth (high-water/low-water marks) rather than just the per-publish spin timeout?
 - **Q7** — Replay log (section E): is `maxMessageHistorySize` counted in messages or bytes, and is retention per-feed or server-default? When `durableReplay: true`, what is the recovery contract on restart — replay *all* persisted records before accepting live events, or interleave? And how does a persisted log reconcile with pooled/`PoolAware` events (the Chronicle write must serialise a detached copy, as the heap cache already does via `String.valueOf` for `PoolAware`)?
+- **Q8** — Dynamic deployment policy: when a *runtime* subscription would create an unsafe `BLOCK` edge (new subscriber colocated with the publisher's thread), which of the three responses is the default — refuse the subscription (error event), auto-decouple the feed onto its own agent thread, or accept-and-degrade via the runtime guard? Refuse is safest for determinism but can fail a hot deploy; auto-decouple is most operator-friendly but silently changes threading. Likely a per-deployment policy with a conservative default (auto-decouple) + an audit signal.
 
 ---
 
