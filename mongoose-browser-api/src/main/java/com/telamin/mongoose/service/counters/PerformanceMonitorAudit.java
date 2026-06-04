@@ -14,7 +14,8 @@ package com.telamin.mongoose.service.counters;
  * The stub never runs.
  */
 public final class PerformanceMonitorAudit
-        implements com.telamin.fluxtion.runtime.audit.Auditor {
+        implements com.telamin.fluxtion.runtime.audit.Auditor,
+                   com.telamin.fluxtion.runtime.service.ServiceListener {
 
     // No-arg ctor — Fluxtion source-gen emits `new PerformanceMonitorAudit()`
     // in the generated processor (the processorName field is set separately
@@ -43,4 +44,17 @@ public final class PerformanceMonitorAudit
     // nodeInvoked/eventReceived/processingComplete calls resolve to the
     // Auditor interface's default methods, so no extra stub surface is needed.
     @Override public boolean auditInvocations() { return true; }
+
+    // The real auditor also implements ServiceListener — that is how it
+    // receives the MongooseCountersService at runtime and rebinds its per-node
+    // counters away from the NoOp default. Fluxtion source-gen only fans
+    // `registerService(...)` out to nodes it sees as ServiceListeners at
+    // GENERATION time, so the stub must declare it too; otherwise the
+    // browser-generated processor never calls perfMon.registerService(...),
+    // the counters service is never delivered, and per-node counts are written
+    // to no-op counters (nothing shows in the admin console). Bodies are inert
+    // — the stub never runs.
+    @Override public void registerService(com.telamin.fluxtion.runtime.service.Service<?> service) { }
+
+    @Override public void deRegisterService(com.telamin.fluxtion.runtime.service.Service<?> service) { }
 }
