@@ -6,7 +6,7 @@
 
     <groupId>com.telamin</groupId>
     <artifactId>mongoose-browser-api</artifactId>
-    <version>1.0.12-SNAPSHOT</version>
+    <version>1.0.13-SNAPSHOT</version>
     <name>telamin :: mongoose-browser-api</name>
     <description>
         Signature-only Java 8 (class file v52) stub of the Mongoose API surface
