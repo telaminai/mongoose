@@ -1,6 +1,6 @@
 # Mongoose counters service + performance-monitor auditor
 
-**Status**: Phases 1–4 shipped on `develop` (counters live, hot-path sites instrumented, auditor available, admin Dashboard card visible). Phase 4.5 (health verdict) and Phase 5 (admin commands) remain. See per-phase checklist below for granular state.
+**Status**: Phases 1–4 shipped on `develop` (counters live, hot-path sites instrumented, per-node auditor **verified end-to-end** on the compiled SEP, admin Dashboard "Throughput" card + per-processor per-node Performance view visible). Phase 4 polish (Services/Agents row badges, Topology pulse, graphml per-node overlay), Phase 4.5 (health verdict) and Phase 5 (admin commands) remain. NOTE: the per-node auditor binds the counters service via an `@ExportService(propagate = false) ServiceListener` — not `@ServiceRegistered`; the playground requires the `mongoose-browser-api` stub to mirror this. See the `PerformanceMonitorAudit` section + per-phase checklist below.
 **Owners**: Greg
 **Drives**: live throughput on svc-admin-web (✓ visible), future Prometheus / OTLP exporters, per-node fire counts for the topology view.
 
@@ -115,55 +115,80 @@ Any other plugin / service that wants counters injects `MongooseCountersService`
 
 ### PerformanceMonitorAudit
 
-A standard Fluxtion `Auditor`, bound at processor build time (opt-in). Implements:
+A standard Fluxtion `Auditor`, bound at processor build time (opt-in).
+
+**Service injection — `ServiceListener`, NOT `@ServiceRegistered` (as shipped).**
+The design originally sketched `@ServiceRegistered`-injection of the counters
+service. That path does **not** work for an auditor on the compiled SEP: an
+auditor isn't scanned for `@ServiceRegistered` callbacks the way a regular node
+is. The shipped class instead `implements ServiceListener` and exports it via a
+type-use `@ExportService(propagate = false)` annotation on the implements
+clause — that annotation is what makes Fluxtion source-gen delegate the
+processor's `registerService(...)` to the auditor (`perfMon.registerService(svc)`
+in the generated SEP), which is how the live `MongooseCountersService` reaches
+it at startup. It rebinds its counters off the no-op default at that point. A
+plain `implements ServiceListener` with no annotation compiles but is **not**
+exported, so the generated processor never calls `perfMon.registerService(...)`
+and per-node counts silently accrue against no-op counters.
 
 ```java
-public final class PerformanceMonitorAudit implements Auditor {
+public final class PerformanceMonitorAudit
+        implements Auditor,
+                   @ExportService(propagate = false) ServiceListener {  // <-- export, not @ServiceRegistered
 
-    private MongooseCountersService counters; // injected via @ServiceRegistered
-    private AtomicCounter eventCounter;       // for this processor
-    private final Map<String, AtomicCounter> nodeCounters = new HashMap<>();
+    private MongooseCountersService counters = NoOpCountersService.INSTANCE; // until service bound
+    private MongooseCounter eventCounter;
+    private final Map<String, MongooseCounter> nodeCounters = new HashMap<>();
     private volatile boolean writeEnabled = true; // per-auditor toggle
     private final String processorName;
 
-    public PerformanceMonitorAudit(String processorName) {
-        this.processorName = processorName;
-    }
+    public PerformanceMonitorAudit(String processorName) { this.processorName = processorName; }
 
-    @ServiceRegistered
-    public void countersService(MongooseCountersService svc, String name) {
-        this.counters = svc;
+    // Service delivery: the generated SEP calls this because ServiceListener is
+    // @ExportService-exported. We bind the real counters service and rebind the
+    // already-created counters (created against the no-op default) onto it.
+    @Override public void registerService(Service<?> svc) {
+        if (MongooseCountersService.class.isAssignableFrom(svc.serviceClass())) {
+            this.counters = (MongooseCountersService) svc.instance();
+            rebindCountersAgainstCurrentService();
+        }
+        // (also binds MongooseLatencyService when present)
     }
+    @Override public void deRegisterService(Service<?> svc) { /* revert to no-op */ }
 
-    @Override
-    public void init() {
-        eventCounter = counters.processorEventsCounter(processorName);
-    }
+    @Override public void init() { eventCounter = counters.processorEventsCounter(processorName); }
 
-    @Override
-    public void nodeRegistered(Object node, String nodeName) {
+    @Override public void nodeRegistered(Object node, String nodeName) {
         nodeCounters.put(nodeName, counters.nodeInvocationCounter(processorName, nodeName));
     }
 
-    @Override
-    public void eventReceived(Object event) {
+    @Override public void eventReceived(Object event) {
         if (writeEnabled) eventCounter.increment();
     }
 
-    @Override
-    public void nodeInvoked(Object node, String nodeName, String methodName, Object event) {
+    @Override public void nodeInvoked(Object node, String nodeName, String methodName, Object event) {
         if (writeEnabled) {
-            AtomicCounter c = nodeCounters.get(nodeName);
+            MongooseCounter c = nodeCounters.get(nodeName);
             if (c != null) c.increment();
         }
     }
 
-    @Override
-    public boolean auditInvocations() { return true; } // need per-node callbacks
+    @Override public boolean auditInvocations() { return true; } // need per-node callbacks
 
     public void setWriteEnabled(boolean enabled) { this.writeEnabled = enabled; }
 }
 ```
+
+> **Playground / CheerpJ parity (cross-repo).** The Fluxtion playground generates
+> the processor in-browser against the signature-only `mongoose-browser-api` stub,
+> then ships those generated sources in the downloaded project. The stub's
+> `PerformanceMonitorAudit` must mirror the real interface set **and annotations
+> exactly** — `Auditor` + `@ExportService(propagate = false) ServiceListener` +
+> `auditInvocations()` returning `true` — because source-gen keys the per-node
+> weaving and the `registerService` delegation off what it sees at generation
+> time. A stub missing the annotation (or the interface, or returning `false`)
+> produces a download that compiles and runs but shows **no** per-node counters.
+> Tracked at `mongoose-browser-api` 1.0.15 (`com.telamin:mongoose-browser-api`).
 
 **Build-time opt-in** — added to the processor builder:
 
@@ -554,7 +579,8 @@ Screenshot: `docs/screenshots/health.png`. Update the HTTP/WebSocket surface tab
 - [x] `PerformanceMonitorAudit` class — `com.telamin.mongoose.service.counters.PerformanceMonitorAudit`.
 - [ ] ~~`withPerformanceMonitor(processorName)` mongoose-builder helper wrapping `c.addAuditor(...)`~~ *(intentionally dropped — mongoose-core deliberately doesn't depend on fluxtion-builder which is a build-time-only heavyweight. Users call the canonical `cfg.addAuditor(new PerformanceMonitorAudit("name"), "perfMon")` directly. The mongoose-builder-helpers plugin can host the sugar later if it proves useful.)*
 - [x] Per-auditor `setWriteEnabled` toggle.
-- [x] Per-node / per-event counters populated; `writeEnabled=false` zero-delta tests. *(5 SPI-level tests in `PerformanceMonitorAuditTest`. End-to-end Fluxtion-compile binding deferred to Phase 4 work against fx-pnl-mongoose — Fluxtion's interpret-path doesn't propagate `registerService` to `@ServiceRegistered` on auditors, so it'll only exercise meaningfully under the compiled SEP path which mongoose's normal service injection will hit.)*
+- [x] Per-node / per-event counters populated; `writeEnabled=false` zero-delta tests. *(5 SPI-level tests in `PerformanceMonitorAuditTest`.)*
+- [x] **End-to-end compiled-SEP binding verified** against `fx-pnl-mongoose` (2026-06). Resolved by switching service delivery from `@ServiceRegistered` to an `@ExportService(propagate = false) ServiceListener` (see the corrected listing above): the generated SEP now emits `perfMon.registerService(...)`, the live counters service binds at startup, and `node.{processor}.{node}.invocations` populate the svc-admin-web per-processor Performance view. Verified in both the downloaded Maven build (real mongoose) and the in-browser playground (after the `mongoose-browser-api` 1.0.15 stub was brought to parity).
 
 ### Phase 4 — svc-admin-web throughput consumer (shipped — `cc916c3` in mongoose-plugins)
 - [x] Sampler diff loop reading `forEachCounter`. *(`MonitoringSampler.tickSnapshot()` computes deltas vs previous tick; first tick = 0 by contract.)*
