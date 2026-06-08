@@ -14,8 +14,8 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -61,8 +61,11 @@ public class DynamicServiceRegistrationTest {
             // ── REGISTER ─────────────────────────────────────────────
             server.registerService(svc);
 
-            awaitTrue(() -> processor.registeredService.get() != null);
-            assertEquals(svc, processor.registeredService.get(),
+            // Wait for THIS service specifically: the running processor also receives the
+            // feed registered as a Service<NamedFeed> (noop-feed), so "any service arrived"
+            // would race with that. Assert the fake-service is among those that reached it.
+            awaitTrue(() -> processor.registered.stream().anyMatch(s -> s == svc));
+            assertTrue(processor.registered.stream().anyMatch(s -> s == svc),
                     "the same Service<?> instance should reach the running processor");
             assertEquals(0, processor.deregisterCount,
                     "deregister should not fire on a register");
@@ -70,8 +73,8 @@ public class DynamicServiceRegistrationTest {
             // ── REMOVE ───────────────────────────────────────────────
             server.removeService("fake-service");
 
-            awaitTrue(() -> processor.deregisteredService.get() != null);
-            assertEquals(svc, processor.deregisteredService.get(),
+            awaitTrue(() -> processor.deregistered.stream().anyMatch(s -> s == svc));
+            assertTrue(processor.deregistered.stream().anyMatch(s -> s == svc),
                     "the same Service<?> instance should reach the running processor on remove");
             assertTrue(processor.registerCount >= 1, "registerService fired at least once");
             assertTrue(processor.deregisterCount >= 1, "deRegisterService fired at least once");
@@ -119,8 +122,10 @@ public class DynamicServiceRegistrationTest {
      *  observation surface. */
     public static class RecordingDataFlow implements DataFlow {
         public volatile boolean startCalled;
-        public final AtomicReference<Service<?>> registeredService = new AtomicReference<>();
-        public final AtomicReference<Service<?>> deregisteredService = new AtomicReference<>();
+        // All services that reached this processor — feeds (Service<NamedFeed>) arrive here too,
+        // so the test matches the specific service it registered rather than the latest one.
+        public final List<Service<?>> registered = new CopyOnWriteArrayList<>();
+        public final List<Service<?>> deregistered = new CopyOnWriteArrayList<>();
         public volatile int registerCount = 0;
         public volatile int deregisterCount = 0;
         private final List<EventFeed> eventFeeds = new ArrayList<>();
@@ -134,13 +139,13 @@ public class DynamicServiceRegistrationTest {
         @Override
         public void registerService(Service<?> service) {
             registerCount++;
-            registeredService.set(service);
+            registered.add(service);
         }
 
         @Override
         public void deRegisterService(Service<?> service) {
             deregisterCount++;
-            deregisteredService.set(service);
+            deregistered.add(service);
         }
     }
 }
