@@ -4,14 +4,14 @@
 
     <groupId>com.telamin</groupId>
     <artifactId>mongoose</artifactId>
-    <version>1.0.26-SNAPSHOT</version>
+    <version>1.0.27-SNAPSHOT</version>
     <name>telamin :: mongoose</name>
 
     <properties>
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <fluxtion.version>1.0.9</fluxtion.version>
+        <fluxtion.version>1.0.11</fluxtion.version>
     </properties>
     <description>
         A high-performance opinionated event processing server, connecting event source and event sinks to event handlers
@@ -56,6 +56,14 @@
             </dependency>
         </dependencies>
     </dependencyManagement>
+
+    <repositories>
+        <repository>
+            <id>repsy-fluxtion-public</id>
+            <name>Fluxtion public Maven repo on Repsy</name>
+            <url>https://repo.repsy.io/mvn/fluxtion/fluxtion-public</url>
+        </repository>
+    </repositories>
 
     <dependencies>
         <dependency>
