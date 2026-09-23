@@ -66,6 +66,18 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
     private final AuditCaptureConfig config;
     private final MongooseCountersService counters;
     private final ConcurrentHashMap<String, ProcessorSink> sinks = new ConcurrentHashMap<>();
+    /** Told when the set of live sinks changes, so a listing cache can drop its snapshot. */
+    private volatile Runnable liveSinkMutation = () -> { };
+
+    /**
+     * Register a callback for live-sink mutations — start, stop, and adopting a re-registered processor.
+     *
+     * <p>{@code DirAuditIntrospectionService}'s cache comment already claimed this existed. It did not,
+     * so a sink that began recording after the first listing never appeared in it.
+     */
+    public void onLiveSinkMutation(Runnable listener) {
+        this.liveSinkMutation = listener == null ? () -> { } : listener;
+    }
 
     public ChronicleAuditCaptureService(AuditCaptureConfig config, MongooseCountersService counters) {
         this.config = config;
@@ -103,6 +115,7 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             // Measured on a live server: 3 events after a re-registration reached the listener, the
             // capture recordCount stayed at 23, and the export held none of them. Adopt the new flow.
             existing.adoptWhileRecording();
+            liveSinkMutation.run();
             return existing;
         });
     }
@@ -119,6 +132,7 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             return;
         }
         sink.startRecording(config, counters);
+        liveSinkMutation.run();
         log.info("audit-capture STARTED for processor '" + processorName + "' at " + sink.path());
     }
 
@@ -129,6 +143,7 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             return;
         }
         sink.stopRecording();
+        liveSinkMutation.run();
         log.info("audit-capture STOPPED for processor '" + processorName + "'");
     }
 
