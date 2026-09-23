@@ -97,6 +97,12 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             // Re-attach: take the listener again. The server may have replaced it, and a re-registered
             // processor is a NEW DataFlow whose listener is the one just installed on it.
             if (configuredListener != null) existing.configuredListener = configuredListener;
+            // MA-5.4. If the sink is ALREADY recording, the new DataFlow has the server's listener on
+            // it and nothing else — so its records would reach the console and never the queue, while
+            // start() returned early on isRecording() and the sink kept answering "recording: true".
+            // Measured on a live server: 3 events after a re-registration reached the listener, the
+            // capture recordCount stayed at 23, and the export held none of them. Adopt the new flow.
+            existing.adoptWhileRecording();
             return existing;
         });
     }
@@ -245,6 +251,19 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             this.previousListener = configuredListener;
             this.captureListener = this::onRecordFanOut;
             dataFlow.setAuditLogProcessor(captureListener);
+        }
+
+        /**
+         * Point an already-recording sink at a freshly attached {@code DataFlow} (MA-5.4).
+         *
+         * <p>Without this a re-registered processor discards silently: {@code start} returns early
+         * because {@link #isRecording()} is true, so nothing ever installs the capture listener on the
+         * new instance.
+         */
+        synchronized void adoptWhileRecording() {
+            if (captureListener != null && dataFlow != null) {
+                dataFlow.setAuditLogProcessor(captureListener);
+            }
         }
 
         synchronized void stopRecording() {

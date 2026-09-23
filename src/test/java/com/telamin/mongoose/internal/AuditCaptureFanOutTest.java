@@ -179,31 +179,73 @@ class AuditCaptureFanOutTest {
     }
 
     /**
-     * MA-5.4 — re-registration while recording.
+     * MA-5.4 — re-registration while recording. Records from the NEW instance must reach the QUEUE.
      *
-     * <p>The re-add path matters and is named here: {@code addEventProcessor} on a RUNNING server does
-     * not call {@code init()}, so a re-add through it leaves the processor uninitialised; the
-     * configuration path does call it. This drives the capture service's half — a re-attach must point
-     * the sink at the NEW DataFlow and keep recording into the same file.
+     * <p>My first version of this test asserted only that the sink still reported recording and that
+     * stop restored the listener. Review ran the real thing and found it discarding silently: after a
+     * re-registration the new instance's events reached the configured listener, the capture's
+     * recordCount stayed where it was, and the export held none of them, while {@code start} kept
+     * answering {@code "recording": true}. The cause is that {@code attach} swapped the DataFlow
+     * without installing the capture listener on it, and {@code start} returned early on
+     * {@code isRecording()}.
+     *
+     * <p>So this asserts the spec's clause instead of its neighbours: drive a record through the NEW
+     * DataFlow and require it in the queue.
+     *
+     * <p>The re-add path matters and is named: {@code addEventProcessor} on a RUNNING server does not
+     * call {@code init()}, so a re-add through it leaves the processor uninitialised; the configuration
+     * path does call it.
      */
     @Test
-    void reAttachingWhileRecordingRedirectsToTheNewInstance(@TempDir Path dir) {
-        List<String> console = new CopyOnWriteArrayList<>();
-        LogRecordListener configured = r -> console.add(String.valueOf(r.asCharSequence()));
+    void recordsFromAReAttachedProcessorReachTheCaptureQueue(@TempDir Path dir) {
+        LogRecordListener configured = r -> { };
         AtomicReference<LogRecordListener> onFirst = new AtomicReference<>();
         AtomicReference<LogRecordListener> onSecond = new AtomicReference<>();
 
         ChronicleAuditCaptureService svc = new ChronicleAuditCaptureService(config(dir), counters());
         svc.attach(dataFlowCapturing(onFirst), "p", configured);
         svc.start("p");
-        assertTrue(svc.isRecording("p"));
+        onFirst.get().processLogRecord(record("before-reattach"));
+        long afterFirst = recordsInQueue(dir);
+        assertEquals(1, afterFirst, "precondition: the first instance's record is captured");
 
         // the processor is replaced while capture is still recording
         svc.attach(dataFlowCapturing(onSecond), "p", configured);
-        assertTrue(svc.isRecording("p"), "capture is still recording after a re-attach");
+        assertTrue(svc.isRecording("p"), "capture still reports recording, which is what hid this");
+
+        assertNotNull(onSecond.get(),
+                "MA-5.4: NOTHING was installed on the new DataFlow, so its records can only reach "
+                        + "whatever the server put there — never the capture queue");
+        assertNotSame(configured, onSecond.get(),
+                "MA-5.4: the capture listener must be installed on the NEW DataFlow, not left as the "
+                        + "server's listener — otherwise its records reach the console and never the queue");
+
+        onSecond.get().processLogRecord(record("after-reattach"));
+        assertEquals(2, recordsInQueue(dir),
+                "MA-5.4: a record from the re-attached instance must reach the capture queue. "
+                        + "Measured on a live server before this fix: the count did not move and the "
+                        + "export held none of them");
 
         svc.stop("p");
         assertSame(configured, onSecond.get(),
-                "MA-5.4: stop must restore the listener on the CURRENT DataFlow, not the replaced one");
+                "and stop restores the listener on the CURRENT DataFlow");
+    }
+
+    /** Read the sink back, so the assertion is about the FILE rather than about a counter. */
+    private static long recordsInQueue(Path dir) {
+        Path procDir = dir.resolve("p");
+        try (net.openhft.chronicle.queue.ChronicleQueue q =
+                     net.openhft.chronicle.queue.impl.single.SingleChronicleQueueBuilder
+                             .binary(procDir).build()) {
+            net.openhft.chronicle.queue.ExcerptTailer tailer = q.createTailer().toStart();
+            long n = 0;
+            while (true) {
+                try (net.openhft.chronicle.wire.DocumentContext dc = tailer.readingDocument()) {
+                    if (!dc.isPresent()) break;
+                    n++;
+                }
+            }
+            return n;
+        }
     }
 }
