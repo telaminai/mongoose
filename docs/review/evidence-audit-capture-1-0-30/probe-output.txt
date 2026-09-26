@@ -1,0 +1,8 @@
+PROBE-A after stop+start: L1 got 1, L2 got 1
+PROBE-A after stop, installed on the NEW flow is L1
+PROBE-A while recording after re-attach with L2: L1 got 1, L2 got 0
+PROBE-B re-attach after stop: installed on new flow by capture? false
+PROBE-B start after re-attach: L1 got 0, L2 got 1
+PROBE-C after stop: a restored false, b restored false, c restored true
+PROBE-C capture listener on a/b/c: true/true/true (stop restores only the current flow)
+PROBE-L reads=260 backwards=0 finalListed=2000 written=2000
