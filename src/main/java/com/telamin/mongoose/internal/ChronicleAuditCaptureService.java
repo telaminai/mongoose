@@ -66,6 +66,18 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
     private final AuditCaptureConfig config;
     private final MongooseCountersService counters;
     private final ConcurrentHashMap<String, ProcessorSink> sinks = new ConcurrentHashMap<>();
+    /** Told when the set of live sinks changes, so a listing cache can drop its snapshot. */
+    private volatile Runnable liveSinkMutation = () -> { };
+
+    /**
+     * Register a callback for live-sink mutations — start, stop, and adopting a re-registered processor.
+     *
+     * <p>{@code DirAuditIntrospectionService}'s cache comment already claimed this existed. It did not,
+     * so a sink that began recording after the first listing never appeared in it.
+     */
+    public void onLiveSinkMutation(Runnable listener) {
+        this.liveSinkMutation = listener == null ? () -> { } : listener;
+    }
 
     public ChronicleAuditCaptureService(AuditCaptureConfig config, MongooseCountersService counters) {
         this.config = config;
@@ -80,13 +92,30 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
 
     @Override
     public void attach(DataFlow dataFlow, String processorName) {
+        attach(dataFlow, processorName, null);
+    }
+
+    @Override
+    public void attach(DataFlow dataFlow, String processorName, LogRecordListener configuredListener) {
         // Hold a weak reference to the DataFlow keyed by name so start()
         // can install a listener later. Idempotent — re-attach replaces.
         sinks.compute(processorName, (k, existing) -> {
             if (existing == null) {
-                return new ProcessorSink(dataFlow, processorName);
+                ProcessorSink created = new ProcessorSink(dataFlow, processorName);
+                created.configuredListener = configuredListener;
+                return created;
             }
             existing.dataFlow = dataFlow;
+            // Re-attach: take the listener again. The server may have replaced it, and a re-registered
+            // processor is a NEW DataFlow whose listener is the one just installed on it.
+            if (configuredListener != null) existing.configuredListener = configuredListener;
+            // MA-5.4. If the sink is ALREADY recording, the new DataFlow has the server's listener on
+            // it and nothing else — so its records would reach the console and never the queue, while
+            // start() returned early on isRecording() and the sink kept answering "recording: true".
+            // Measured on a live server: 3 events after a re-registration reached the listener, the
+            // capture recordCount stayed at 23, and the export held none of them. Adopt the new flow.
+            existing.adoptWhileRecording();
+            liveSinkMutation.run();
             return existing;
         });
     }
@@ -103,6 +132,7 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             return;
         }
         sink.startRecording(config, counters);
+        liveSinkMutation.run();
         log.info("audit-capture STARTED for processor '" + processorName + "' at " + sink.path());
     }
 
@@ -113,6 +143,7 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             return;
         }
         sink.stopRecording();
+        liveSinkMutation.run();
         log.info("audit-capture STOPPED for processor '" + processorName + "'");
     }
 
@@ -154,6 +185,11 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
         private DataFlow dataFlow;
         private ChronicleQueue queue;
         private ExcerptAppender appender;
+        /** The listener the server configured, taken at attach. Restored on stop; fanned to while recording. */
+        private LogRecordListener configuredListener;
+        /** Counted, never swallowed: a destination that fails is a finding, not silence. */
+        private long captureFailures;
+        private long delegateFailures;
         private LogRecordListener previousListener;
         private LogRecordListener captureListener;
         private MongooseCounter recordCounter;
@@ -223,23 +259,34 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             this.recordCounter = counters.counter("audit." + processorName + ".records");
             this.startedAt = Instant.now();
 
-            // Compose the capture listener IN FRONT of whatever listener
-            // mongoose already installed (typically the SLF4J sink).
-            // We can't read back the existing listener through Fluxtion's
-            // API, so we wrap our listener with a delegate that fans to
-            // the previous one if present. The previous listener is what
-            // we'll restore in stopRecording.
-            this.previousListener = null; // Best-effort; see stopRecording.
-            this.captureListener = this::onRecord;
+            // Compose the capture listener IN FRONT of the listener the server configured, handed to
+            // us at attach because DataFlow has no getter for it. Capture used to REPLACE it: records
+            // stopped reaching the console the moment capture started (MA-5a), and stopRecording
+            // installed a no-op, so stopping capture sent audit nowhere at all until restart (MA-5b).
+            this.previousListener = configuredListener;
+            this.captureListener = this::onRecordFanOut;
             dataFlow.setAuditLogProcessor(captureListener);
         }
 
+        /**
+         * Point an already-recording sink at a freshly attached {@code DataFlow} (MA-5.4).
+         *
+         * <p>Without this a re-registered processor discards silently: {@code start} returns early
+         * because {@link #isRecording()} is true, so nothing ever installs the capture listener on the
+         * new instance.
+         */
+        synchronized void adoptWhileRecording() {
+            if (captureListener != null && dataFlow != null) {
+                dataFlow.setAuditLogProcessor(captureListener);
+            }
+        }
+
         synchronized void stopRecording() {
-            // Detach our listener. Setting to a true no-op rather than
-            // null preserves the contract that setAuditLogProcessor is
-            // valid to call any time.
+            // Restore the listener the server configured, so audit keeps flowing after capture stops.
+            // A no-op here is what made stopping capture discard audit entirely (MA-5b).
             if (dataFlow != null) {
-                dataFlow.setAuditLogProcessor(NoOpLogRecordListener.INSTANCE);
+                dataFlow.setAuditLogProcessor(
+                        previousListener != null ? previousListener : NoOpLogRecordListener.INSTANCE);
             }
             if (appender != null) {
                 appender = null;
@@ -249,6 +296,34 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
                 queue = null;
             }
             captureListener = null;
+        }
+
+        /**
+         * Fan one record out to BOTH destinations, isolated in both directions.
+         *
+         * <p>A failure in either must not stop the other receiving the record, and must not be
+         * swallowed: it is counted and logged. Silent isolation would reproduce the very defect this
+         * fixes, one layer down — and a write that fails while the record is still counted is what lets
+         * a later marker read {@code missing_records} rather than claiming a record that never landed.
+         */
+        void onRecordFanOut(LogRecord record) {
+            try {
+                onRecord(record);
+            } catch (Throwable t) {
+                captureFailures++;
+                log.log(Level.WARNING, "audit capture write failed for '" + processorName
+                        + "' (" + captureFailures + " so far); the record is counted as received", t);
+            }
+            LogRecordListener delegate = previousListener;
+            if (delegate != null) {
+                try {
+                    delegate.processLogRecord(record);
+                } catch (Throwable t) {
+                    delegateFailures++;
+                    log.log(Level.WARNING, "configured audit listener failed for '" + processorName
+                            + "' (" + delegateFailures + " so far)", t);
+                }
+            }
         }
 
         void onRecord(LogRecord record) {

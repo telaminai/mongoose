@@ -41,6 +41,10 @@ public final class DirAuditIntrospectionService implements MongooseAuditIntrospe
     public DirAuditIntrospectionService(AuditCaptureConfig config, ChronicleAuditCaptureService captureService) {
         this.config = config;
         this.captureService = captureService;
+        // The cache's own comment says it "is invalidated on each live-sink mutation reported by the
+        // capture service". Nothing reported one: invalidate() had no callers anywhere, so a sink that
+        // began recording after the first walk never appeared in the listing at all.
+        captureService.onLiveSinkMutation(this::invalidate);
     }
 
     /** Drop the cached listAvailable() snapshot — call on capture roll / janitor sweep. */
@@ -51,13 +55,36 @@ public final class DirAuditIntrospectionService implements MongooseAuditIntrospe
     @Override
     public List<AuditSinkHandle> listAvailable() {
         List<AuditSinkHandle> cached = cachedList.get();
-        if (cached != null) {
-            return cached;
+        if (cached == null) {
+            List<AuditSinkHandle> fresh = walk();
+            // Race-safe: if another walk landed first, just discard ours.
+            cachedList.compareAndSet(null, fresh);
+            cached = cachedList.get() == null ? fresh : cachedList.get();
         }
-        List<AuditSinkHandle> fresh = walk();
-        // Race-safe: if another walk landed first, just discard ours.
-        cachedList.compareAndSet(null, fresh);
-        return fresh;
+        return withLiveCounters(cached);
+    }
+
+    /**
+     * Overlay the live handle for any sink that is currently recording.
+     *
+     * <p>The cache exists to keep the DIRECTORY WALK off the steady-state path, and that part is still
+     * cached. But a handle also carries {@code recordCount} and {@code lastWriteAt}, which change on
+     * every single record — so serving them from a snapshot froze them at whatever the first call saw.
+     * Measured on a live server: the export grew from 23 records to 45 while {@code /api/audit/files}
+     * kept reporting 23 and a {@code lastWriteAt} from boot.
+     *
+     * <p>Invalidating per record would defeat the cache entirely; overlaying the live values costs one
+     * map lookup per entry and keeps the walk cached, which is what the cache was for.
+     */
+    private List<AuditSinkHandle> withLiveCounters(List<AuditSinkHandle> snapshot) {
+        Map<String, AuditSinkHandle> live = captureService.liveSinks();
+        if (live.isEmpty()) return snapshot;
+        List<AuditSinkHandle> out = new ArrayList<>(snapshot.size());
+        for (AuditSinkHandle h : snapshot) {
+            AuditSinkHandle fresh = live.get(h.processorName());
+            out.add(fresh != null ? fresh : h);
+        }
+        return List.copyOf(out);
     }
 
     @Override

@@ -767,7 +767,10 @@ public class MongooseServer implements MongooseServerController {
             // capture is disabled; the Chronicle impl remembers the DataFlow
             // so a later start(name) call can install a LogRecordListener
             // without the runtime needing to hand the DataFlow over again.
-            auditCaptureService.attach(eventProcessor, processorName);
+            // Hand the capture service the listener this server configured, so it can fan out to it
+            // and restore it on stop. Taken here, at attach: logRecordListener is a static that each
+            // bootServer call overwrites, so reading it later would restore another server's listener.
+            auditCaptureService.attach(eventProcessor, processorName, logRecordListener);
             if (auditCaptureConfig != null && auditCaptureConfig.getAutoStart() != null
                     && auditCaptureConfig.getAutoStart().contains(processorName)) {
                 auditCaptureService.start(processorName);

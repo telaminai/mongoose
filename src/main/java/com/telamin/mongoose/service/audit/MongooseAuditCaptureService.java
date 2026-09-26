@@ -5,6 +5,7 @@
 package com.telamin.mongoose.service.audit;
 
 import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.audit.LogRecordListener;
 
 /**
  * CONTROL surface for the audit-log capture plugin. Starts and stops
@@ -55,6 +56,28 @@ public interface MongooseAuditCaptureService {
      */
     default void attach(DataFlow dataFlow, String processorName) {
         // no-op default — NoOp impl ignores
+    }
+
+    /**
+     * Register a processor, and hand over the listener the server has configured on it.
+     *
+     * <p><b>Why the listener must arrive here, at attach.</b> Capture installs its own
+     * {@code LogRecordListener}, and {@code DataFlow} has no getter for the current one, so a capture
+     * service that does not receive it cannot fan out to it and cannot restore it on stop. It used to
+     * do neither: records stopped reaching the console the moment capture started, and stopping capture
+     * left audit going nowhere at all until the next restart.
+     *
+     * <p>It must be captured <b>at attach, per processor</b>. The server's field is a
+     * {@code private static} that each {@code bootServer} call overwrites, so two servers in one JVM
+     * share it — reading it later would restore the wrong listener.
+     *
+     * <p>Default delegates to {@link #attach(DataFlow, String)} so existing implementations, including
+     * the NoOp, keep working unchanged.
+     *
+     * @param configuredListener the listener the server installed on this processor; may be null.
+     */
+    default void attach(DataFlow dataFlow, String processorName, LogRecordListener configuredListener) {
+        attach(dataFlow, processorName);
     }
 
     /**
