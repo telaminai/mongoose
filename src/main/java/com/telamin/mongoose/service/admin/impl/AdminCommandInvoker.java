@@ -26,7 +26,11 @@ public class AdminCommandInvoker extends AbstractEventToInvocationStrategy {
     @Override
     protected void dispatchEvent(Object event, DataFlow eventProcessor) {
         AdminCommand adminCommand = (AdminCommand) event;
-        adminCommand.executeCommand();
+        if (adminCommand.isSignalRouted()) {
+            adminCommand.executeAsSignal(eventProcessor);           // option A: in the processor's event cycle
+        } else {
+            adminCommand.executeCommand();                          // a lambda: on the processor's thread, outside a cycle
+        }
     }
 
     @Override

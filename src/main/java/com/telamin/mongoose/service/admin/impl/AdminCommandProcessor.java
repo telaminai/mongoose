@@ -119,6 +119,16 @@ public class AdminCommandProcessor implements AdminCommandRegistry, LifeCycleEve
     }
 
     @Override
+    public void registerSignalCommand(String name) {
+        if (com.telamin.mongoose.dispatch.ProcessorContext.currentProcessor() == null) {
+            throw new IllegalStateException("a signal-routed command belongs to a processor: register '" + name
+                    + "' from a processor's @ServiceRegistered");
+        }
+        String queueKey = "adminCommand." + name;
+        addCommand(name, queueKey, new AdminCommand(eventFlowManager.registerEventSource(queueKey, this), true));
+    }
+
+    @Override
     public List<String> commandList() {
         return registeredCommandMap.keySet().stream().sorted().collect(Collectors.toList());
     }

@@ -23,6 +23,9 @@ CONTROLS=[
  ('R5-a-typed-call-replays-through-the-configured-strategy', M+'dispatch/AbstractEventToInvocationStrategy.java', '            dispatchEvent(event, target);\n        } finally {', '            target.onEvent(event);\n        } finally {', 'TypedCallReplayAcceptanceTest#aServiceCallRecordedAtDispatch_isReplayedAsTheSameCall'),
  ('csv-the-journal-reads-back-its-file', R+'CsvEventJournal.java', '                    put(f.get(0), Long.parseLong(f.get(1)), Base64.getDecoder().decode(f.get(2)));\n', '', 'CsvDurableReplayTest#aRunRecordedToCsv_isReplayedFromTheFilesAlone'),
  ('csv-the-store-reads-back-its-file', R+'CsvReplayStore.java', '                    add(f.get(0), parse(f));\n', '', 'CsvDurableReplayTest#aRunRecordedToCsv_isReplayedFromTheFilesAlone'),
+ ('A-a-signal-command-runs-in-an-event-cycle', M+'service/admin/impl/AdminCommandInvoker.java', '            adminCommand.executeAsSignal(eventProcessor);           // option A: in the processor\'s event cycle\n', '            adminCommand.executeCommand();\n', 'SignalAdminCommandTest#aSignalCommandRunsInTheProcessorsEventCycle'),
+ ('A-an-unanswered-command-is-an-error', M+'service/admin/impl/AdminCommand.java', '            if (!replied[0]) {\n', '            if (false) {\n', 'SignalAdminCommandTest#aCommandNoHandlerAnswers_isAnsweredWithAnError'),
+ ('A-each-invocation-keeps-its-routing', M+'service/admin/impl/AdminCommand.java', '        this.signalRouted = adminCommand.signalRouted;\n', '', 'SignalAdminCommandTest#aSignalCommandIsRecorded_andReplayedAsTheSameCycle'),
 ]
 only=set(sys.argv[1:])
 results=[]
