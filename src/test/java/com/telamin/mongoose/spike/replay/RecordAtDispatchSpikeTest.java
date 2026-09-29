@@ -10,6 +10,7 @@ import com.telamin.mongoose.config.EventSinkConfig;
 import com.telamin.mongoose.config.MongooseServerConfig;
 import com.telamin.mongoose.connector.memory.InMemoryEventSource;
 import com.telamin.mongoose.connector.memory.InMemoryMessageSink;
+import com.telamin.mongoose.dispatch.EventToOnEventInvokeStrategy;
 import org.agrona.concurrent.BusySpinIdleStrategy;
 import org.junit.jupiter.api.Test;
 
@@ -42,7 +43,7 @@ class RecordAtDispatchSpikeTest {
         source.setName("orders");
         source.setCacheEventLog(true);
         InMemoryMessageSink sink = new InMemoryMessageSink();
-        List<ReplayRecord> recorded = new CopyOnWriteArrayList<>();
+        List<RecordingEventToInvokeStrategy.Recorded> recorded = new CopyOnWriteArrayList<>();
         AtomicLong clock = new AtomicLong(T0);
 
         var builder = MongooseServerConfig.builder()
@@ -55,12 +56,13 @@ class RecordAtDispatchSpikeTest {
                 .addEventSink(EventSinkConfig.<MessageSink<?>>builder().instance(sink).name("memSink").build());
         if (recording) {
             // a data-driven wall clock for the spike, so the instants are exact: 10 ms per input
-            builder.onEventInvokeStrategy(() -> new RecordingEventToInvokeStrategy(recorded, () -> clock.addAndGet(10)));
+            builder.onEventInvokeStrategy(() -> new RecordingEventToInvokeStrategy(new EventToOnEventInvokeStrategy(), recorded,
+                    () -> clock.addAndGet(10), source.getName()));
         }
         MongooseServer server = MongooseServer.bootServer(builder.build(), rec -> { });
         try {
             for (Object in : inputs) source.offer(in);
-            return new Run(await(sink, 5), List.copyOf(recorded));
+            return new Run(await(sink, 5), recorded.stream().map(RecordingEventToInvokeStrategy.Recorded::record).toList());
         } finally {
             server.stop();
         }

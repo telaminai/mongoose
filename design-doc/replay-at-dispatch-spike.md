@@ -125,10 +125,18 @@ in three steps:
 3. The strategy's `dispatchEvent` calls the processor's typed method (`listener.onServiceEvent(s)`) on the agent
    thread.
 
-That is after the queue and through `processEvent`, so the recorder in this spike sees it. What it must add is the
-**callback type**: a replay has to deliver the value through the same typed strategy, not as an `onEvent`. So the
-record is `{callBackType, event, wallClockTime}`. The recorded value also carries what the exported method's audit
-event leaves out, the arguments.
+That is after the queue and through `processEvent`, so the recorder in this spike sees it. The record needs the
+**source** it came from, not the callback type. The callback is configuration: the source defines it, and a replay boots
+the same config. So a replay publishes each record back through its own source (`publishReplay`), and the configured
+strategy makes the same call. The record is `{source, event, wallClockTime}`. The strategy does not know its source
+name; the queue's agent does (it is named `group/source/callback`), so a production recorder takes it from there. The
+recorded value also carries what the exported method's audit event leaves out, the arguments.
+
+**Spiked** (`TypedServiceCallReplaySpikeTest`, 1/0/0/0). A typed service (`QuoteControlService`) sends three commands;
+the processor (`QuoteControlProcessor`, exporting `QuoteControl`) receives them as service calls at T0+10..30. They
+are recorded after the queue with their source. Replayed through the same service's queue into a fresh server, the
+configured strategy makes the same three calls at the same instants. Witness: the same records through a plain feed
+arrive as events, not calls, and do not reproduce the run.
 
 The other ways in, and whether a dispatch recorder sees them:
 
@@ -137,7 +145,7 @@ The other ways in, and whether a dispatch recorder sees them:
 | feed event, `BroadcastEvent`, `ReplayRecord` | yes | yes |
 | service call through a typed invoke strategy | yes (`onEvent` no) | yes, with its callback type |
 | processor-owned admin command | yes (`onEvent` no) | yes, as `AdminCommand`; only its args are recordable |
-| timer expiry (`DeadWheelScheduler.onTimerExpiry` runs the node's `Runnable`) | no, a direct callback on the agent thread | no: record the timer and its instant at the expiry |
+| timer expiry (`DeadWheelScheduler.onTimerExpiry` runs the node's `Runnable`) | no, a direct callback on the agent thread | no: see *Timers* below |
 | `registerService` / `deRegisterService`, `initialConfig`, lifecycle | no | no, and not needed: these are set-up, re-created by booting the same config |
 | `setAuditLogProcessor` / `setAuditLogLevel` / `setClockStrategy` | no (default methods call `onEvent` directly) | no, and not needed: set-up; see mongoose#46 for `audit.*` |
 | server-level admin commands | no, on the transport thread | not processor inputs |
@@ -152,6 +160,34 @@ A direct exported-service call from user code that holds the processor would sti
 exported-service boundary (`beforeServiceCall`) is where to record such a call, with its arguments. That is a Fluxtion
 change, and it matches the admin-commands proposal's option B.
 
+## Timers
+
+A listener on expiry records WHEN a timer fired, but a replay cannot use that alone. A timer's action is a closure the
+node made when it scheduled it, so it cannot be recorded. And during a replay the same build re-arms the same timers,
+while the live scheduler fires them from its own clock (`DeadWheelScheduler` reads an `OffsetEpochNanoClock`, real
+time), at the wrong points or not at all. The old Fluxtion `YamlReplayRunner` (`com.fluxtion.compiler.replay`) has no
+timer support either: it pins the clock per record and calls `onEvent`. A timer could replay there only because the
+runner has no live scheduler and the writer, an auditor, sees the event a fired timer's cycle dispatches.
+
+The design (`TimerReplay`):
+- **Recording**: a scheduler decorator gives each schedule call a sequence number per processor. The number is
+  deterministic: a replay makes the same calls in the same order. On expiry it reports `Fired{seq, instant}` into the
+  processor's input sequence, pins the processor's clock to the deadline, then runs the action.
+- **Replay**: a scheduler that never fires by itself. When the replay stream reaches `Fired{seq, t}`, it pins the
+  clock to `t` and fires the action the replayed node registered under `seq`. It refuses a `seq` the replayed run
+  never scheduled.
+- Both schedulers keep `milliTime()` on the processor's time, so a delay computed from it is the same in both.
+
+**Spiked** (`TimerReplaySpikeTest`, 1/0/0/0), driving a processor directly with the duty cycle's order (due timers
+fire before the next input). Each order arms a 50 ms timeout, and one timeout fires between two inputs. The recorded
+stream is the inputs with the three firings where they happened. The replay reproduces the run exactly. Witness: the
+inputs alone, without the firings, do not. Control: the recorder reporting the poll time instead of the deadline is
+caught; restored byte-identically.
+
+**Needed in Mongoose:** a scheduler factory in config. `MongooseServer.java:740` hard-wires
+`new DeadWheelScheduler()` into each processor group, so the recording and replay schedulers cannot be installed today.
+A timer's firing is then recorded into the same per-processor sequence as the dispatched inputs.
+
 ## Recommendation
 
 1. **Record feed events at dispatch** (this spike): a recording `EventToInvokeStrategy` from config, one sequence per
@@ -159,8 +195,9 @@ change, and it matches the admin-commands proposal's option B.
 2. **Admin commands**: record `{command, args}` at `AdminCommandInvoker`; with the proposal's option B they also get an
    audit record to check a replay against.
 3. **Service calls** through a typed invoke strategy: recorded at dispatch like events, with their callback type, and
-   replayed through the same strategy. **Timers**: record the timer and its instant at `onTimerExpiry`, into the same
-   per-processor sequence. A direct exported-service call is outside managed Mongoose; recording it needs the Fluxtion
+   replayed back through the same source. **Timers**: a numbering scheduler records each firing into the same
+   per-processor sequence, and a replay scheduler fires only when the replay reaches it (needs a scheduler factory
+   in config). A direct exported-service call is outside managed Mongoose; recording it needs the Fluxtion
    service boundary, with its arguments.
 4. The recorder's codec is the processor's handled event types plus the recorded service signatures.
 5. Configuration events (audit level/processor, clock, service registration, initial config) are the deployment's
