@@ -229,11 +229,28 @@ The event is not dispatched to any node, and nothing is marked dirty. Mongoose's
 `processor.runInEventCycle(new AdminCommandEvent(name, args), command::executeCommand)`: the trigger is the command,
 carrying all its state.
 
+**Spiked 2026-09-29, both Fluxtion repos, branch `spike/run-in-event-cycle`, not pushed.**
+- Runtime (`b8e97b4`): the `DataFlow` default plus the `DefaultEventProcessor` override. `RunInEventCycleTest` 5/0/0/0,
+  suite 274/0/0/1, three controls caught.
+- Compiler (`632d99a1`): the method is added in `javaTemplate.vsl` and in `InMemoryEventProcessor`, with **no change to the
+  generator model**. `RunInEventCycleTest` 15/0/0/0 across the five targets (three compiled, serialised, interpreted).
+  Removing the template override fails the compiled targets, and removing the interpreter's fails the interpreted one.
+  The only change to the pre-split goldens is the added method.
+- The audit log it produces: the command's record carries the node's line and nothing from downstream. The event it
+  raised follows as its own record, with the publisher firing.
+- Mongoose (`a91a2fd`): the invoker uses `runInEventCycle` when the processor's class overrides it, and keeps the
+  bracket otherwise. `RunInEventCycleAdminTest` passes on 1.0.17-SNAPSHOT and skips on 1.0.15.
+
+**Why a default method cannot run the cycle:** it sees only `DataFlow`'s public API. The auditor fan-out, the
+`processing` flag, `afterEvent()` and the callback queue are private to each implementation. Exposing them as public
+begin and end calls would let any caller leave a cycle half-open. So the default runs the action without a cycle, and
+each implementation overrides it. A template that wants the path closed makes the override throw.
+
 Security of such a trigger:
 1. It grants no new privilege in-process. Its caller holds the `DataFlow`, and can already call `onEvent`, exported
    services and nodes. The boundary that matters is Mongoose's: the admin transport sends a registered command name
    and arguments, never code, and must go on doing so.
-2. Re-entrancy: called inside an open cycle, it must queue, as a re-entrant event does, or refuse.
+2. Re-entrancy: called inside an open cycle, it must queue, as a re-entrant event does, or refuse. The spike refuses.
 3. Thread: it must run on the processor's thread (the #46 class of race). Mongoose guarantees that through the admin
    queue; Fluxtion could assert it.
 4. Exceptions: the `finally` must clear `processing` and close the record (finding 2).
