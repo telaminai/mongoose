@@ -176,13 +176,21 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         Thread agent = agentThread;
         if (agent == null || agent == Thread.currentThread() || !agent.isAlive()) {
             work.run();
-        } else if (!onAgentThread.offer(work)) {
+            return;
+        }
+        Runnable once = AgentHandoff.once(work);
+        if (!onAgentThread.offer(once)) {
             throw new IllegalStateException("group " + roleName() + " cannot take more work from other threads");
         }
+        // the thread may have stopped between the check above and the offer: then nothing will poll the queue, so run
+        // it here; the claim makes it run once, whichever of the two gets to it
+        Thread after = agentThread;
+        if (after == null || !after.isAlive()) once.run();
     }
 
     @Override
     public void onClose() {
+        for (Runnable r; (r = onAgentThread.poll()) != null; ) r.run();   // work handed over before the close still runs
         agentThread = null;
         log.info("onClose " + roleName());
         super.onClose();
