@@ -74,7 +74,22 @@ public final class GroupReplayer {
         ReplayClock clock = new ReplayClock();
         flow.setClockStrategy(clock);
         scheduler.replay(flow);
-        cursors.add(new Cursor(name, flow, clock, config.store().entries(name)));
+        // on the group's agent thread: a store that cannot be read stops this processor's replay, by name, instead of
+        // reaching the agent's error handler (which ends the process). The processor still has its cursor, so it stays
+        // replayed: its live inputs are muted, and it receives nothing (review of 90f0d9b, finding 1)
+        List<ReplayEntry> entries;
+        String unreadable = null;
+        try {
+            entries = config.store().entries(name);
+        } catch (VirtualMachineError e) {
+            throw e;
+        } catch (Throwable t) {
+            entries = List.of();
+            unreadable = "the replay store could not be read: " + t;
+        }
+        Cursor cursor = new Cursor(name, flow, clock, entries);
+        cursors.add(cursor);
+        if (unreadable != null) stop(cursor, unreadable);
     }
 
     /**
@@ -138,9 +153,12 @@ public final class GroupReplayer {
             boolean delivered;
             try {
                 delivered = deliver(c, c.entries.get(c.next));
-            } catch (RuntimeException e) {
+            } catch (VirtualMachineError e) {
+                throw e;
+            } catch (Throwable e) {
                 // a replay that cannot deliver an entry stops that processor's replay and says why; it does not
-                // take the group (or the server) down with it
+                // take the group (or the server) down with it. Any Throwable: a decoder's AssertionError reached the
+                // agent's error handler, which ended the process (review of 90f0d9b, finding 1)
                 delivered = stop(c, "entry " + c.next + " could not be replayed: " + e);
             }
             if (delivered) {

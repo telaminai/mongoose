@@ -223,13 +223,15 @@ class ReplayIndependentReviewTest {
     void f1_aReplayStoreThatCannotBeRead_isAStoppedReplay_notAnExitedServer() throws Exception {
         String survived = runChild("store");
         assertTrue(survived.contains("stopped=") && survived.contains("DEMO replay store unavailable"), "named: " + survived);
-        assertTrue(survived.contains("live=[]"), "and the processor whose replay failed receives no live input: " + survived);
+        assertTrue(survived.contains("live=[]") && survived.contains("outputs=[]"),
+                "and the processor whose replay failed receives no live input: " + survived);
     }
 
     @Test
     void f1_aDecoderThatThrowsAnError_isAStoppedReplay_notAnExitedServer() throws Exception {
         String survived = runChild("decoder");
         assertTrue(survived.contains("DEMO decoder failure"), "named: " + survived);
+        assertTrue(survived.contains("live=[]") && survived.contains("outputs=[]"), "and it receives no live input: " + survived);
     }
 
     // ---- 2: an inline input is recorded as received ------------------------------------------------------------

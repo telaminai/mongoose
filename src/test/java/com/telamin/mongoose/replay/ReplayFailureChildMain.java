@@ -77,7 +77,8 @@ public final class ReplayFailureChildMain {
         GroupReplayer replayer = server.replayers().get("processor-agent");
         System.out.println("SURVIVED complete=" + (replayer != null && replayer.complete())
                 + " stopped=" + (replayer == null ? null : replayer.stopped("quotes"))
-                + " live=" + sink.getMessages());
+                + " live=" + sink.getMessages()
+                + " outputs=" + (replayer == null ? null : replayer.outputs("quotes")));   // captured (L2): a leak shows here
         server.stop();
         System.exit(0);
     }
