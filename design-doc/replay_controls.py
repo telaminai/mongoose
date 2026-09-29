@@ -26,18 +26,20 @@ CONTROLS=[
  ('A-a-signal-command-runs-in-an-event-cycle', M+'service/admin/impl/AdminCommandInvoker.java', '            adminCommand.executeAsSignal(eventProcessor);           // option A: in the processor\'s event cycle\n', '            adminCommand.executeCommand();\n', 'SignalAdminCommandTest#aSignalCommandRunsInTheProcessorsEventCycle'),
  ('A-an-unanswered-command-is-an-error', M+'service/admin/impl/AdminCommand.java', '            if (!replied[0]) {\n', '            if (false) {\n', 'SignalAdminCommandTest#aCommandNoHandlerAnswers_isAnsweredWithAnError'),
  ('A-each-invocation-keeps-its-routing', M+'service/admin/impl/AdminCommand.java', '        this.signalRouted = adminCommand.signalRouted;\n', '', 'SignalAdminCommandTest#aSignalCommandIsRecorded_andReplayedAsTheSameCycle'),
+ ('A-the-generated-processor-audits-the-command', M+'service/admin/impl/AdminCommandInvoker.java', '            adminCommand.executeAsSignal(eventProcessor);           // option A: in the processor\'s event cycle\n', '            adminCommand.executeCommand();\n', 'GeneratedAdminAuditTest#aSignalCommandIsAuditedAndPropagates_aLambdaStillWorksOutsideTheCycle'),
+ ('A-the-generated-source-stays-publishable', 'src/test/java/com/telamin/mongoose/replay/generated/AlarmProcessor.java', 'package com.telamin.mongoose.replay.generated;\n', '/* Copyright: DEMO header. All Rights Reserved */\npackage com.telamin.mongoose.replay.generated;\n', 'GeneratedAdminAuditTest#theGeneratedSourceIsPublishable'),
 ]
 only=set(sys.argv[1:])
 results=[]
 
 def verdict_of(test):
     cls,meth=test.split('#')
-    rep=pathlib.Path(f'target/surefire-reports/TEST-com.telamin.mongoose.replay.{cls}.xml')
-    if rep.exists(): rep.unlink()
+    for old in pathlib.Path('target/surefire-reports').glob(f'TEST-*.{cls}.xml'): old.unlink()
     r=subprocess.run(['mvn','-o','-q','test',f'-Dtest={test}','-Dsurefire.failIfNoSpecifiedTests=false'],capture_output=True,text=True)
-    if not rep.exists():
+    found=list(pathlib.Path('target/surefire-reports').glob(f'TEST-*.{cls}.xml'))
+    if not found:
         return 'compile-error' if 'COMPILATION' in r.stdout+r.stderr else 'no-report'
-    root=ET.parse(rep).getroot()
+    root=ET.parse(found[0]).getroot()
     tcs=[tc for tc in root.iter('testcase') if tc.get('name')==meth or tc.get('name').startswith(meth+'(')]
     if not tcs: return 'not-run'
     kinds=[x.tag for x in tcs[0] if x.tag in('failure','error','skipped')]
@@ -57,21 +59,10 @@ for name,path,old,new,test in CONTROLS:
     p=pathlib.Path(path); orig=p.read_bytes(); h=hashlib.sha256(orig).hexdigest()
     text=orig.decode()
     assert text.count(old)==1,(name,'anchor count',text.count(old))
-    cls,meth=test.split('#')
-    rep=pathlib.Path(f'target/surefire-reports/TEST-com.telamin.mongoose.replay.{cls}.xml')
     try:
         p.write_text(text.replace(old,new,1))
-        if rep.exists(): rep.unlink()
-        r=subprocess.run(['mvn','-o','-q','test',f'-Dtest={test}','-Dsurefire.failIfNoSpecifiedTests=false'],capture_output=True,text=True)
-        verdict='no-report'
-        if rep.exists():
-            root=ET.parse(rep).getroot()
-            tcs=[tc for tc in root.iter('testcase') if tc.get('name')==meth or tc.get('name').startswith(meth+'(')]
-            if not tcs: verdict='not-run'
-            else:
-                kinds=[x.tag for x in tcs[0] if x.tag in('failure','error','skipped')]
-                verdict='caught' if kinds==['failure'] else ('survived' if not kinds else '+'.join(kinds))
-        elif 'COMPILATION' in r.stdout+r.stderr: verdict='compile-error'
+        v=verdict_of(test)
+        verdict={'green':'survived'}.get(v, v)
     finally:
         p.write_bytes(orig)
     restored=hashlib.sha256(p.read_bytes()).hexdigest()==h
