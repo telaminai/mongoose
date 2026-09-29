@@ -443,4 +443,18 @@ class ReplayIndependentReviewTest {
             assertEquals(List.of(), again.entries("probe"), "and it still reads");
         }
     }
+
+    @Test
+    void f7_aJournalWithATornTail_isNeverAppendedTo_andStaysReadable(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("journal.csv");
+        Files.writeString(file, CsvEventJournal.HEADER + "\nfeed,1,AAE", StandardCharsets.UTF_8);    // torn first record
+        try (CsvEventJournal journal = new CsvEventJournal(file)) {
+            assertEquals(0, journal.size(FEED));
+            assertTrue(journal.holdsRecording(), "a torn journal is not an empty one: RECORD refuses it");
+            assertThrows(Exception.class, () -> journal.append(FEED, 1, new byte[]{1}), "and it is not appended to");
+        }
+        try (CsvEventJournal again = new CsvEventJournal(file)) {
+            assertEquals(0, again.size(FEED), "and it still reads");
+        }
+    }
 }
