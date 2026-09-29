@@ -71,8 +71,8 @@ Not shown, and each needs a decision before this is more than a spike:
    should, is open.
 5. **Serialisation.** The spike keeps `ReplayRecord` objects in memory. Writing them needs the codec: the processor's
    handled event types (the analyser's DEMO writer has one, restricted to records of simple components).
-6. **Other ways into a processor** that do not pass this strategy: service calls, timers, lifecycle and control
-   (below). Admin commands owned by a processor do pass it, but not as an `onEvent`.
+6. **Other ways into a processor**: typed service calls and processor-owned admin commands pass this point (not as
+   `onEvent`); timers, lifecycle and control do not (below).
 
 ## Admin commands (reviewed: origin/main and `origin/proposal/admin-commands-in-event-cycle`)
 
@@ -88,39 +88,69 @@ dispatch, in the processor's input sequence; at replay, look the command up agai
 and run it with stub reply consumers. Built-in commands registered with no current processor run on the transport
 thread and never reach a processor.
 
-## Service calls, timers and the other ways in (reviewed: origin/main, runtime 1.0.15 sources)
+## Which thread runs processor code (checked in source)
 
-**Mongoose has no marshalling for calls into a processor.** `DataFlow.getExportedService()` returns the processor
-itself (runtime `DataFlow.java:451-453`), so an exported-service call is a plain method call on the generated processor,
-on the caller's thread. The generated method wraps it in `beforeServiceCall(signature)` → node method →
-`afterServiceCall()`; it audits an `ExportFunctionAuditEvent` whose only field is the **method signature, no argument
-values** (runtime `ExportFunctionAuditEvent.java:10-22`, `DefaultEventProcessor.java:299-312`). None of it passes the
-dispatch strategy. So:
+Every path Mongoose drives into a processor runs on the processor group's agent thread, **after the queue**:
+- feed events;
+- processor-owned admin commands, which are queued onto the processor;
+- service calls through a typed invoke strategy (below);
+- timer expiries (the scheduler is a composed agent of the group);
+- lifecycle calls, `@ServiceRegistered` callbacks (including dynamic registration, through the group's broadcast
+  queues) and `ConfigListener.initialConfig`.
 
-| path | through the dispatch strategy? | a dispatch recorder captures it? |
+So a processor's inputs arrive in one sequence, on one thread. One recorder per processor, fed from the points where
+they leave their queues, captures them in their true order with no locking.
+
+**The one exception is filed as [mongoose#46](https://github.com/telaminai/mongoose/issues/46).**
+`audit.start` / `audit.stop` are server-level admin commands. They run on the transport's thread and call
+`dataFlow.setAuditLogProcessor(...)`, whose default method calls `onEvent` from that thread, racing the agent. This is
+inferred from source and not yet reproduced.
+
+**Not a Mongoose path:** `MongooseServerController.registeredProcessors()` hands out the live processors. Code holding
+one could call it, or its exported services, from any thread. Nothing in Mongoose `src/main` does; `mongoose-plugins`
+was not checked.
+
+## Service calls: after the queue, so recordable at dispatch
+
+A processor's exported service is the processor object itself (`DataFlow.getExportedService()` is
+`return (T) this;`). A generated exported method has no thread hand-off: it is `beforeServiceCall(signature)` → node
+method → `afterServiceCall()`. It audits an `ExportFunctionAuditEvent` carrying the signature only, never the
+argument values.
+
+**In a managed Mongoose a service call does not arrive that way.** It arrives through a
+[typed invoke strategy](https://telaminai.github.io/mongoose/example/plugin/writing-a-typed-invoke-publishing-service-plugin/),
+in three steps:
+1. The service publishes a value to its queue.
+2. `EventQueueToEventProcessorAgent.doWork` polls it.
+3. The strategy's `dispatchEvent` calls the processor's typed method (`listener.onServiceEvent(s)`) on the agent
+   thread.
+
+That is after the queue and through `processEvent`, so the recorder in this spike sees it. What it must add is the
+**callback type**: a replay has to deliver the value through the same typed strategy, not as an `onEvent`. So the
+record is `{callBackType, event, wallClockTime}`. The recorded value also carries what the exported method's audit
+event leaves out, the arguments.
+
+The other ways in, and whether a dispatch recorder sees them:
+
+| path | after a queue, through `processEvent`? | a dispatch recorder captures it? |
 |---|---|---|
 | feed event, `BroadcastEvent`, `ReplayRecord` | yes | yes |
-| processor-owned admin command | `processEvent` yes, `onEvent` no | yes, as `AdminCommand` (record only its args) |
-| custom strategy calling an exported method (e.g. `PublishingServiceTyped`) | `processEvent` yes, `onEvent` no | yes, if the recorder is at `processEvent` |
-| exported-service call from another component | **no**, a direct call on the caller's thread | **no** |
-| `registerService` / `deRegisterService` into processors (join, and dynamic via the group's broadcast queues) | no | no |
-| `ConfigListener.initialConfig(configMap)` at start (`internal/ServerConfigurator.java:130`) | no | no |
-| scheduler expiry (`DeadWheelScheduler.onTimerExpiry` runs the node's `Runnable`; `ScheduledTriggerNode` then calls `onEvent` itself) | no | no |
-| lifecycle (`init`, `start`, `startComplete`, `stop`, `tearDown`) | no | no |
-| `setAuditLogProcessor` / `setAuditLogLevel` / `setClockStrategy` (default methods calling `onEvent` directly) | no | no; `audit.start`/`audit.stop` make the call from the ADMIN thread, unsynchronised with the agent (INFERRED race) |
-| server-level admin commands (no current processor) | no, run on the transport's thread | no |
+| service call through a typed invoke strategy | yes (`onEvent` no) | yes, with its callback type |
+| processor-owned admin command | yes (`onEvent` no) | yes, as `AdminCommand`; only its args are recordable |
+| timer expiry (`DeadWheelScheduler.onTimerExpiry` runs the node's `Runnable`) | no, a direct callback on the agent thread | no: record the timer and its instant at the expiry |
+| `registerService` / `deRegisterService`, `initialConfig`, lifecycle | no | no, and not needed: these are set-up, re-created by booting the same config |
+| `setAuditLogProcessor` / `setAuditLogLevel` / `setClockStrategy` | no (default methods call `onEvent` directly) | no, and not needed: set-up; see mongoose#46 for `audit.*` |
+| server-level admin commands | no, on the transport thread | not processor inputs |
 | `BatchDtoHandler` redispatch | the `BatchDto` yes; its inner events are re-entrant | the `BatchDto` is enough |
 
 **Reads a replay must supply** (non-void calls a node may make on injected services): the processor's wall clock
-outside a pinned dispatch; `SchedulerService` times and timer ids; `ObjectPool.acquire()`; controller, error and
-counter snapshots. Whether a given graph reads them is the graph's own business; the Mongoose `ScheduledTriggerNode`
-only schedules and ignores the id.
+outside a pinned dispatch, `SchedulerService` times and timer ids, `ObjectPool.acquire()`, and controller, error and
+counter snapshots. Whether a given graph reads them is the graph's own business. The Mongoose `ScheduledTriggerNode`
+only schedules, and ignores the returned id.
 
-So the service-call half of R-D5 ("a serialised method call") has a natural home: record at the exported-service
-boundary, the same `beforeServiceCall` where the audit event is made, the method AND its arguments, in the processor's
-input sequence. That is a Fluxtion change (the boundary is private; the admin-commands proposal's option B asks to
-expose it too), not a Mongoose one. Timers are recordable as their firing instant plus which timer, at
-`DeadWheelScheduler.onTimerExpiry`.
+A direct exported-service call from user code that holds the processor would still bypass all of this. The
+exported-service boundary (`beforeServiceCall`) is where to record such a call, with its arguments. That is a Fluxtion
+change, and it matches the admin-commands proposal's option B.
 
 ## Recommendation
 
@@ -128,8 +158,10 @@ expose it too), not a Mongoose one. Timers are recordable as their firing instan
    processor across its queues, the processor's clock pinned to the recorded instant (decision 1 above).
 2. **Admin commands**: record `{command, args}` at `AdminCommandInvoker`; with the proposal's option B they also get an
    audit record to check a replay against.
-3. **Service calls and timers**: record at their own boundaries into the same per-processor sequence. Service calls
-   need the exported-service boundary exposed in Fluxtion, carrying the arguments.
+3. **Service calls** through a typed invoke strategy: recorded at dispatch like events, with their callback type, and
+   replayed through the same strategy. **Timers**: record the timer and its instant at `onTimerExpiry`, into the same
+   per-processor sequence. A direct exported-service call is outside managed Mongoose; recording it needs the Fluxtion
+   service boundary, with its arguments.
 4. The recorder's codec is the processor's handled event types plus the recorded service signatures.
 5. Configuration events (audit level/processor, clock, service registration, initial config) are the deployment's
    set-up: recorded once as configuration, or re-created by booting the same config, never replayed as inputs.
