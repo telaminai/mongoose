@@ -36,13 +36,15 @@ public class AdminCommandInvoker extends AbstractEventToInvocationStrategy {
     }
 
     /**
-     * A lambda command, bracketed as a generated processor brackets an event (its {@code auditEvent} and
+     * A lambda command, run as its own event cycle through {@link DataFlow#runInEventCycle} when the processor
+     * implements it. Otherwise (a processor generated before fluxtion runtime 1.1.0) it is bracketed as a generated
+     * processor brackets an event (its {@code auditEvent} and
      * {@code afterEvent}): the processor's clock and audit logger are told an {@link AdminCommandEvent} was received,
      * the lambda runs, and both are told processing is complete. So the command has its own audit record, its
      * {@code auditLog} writes land in it, and it carries the command's own instant. Both auditors are found by name
      * ({@code getAuditorById}); a processor without them (a hand-written one) runs the lambda as before.
      *
-     * <p>Not a full event cycle: nothing the lambda changes is marked dirty, so nothing downstream reacts, and the
+     * <p>The bracket is not a full event cycle: nothing the lambda changes is marked dirty, so nothing downstream reacts, and the
      * processor's {@code processing} flag is not set, so an event the lambda raises is dispatched at once rather than
      * queued. A command that must propagate is signal-routed ({@code registerSignalCommand}).
      */
@@ -50,22 +52,27 @@ public class AdminCommandInvoker extends AbstractEventToInvocationStrategy {
         List<String> args = adminCommand.getArgs();
         Object event = new com.telamin.mongoose.service.admin.AdminCommandEvent(
                 args.isEmpty() ? "" : args.get(0), args.size() > 1 ? List.copyOf(args.subList(1, args.size())) : List.of());
-        // the proper form: the processor runs the command as its own event cycle (DataFlow.runInEventCycle), so an event
-        // the command raises is queued and dispatched after it. Only a processor that IMPLEMENTS it: the interface
-        // default runs the action with no cycle at all, which would lose the audit record the bracket below gives
-        java.lang.reflect.Method inCycle = runInEventCycle(processor);
-        if (inCycle != null) {
+        // the proper form: the processor runs the command as its own event cycle (DataFlow.runInEventCycle, fluxtion
+        // runtime 1.1.0), so an event the command raises is queued and dispatched after it. A processor generated
+        // before that has no implementation, and the interface default refuses BEFORE running the action; only
+        // then is the command bracketed instead. A command that itself throws is never run twice.
+        if (!NO_CYCLE.containsKey(processor.getClass())) {
+            boolean[] ran = {false};
             try {
-                inCycle.invoke(processor, event, (Runnable) adminCommand::executeCommand);
+                processor.runInEventCycle(event, () -> {
+                    ran[0] = true;
+                    adminCommand.executeCommand();
+                });
                 return;
-            } catch (IllegalAccessException e) {
-                // fall back to the bracket
-            } catch (java.lang.reflect.InvocationTargetException e) {
-                throw e.getCause() instanceof RuntimeException r ? r : new IllegalStateException(e.getCause());
+            } catch (UnsupportedOperationException refused) {
+                if (ran[0]) {
+                    throw refused;                                  // the command's own exception
+                }
+                NO_CYCLE.put(processor.getClass(), Boolean.TRUE);   // a processor that predates it: bracket from now on
             }
         }
-        // interim, for a runtime without it: the processor's own audit calls, found by name (spec 3d: unsafe for a
-        // command that redispatches, which dispatches at once inside the open record)
+        // for a processor without runInEventCycle: the processor's own audit calls, found by name (spec 3d: unsafe for
+        // a command that redispatches, which dispatches at once inside the open record)
         com.telamin.fluxtion.runtime.time.Clock clock = auditor(processor, "clock");
         com.telamin.fluxtion.runtime.audit.EventLogManager log =
                 auditor(processor, com.telamin.fluxtion.runtime.audit.EventLogManager.NODE_NAME);
@@ -79,20 +86,8 @@ public class AdminCommandInvoker extends AbstractEventToInvocationStrategy {
         }
     }
 
-    private static final java.util.Map<Class<?>, java.util.Optional<java.lang.reflect.Method>> IN_CYCLE =
-            new java.util.concurrent.ConcurrentHashMap<>();
-
-    /** The processor's own runInEventCycle(Object, Runnable), when its class implements it; else null. */
-    private static java.lang.reflect.Method runInEventCycle(DataFlow processor) {
-        return IN_CYCLE.computeIfAbsent(processor.getClass(), c -> {
-            try {
-                java.lang.reflect.Method m = c.getMethod("runInEventCycle", Object.class, Runnable.class);
-                return m.getDeclaringClass().isInterface() ? java.util.Optional.empty() : java.util.Optional.of(m);
-            } catch (NoSuchMethodException e) {
-                return java.util.Optional.empty();              // a runtime that predates it
-            }
-        }).orElse(null);
-    }
+    /** Processor classes whose runInEventCycle refused (they predate it), so the refusal is paid once per class. */
+    private static final java.util.Map<Class<?>, Boolean> NO_CYCLE = new java.util.concurrent.ConcurrentHashMap<>();
 
     @SuppressWarnings("unchecked")
     private static <A> A auditor(DataFlow processor, String name) {
