@@ -34,6 +34,18 @@ public interface EventToInvokeStrategy {
     void processEvent(Object event, long time);
 
     /**
+     * Replay RECORD: process as {@link #processEvent(Object)} does, calling {@code beforeEach} with each processor and
+     * the event just before that processor is given it, so the recording can copy what each one actually received
+     * (with fan-out, a later processor receives what an earlier one's handler left). Replay OFF never calls it. This
+     * default, for a strategy that cannot say, calls it for every registered processor first; a fan-out strategy that
+     * lets processors change their input should override it.
+     */
+    default void processEventRecording(Object event, java.util.function.BiConsumer<DataFlow, Object> beforeEach) {
+        for (DataFlow target : registeredProcessors()) beforeEach.accept(target, event);
+        processEvent(event);
+    }
+
+    /**
      * Set {@code target}'s synthetic clock to {@code time}, as {@link #processEvent(Object, long)} does for each
      * processor before it dispatches. Replay recording uses it to give a processor that is NOT recorded the same clock
      * a {@code ReplayRecord} input gives it today, while a recorded one keeps its recording clock.

@@ -32,6 +32,10 @@ public final class GroupRecorder {
         long timerSeq;
         /** Why this processor's recording stopped (its store failed), or null while it records. */
         String broken;
+        /** This dispatch: whether the processor was given the input, the copy taken just before, or why none could be. */
+        boolean received;
+        Object input;
+        String uncopyable;
 
         Recorded(String name, RecordingClock clock) {
             this.name = name;
@@ -64,35 +68,70 @@ public final class GroupRecorder {
         return true;
     }
 
-    /** Just before a queue dispatches to {@code targets}. */
-    public void beforeDispatch(Collection<DataFlow> targets) {
+    /** Whether the current dispatch's input is journalled, so recorded by index and never copied. */
+    private boolean indexedDispatch;
+
+    /** Just before a queue dispatches an input of {@code source} (numbered {@code seq}, or -1) to {@code targets}. */
+    public void beforeDispatch(String source, long seq, Collection<DataFlow> targets) {
+        indexedDispatch = seq >= 0 && config.journalled(source);
         for (DataFlow t : targets) {
             Recorded r = byFlow.get(t);
-            if (r != null) r.clock.arm();
+            if (r == null) continue;
+            r.clock.arm();
+            r.received = false;
+            r.input = null;
+            r.uncopyable = null;
         }
     }
 
     /**
-     * Just after: one entry per recorded target, at the instant it read. An admin command is recorded by its name and
-     * arguments; an input of a journalled feed that carried its sequence number by index; anything else inline.
+     * Just before the strategy gives {@code event} to {@code target} (first attempt only): a copy of it as that
+     * processor receives it. Per target, because with fan-out a later processor receives what an earlier one's handler
+     * left (review of 90f0d9b, finding 2); committed only by {@link #afterDispatch}, once the dispatch succeeded.
      */
-    public void afterDispatch(String source, Object event, long seq, Collection<DataFlow> targets) {
+    public void received(DataFlow target, Object event) {
+        Recorded r = byFlow.get(target);
+        if (r == null || r.broken != null) return;
+        r.received = true;
+        if (indexedDispatch || event instanceof AdminCommand) {
+            r.input = event;                            // recorded by index, or by name and arguments: not copied
+            return;
+        }
+        try {
+            r.input = InputCopy.of(event);
+        } catch (Throwable t) {
+            r.uncopyable = String.valueOf(t);
+        }
+    }
+
+    /**
+     * Just after a dispatch that succeeded first time: one entry per recorded target that was given the input, at the
+     * instant it handled it, naming the {@code route} that delivered it. An admin command is recorded by its name and
+     * arguments; an input of a journalled feed that carried its sequence number by index; anything else inline, as the
+     * copy taken before the processor handled it. An input that could not be copied is marked Failed, so a replay stops
+     * there rather than give something other than what was received.
+     */
+    public void afterDispatch(String source, String route, Object event, long seq, Collection<DataFlow> targets) {
         for (DataFlow t : targets) {
             Recorded r = byFlow.get(t);
             if (r == null) continue;
             List<Long> reads = r.clock.captured();
+            long instant = r.clock.instant(reads);
+            if (!r.received) continue;                  // the strategy did not give it this processor
             ReplayEntry entry;
             if (event instanceof AdminCommand admin && admin.getArgs() != null && !admin.getArgs().isEmpty()) {
                 List<String> args = admin.getArgs();
-                entry = new ReplayEntry.AdminInvoked(args.get(0), List.copyOf(args.subList(1, args.size())), reads);
+                entry = new ReplayEntry.AdminInvoked(args.get(0), List.copyOf(args.subList(1, args.size())), instant, reads);
             } else if (seq >= 0 && config.journalled(source)) {
-                entry = new ReplayEntry.Indexed(source, seq, reads);
-            } else if (event instanceof com.telamin.fluxtion.runtime.event.NamedFeedEvent<?> named) {
-                // the item and its number: the wrapper is configuration, rebuilt on replay (and is not serialisable)
-                entry = new ReplayEntry.Inline(source, named.data(), named.sequenceNumber(), reads);
+                entry = new ReplayEntry.Indexed(source, route, seq, instant, reads);
+            } else if (r.uncopyable != null) {
+                entry = new ReplayEntry.Failed(source, "the input could not be recorded as received, so it cannot be "
+                        + "replayed: " + r.uncopyable, instant);
             } else {
-                entry = new ReplayEntry.Inline(source, event, reads);
+                long number = r.input instanceof RecordedNamedEvent named ? named.sequenceNumber() : -1;
+                entry = new ReplayEntry.Inline(source, route, r.input, number, instant, reads);
             }
+            r.input = null;
             append(r, entry);
         }
     }
@@ -102,7 +141,8 @@ public final class GroupRecorder {
         for (DataFlow t : targets) {
             Recorded r = byFlow.get(t);
             if (r == null) continue;
-            append(r, new ReplayEntry.Failed(source, error + " on " + event, r.clock.captured().get(0)));
+            r.input = null;
+            append(r, new ReplayEntry.Failed(source, error + " on " + event, r.clock.instant(r.clock.captured())));
         }
     }
 
@@ -148,12 +188,14 @@ public final class GroupRecorder {
 
     public void timerFired(DataFlow flow, long seq) {
         Recorded r = byFlow.get(flow);
-        if (r != null) append(r, new ReplayEntry.TimerFired(seq, r.clock.captured()));
+        if (r == null) return;
+        List<Long> reads = r.clock.captured();
+        append(r, new ReplayEntry.TimerFired(seq, r.clock.instant(reads), reads));
     }
 
     /** A timer's action threw: marked, as a dispatch that throws is (D4). */
     public void timerFailed(DataFlow flow, long seq, Throwable error) {
         Recorded r = byFlow.get(flow);
-        if (r != null) append(r, new ReplayEntry.Failed("timer#" + seq, String.valueOf(error), r.clock.captured().get(0)));
+        if (r != null) append(r, new ReplayEntry.Failed("timer#" + seq, String.valueOf(error), r.clock.instant(r.clock.captured())));
     }
 }

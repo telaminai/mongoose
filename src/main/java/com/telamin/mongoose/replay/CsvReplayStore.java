@@ -20,13 +20,16 @@ import java.util.stream.Collectors;
 /**
  * Each processor's entries in a CSV file, to start: one line per entry, {@code processor,kind,...}, under a header. An
  * index names its journal entry and needs no payload; an inline input or an admin command's arguments are encoded with
- * {@code codec}; each entry's clock readings are {@code ;}-separated. Appended and flushed per entry; read back whole
+ * {@code codec}; each entry names its route and its instant, and its clock readings are {@code ;}-separated (none
+ * for a cycle that read no clock). A file of the earlier six-field format, with neither, is still read. Appended and flushed per entry; read back whole
  * when opened again. A sample, like {@link CsvEventJournal}.
  */
 @Experimental
 public final class CsvReplayStore implements ReplayStore, AutoCloseable {
 
-    static final String HEADER = "processor,kind,source,seq,payload,reads";
+    static final String HEADER = "processor,kind,source,route,seq,instant,payload,reads";
+    /** The format before entries named their route and instant (review of 90f0d9b, findings 4 and 6): read, not written. */
+    static final String HEADER_6 = "processor,kind,source,seq,payload,reads";
 
     private final Path file;
     private final EventCodec codec;
@@ -43,15 +46,17 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
                 Csv.Lines read = Csv.read(file);
                 torn = read.torn();
                 List<String> lines = read.lines();
+                int fields = 0;
                 for (int i = 0; i < lines.size(); i++) {
                     if (i == 0) {
-                        if (!lines.get(0).equals(HEADER)) throw new IllegalArgumentException(file + " is not a replay store: " + lines.get(0));
+                        fields = lines.get(0).equals(HEADER) ? 8 : lines.get(0).equals(HEADER_6) ? 6 : 0;
+                        if (fields == 0) throw new IllegalArgumentException(file + " is not a replay store: " + lines.get(0));
                         continue;
                     }
                     if (lines.get(i).isEmpty()) continue;
                     List<String> f = Csv.split(lines.get(i));
-                    if (f.size() != 6) throw new IllegalArgumentException(file + " line " + (i + 1) + " has " + f.size() + " fields, not 6");
-                    add(f.get(0), parse(f));
+                    if (f.size() != fields) throw new IllegalArgumentException(file + " line " + (i + 1) + " has " + f.size() + " fields, not " + fields);
+                    add(f.get(0), fields == 8 ? parse(f) : parse6(f));
                 }
             }
             boolean fresh = !Files.exists(file) || Files.size(file) == 0;
@@ -96,17 +101,35 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
 
     private String format(ReplayEntry e) {
         return switch (e) {
-            case ReplayEntry.Indexed i -> "INDEXED," + Csv.field(i.source()) + "," + i.seq() + ",," + reads(i.reads());
-            case ReplayEntry.Inline in -> "INLINE," + Csv.field(in.source()) + "," + (in.seq() < 0 ? "" : in.seq()) + ","
-                    + encode(in.event()) + "," + reads(in.reads());
-            case ReplayEntry.TimerFired t -> "TIMER,," + t.seq() + ",," + reads(t.reads());
-            case ReplayEntry.AdminInvoked a -> "ADMIN," + Csv.field(a.command()) + ",," + encode(new ArrayList<>(a.args())) + "," + reads(a.reads());
-            case ReplayEntry.Failed f -> "FAILED," + Csv.field(f.source()) + ",," + encode(f.description()) + "," + f.instant();
+            case ReplayEntry.Indexed i -> "INDEXED," + Csv.field(i.source()) + "," + Csv.field(i.route()) + "," + i.seq() + ","
+                    + i.instant() + ",," + reads(i.reads());
+            case ReplayEntry.Inline in -> "INLINE," + Csv.field(in.source()) + "," + Csv.field(in.route()) + ","
+                    + (in.seq() < 0 ? "" : in.seq()) + "," + in.instant() + "," + encode(in.event()) + "," + reads(in.reads());
+            case ReplayEntry.TimerFired t -> "TIMER,,," + t.seq() + "," + t.instant() + ",," + reads(t.reads());
+            case ReplayEntry.AdminInvoked a -> "ADMIN," + Csv.field(a.command()) + ",,," + a.instant() + ","
+                    + encode(new ArrayList<>(a.args())) + "," + reads(a.reads());
+            case ReplayEntry.Failed f -> "FAILED," + Csv.field(f.source()) + ",,," + f.instant() + "," + encode(f.description()) + ",";
         };
     }
 
     @SuppressWarnings("unchecked")
     private ReplayEntry parse(List<String> f) {
+        String kind = f.get(1), source = f.get(2), route = f.get(3), seq = f.get(4), payload = f.get(6);
+        long instant = Long.parseLong(f.get(5));
+        List<Long> reads = reads(f.get(7));
+        return switch (kind) {
+            case "INDEXED" -> new ReplayEntry.Indexed(source, route, Long.parseLong(seq), instant, reads);
+            case "INLINE" -> new ReplayEntry.Inline(source, route, decode(payload), seq.isEmpty() ? -1 : Long.parseLong(seq), instant, reads);
+            case "TIMER" -> new ReplayEntry.TimerFired(Long.parseLong(seq), instant, reads);
+            case "ADMIN" -> new ReplayEntry.AdminInvoked(source, List.copyOf((List<String>) decode(payload)), instant, reads);
+            case "FAILED" -> new ReplayEntry.Failed(source, (String) decode(payload), instant);
+            default -> throw new IllegalArgumentException(file + ": an unknown entry kind " + kind);
+        };
+    }
+
+    /** The six-field format: no route, and the instant was the first reading (a cycle always recorded one). */
+    @SuppressWarnings("unchecked")
+    private ReplayEntry parse6(List<String> f) {
         String kind = f.get(1), source = f.get(2), seq = f.get(3), payload = f.get(4), reads = f.get(5);
         return switch (kind) {
             case "INDEXED" -> new ReplayEntry.Indexed(source, Long.parseLong(seq), reads(reads));
@@ -131,6 +154,7 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
     }
 
     private static List<Long> reads(String s) {
+        if (s.isEmpty()) return List.of();              // a cycle that read no clock
         return Arrays.stream(s.split(";")).map(Long::parseLong).toList();
     }
 

@@ -197,8 +197,8 @@ public final class GroupReplayer {
     private boolean deliver(Cursor c, ReplayEntry entry) {
         switch (entry) {
             case ReplayEntry.Indexed i -> {
-                ReplayRoute route = routing.routeFor(i.source(), c.flow);
-                if (route == null) return waiting(c, "no route delivers " + i.source() + " to " + c.name);
+                ReplayRoute route = routing.routeFor(i.source(), i.route(), c.flow);
+                if (route == null) return waiting(c, "no route " + routeName(i.route()) + "delivers " + i.source() + " to " + c.name);
                 byte[] bytes = config.journal().get(i.source(), i.seq());
                 if (bytes == null) return stop(c, "the journal holds no " + i.source() + "#" + i.seq());
                 Object item = config.journalledFeeds().get(i.source()).decode(bytes);
@@ -207,19 +207,23 @@ public final class GroupReplayer {
                         || wrap == EventSource.EventWrapStrategy.BROADCAST_NAMED_EVENT
                         ? new NamedFeedEventImpl<>(i.source()).data(item).sequenceNumber(i.seq())
                         : item;
-                pin(c, i.reads());
+                pin(c, i.instant(), i.reads());
                 route.replayTo(c.flow, event);
                 return readsMatch(c, i.reads());
             }
             case ReplayEntry.Inline in -> {
-                ReplayRoute route = routing.routeFor(in.source(), c.flow);
-                if (route == null) return waiting(c, "no route delivers " + in.source() + " to " + c.name);
-                pin(c, in.reads());
-                route.replayTo(c.flow, rewrapped(in.source(), in.event(), in.seq()));
+                ReplayRoute route = routing.routeFor(in.source(), in.route(), c.flow);
+                if (route == null) return waiting(c, "no route " + routeName(in.route()) + "delivers " + in.source() + " to " + c.name);
+                // a copy, so a replayed handler that changes its input cannot change the recording (finding 2); a
+                // recorded NamedFeedEvent is rebuilt with its own fields, whatever the feed's wrap (finding 3)
+                Object event = InputCopy.of(in.event());
+                pin(c, in.instant(), in.reads());
+                route.replayTo(c.flow, event instanceof RecordedNamedEvent named ? named.rebuild()
+                        : rewrapped(in.source(), event, in.seq()));
                 return readsMatch(c, in.reads());
             }
             case ReplayEntry.TimerFired t -> {
-                pin(c, t.reads());
+                pin(c, t.instant(), t.reads());
                 scheduler.fire(c.flow, t.seq());
                 return readsMatch(c, t.reads());
             }
@@ -233,7 +237,7 @@ public final class GroupReplayer {
                 request.setArguments(a.args());
                 request.setOutput(o -> adminReplies.add(c.name + ": " + o));
                 request.setErrOutput(o -> adminReplies.add(c.name + " err: " + o));
-                pin(c, a.reads());
+                pin(c, a.instant(), a.reads());
                 route.replayTo(c.flow, new AdminCommand(template, request));
                 return readsMatch(c, a.reads());
             }
@@ -260,21 +264,25 @@ public final class GroupReplayer {
     }
 
     /**
-     * The cycle read the clock as often as the recorded one did, or this is a divergence, reported by stopping. One
-     * recorded reading that went unused is not: a cycle that read nothing is recorded as one reading, the instant.
+     * The cycle read the clock exactly as often as the recorded one did, or this is a divergence, reported by stopping.
+     * A cycle that read nothing records no reading, so zero to zero matches and a recorded read the replay did not take
+     * is a divergence (review of 90f0d9b, finding 6: it used to be accepted as the padded instant).
      */
     private boolean readsMatch(Cursor c, List<Long> recorded) {
         int taken = c.clock.taken();
-        boolean matches = taken == recorded.size() || (recorded.size() == 1 && taken == 0);
-        if (matches) return true;
+        if (taken == recorded.size()) return true;
         return stop(c, "clock divergence: the replayed cycle read the clock " + taken + " time(s), the recorded one "
                 + recorded.size());
     }
 
-    /** The entry's clock readings, played back in order: its processTime first, then any later reads in its cycle. */
-    private void pin(Cursor c, List<Long> reads) {
-        scheduler.setNow(reads.get(0));
-        c.clock.play(reads);
+    /** The entry's instant, and its clock readings played back in order: its processTime first, then any later reads. */
+    private void pin(Cursor c, long instant, List<Long> reads) {
+        scheduler.setNow(instant);
+        c.clock.play(instant, reads);
+    }
+
+    private static String routeName(String route) {
+        return route.isEmpty() ? "" : "(" + route + ") ";
     }
 
     private boolean stop(Cursor c, String why) {

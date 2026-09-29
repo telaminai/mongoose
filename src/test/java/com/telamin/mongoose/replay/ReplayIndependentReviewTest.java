@@ -371,11 +371,49 @@ class ReplayIndependentReviewTest {
         try (Server r = boot(ReplayConfig.replay(Set.of("probe"), Map.of(), null, store), false,
                 Map.of("probe", new ProbeProcessor(true, typedFirst)))) {
             r.awaitReplayDone();
-            if (r.replayer().stopped("probe") == null) {
-                assertEquals(live, r.replayed("probe"), "each entry replays through the route that delivered it");
-            } else {
-                assertTrue(r.replayer().stopped("probe").contains("route"), "or it is refused, naming the route");
-            }
+            assertEquals(null, r.replayer().stopped("probe"), "each entry names its route, so none is ambiguous");
+            assertEquals(live, r.replayed("probe"), "each entry replays through the route that delivered it");
+        }
+    }
+
+    static final String TYPED = CallBackType.forClass(TypedRoute.class).name(), ON_EVENT = CallBackType.ON_EVENT_CALL_BACK.name();
+
+    /** Entries naming each route, in both subscription orders: the two routes' effects differ, and each is taken. */
+    void entriesNamingTheirRoutes(boolean typedFirst) throws Exception {
+        InMemoryReplayStore store = new InMemoryReplayStore();
+        store.append("probe", new ReplayEntry.Inline(FEED, TYPED, "DEMO-a", -1, 5, List.of(5L)));
+        store.append("probe", new ReplayEntry.Inline(FEED, ON_EVENT, "DEMO-b", -1, 6, List.of(6L)));
+        store.append("probe", new ReplayEntry.Inline(FEED, TYPED, "DEMO-c", -1, 7, List.of(7L)));
+        try (Server r = boot(ReplayConfig.replay(Set.of("probe"), Map.of(), null, store), false,
+                Map.of("probe", new ProbeProcessor(true, typedFirst)))) {
+            r.awaitReplayDone();
+            assertEquals(null, r.replayer().stopped("probe"));
+            assertEquals(List.of("bare=TYPE:DEMO-a", "bare=DEMO-b", "bare=TYPE:DEMO-c"), r.replayed("probe"),
+                    "each entry through the route it names");
+        }
+    }
+
+    @Test
+    void f4_entriesReplayThroughTheRouteTheyName_typedSubscribedFirst() throws Exception {
+        entriesNamingTheirRoutes(true);
+    }
+
+    @Test
+    void f4_entriesReplayThroughTheRouteTheyName_onEventSubscribedFirst() throws Exception {
+        entriesNamingTheirRoutes(false);
+    }
+
+    @Test
+    void f4_anEntryNamingNoRoute_isRefused_whenTwoRoutesDeliverItsSource() throws Exception {
+        InMemoryReplayStore store = new InMemoryReplayStore();
+        store.append("probe", new ReplayEntry.Inline(FEED, "DEMO-a", List.of(5L)));          // no route: ambiguous here
+        try (Server r = boot(ReplayConfig.replay(Set.of("probe"), Map.of(), null, store), false,
+                Map.of("probe", new ProbeProcessor(true, false)))) {
+            r.awaitReplayDone();
+            String stopped = r.replayer().stopped("probe");
+            assertNotNull(stopped, "an entry that names no route is refused when two routes could deliver it");
+            assertTrue(stopped.contains("2 routes"), stopped);
+            assertEquals(List.of(), r.replayed("probe"), "and nothing was delivered by a guessed route");
         }
     }
 

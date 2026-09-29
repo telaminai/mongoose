@@ -263,15 +263,25 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     private ReplayRouting routing() {
         return new ReplayRouting() {
             @Override
-            public ReplayRoute routeFor(String source, DataFlow flow) {
+            public ReplayRoute routeFor(String source, String route, DataFlow flow) {
+                // by source AND route: one source can reach a processor by several callback types, and the first match
+                // replayed every entry through whichever route the map listed first (review of 90f0d9b, finding 4)
+                List<String> matched = new ArrayList<>();
+                ReplayRoute found = null;
                 for (var e : queueProcessorMap.entrySet()) {
                     if (e.getKey().eventSourceKey().sourceName().equals(source)
                             && e.getValue() instanceof EventQueueToEventProcessorAgent agent
-                            && agent.subscribers().contains(flow)) {
-                        return agent;
+                            && agent.subscribers().contains(flow)
+                            && (route.isEmpty() || route.equals(agent.route()))) {
+                        matched.add(agent.route());
+                        found = agent;
                     }
                 }
-                return null;
+                if (matched.size() > 1) {
+                    throw new IllegalStateException("the entry names no route, and " + source + " reaches the processor by "
+                            + matched.size() + " routes " + matched + ": a replay does not choose one");
+                }
+                return found;
             }
 
             @Override

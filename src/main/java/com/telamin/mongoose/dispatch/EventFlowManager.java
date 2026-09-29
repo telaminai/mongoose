@@ -219,7 +219,8 @@ public class EventFlowManager {
 
         Runnable unsubscribe = createUnsubscribeAction(sourcePublisher, name, keySubscriber);
 
-        return new EventQueueToEventProcessorAgent(eventQueue, eventMapperSupplier.get(), name, eventSourceKey.sourceName())
+        return new EventQueueToEventProcessorAgent(eventQueue, eventMapperSupplier.get(), name, eventSourceKey.sourceName(),
+                type.name())
                 .withUnsubscribeAction(unsubscribe);
     }
 

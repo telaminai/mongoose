@@ -34,8 +34,12 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     private Runnable unsubscribeAction;
     /** The source this queue drains (spec-replay-recording R2: an entry names its source). */
     private final String sourceName;
+    /** The configured route (callback type) this queue delivers by: an entry names it (review of 90f0d9b, finding 4). */
+    private final String route;
     /** RECORD mode: set by the group when it subscribes this queue. */
     private GroupRecorder recorder;
+    /** RECORD mode: the recorder's per-processor copy of each input, taken just before the processor is given it. */
+    private java.util.function.BiConsumer<DataFlow, Object> received;
 
     public EventQueueToEventProcessorAgent(
             OneToOneConcurrentArrayQueue<?> inputQueue,
@@ -49,6 +53,16 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
             EventToInvokeStrategy eventToInvokeStrategy,
             String name,
             String sourceName) {
+        this(inputQueue, eventToInvokeStrategy, name, sourceName, "");
+    }
+
+    public EventQueueToEventProcessorAgent(
+            OneToOneConcurrentArrayQueue<?> inputQueue,
+            EventToInvokeStrategy eventToInvokeStrategy,
+            String name,
+            String sourceName,
+            String route) {
+        this.route = route;
         this.inputQueue = inputQueue;
         this.eventToInvokeStrategy = eventToInvokeStrategy;
         this.name = name;
@@ -90,6 +104,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                     seq = named.sequenceNumber();
                 }
                 targets = eventToInvokeStrategy.registeredProcessors();
+                if (event instanceof ReplayRecord || event instanceof BroadcastEvent) seq = -1;
             }
 
             int attempt = 0;
@@ -97,7 +112,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
             Throwable lastError = null;
             while (!done) {
                 try {
-                    if (recorder != null) recorder.beforeDispatch(targets);
+                    if (recorder != null) recorder.beforeDispatch(sourceName, seq, targets);
                     if (event instanceof ReplayRecord replayRecord) {
                         if (recorder == null) {
                             eventToInvokeStrategy.processEvent(replayRecord.getEvent(), replayRecord.getWallClockTime());
@@ -108,8 +123,16 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                             for (DataFlow target : targets) {
                                 if (!recorder.pinSyntheticTime(target, time)) eventToInvokeStrategy.setSyntheticTime(target, time);
                             }
-                            eventToInvokeStrategy.processEvent(replayRecord.getEvent());
+                            if (attempt == 0) {
+                                eventToInvokeStrategy.processEventRecording(replayRecord.getEvent(), received);
+                            } else {
+                                eventToInvokeStrategy.processEvent(replayRecord.getEvent());
+                            }
                         }
+                    } else if (recorder != null && attempt == 0) {
+                        // RECORD, first attempt: each recorded processor's input is copied just before it is given it
+                        // (review of 90f0d9b, finding 2); a retry is already marked Failed, so it is not copied again
+                        eventToInvokeStrategy.processEventRecording(delivered(event), received);
                     } else if (event instanceof BroadcastEvent broadcastEvent) {
                         eventToInvokeStrategy.processEvent(broadcastEvent.getEvent());
                     } else {
@@ -157,8 +180,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
             // Failed (D4, a retry is a failure: marked, not reproduced), and recording it too would make a replay re-run
             // it, with the retry's clock reads rather than those of the attempt that happened
             if (done && recorder != null && attempt == 0) {
-                boolean wrapped = event instanceof ReplayRecord || event instanceof BroadcastEvent;
-                recorder.afterDispatch(sourceName, delivered(event), wrapped ? -1 : seq, targets);
+                recorder.afterDispatch(sourceName, route, delivered(event), seq, targets);
             }
 
             // After dispatching to all processors attempt to return to pool if no more references remain
@@ -191,6 +213,12 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     /** RECORD mode: record what this queue dispatches (spec-replay-recording R2). */
     public void recordWith(GroupRecorder recorder) {
         this.recorder = recorder;
+        this.received = recorder == null ? null : recorder::received;
+    }
+
+    /** The configured route (callback type name) this queue delivers by; empty when it was built without one. */
+    public String route() {
+        return route;
     }
 
     /** REPLAY mode: this queue's live inputs no longer reach {@code target}, which receives only its replay. */
