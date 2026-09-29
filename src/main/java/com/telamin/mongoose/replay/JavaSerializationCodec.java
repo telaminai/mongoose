@@ -7,7 +7,10 @@ import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.UncheckedIOException;
 
-/** SPIKE: Java serialisation, for items that are {@code Serializable}. A feed configures its own codec. */
+/**
+ * An {@link EventCodec} using Java serialisation, for items that are {@code Serializable}. Each journalled feed names
+ * its codec in {@link ReplayConfig}; a feed carrying non-serialisable or schema-evolving items supplies its own.
+ */
 public class JavaSerializationCodec implements EventCodec {
     @Override
     public byte[] encode(Object item) {
