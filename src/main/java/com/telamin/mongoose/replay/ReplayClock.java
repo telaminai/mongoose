@@ -1,5 +1,6 @@
 package com.telamin.mongoose.replay;
 
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
 import com.telamin.fluxtion.runtime.time.ClockStrategy;
 
 import java.util.List;
@@ -9,6 +10,7 @@ import java.util.List;
  * used up, the last is held. It counts the reads, so the driver can tell a cycle that read the clock a different number
  * of times from the recorded one: a divergence, which it reports.
  */
+@Experimental
 public final class ReplayClock implements ClockStrategy {
     private volatile List<Long> reads = List.of(0L);
     private int next;

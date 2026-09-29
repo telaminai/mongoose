@@ -5,13 +5,13 @@
 
 package com.telamin.mongoose.dispatch;
 
-import com.telamin.mongoose.replay.EventCodec;
-import com.telamin.mongoose.replay.EventJournal;
-import com.telamin.mongoose.replay.JournalledItem;
 import com.telamin.fluxtion.runtime.event.NamedFeedEvent;
 import com.telamin.fluxtion.runtime.event.NamedFeedEventImpl;
 import com.telamin.fluxtion.runtime.event.ReplayRecord;
 import com.telamin.mongoose.internal.NoOpCountersService;
+import com.telamin.mongoose.replay.EventCodec;
+import com.telamin.mongoose.replay.EventJournal;
+import com.telamin.mongoose.replay.JournalledItem;
 import com.telamin.mongoose.service.EventSource;
 import com.telamin.mongoose.service.counters.MongooseCounter;
 import com.telamin.mongoose.service.pool.PoolAware;
@@ -71,6 +71,8 @@ public class EventToQueuePublisher<T> {
     /** Replay R3: when set, each item is journalled once, encoded, and carries its sequence number to the queue. */
     private EventJournal journal;
     private EventCodec journalCodec;
+    /** Set when a journal append or encoding failed: the feed stops journalling (a gap a replay stops at). */
+    private volatile String journalBroken;
     private final boolean logWarning = log.isLoggable(Level.WARNING);
     private final boolean logInfo = log.isLoggable(Level.INFO);
     private final boolean logFine = log.isLoggable(Level.FINE);
@@ -229,10 +231,25 @@ public class EventToQueuePublisher<T> {
     }
 
     private void journalItem(Object mappedItem, long seq) {
-        if (journal != null) {
+        if (journal == null || journalBroken != null) return;
+        try {
             // encoded before dispatch, so before a pooled item can return to its pool
             journal.append(name, seq, journalCodec.encode(mappedItem));
+        } catch (Throwable failed) {
+            // never out of publish: from a feed agent it would reach the default error handler, which exits the process
+            // (#47 re-review B). The feed stops journalling; its items still carry their numbers, so a replay of the
+            // recording stops at the first missing one ("the journal holds no ..."), naming the gap, never joining across it
+            journalBroken = String.valueOf(failed);
+            String why = "replay journal of feed " + name + " stopped at item #" + seq + " (" + mappedItem + "): " + failed;
+            log.severe(why);
+            com.telamin.mongoose.service.error.ErrorReporting.report("EventToQueuePublisher:" + name, why, failed,
+                    com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
         }
+    }
+
+    /** Why this feed's journal stopped (an append or its encoding failed), or null while it journals. */
+    public String journalBroken() {
+        return journalBroken;
     }
 
     private void dispatch(Object mappedItem, long seq) {

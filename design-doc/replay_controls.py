@@ -12,22 +12,22 @@ CONTROLS=[
  ('R3-cached-items-carry-their-own-seq', M+'dispatch/EventToQueuePublisher.java', '                dispatch(cachedFeedEvent.data(), cachedFeedEvent.sequenceNumber());', '                dispatch(cachedFeedEvent.data(), sequenceNumber);', 'JournalSequenceTest#aLateSubscribersCachedItemsCarryTheirOwnSequenceNumbers'),
  ('R3-journalled-once', M+'dispatch/EventToQueuePublisher.java', '        sequenceNumber++;\n        journalItem(mappedItem, sequenceNumber);\n\n        if (log.isLoggable(Level.FINE)) {\n            log.fine("listenerCount:" + targetQueues.size() + " sequenceNumber:" + sequenceNumber + " publish:" + itemToPublish);', '        sequenceNumber++;\n\n        if (log.isLoggable(Level.FINE)) {\n            log.fine("listenerCount:" + targetQueues.size() + " sequenceNumber:" + sequenceNumber + " publish:" + itemToPublish);', 'JournalSequenceTest#aJournalledNowrapItemCarriesItsSequenceNumber_andIsJournalledOnce'),
  ('R4-records-timer-firings', R+'RecordingScheduler.java', '        if (seq < 0) return action;                     // not a recorded processor\'s timer\n', '        if (seq >= 0) return action;\n', 'ReplayRecordingAcceptanceTest#R4_aTimeoutFiringBetweenInputs_replaysThere'),
- ('R4-replay-never-fires-by-itself', R+'ReplayScheduler.java', '        return replaying() ? register(action) : super.scheduleAfterDelay(waitTime, action);', '        return super.scheduleAfterDelay(waitTime, action);', 'ReplayRecordingAcceptanceTest#R4_aTimeoutFiringBetweenInputs_replaysThere'),
- ('R5-pins-the-entry-instant', R+'GroupReplayer.java', '        c.clock.play(reads);\n', '', 'ReplayRecordingAcceptanceTest#R2_R3_R5_twoSourcesAndTheGraphsOwnEvent_replayInTheProcessorsOrder'),
+ ('R4-replay-never-fires-by-itself', R+'ReplayScheduler.java', '        return replaying() ? register(action) : super.scheduleAfterDelay(waitTime, action);', '        return super.scheduleAfterDelay(waitTime, action);', 'ReplayRecordingAcceptanceTest#R4_aTimeoutFiringBetweenInputs_replaysThere', 'the replay fired timer 1, which'),
+ ('R5-pins-the-entry-instant', R+'GroupReplayer.java', '        c.clock.play(reads);\n', '', 'ReplayRecordingAcceptanceTest#R2_R3_R5_twoSourcesAndTheGraphsOwnEvent_replayInTheProcessorsOrder', 'clock divergence'),
  ('R5-plays-every-read-of-the-cycle', R+'ReplayClock.java', '        return next < r.size() ? r.get(next++) : r.get(r.size() - 1);', '        return r.get(0);', 'ReplayRecordingAcceptanceTest#R2_R3_R5_twoSourcesAndTheGraphsOwnEvent_replayInTheProcessorsOrder'),
- ('R5-delivers-to-the-processor-alone', M+'dispatch/AbstractEventToInvocationStrategy.java', '        if (!eventProcessorSinks.contains(target)) {\n            throw new IllegalArgumentException("invokerId: " + id + " " + target + " is not registered with this strategy");\n        }\n        ProcessorContext.setCurrentProcessor(target);\n        try {\n            dispatchEvent(event, target);', '        if (!eventProcessorSinks.contains(target)) {\n            throw new IllegalArgumentException("invokerId: " + id + " " + target + " is not registered with this strategy");\n        }\n        ProcessorContext.setCurrentProcessor(target);\n        try {\n            dispatchEvent(event, target);\n            dispatchEvent(event, target);', 'ReplayRecordingAcceptanceTest#R2_R3_R5_twoSourcesAndTheGraphsOwnEvent_replayInTheProcessorsOrder'),
+ ('R5-delivers-to-the-processor-alone', M+'dispatch/AbstractEventToInvocationStrategy.java', '        if (!eventProcessorSinks.contains(target)) {\n            throw new IllegalArgumentException("invokerId: " + id + " " + target + " is not registered with this strategy");\n        }\n        ProcessorContext.setCurrentProcessor(target);\n        try {\n            dispatchEvent(event, target);', '        if (!eventProcessorSinks.contains(target)) {\n            throw new IllegalArgumentException("invokerId: " + id + " " + target + " is not registered with this strategy");\n        }\n        ProcessorContext.setCurrentProcessor(target);\n        try {\n            dispatchEvent(event, target);\n            dispatchEvent(event, target);', 'ReplayRecordingAcceptanceTest#R2_R3_R5_twoSourcesAndTheGraphsOwnEvent_replayInTheProcessorsOrder', 'clock divergence'),
  ('R6-records-an-admin-command-by-its-args', R+'GroupRecorder.java', '            if (event instanceof AdminCommand admin && admin.getArgs() != null && !admin.getArgs().isEmpty()) {', '            if (false && event instanceof AdminCommand admin && admin.getArgs() != null && !admin.getArgs().isEmpty()) {', 'ReplayRecordingAcceptanceTest#R6_anAdminCommandBetweenInputs_replaysThere'),
  ('D4-marks-a-failed-dispatch', M+'dutycycle/EventQueueToEventProcessorAgent.java', '                    if (recorder != null && attempt == 0) recorder.failed(sourceName, delivered(event), t, targets);\n', '', 'ReplayRecordingAcceptanceTest#D4_aFailedDispatchIsMarked_andTheReplayStopsThere'),
  ('R7-the-server-passes-the-groups-thread', M+'MongooseServer.java', '            auditCaptureService.attach(eventProcessor, processorName, logRecordListener,\n                    composingEventProcessorAgentRunner.group()::runOnAgentThread);', '            auditCaptureService.attach(eventProcessor, processorName, logRecordListener);', 'AuditSinkOnAgentThreadTest#theServerHandsTheCaptureServiceTheGroupsThread'),
  ('R7-the-sink-changes-on-the-agent-thread', M+'internal/ChronicleAuditCaptureService.java', '            return com.telamin.mongoose.dutycycle.AgentHandoff.submit(onAgentThread, () -> {', '            return com.telamin.mongoose.dutycycle.AgentHandoff.submit(Runnable::run, () -> {', 'AuditSinkOnAgentThreadTest#theCaptureServiceChangesTheSinkOnTheAgentThread'),
  ('R5-a-typed-call-replays-through-the-configured-strategy', M+'dispatch/AbstractEventToInvocationStrategy.java', '            dispatchEvent(event, target);\n        } finally {', '            target.onEvent(event);\n        } finally {', 'TypedCallReplayAcceptanceTest#aServiceCallRecordedAtDispatch_isReplayedAsTheSameCall'),
- ('csv-the-journal-reads-back-its-file', R+'CsvEventJournal.java', '                    put(f.get(0), Long.parseLong(f.get(1)), Base64.getDecoder().decode(f.get(2)));\n', '', 'CsvDurableReplayTest#aRunRecordedToCsv_isReplayedFromTheFilesAlone'),
- ('csv-the-store-reads-back-its-file', R+'CsvReplayStore.java', '                    add(f.get(0), parse(f));\n', '', 'CsvDurableReplayTest#aRunRecordedToCsv_isReplayedFromTheFilesAlone'),
+ ('csv-the-journal-reads-back-its-file', R+'CsvEventJournal.java', '                    put(f.get(0), Long.parseLong(f.get(1)), Base64.getDecoder().decode(f.get(2)));\n', '', 'CsvDurableReplayTest#aRunRecordedToCsv_isReplayedFromTheFilesAlone', 'the journal holds no orders#1'),
+ ('csv-the-store-reads-back-its-file', R+'CsvReplayStore.java', '                    add(f.get(0), parse(f));\n', '', 'CsvDurableReplayTest#aRunRecordedToCsv_isReplayedFromTheFilesAlone', 'lines=[]'),
  ('review-1-a-ReplayRecord-keeps-the-recording-clock', M+'dutycycle/EventQueueToEventProcessorAgent.java', '                                if (!recorder.pinSyntheticTime(target, time)) eventToInvokeStrategy.setSyntheticTime(target, time);', '                                eventToInvokeStrategy.setSyntheticTime(target, time);', 'ReplayReviewRegressionTest#f1_aReplayRecordInput_isRecordedAsItsEvent_andTheReplayMatches'),
- ('review-2-an-undeliverable-entry-stops-the-replay', R+'GroupReplayer.java', '            } else if (System.nanoTime() - c.waitingSince > config.deliveryTimeout().toNanos()) {', '            } else if (false) {', 'ReplayReviewRegressionTest#f2_aMissingAdminCommand_stopsTheReplayWithAReason_ratherThanStalling'),
+ ('review-2-an-undeliverable-entry-stops-the-replay', R+'GroupReplayer.java', '            } else if (System.nanoTime() - c.waitingSince > config.deliveryTimeout().toNanos()) {', '            } else if (false) {', 'ReplayReviewRegressionTest#f2_aMissingAdminCommand_stopsTheReplayWithAReason_ratherThanStalling', 'neither completed nor stopped'),
  ('review-3-a-named-input-is-recorded-as-its-item', R+'GroupRecorder.java', '            } else if (event instanceof com.telamin.fluxtion.runtime.event.NamedFeedEvent<?> named) {', '            } else if (false && event instanceof com.telamin.fluxtion.runtime.event.NamedFeedEvent<?> named) {', 'ReplayReviewRegressionTest#f3_anInlineNamedEventInput_isRecordedToACsvStore_andReplays'),
  ('review-4-record-refuses-a-recording', M+'MongooseServer.java', '        refuseRecordingOverARecording(mongooseServerConfig == null ? null : mongooseServerConfig.getReplay());\n', '', 'ReplayReviewRegressionTest#f4_recordingIntoAJournalThatAlreadyHoldsARecording_isRefused'),
- ('review-5-a-torn-last-line-is-dropped', R+'Csv.java', '        if (!text.isEmpty() && !text.endsWith("\\n") && !lines.isEmpty()) {', '        if (false) {', 'ReplayReviewRegressionTest#f5_aTornLastLine_isDropped_andTheRestIsRead'),
+ ('review-5-a-torn-last-line-is-dropped', R+'Csv.java', '        if (!text.isEmpty() && !text.endsWith("\\n") && !lines.isEmpty()) {', '        if (false) {', 'ReplayReviewRegressionTest#f5_aTornLastLine_isDropped_andTheRestIsRead', 'fields, not 6'),
  ('review-6-L1-live-inputs-are-muted', M+'dutycycle/ComposingEventProcessorAgent.java', '            agent.muteLiveInputs(subscriber);\n', '', 'ReplayReviewRegressionTest#f6_aLiveInputDuringAReplay_doesNotReachTheReplayedProcessor'),
  ('review-6-L2-outputs-are-captured', M+'dutycycle/ComposingEventProcessorAgent.java', '        return replayer == null ? service : replayer.serviceFor(eventProcessor, service);', '        return service;', 'ReplayReviewRegressionTest#l2_aReplayedProcessorsOutputs_areCaptured_andNeverDelivered'),
  ('review-7-other-processors-keep-live-timers', R+'ReplayScheduler.java', '        return replaying() ? register(action) : super.scheduleAfterDelay(waitTime, action);', '        return register(action);', 'ReplayReviewRegressionTest#f7_aProcessorNotReplayed_keepsItsLiveTimers'),
@@ -35,6 +35,8 @@ CONTROLS=[
  ('review-9-a-throwing-timer-is-a-failure', R+'RecordingScheduler.java', '                recorder.timerFailed(flow, seq, failed);    // a timer that throws is a failure (D4), not a firing', '                recorder.timerFired(flow, seq);', 'ReplayReviewRegressionTest#f9_aTimerThatThrows_isRecordedAsAFailure'),
  ('review-11-handed-over-work-runs-at-most-once', M+'dutycycle/AgentHandoff.java', '        if (!claimed.compareAndSet(false, true)) return;', '        claimed.set(true);', 'com.telamin.mongoose.dutycycle.AgentHandoffTest#workTheCallerStoppedWaitingFor_neverRuns'),
  ('review-F4-only-a-first-attempt-is-recorded', M+'dutycycle/EventQueueToEventProcessorAgent.java', '            if (done && recorder != null && attempt == 0) {', '            if (done && recorder != null) {', 'ReplayReviewRegressionTest#f12_aDispatchThatARetryRecovers_isRecordedAsFailedAlone'),
+ ('review-reA-a-replayed-processors-clock-is-not-replaced', M+'dispatch/AbstractEventToInvocationStrategy.java', '        if (anyMuted && mutedForReplay.contains(eventProcessor)) return;\n', '', 'ReplayReviewRegressionTest#reA_aLiveReplayRecordDuringAReplay_doesNotReplaceTheReplayClock'),
+ ('review-reB-a-journal-failure-never-escapes-publish', M+'dispatch/EventToQueuePublisher.java', '        } catch (Throwable failed) {\n            // never out of publish', '        } catch (Error failed) {\n            // never out of publish', 'ReplayReviewRegressionTest#reB_aJournalFailure_neverEscapesPublish_andTheItemIsStillDeliveredWithItsNumber', 'DEMO disk full'),
  ('review-11-a-refused-start-closes-its-sink', M+'internal/ChronicleAuditCaptureService.java', '            sink.closeRecording();\n            throw notApplied;', '            throw notApplied;', 'AuditSinkOnAgentThreadTest#aStartThatTimesOut_changesNothing_evenWhenItsInstallRunsLater'),
 ]
 only=set(sys.argv[1:])
@@ -68,14 +70,16 @@ def verdict_of(test):
 
 # every named test must pass UNMUTATED first, or a 'caught' means nothing
 baselines={}
-for name,path,old,new,test in CONTROLS:
+for control in CONTROLS:
+    name,path,old,new,test=control[:5]
     if only and name not in only: continue
     if test not in baselines:
         baselines[test]=verdict_of(test)
         print('baseline', test, baselines[test], flush=True)
         assert baselines[test]=='green', ('the named test is not green unmutated', test, baselines[test])
 
-for name,path,old,new,test in CONTROLS:
+for control in CONTROLS:
+    name,path,old,new,test=control[:5]
     if only and name not in only: continue
     p=pathlib.Path(path); orig=p.read_bytes(); h=hashlib.sha256(orig).hexdigest()
     text=orig.decode()
@@ -97,9 +101,16 @@ for name,path,old,new,test in CONTROLS:
     finally:
         p.write_bytes(orig)
     restored=hashlib.sha256(p.read_bytes()).hexdigest()==h
-    results.append((name,verdict,restored)); print(name, verdict, 'restored' if restored else 'NOT RESTORED', '|', message, flush=True)
-detected=('caught','caught-by-timeout','error')
-print(sum(1 for r in results if r[1]=='caught'), 'of', len(results), 'caught by the named assertion;',
-      sum(1 for r in results if r[1]=='caught-by-timeout'), 'by an await running out;',
-      sum(1 for r in results if r[1]=='error'), 'by an error (read its message: a hang shows as a TimeoutException);',
-      sum(1 for r in results if r[1] not in detected), 'NOT detected')
+    expect=control[5] if len(control)>5 else None
+    # a named assertion is a detection; an await running out, or an error, only when its message is the mutation's
+    detected = verdict=='caught' or (verdict in ('caught-by-timeout','error') and expect is not None and expect in message)
+    results.append((name,verdict,restored,detected)); print(name, verdict, 'restored' if restored else 'NOT RESTORED', '|', message, flush=True)
+caught=sum(1 for r in results if r[1]=='caught')
+by_message=sum(1 for r in results if r[3] and r[1]!='caught')
+undetected=[r[0] for r in results if not r[3]]
+unrestored=[r[0] for r in results if not r[2]]
+print(caught, 'of', len(results), 'caught by the named assertion;', by_message,
+      'by an await or error carrying the mutation\'s expected message;', len(undetected), 'NOT detected', undetected)
+if unrestored: print('NOT RESTORED:', unrestored)
+# a gate, not a report: any control not detected, or any file left mutated, fails the run
+sys.exit(1 if undetected or unrestored else 0)

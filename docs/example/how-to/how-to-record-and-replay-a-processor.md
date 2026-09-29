@@ -6,9 +6,11 @@ to check a fix against a real run, or to turn a run into a test.
 
 !!! note "A replay is isolated from the live world"
     In `REPLAY` mode a replayed processor receives only its replay: its live inputs are muted (limit L1). What it
-    sends to its sinks is captured for comparison, `replayers().get(group).outputs(processor)`, and never delivered
-    (L2), so a replay repeats no side effect such as an order or a message. Other processors in the group are
-    unaffected: they keep their live inputs, outputs and timers.
+    sends to its registered `MessageSink` services is captured for comparison,
+    `replayers().get(group).outputs(processor)`, and never delivered (L2). Anything it sends through any other service
+    it was given (an injected gateway, a publisher, another processor's exported service) is delivered as live: isolate
+    those yourself before replaying. Other processors in the group are unaffected: they keep their live inputs, outputs
+    and timers.
 
 ## How it relates to `ReplayRecord`
 

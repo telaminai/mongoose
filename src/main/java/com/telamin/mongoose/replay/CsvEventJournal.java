@@ -1,5 +1,6 @@
 package com.telamin.mongoose.replay;
 
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -21,6 +22,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>A sample, not a production store: the index is in memory, flushing is per line with no fsync, and one file holds
  * every source. A production journal (Chronicle) indexes by offset, rolls, and retains by policy.
  */
+@Experimental
 public final class CsvEventJournal implements EventJournal, AutoCloseable {
 
     static final String HEADER = "source,seq,item";

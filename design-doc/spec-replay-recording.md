@@ -173,8 +173,10 @@ commands) is recorded in its order at the instants it read, and replayed.
 - **L1: disconnect live inputs.** A replayed processor's queues mute live dispatch to it (`muteLive`); only the replay
   reaches it (`processEventFor`). Other processors in the group keep their live inputs.
 - **L2: mute outputs.** A replayed processor's `MessageSink` services are replaced by a capture: what it sends is kept
-  for comparison (`GroupReplayer.outputs`) and never delivered, so a replay repeats no side effect. Output a processor
-  sends other than through a registered sink service is outside this (a hidden channel, like any other).
+  for comparison (`GroupReplayer.outputs`) and never delivered. Only those: anything a replayed processor sends through
+  any other service it was given (an injected gateway, a publisher, another processor's exported typed service) is the
+  live instance, and is delivered. That is outside L2, and a replay's side effects through it are the operator's to
+  isolate.
 
 **Several processors in one agent group:**
 - Recording is already right. The group runs them on one thread; each has its own stream; one queue item fanned out
@@ -226,6 +228,20 @@ Also: the javadocs displaced by inserted members are back on their owners; `Repl
 `ReplayRoute` rather than the internal agent; the replay API is `@Experimental`; the weak tests are strengthened
 (`awaitReplay` fails on timeout, witnesses check a full replay first, R1 checks the live clock, a typed-call witness).
 Remaining limit, stated not fixed: clock reads outside an input's cycle (`start()`, `@Initialise`) are not recorded.
+
+**The re-review (review 5357040107)** verified every disposition above and found:
+
+| # | finding | disposition |
+|---|---|---|
+| A | a live `ReplayRecord` on a replayed processor's queue is muted, but its synthetic clock still replaced the processor's `ReplayClock`: every later entry replayed on the live instant, silently | fixed: `setSyntheticTime` refuses a processor muted for a replay. Shown first: the last entry replayed at `time=42`, not its recorded 999999 |
+| B | a journal append or encoding failure escaped `publish()`, reaching the default error handler, which exits | fixed: logged and reported once; the feed stops journalling; its items still carry their numbers, so a replay stops at the first gap by name (`reB_aRecordingWithAJournalGap_replaysToItAndStopsThere`) |
+| C | the PR body and how-to overstated L2 | corrected: only registered `MessageSink` services are captured; anything sent through another given service is live |
+| D | `@Experimental` on 7 of 20 replay types; a method between fields; import order | all replay types a user names are marked; moved; sorted |
+| E | `runOnAgentThread` re-check read as a delivery guarantee | its javadoc and comment say best effort, and why a lost handoff is safe |
+
+The controls harness is now a gate: it exits non-zero on any control not detected and on any file not restored; a
+detection by an `await` running out or by an error counts only when its message carries the fragment the mutation is
+expected to produce. 32 of 32 detected; a no-op control, added for the check, fails the gate.
 
 ## 4. Decisions
 

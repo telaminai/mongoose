@@ -101,6 +101,9 @@ public abstract class AbstractEventToInvocationStrategy implements EventToInvoke
 
     @Override
     public void setSyntheticTime(DataFlow eventProcessor, long time) {
+        // REPLAY: a replayed processor is muted, and its clock is its ReplayClock; a live ReplayRecord must not swap
+        // it for a synthetic clock, or every later entry replays on the live record's instant (#47 re-review A)
+        if (anyMuted && mutedForReplay.contains(eventProcessor)) return;
         syntheticClocks.computeIfAbsent(eventProcessor, k -> {
             AtomicLong atomicLong = new AtomicLong();
             eventProcessor.setClockStrategy(atomicLong::get);

@@ -1,5 +1,6 @@
 package com.telamin.mongoose.replay;
 
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -8,6 +9,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * loses it. {@link CsvEventJournal} is the durable sample; a production journal (e.g. Chronicle) is open work
  * (design-doc/spec-replay-recording.md §5).
  */
+@Experimental
 public class InMemoryEventJournal implements EventJournal {
     private final Map<String, Map<Long, byte[]>> items = new ConcurrentHashMap<>();
 
