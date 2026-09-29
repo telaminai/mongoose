@@ -100,13 +100,17 @@ class ReplayReviewRegressionTest {
 
     /** The demo processor, and optionally a second one in the same group that is never replayed. */
     static Server boot(ReplayConfig replay, boolean withOther, boolean namedOrders) throws Exception {
+        return boot(replay, withOther, namedOrders, namedOrders ? new NamedFeedHandler() : new ReplayDemoHandler(ORDERS, CONTROLS));
+    }
+
+    static Server boot(ReplayConfig replay, boolean withOther, boolean namedOrders, ReplayDemoHandler handler) throws Exception {
         InMemoryEventSource<Object> orders = new InMemoryEventSource<>();
         orders.setName(ORDERS);
         ReplayableEventSource controls = new ReplayableEventSource();
         controls.setName(CONTROLS);
         InMemoryMessageSink sink = new InMemoryMessageSink();
         EventProcessorGroupConfig.Builder group = EventProcessorGroupConfig.builder().agentName("processor-agent")
-                .put(PROCESSOR, new EventProcessorConfig(namedOrders ? new NamedFeedHandler() : new ReplayDemoHandler(ORDERS, CONTROLS)));
+                .put(PROCESSOR, new EventProcessorConfig(handler));
         if (withOther) group.put(OTHER, new EventProcessorConfig(new ReplayDemoHandler(ORDERS, CONTROLS)));
         MongooseServerConfig config = MongooseServerConfig.builder()
                 .addProcessorGroup(group.build())
@@ -386,6 +390,123 @@ class ReplayReviewRegressionTest {
         List<ReplayEntry> entries = store.entries(PROCESSOR);
         assertEquals(1, entries.size(), "one entry for the one input: " + entries);
         assertTrue(entries.get(0) instanceof ReplayEntry.Failed, "and it is the failure: " + entries);
+    }
+
+    // ---- re-review A: a live ReplayRecord during a replay ------------------------------------------------------
+
+    /**
+     * The original blocker's mirror on the REPLAY side: a live ReplayRecord on a queue the replayed processor is on is
+     * muted (L1) but must not replace the processor's ReplayClock with its synthetic clock, or every later entry replays
+     * on the live record's instant, silently.
+     */
+    /** Takes a millisecond over each "slow" input, so a replay of many lasts long enough for live input to arrive. */
+    public static class SlowHandler extends ReplayDemoHandler {
+        public SlowHandler() {
+            super(ORDERS, CONTROLS);
+        }
+
+        @Override
+        protected boolean handleEvent(Object event) {
+            if ("slow".equals(event)) {
+                java.util.concurrent.locks.LockSupport.parkNanos(1_000_000);
+                return true;
+            }
+            return super.handleEvent(event);
+        }
+    }
+
+    @Test
+    void reA_aLiveReplayRecordDuringAReplay_doesNotReplaceTheReplayClock() throws Exception {
+        InMemoryReplayStore store = new InMemoryReplayStore();
+        for (int i = 0; i < 2_000; i++) store.append(PROCESSOR, new ReplayEntry.Inline(CONTROLS, "slow", List.of(1_000L + i)));
+        store.append(PROCESSOR, new ReplayEntry.Inline(CONTROLS, "suspend", List.of(999_999L)));
+        try (Server r = boot(replaying(store, new InMemoryEventJournal()), false, false, new SlowHandler())) {
+            // live ReplayRecords, published continuously until the replay is done, so some arrive while it drains
+            Thread live = new Thread(() -> {
+                while (r.replayer() == null || !r.replayer().complete()) {
+                    r.controls().replay(replayRecord("noop", 42));
+                    java.util.concurrent.locks.LockSupport.parkNanos(200_000);
+                }
+            }, "DEMO-live-replay-records");
+            live.start();
+            r.awaitReplayDone();
+            live.join(5_000);
+            assertEquals(null, r.replayer().stopped(PROCESSOR));
+            assertEquals(List.of("control=suspend time=999999"), r.lines(), "the last entry replays at its recorded instant");
+        }
+    }
+
+    // ---- re-review B: a journal failure on the publish path ----------------------------------------------------
+
+    /** A journal whose appends fail. */
+    static final class BrokenJournal implements EventJournal {
+        int appends;
+
+        @Override
+        public void append(String source, long seq, byte[] encoded) {
+            appends++;
+            throw new java.io.UncheckedIOException(new java.io.IOException("DEMO disk full"));
+        }
+
+        @Override
+        public byte[] get(String source, long seq) {
+            return null;
+        }
+    }
+
+    /**
+     * A journal that fails, or an item its codec cannot encode, must not escape publish(): from a feed agent it reaches
+     * the default error handler, which exits the process. The item is still delivered with its number, so a replay of
+     * the recording stops at the gap ("the journal holds no ...") rather than joining across it.
+     */
+    @Test
+    void reB_aJournalFailure_neverEscapesPublish_andTheItemIsStillDeliveredWithItsNumber() {
+        EventToQueuePublisher<Object> publisher = new EventToQueuePublisher<>(ORDERS);
+        BrokenJournal journal = new BrokenJournal();
+        publisher.journal(journal, new JavaSerializationCodec());
+        OneToOneConcurrentArrayQueue<Object> queue = new OneToOneConcurrentArrayQueue<>(16);
+        publisher.addTargetQueue(queue, "q");
+        publisher.publish("ord-1");                                     // the journal throws
+        publisher.publish("ord-2");
+        assertEquals(new JournalledItem(1, "ord-1"), queue.poll(), "delivered, with its number");
+        assertEquals(new JournalledItem(2, "ord-2"), queue.poll());
+        assertEquals(1, journal.appends, "a broken journal is not retried on every item");
+    }
+
+    /** A recording whose journal failed replays up to the gap, and stops there naming it. */
+    @Test
+    void reB_aRecordingWithAJournalGap_replaysToItAndStopsThere() throws Exception {
+        InMemoryReplayStore store = new InMemoryReplayStore();
+        BrokenJournal journal = new BrokenJournal();
+        try (Server s = boot(recording(store, journal), false, false)) {
+            s.controls().offer("suspend");                             s.await(1);
+            s.orders().offer("ord-1");                                  s.await(2);   // its journal append fails
+        }
+        try (Server r = boot(replaying(store, journal), false, false)) {
+            r.awaitReplayDone();
+            assertEquals(List.of("control=suspend"), r.lines().stream().map(l -> l.substring(0, l.indexOf(" time="))).toList(),
+                    "up to the gap");
+            String stopped = r.replayer().stopped(PROCESSOR);
+            assertNotNull(stopped, "and it stops there");
+            assertTrue(stopped.contains("the journal holds no orders#1"), stopped);
+        }
+    }
+
+    @Test
+    void reB_anItemTheCodecCannotEncode_neverEscapesPublish() {
+        EventToQueuePublisher<Object> publisher = new EventToQueuePublisher<>(ORDERS);
+        publisher.journal(new InMemoryEventJournal(), new JavaSerializationCodec());
+        OneToOneConcurrentArrayQueue<Object> queue = new OneToOneConcurrentArrayQueue<>(16);
+        publisher.addTargetQueue(queue, "q");
+        Object notSerializable = new Object() {
+            @Override
+            public String toString() {
+                return "DEMO-not-serialisable";
+            }
+        };
+        publisher.publish(notSerializable);
+        Object delivered = queue.poll();
+        assertTrue(delivered instanceof JournalledItem j && j.item() == notSerializable, "still delivered: " + delivered);
     }
 
     // ---- 10: a pooled item in a late subscriber's catch-up -----------------------------------------------------
