@@ -75,15 +75,19 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                 }
             }
 
-            // R3: a journalled item carries its feed's sequence number; the processor receives the bare item
+            // RECORD mode only, so replay OFF pays one null check (measured: DispatchPathJmh). A journalled item exists
+            // only in RECORD mode; it carries its feed's sequence number, and the processor receives the bare item (R3)
             long seq = -1;
-            if (event instanceof com.telamin.mongoose.replay.JournalledItem journalled) {
-                seq = journalled.seq();
-                event = journalled.item();
-            } else if (event instanceof com.telamin.fluxtion.runtime.event.NamedFeedEvent<?> named) {
-                seq = named.sequenceNumber();
+            java.util.Collection<DataFlow> targets = null;
+            if (recorder != null) {
+                if (event instanceof com.telamin.mongoose.replay.JournalledItem journalled) {
+                    seq = journalled.seq();
+                    event = journalled.item();
+                } else if (event instanceof com.telamin.fluxtion.runtime.event.NamedFeedEvent<?> named) {
+                    seq = named.sequenceNumber();
+                }
+                targets = eventToInvokeStrategy.registeredProcessors();
             }
-            java.util.Collection<DataFlow> targets = recorder == null ? null : eventToInvokeStrategy.registeredProcessors();
 
             int attempt = 0;
             boolean done = false;
@@ -228,7 +232,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     private PoolTracker<?> trackerOf(Object event) {
         if (event == null) return null;
         Object candidate = event;
-        if (candidate instanceof com.telamin.mongoose.replay.JournalledItem journalled) {
+        if (recorder != null && candidate instanceof com.telamin.mongoose.replay.JournalledItem journalled) {
             candidate = journalled.item();
         }
         if (candidate instanceof ReplayRecord rr) {

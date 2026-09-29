@@ -1,6 +1,6 @@
 # Spec: record and replay a processor's inputs in Mongoose
 
-**Status**: r3, 2026-09-29. Implemented and tested on `spike/replay-at-dispatch` (§3a); not reviewed, not for merge as is. Background, and the evidence each
+**Status**: r4, 2026-09-29. Implemented and tested on `spike/replay-at-dispatch` (§3a); not reviewed, not for merge as is. Background, and the evidence each
 decision rests on: [`replay-at-dispatch-spike.md`](replay-at-dispatch-spike.md).
 
 ## 1. Goal, and the boundary of the claim
@@ -55,8 +55,8 @@ behaviour is removed.
 
 All seven items are implemented, in `src/main`, behind `ReplayConfig` (off by default). Full suite: **232 / 0 / 0 / 9**
 (total / failures / errors / skips); the baseline before this work was 223 / 0 / 0 / 9, and the nine skips are the
-same. Controls: `python3 design-doc/replay_controls.py`. It runs each of the nine named tests unmutated first (all green),
-then **15 of 15 controls caught**, each by a named assertion, with every file restored byte-identically.
+same. Controls: `python3 design-doc/replay_controls.py`. It runs each named test unmutated first (all green),
+then **17 of 17 controls caught**, each by a named assertion, with every file restored byte-identically.
 
 | id | named test | controls |
 |---|---|---|
@@ -95,6 +95,112 @@ a mistake. The test then passed six runs out of six on its own, the next full ru
 like a pre-existing race in pooled named-event dispatch. That is unproven: it is intermittent and was not reproduced.
 
 Still open: outputs muted during a group replay; a durable journal and store; direct exported-service calls (§5).
+
+## 3b. Performance with replay off (2026-09-29)
+
+`src/test/java/.../benchmark/dispatch/DispatchPathJmh`: a publish through `EventToQueuePublisher` onto a queue, then
+`EventQueueToEventProcessorAgent.doWork` into a processor through the onEvent strategy. It runs single-threaded, with
+a pre-allocated payload and a handler that does nothing. JMH 1.37, JDK 21.0.9, 3 forks × 10 × 1 s, `-prof gc`. The
+same benchmark file runs on `main` (`3821b62`, whose `src/main` is `origin/main`) and on this branch, in alternating
+rounds.
+
+| path | `main` | this branch | allocated / op (both) |
+|---|---|---|---|
+| NOWRAP (default feed) | 23.6-24.1 ns | 24.8-24.9 ns | **0.0002 B**: zero GC, 0 collections |
+| NAMED_EVENT | 40.8-41.8 ns | 42.0-42.1 ns | 48 B: the existing `NamedFeedEventImpl` per publish, not new |
+
+Attribution (NOWRAP, a clean round):
+
+| build | ns/op | added |
+|---|---|---|
+| `main` | 24.14 | — |
+| only the publisher change (sequence numbers carried, the journal hook, the cached-seq fix) | 24.26 | **+0.12** |
+| only the queue agent change (the recording hook) | 24.67 | +0.5 |
+| both | 24.85 | +0.7 |
+
+- **Sequence numbers cost about 0.1 ns and allocate nothing.**
+- **The recording hook costs about 0.5 ns on the replay-off path**, even with every use behind one
+  `recorder != null` check: the loop's shape changed. If that matters, a separate recording agent class, made only in
+  RECORD mode, would leave the off path as it was, at the cost of a second copy of the dispatch loop (an owner
+  decision).
+- **Zero GC holds** for the no-replay path.
+
+## 3c. The sample durable journal and store (CSV)
+
+`CsvEventJournal` is one line per journalled item, `source,seq,base64(item)`. `CsvReplayStore` is one line per entry,
+`processor,kind,source,seq,payload,reads`. Both are appended and flushed per line, and read back whole when opened
+again. `CsvDurableReplayTest` records a run to the two files, closes them, reopens them as new instances from disk (as
+another process would), and replays: the processor does what it did. They are samples: the index is in memory, there
+is no fsync, and there is one file for every source. A production journal (Chronicle) indexes by offset, rolls, and
+retains by policy.
+
+## 3d. Admin commands and the event cycle (validated 2026-09-29)
+
+**They do not run in an event cycle yet.** `AdminCommandAuditTest`, through a real server, shows that a processor-owned
+command runs on the processor's thread, changes node state, and opens **no** event cycle: the processor's `onEvent`
+count is unchanged, and the command's code runs outside any cycle. That is the cause the proposal
+(`origin/proposal/admin-commands-in-event-cycle`) describes: `AdminCommandInvoker` calls the lambda directly. The
+consequences (no audit record, `auditLog` lines spliced into the next record in a generated processor, no dirty
+flags, nothing downstream triggered) are the proposal's live evidence. They are not reproduced here: a hand-written
+`DefaultEventProcessor` has no `EventLogManager`, and Mongoose's tests have no generated processor.
+
+The proposal covers delivery in an event cycle, and what each option gives:
+
+| option | where | audit record | `auditLog` lands in it | dirty flags, downstream triggers |
+|---|---|---|---|---|
+| A: signal-routed command, `onEvent(Signal("admin:<name>", request))` | Mongoose only | yes | yes | **yes**: a full cycle |
+| B: `DataFlow.runInEventCycle(description, lambda)` | Fluxtion runtime + Mongoose | yes | yes | **no** (the proposal says so) |
+| C: an out-of-cycle `auditLog` becomes its own record | Fluxtion runtime | a safety net | — | — |
+
+**Only A puts a command fully in the event cycle, and it needs no Fluxtion change.** It is a new registration API; an
+existing lambda command is not converted. The proposal does not cover replay; under A the recorder still records
+`{name, args}` at the admin queue, and the replay rebuilds the command, which becomes the same `Signal`.
+
+## 3e. One processor, several in one agent, several agents: what holds, and what is needed
+
+**One processor: supported (R1-R7).** Everything Mongoose delivers to it (feeds, typed service calls, timers, admin
+commands) is recorded in its order at the instants it read, and replayed.
+
+**The limits, for every case** (not solved by more processors):
+- Hidden inputs inside nodes: randomness, iteration order, file, database or network reads, values read back from
+  injected services. They are detected by divergence, not supplied.
+- Direct calls from code holding a processor (`registeredProcessors()`), outside Mongoose's paths.
+- After a failure the processor has stopped (the `processing` wedge, §3a finding 2); the stream ends there.
+
+**Needed even for one processor, before a replay runs anywhere real:**
+- **L1: disconnect live inputs.** In REPLAY mode, a replayed processor's feeds are still subscribed. The tests publish
+  nothing, but a deployment's sources (Kafka, files) would. The group must not deliver live queue items to a processor
+  it is replaying.
+- **L2: mute outputs.** A replayed processor's sinks and publications still go out. In a real deployment that is
+  a second copy of real side effects (orders, messages). They must be captured for comparison, never delivered.
+
+**Several processors in one agent group:**
+- Recording is already right. The group runs them on one thread; each has its own stream; one queue item fanned out
+  to several is one entry in each (an index to the same journal item).
+- They interact only through queues (a publication that reaches another's feed is recorded as that one's input),
+  **or through a shared mutable service or static state**, which is a hidden channel: a read of it is an input no
+  replay supplies.
+- Replaying one of them: supported, given L1 and L2.
+- Replaying several together, each from its own stream: needs **L2**, because one processor's replayed output
+  would otherwise reach another, whose stream already holds it, and it would be handled twice. With L2, their
+  streams are independent: no order across processors is needed.
+
+**Several agent groups:**
+- Each group records its own processors on its own thread; nothing orders two groups, and nothing needs to. A
+  cross-group publication is a queued input of the receiver, recorded where the receiver handled it.
+- Replaying across groups is the same as within one: independent per-processor replays, with L1 and L2.
+- **Not supported, and not proposed:** a chained re-simulation, where one replayed processor's live output drives
+  another live one. It would need a deterministic order across threads that Mongoose does not have, and it adds
+  nothing a per-processor replay does not already check.
+
+**Decisions needed:**
+- D7: a replay is per processor, against its own recorded inputs; a multi-processor replay is N of them, never a
+  chained re-simulation.
+- D8: in REPLAY mode a replayed processor gets no live inputs (L1) and delivers no outputs (L2); its outputs are
+  captured for comparison.
+- D9: shared mutable services and static state between processors are outside the claim, like any hidden input.
+- D10: admin commands in the event cycle through option A (Mongoose only), with B and C in Fluxtion as the safety net
+  for lambda commands.
 
 ## 4. Decisions
 
