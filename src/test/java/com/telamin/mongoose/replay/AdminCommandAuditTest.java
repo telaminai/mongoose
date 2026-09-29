@@ -27,9 +27,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Do processor-owned admin commands run in an event cycle, and audit properly? (Asked 2026-09-29; the proposal is
  * origin/proposal/admin-commands-in-event-cycle.) Not yet. This CHARACTERISES the current behaviour: the command runs on
- * the processor's thread through {@code AdminCommandInvoker}, which calls the lambda directly, never
- * {@code onEvent}. So no event cycle opens for it: no audit record (in a generated processor its {@code auditLog}
- * lines splice into the next record, the proposal's live evidence), no dirty flags, nothing downstream triggered.
+ * the processor's thread through {@code AdminCommandInvoker}, never through {@code onEvent}, so no event cycle
+ * opens for it: no dirty flags, nothing downstream triggered. (In a generated processor the invoker now brackets the
+ * lambda with the processor's audit record, so it is audited: GeneratedAdminAuditTest. A signal-routed command runs in
+ * a full cycle: SignalAdminCommandTest.)
  * A hand-written {@code DefaultEventProcessor} has no {@code EventLogManager} and writes no audit log, and Mongoose's
  * tests have no generated processor, so the audit half is shown there, not here; what is shown here is the cause.
  * When admin commands are delivered in an event cycle (the proposal's option A, or B), invert the marked assertion.
