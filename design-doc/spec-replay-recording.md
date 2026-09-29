@@ -1,6 +1,6 @@
 # Spec: record and replay a processor's inputs in Mongoose
 
-**Status**: r6, 2026-09-29. Implemented and tested on `spike/replay-at-dispatch` (§3a); not reviewed, not for merge as is. Background, and the evidence each
+**Status**: r7, 2026-09-29. Implemented and tested on `spike/replay-at-dispatch` (§3a); not reviewed, not for merge as is. Background, and the evidence each
 decision rests on: [`replay-at-dispatch-spike.md`](replay-at-dispatch-spike.md).
 
 ## 1. Goal, and the boundary of the claim
@@ -56,7 +56,7 @@ behaviour is removed.
 All seven items are implemented, in `src/main`, behind `ReplayConfig` (off by default). Full suite: **232 / 0 / 0 / 9**
 (total / failures / errors / skips); the baseline before this work was 223 / 0 / 0 / 9, and the nine skips are the
 same. Controls: `python3 design-doc/replay_controls.py`. It runs each named test unmutated first (all green),
-then **22 of 22 controls caught**, each by a named assertion, with every file restored byte-identically.
+then **24 of 24 controls caught**, each by a named assertion, with every file restored byte-identically.
 
 | id | named test | controls |
 |---|---|---|
@@ -200,11 +200,46 @@ copyright header, and a test fails if it returns.
   ```
   The node's `auditLog` writes are in it, and **the change propagated**: the downstream node fired in the same cycle.
   Exactly one record names it, and every record is well formed.
-- **A lambda command still works** (it replies), and is still outside any cycle: no record of its own; its
-  `lambdaReset: true` is spliced into the next event's record, so the next record does not open with
-  `eventLogRecord:` (the mangled log users see); and its change does not propagate.
+- **A lambda command still works** (it replies). The invoker now brackets it with the processor's own audit calls, found
+  by name: `clock.eventReceived` / `eventLogger.eventReceived(AdminCommandEvent)` before it, and
+  `processingComplete()` on both after it. So it has a record of its own, `event: AdminCommandEvent`,
+  `eventToString: AdminCommandEvent[command=alarm.lambda, args=[DEMO-operator]]`. Its `auditLog` line is in it, at
+  the command's own instant, and the next record is clean: the mangled log is gone. Its change does not propagate,
+  which is wanted (owner: an admin command redispatches if it needs a reaction).
 
-Controls: `A-the-generated-processor-audits-the-command`, `A-the-generated-source-stays-publishable`.
+Controls: `A-the-generated-processor-audits-the-command`, `A-the-generated-source-stays-publishable`,
+`A-a-lambda-command-is-bracketed-by-an-audit-record`, `A-a-lambda-record-carries-the-commands-instant`.
+
+**The bracket is an interim, and unsafe for a command that redispatches** (owner, 2026-09-29: "we don't get the
+queued dispatch or any other event mechanics"). The bracket does not set the processor's private `processing` flag.
+So an event the command raises is dispatched at once, as a nested cycle, while the command's record is still open.
+That nested record corrupts the log, and the queued-callback dispatch never runs.
+
+**The proper form is a general Fluxtion trigger, not an admin API.** It runs a supplied action as an event cycle of the
+processor, with a supplied event as its audit context:
+`DataFlow.runInEventCycle(Object auditEvent, Runnable action)`, with a default of `action.run()` for older
+processors. A generated processor implements it with the boundary it already has for exported service calls:
+1. `auditEvent(auditEvent)`: every auditor sees it.
+2. `processing = true`.
+3. The action runs.
+4. `afterEvent()`, then `dispatchQueuedCallbacks()`, so anything the action redispatched runs after it, in order.
+5. `processing = false`, in a `finally`.
+
+The event is not dispatched to any node, and nothing is marked dirty. Mongoose's invoker becomes
+`processor.runInEventCycle(new AdminCommandEvent(name, args), command::executeCommand)`: the trigger is the command,
+carrying all its state.
+
+Security of such a trigger:
+1. It grants no new privilege in-process. Its caller holds the `DataFlow`, and can already call `onEvent`, exported
+   services and nodes. The boundary that matters is Mongoose's: the admin transport sends a registered command name
+   and arguments, never code, and must go on doing so.
+2. Re-entrancy: called inside an open cycle, it must queue, as a re-entrant event does, or refuse.
+3. Thread: it must run on the processor's thread (the #46 class of race). Mongoose guarantees that through the admin
+   queue; Fluxtion could assert it.
+4. Exceptions: the `finally` must clear `processing` and close the record (finding 2).
+5. Audit spoofing: the caller chooses the audit event. Such records should be marked as actions, distinct from inputs.
+6. Secrets: the audit event's `toString` is written to the log, so a command's arguments need redaction where they are
+   sensitive.
 
 **Who writes the handler:** the processor's author, the same person who writes a lambda today. They register the name
 (`registerSignalCommand`) and add a filtered signal handler to a node (or a Spring XML `signalHandlers` binding). It

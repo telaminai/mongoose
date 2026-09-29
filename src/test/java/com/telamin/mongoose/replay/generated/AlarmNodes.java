@@ -32,7 +32,7 @@ public final class AlarmNodes {
             // today's form: a lambda, run on the processor's thread outside any event cycle
             registry.registerCommand("alarm.lambda", (args, out, err) -> {
                 raised = false;
-                auditLog.info("lambdaReset", true);
+                auditLog.info("lambdaReset", true).info("at", context.getClock().getProcessTime());
                 out.accept("lambda cleared");
             });
         }
