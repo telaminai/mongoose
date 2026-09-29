@@ -5,6 +5,7 @@
 
 package com.telamin.mongoose.dispatch;
 
+import com.telamin.mongoose.replay.ReplayConfig;
 import com.telamin.mongoose.dutycycle.EventQueueToEventProcessor;
 import com.telamin.mongoose.dutycycle.EventQueueToEventProcessorAgent;
 import com.telamin.mongoose.internal.NoOpCountersService;
@@ -62,20 +63,14 @@ public class EventFlowManager {
         eventToInvokerFactoryMap.put(CallBackType.ON_EVENT_CALL_BACK, EventToOnEventInvokeStrategy::new);
     }
 
-    /**
-     * Bind the counters service. Called once by {@link com.telamin.mongoose.MongooseServer}
-     * during its constructor, before any feed / sink / processor wiring. The
-     * default before this call is the no-op service, so any pre-binding access
-     * (typically only test harnesses) still returns a valid handle.
-     */
-    private com.telamin.mongoose.replay.ReplayConfig replayConfig = com.telamin.mongoose.replay.ReplayConfig.OFF;
+    private ReplayConfig replayConfig = ReplayConfig.OFF;
 
     /** Set before any event source registers (spec-replay-recording R1). */
-    public void setReplayConfig(com.telamin.mongoose.replay.ReplayConfig replayConfig) {
-        this.replayConfig = replayConfig == null ? com.telamin.mongoose.replay.ReplayConfig.OFF : replayConfig;
+    public void setReplayConfig(ReplayConfig replayConfig) {
+        this.replayConfig = replayConfig == null ? ReplayConfig.OFF : replayConfig;
     }
 
-    public com.telamin.mongoose.replay.ReplayConfig getReplayConfig() {
+    public ReplayConfig getReplayConfig() {
         return replayConfig;
     }
 
@@ -85,6 +80,12 @@ public class EventFlowManager {
         return p == null ? null : p.queuePublisher().getEventWrapStrategy();
     }
 
+    /**
+     * Bind the counters service. Called once by {@link com.telamin.mongoose.MongooseServer}
+     * during its constructor, before any feed / sink / processor wiring. The
+     * default before this call is the no-op service, so any pre-binding access
+     * (typically only test harnesses) still returns a valid handle.
+     */
     public void setCountersService(MongooseCountersService countersService) {
         this.countersService = Objects.requireNonNull(countersService, "countersService must be non-null");
     }
@@ -177,7 +178,7 @@ public class EventFlowManager {
 
         EventToQueuePublisher<T> queuePublisher = (EventToQueuePublisher<T>) eventSourceQueuePublisher.queuePublisher();
         // R3: a journalled feed's items are journalled once, and carry their sequence number to every queue
-        if (replayConfig.mode() == com.telamin.mongoose.replay.ReplayConfig.Mode.RECORD && replayConfig.journalled(sourceName)) {
+        if (replayConfig.mode() == ReplayConfig.Mode.RECORD && replayConfig.journalled(sourceName)) {
             queuePublisher.journal(replayConfig.journal(), replayConfig.journalledFeeds().get(sourceName));
         }
         eventSource.setEventToQueuePublisher(queuePublisher);

@@ -34,6 +34,15 @@ public interface EventToInvokeStrategy {
     void processEvent(Object event, long time);
 
     /**
+     * Set {@code target}'s synthetic clock to {@code time}, as {@link #processEvent(Object, long)} does for each
+     * processor before it dispatches. Replay recording uses it to give a processor that is NOT recorded the same clock
+     * a {@code ReplayRecord} input gives it today, while a recorded one keeps its recording clock.
+     */
+    default void setSyntheticTime(DataFlow target, long time) {
+        target.setClockStrategy(() -> time);
+    }
+
+    /**
      * Deliver {@code event} to ONE registered processor, as {@link #processEvent(Object)} would deliver it to each
      * (spec-replay-recording R5: a replay delivers each recorded input to the processor that received it, alone).
      * The caller owns the processor's clock.
@@ -42,6 +51,14 @@ public interface EventToInvokeStrategy {
      */
     default void processEventFor(DataFlow target, Object event) {
         throw new UnsupportedOperationException(getClass().getName() + " cannot deliver to a single processor");
+    }
+
+    /**
+     * REPLAY: stop delivering live inputs to {@code target}, which receives only its replay through
+     * {@link #processEventFor}. A strategy that cannot mute refuses, so a replay is never silently mixed with live input.
+     */
+    default void muteLive(DataFlow target) {
+        throw new UnsupportedOperationException(getClass().getName() + " cannot mute a processor's live inputs for a replay");
     }
 
     /**

@@ -22,6 +22,11 @@ public class InMemoryEventJournal implements EventJournal {
         return bySeq == null ? null : bySeq.get(seq);
     }
 
+    @Override
+    public boolean holdsRecording() {
+        return items.values().stream().anyMatch(m -> !m.isEmpty());
+    }
+
     public int size(String source) {
         Map<Long, byte[]> bySeq = items.get(source);
         return bySeq == null ? 0 : bySeq.size();

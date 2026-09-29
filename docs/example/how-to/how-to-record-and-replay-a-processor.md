@@ -4,11 +4,11 @@ Mongoose can record exactly what an event processor received, then replay it int
 does what it did. The output is the same, and so are the instants its clock read. Use it to reproduce an incident,
 to check a fix against a real run, or to turn a run into a test.
 
-!!! warning "Not yet for a live deployment"
-    In `REPLAY` mode a replayed processor's feeds are still subscribed, and its sinks and publications still go
-    out. Replay into a server whose sources and sinks are in-memory or otherwise isolated, as the example below
-    does. Disconnecting live inputs and muting outputs during a replay is open work (limits L1 and L2 in
-    `design-doc/spec-replay-recording.md` §3e).
+!!! note "A replay is isolated from the live world"
+    In `REPLAY` mode a replayed processor receives only its replay: its live inputs are muted (limit L1). What it
+    sends to its sinks is captured for comparison, `replayers().get(group).outputs(processor)`, and never delivered
+    (L2), so a replay repeats no side effect such as an order or a message. Other processors in the group are
+    unaffected: they keep their live inputs, outputs and timers.
 
 ## How it relates to `ReplayRecord`
 
@@ -107,7 +107,8 @@ live.stop();
 // replay, in a fresh server with a fresh processor
 MongooseServer replay = boot(ReplayConfig.replay(Set.of("pricer"), journalled, journal, store), priceFeed(), replaySink);
 // ... wait until replay.replayers().get("processor-agent").complete()
-// replaySink now holds exactly liveSink's lines, times included
+// replay.replayers().get("processor-agent").outputs("pricer") holds exactly liveSink's lines, times included;
+// replaySink receives nothing: a replay's outputs are captured, not delivered
 ```
 
 `boot` builds an ordinary `MongooseServerConfig`, with the processor in a group, the feed, and a sink, and adds
@@ -122,15 +123,21 @@ Sample code:
 
 ## Scope and limits
 
-- **One processor at a time.** A replay is per processor, against its own recorded inputs. Several processors in one
-  agent group are recorded correctly, each with its own stream. Replaying several together needs outputs muted
-  (above), or one processor's replayed output would reach another whose stream already holds it.
+- **Per processor.** A replay is per processor, against its own recorded inputs. Several processors in one agent group
+  are recorded correctly, each with its own stream, and can be replayed together: each one's outputs are captured, so
+  none reaches another whose stream already holds it.
 - **Hidden inputs are not supplied.** Randomness, iteration order, reads of files, databases or networks, or values
   read back from injected services are detected by divergence on replay, not recorded.
 - **Calls outside Mongoose's paths**, from code holding a processor directly, are not recorded.
 - **After a failure** the recording is marked and a replay stops there. Determinism is not claimed after a failure.
+- **A replay stops, saying why,** rather than stalling or diverging silently: an entry that cannot be delivered within
+  `ReplayConfig.deliveryTimeout` (5 s), a journal missing an item, or a cycle that reads the clock a different number of
+  times from the recorded one (a divergence). `replayers().get(group).stopped(processor)` gives the reason.
+- **A recording is refused over a recording.** `RECORD` needs an empty journal and store: a second run numbers its
+  items from 1 again. A torn last CSV line (a crash mid-write) is dropped with a warning.
+- **Clock reads outside an input's cycle** (in `start()` or `@Initialise`) are not recorded.
 - **Durability.** The CSV journal and store are samples; a production journal (for example Chronicle), with
   retention, is open work.
 
-With replay off, the dispatch path is unchanged apart from a sequence number on journalled feeds, and it allocates
-nothing (measured with `DispatchPathJmh`).
+With replay off, the default feed's dispatch allocates nothing and costs about 0.4 ns more per item than without this
+feature (measured with `DispatchPathJmh -prof gc`); recording itself allocates.

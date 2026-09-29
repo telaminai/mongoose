@@ -17,14 +17,30 @@ public final class RecordingClock implements ClockStrategy {
     private final LongSupplier live;
     private boolean recording;
     private final List<Long> reads = new ArrayList<>();
+    /** Set by a ReplayRecord input: the clock then holds that instant, as the strategy's synthetic clock would. */
+    private boolean pinned;
+    private long pinnedTime;
 
     public RecordingClock(LongSupplier live) {
         this.live = live;
     }
 
+    /**
+     * Hold {@code time} from now on, as a {@code ReplayRecord} input's synthetic clock holds it for a processor that is
+     * not recorded (until the next one); the processor's reads of it are still recorded.
+     */
+    public void pin(long time) {
+        pinned = true;
+        pinnedTime = time;
+    }
+
+    private long now() {
+        return pinned ? pinnedTime : live.getAsLong();
+    }
+
     @Override
     public long getWallClockTime() {
-        long now = live.getAsLong();
+        long now = now();
         if (recording) reads.add(now);
         return now;
     }
@@ -37,6 +53,6 @@ public final class RecordingClock implements ClockStrategy {
     /** The readings the processor took since {@link #arm}; if it took none (a call outside an event cycle), now. */
     public List<Long> captured() {
         recording = false;
-        return reads.isEmpty() ? List.of(live.getAsLong()) : List.copyOf(reads);
+        return reads.isEmpty() ? List.of(now()) : List.copyOf(reads);
     }
 }

@@ -68,6 +68,35 @@ class AuditSinkOnAgentThreadTest {
         }
     }
 
+    /**
+     * A start whose install never gets to run in time (the agent thread is busy) is refused after 5 s, and then must
+     * change nothing: before, the queued install still ran later, so start threw yet the capture listener was installed,
+     * and the half-opened sink stayed recording.
+     */
+    @Test
+    void aStartThatTimesOut_changesNothing_evenWhenItsInstallRunsLater(@TempDir Path dir) throws Exception {
+        List<String> installedOn = new CopyOnWriteArrayList<>();
+        DataFlow flow = (DataFlow) Proxy.newProxyInstance(DataFlow.class.getClassLoader(), new Class<?>[]{DataFlow.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "setAuditLogProcessor" -> {
+                        installedOn.add(Thread.currentThread().getName());
+                        yield null;
+                    }
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    case "equals" -> proxy == args[0];
+                    case "toString" -> "DEMO-flow";
+                    default -> null;
+                });
+        List<Runnable> held = new CopyOnWriteArrayList<>();         // the agent thread, busy: work waits here
+        ChronicleAuditCaptureService svc = new ChronicleAuditCaptureService(capture(dir), NoOpCountersService.INSTANCE);
+        svc.attach(flow, "p", r -> { }, held::add);
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class, () -> svc.start("p"),
+                "not applied in time: refused by name");
+        held.forEach(Runnable::run);                                 // the agent thread gets to it, too late
+        assertEquals(List.of(), installedOn, "the install the caller gave up on never runs");
+        org.junit.jupiter.api.Assertions.assertFalse(svc.isRecording("p"), "and the refused start left nothing recording");
+    }
+
     /** A processor that notes the thread each audit sink is installed on. */
     public static class ThreadNotingProcessor extends DefaultEventProcessor {
         final List<String> installedOn = new CopyOnWriteArrayList<>();

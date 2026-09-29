@@ -139,8 +139,14 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             // Idempotent — don't roll the sink.
             return;
         }
-        // mongoose#46: installed on the processor's agent thread; awaited here, outside the sink's lock
-        awaitOnAgent(sink.startRecording(config, counters), processorName, "start");
+        // mongoose#46: installed on the processor's agent thread; awaited here, outside the sink's lock. A start that
+        // times out is cancelled (the install never runs later) and the half-opened sink is closed
+        try {
+            awaitOnAgent(sink.startRecording(config, counters), processorName, "start");
+        } catch (IllegalStateException notApplied) {
+            sink.closeRecording();
+            throw notApplied;
+        }
         liveSinkMutation.run();
         log.info("audit-capture STARTED for processor '" + processorName + "' at " + sink.path());
     }
@@ -188,14 +194,13 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
         }
     }
 
-    /** Per-processor state holder — keeps the wiring local. */
     /** Wait for a sink change the processor's agent thread applies; refused by name rather than hanging. */
-    private static void awaitOnAgent(java.util.concurrent.CompletableFuture<Void> applied, String processorName, String what) {
+    private static void awaitOnAgent(com.telamin.mongoose.dutycycle.AgentHandoff applied, String processorName, String what) {
         try {
-            applied.get(5, java.util.concurrent.TimeUnit.SECONDS);
-        } catch (java.util.concurrent.TimeoutException e) {
-            throw new IllegalStateException("audit " + what + " for '" + processorName
-                    + "' was not applied on its agent thread within 5s");
+            if (!applied.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                throw new IllegalStateException("audit " + what + " for '" + processorName
+                        + "' was not applied on its agent thread within 5s; it was cancelled, and nothing changed");
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("interrupted waiting for audit " + what + " on '" + processorName + "'", e);
@@ -204,6 +209,7 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
         }
     }
 
+    /** Per-processor state holder — keeps the wiring local. */
     private static final class ProcessorSink {
         private final String processorName;
         private DataFlow dataFlow;
@@ -270,21 +276,14 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
         }
 
         /** Change the processor's audit sink on its agent thread; the future completes once it has. */
-        private java.util.concurrent.CompletableFuture<Void> installOnAgent(LogRecordListener listener) {
-            java.util.concurrent.CompletableFuture<Void> applied = new java.util.concurrent.CompletableFuture<>();
+        private com.telamin.mongoose.dutycycle.AgentHandoff installOnAgent(LogRecordListener listener) {
             DataFlow flow = dataFlow;
-            onAgentThread.execute(() -> {
-                try {
-                    if (flow != null) flow.setAuditLogProcessor(listener);
-                    applied.complete(null);
-                } catch (Throwable t) {
-                    applied.completeExceptionally(t);
-                }
+            return com.telamin.mongoose.dutycycle.AgentHandoff.submit(onAgentThread, () -> {
+                if (flow != null) flow.setAuditLogProcessor(listener);
             });
-            return applied;
         }
 
-        synchronized java.util.concurrent.CompletableFuture<Void> startRecording(AuditCaptureConfig cfg, MongooseCountersService counters) {
+        synchronized com.telamin.mongoose.dutycycle.AgentHandoff startRecording(AuditCaptureConfig cfg, MongooseCountersService counters) {
             Path procDir = Path.of(cfg.getDirectory(), processorName);
             try {
                 Files.createDirectories(procDir);
@@ -327,7 +326,7 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
          * made stopping capture discard audit entirely, MA-5b), on the agent thread (mongoose#46). The queue is closed
          * by {@link #closeRecording} only after this has been applied, so no record in flight meets a closed queue.
          */
-        synchronized java.util.concurrent.CompletableFuture<Void> restoreListener() {
+        synchronized com.telamin.mongoose.dutycycle.AgentHandoff restoreListener() {
             return installOnAgent(previousListener != null ? previousListener : NoOpLogRecordListener.INSTANCE);
         }
 

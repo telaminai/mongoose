@@ -9,15 +9,27 @@ import java.util.IdentityHashMap;
 import java.util.Map;
 
 /**
- * REPLAY mode's scheduler (R4): numbers schedule calls per processor exactly as {@link RecordingScheduler} did, and
- * never fires by itself: nothing is armed on the timer wheel, so the wheel it inherits stays empty, and the replay fires
- * {@code seq} when it reaches {@code TimerFired{seq}}. Its time is the replay's.
+ * REPLAY mode's scheduler (R4). For a REPLAYED processor it numbers schedule calls exactly as {@link RecordingScheduler}
+ * did and never fires by itself (the replay fires {@code seq} when it reaches {@code TimerFired{seq}}), and its time is
+ * the replay's. Everything else in the group (a processor that is not replayed, or a call outside any processor) gets
+ * the live scheduler it inherits: armed on the wheel, fired by the group's duty cycle, on live time.
  */
 public class ReplayScheduler extends DeadWheelScheduler {
 
     private final Map<DataFlow, Map<Long, Runnable>> actions = new IdentityHashMap<>();
     private final Map<DataFlow, long[]> seqs = new IdentityHashMap<>();
+    private final java.util.Set<DataFlow> replayed = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private volatile long now;
+
+    /** {@code flow} is replayed: its timers are the replay's, and its time. */
+    public void replay(DataFlow flow) {
+        replayed.add(flow);
+    }
+
+    private boolean replaying() {
+        DataFlow flow = ProcessorContext.currentProcessor();
+        return flow != null && replayed.contains(flow);
+    }
 
     /** The replay's time: the instant of the entry being replayed. */
     public void setNow(long instant) {
@@ -26,17 +38,16 @@ public class ReplayScheduler extends DeadWheelScheduler {
 
     @Override
     public long scheduleAtTime(long expireTime, Runnable action) {
-        return register(action);
+        return replaying() ? register(action) : super.scheduleAtTime(expireTime, action);
     }
 
     @Override
     public long scheduleAfterDelay(long waitTime, Runnable action) {
-        return register(action);
+        return replaying() ? register(action) : super.scheduleAfterDelay(waitTime, action);
     }
 
     private long register(Runnable action) {
         DataFlow flow = ProcessorContext.currentProcessor();
-        if (flow == null) return -1;                    // not a processor's timer: it never fires in a replay
         long seq = ++seqs.computeIfAbsent(flow, f -> new long[1])[0];
         actions.computeIfAbsent(flow, f -> new HashMap<>()).put(seq, action);
         return seq;
@@ -49,26 +60,29 @@ public class ReplayScheduler extends DeadWheelScheduler {
         if (action == null) {
             throw new IllegalStateException("the replay fired timer " + seq + ", which the replayed processor never scheduled");
         }
+        DataFlow outer = ProcessorContext.currentProcessor();
         ProcessorContext.setCurrentProcessor(flow);
         try {
             action.run();
         } finally {
-            ProcessorContext.removeCurrentProcessor();
+            if (outer == null) ProcessorContext.removeCurrentProcessor();
+            else ProcessorContext.setCurrentProcessor(outer);
         }
     }
 
+    /** The replay's time for a replayed processor; live time for everything else, the wheel's own poll included. */
     @Override
     public long milliTime() {
-        return now;
+        return replaying() ? now : super.milliTime();
     }
 
     @Override
     public long microTime() {
-        return now * 1000;
+        return replaying() ? now * 1000 : super.microTime();
     }
 
     @Override
     public long nanoTime() {
-        return now * 1_000_000;
+        return replaying() ? now * 1_000_000 : super.nanoTime();
     }
 }

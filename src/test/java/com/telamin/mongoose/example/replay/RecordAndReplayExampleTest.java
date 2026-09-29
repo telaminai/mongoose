@@ -90,11 +90,14 @@ class RecordAndReplayExampleTest {
             long deadline = System.nanoTime() + 5_000_000_000L;
             while (System.nanoTime() < deadline) {
                 GroupReplayer replayer = replay.replayers().get(AGENT);
-                if (replayer != null && replayer.complete() && replaySink.getMessages().size() >= recorded.size()) break;
+                if (replayer != null && replayer.complete() && replayer.outputs(PROCESSOR).size() >= recorded.size()) break;
                 Thread.sleep(5);
             }
             Thread.sleep(50);
-            assertEquals(recorded, lines(replaySink), "the replay does what the run did, at the same instants");
+            // a replay delivers nothing: what the processor sent is captured by the replayer, for comparison
+            List<String> replayed = replay.replayers().get(AGENT).outputs(PROCESSOR).stream().map(String::valueOf).toList();
+            assertEquals(recorded, replayed, "the replay does what the run did, at the same instants");
+            assertEquals(List.of(), lines(replaySink), "and sends nothing to the real sink");
         } finally {
             replay.stop();
         }

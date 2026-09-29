@@ -1,5 +1,7 @@
 package com.telamin.mongoose.replay;
 
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
+
 import java.util.List;
 
 /**
@@ -12,6 +14,7 @@ import java.util.List;
  * node's own live read. A replay plays them back in the same order, so all of them are reproduced (found on CI: a
  * graph-raised event's second read fell a millisecond after the first, and a replay pinned to one instant differed).
  */
+@Experimental
 public sealed interface ReplayEntry {
 
     /** The instant the processor read first for this input: its {@code processTime}. */
@@ -30,8 +33,15 @@ public sealed interface ReplayEntry {
     /** An input from a journalled feed: the event is the journal's {@code (source, seq)}. */
     record Indexed(String source, long seq, List<Long> reads) implements Timed { }
 
-    /** An input from a feed with no journal, recorded as it was delivered. */
-    record Inline(String source, Object event, List<Long> reads) implements Timed { }
+    /**
+     * An input from a feed with no journal, recorded as it was delivered. For a named-event feed {@code event} is the
+     * item and {@code seq} its sequence number (the wrapper is rebuilt on replay, as for an index); otherwise -1.
+     */
+    record Inline(String source, Object event, long seq, List<Long> reads) implements Timed {
+        public Inline(String source, Object event, List<Long> reads) {
+            this(source, event, -1, reads);
+        }
+    }
 
     /** A timer the processor scheduled fired: its schedule number, in the processor's own count. */
     record TimerFired(long seq, List<Long> reads) implements Timed { }

@@ -6,6 +6,11 @@
 package com.telamin.mongoose;
 
 
+import com.telamin.mongoose.replay.GroupRecorder;
+import com.telamin.mongoose.replay.GroupReplayer;
+import com.telamin.mongoose.replay.RecordingScheduler;
+import com.telamin.mongoose.replay.ReplayConfig;
+import com.telamin.mongoose.replay.ReplayScheduler;
 import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered;
 import com.telamin.fluxtion.runtime.audit.LogRecordListener;
@@ -160,6 +165,7 @@ public class MongooseServer implements MongooseServerController {
      * @param mongooseServerConfig application configuration used for thread, service, and event-flow setup
      */
     public MongooseServer(MongooseServerConfig mongooseServerConfig) {
+        refuseRecordingOverARecording(mongooseServerConfig == null ? null : mongooseServerConfig.getReplay());
         flowManager.setReplayConfig(mongooseServerConfig == null ? null : mongooseServerConfig.getReplay());
         this.mongooseServerConfig = mongooseServerConfig;
 
@@ -710,6 +716,29 @@ public class MongooseServer implements MongooseServerController {
     }
 
     /**
+     * RECORD mode needs an empty journal and store: a run numbers its items from 1 again, so a second recording into
+     * the same files would overwrite the first one's items and append after its entries, and replay one as the other.
+     */
+    private static void refuseRecordingOverARecording(ReplayConfig replay) {
+        if (replay == null || replay.mode() != ReplayConfig.Mode.RECORD) return;
+        if (replay.journal() != null && replay.journal().holdsRecording()) {
+            throw new IllegalStateException("replay RECORD: the journal already holds a recording; record into an empty one");
+        }
+        if (replay.store().holdsRecording()) {
+            throw new IllegalStateException("replay RECORD: the store already holds a recording; record into an empty one");
+        }
+    }
+
+    /** REPLAY mode: each group's replay driver, by group name (for status and tests). */
+    public java.util.Map<String, GroupReplayer> replayers() {
+        java.util.Map<String, GroupReplayer> out = new java.util.HashMap<>();
+        composingEventProcessorAgents.forEach((name, runner) -> {
+            if (runner.group().replayer() != null) out.put(name, runner.group().replayer());
+        });
+        return out;
+    }
+
+    /**
      * Add a named event processor to a processor group, creating the group on demand.
      * <p>
      * Each processor group executes on its own {@code AgentRunner} with a configurable
@@ -728,15 +757,6 @@ public class MongooseServer implements MongooseServerController {
      * @param feedConsumer  supplier creating the {@link DataFlow} instance
      * @throws IllegalArgumentException if a processor with {@code processorName} already exists in the group
      */
-    /** REPLAY mode: each group's replay driver, by group name (for status and tests). */
-    public java.util.Map<String, com.telamin.mongoose.replay.GroupReplayer> replayers() {
-        java.util.Map<String, com.telamin.mongoose.replay.GroupReplayer> out = new java.util.HashMap<>();
-        composingEventProcessorAgents.forEach((name, runner) -> {
-            if (runner.group().replayer() != null) out.put(name, runner.group().replayer());
-        });
-        return out;
-    }
-
     public void addEventProcessor(
             String processorName,
             String groupName,
@@ -748,18 +768,18 @@ public class MongooseServer implements MongooseServerController {
                 ket -> {
                     //build a subscriber group
                     // replay (spec-replay-recording R4): the group's scheduler follows the replay mode
-                    com.telamin.mongoose.replay.ReplayConfig replayCfg = flowManager.getReplayConfig();
+                    ReplayConfig replayCfg = flowManager.getReplayConfig();
                     ComposingEventProcessorAgent group;
                     switch (replayCfg.mode()) {
                         case RECORD -> {
-                            var recorder = new com.telamin.mongoose.replay.GroupRecorder(replayCfg, replayCfg.clock());
+                            var recorder = new GroupRecorder(replayCfg, replayCfg.clock());
                             group = new ComposingEventProcessorAgent(groupName, flowManager, this,
-                                    new com.telamin.mongoose.replay.RecordingScheduler(recorder), registeredServices, recorder, null);
+                                    new RecordingScheduler(recorder), registeredServices, recorder, null);
                         }
                         case REPLAY -> {
-                            var scheduler = new com.telamin.mongoose.replay.ReplayScheduler();
+                            var scheduler = new ReplayScheduler();
                             group = new ComposingEventProcessorAgent(groupName, flowManager, this, scheduler, registeredServices,
-                                    null, routing -> new com.telamin.mongoose.replay.GroupReplayer(replayCfg, routing, scheduler));
+                                    null, routing -> new GroupReplayer(replayCfg, routing, scheduler));
                         }
                         default -> group = new ComposingEventProcessorAgent(groupName, flowManager, this, new DeadWheelScheduler(), registeredServices);
                     }

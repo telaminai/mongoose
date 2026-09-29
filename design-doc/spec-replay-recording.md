@@ -1,6 +1,8 @@
 # Spec: record and replay a processor's inputs in Mongoose
 
-**Status**: r7, 2026-09-29. Implemented and tested on `spike/replay-at-dispatch` (§3a); not reviewed, not for merge as is. Background, and the evidence each
+**Status**: r7, 2026-09-29. Implemented and tested on `feat/replay-at-dispatch` (PR #47) and, for admin commands in the
+event cycle (§3d), `feat/admin-commands-in-cycle` (PR #48); each reviewed. #47's findings are dispositioned in §3f, each
+fix with a regression that failed first. Background, and the evidence each
 decision rests on: [`replay-at-dispatch-spike.md`](replay-at-dispatch-spike.md).
 
 ## 1. Goal, and the boundary of the claim
@@ -109,20 +111,21 @@ rounds.
 | NOWRAP (default feed) | 23.6-24.1 ns | 24.8-24.9 ns | **0.0002 B**: zero GC, 0 collections |
 | NAMED_EVENT | 40.8-41.8 ns | 42.0-42.1 ns | 48 B: the existing `NamedFeedEventImpl` per publish, not new |
 
-Attribution (NOWRAP, a clean round):
+**Re-measured after the #47 review fixes** (2026-09-29, the same benchmark file on `origin/main` and on the PR, alternating,
+`-f 1 -wi 3 -i 5 -prof gc`, short runs):
 
-| build | ns/op | added |
-|---|---|---|
-| `main` | 24.14 | — |
-| only the publisher change (sequence numbers carried, the journal hook, the cached-seq fix) | 24.26 | **+0.12** |
-| only the queue agent change (the recording hook) | 24.67 | +0.5 |
-| both | 24.85 | +0.7 |
+| path | `main` | PR #47 | allocated / op (both) |
+|---|---|---|---|
+| NOWRAP (default feed) | 24.54, 24.49 ns | 24.90, 24.95 ns | **0 B** |
+| NAMED_EVENT | 41.44, 41.51 ns | 42.07, 41.28 ns | 48 B, the existing wrapper |
 
-- **Sequence numbers cost about 0.1 ns and allocate nothing.**
-- **The recording hook costs about 0.5 ns on the replay-off path**, even with every use behind one
-  `recorder != null` check: the loop's shape changed. If that matters, a separate recording agent class, made only in
-  RECORD mode, would leave the off path as it was, at the cost of a second copy of the dispatch loop (an owner
-  decision).
+- **Replay off costs about 0.4 ns per item on the default feed, and allocates nothing.** On the named-event feed the
+  difference is within the runs' noise.
+- An earlier split of the cost between the publisher (+0.12 ns) and the agent (+0.5 ns) is withdrawn: it came from
+  partial builds that are not committed, and the review could not reproduce it; the difference is below a short run's
+  error. The benchmark is reproducible: copy `DispatchPathJmh.java` onto `main`, `mvn test-compile`, run
+  `org.openjdk.jmh.Main DispatchPathJmh -prof gc` on the test classpath.
+- Recording itself allocates (entries, reads); only replay OFF is zero-allocation.
 - **Zero GC holds** for the no-replay path.
 
 ## 3c. The sample durable journal and store (CSV)
@@ -277,12 +280,12 @@ commands) is recorded in its order at the instants it read, and replayed.
 - Direct calls from code holding a processor (`registeredProcessors()`), outside Mongoose's paths.
 - After a failure the processor has stopped (the `processing` wedge, §3a finding 2); the stream ends there.
 
-**Needed even for one processor, before a replay runs anywhere real:**
-- **L1: disconnect live inputs.** In REPLAY mode, a replayed processor's feeds are still subscribed. The tests publish
-  nothing, but a deployment's sources (Kafka, files) would. The group must not deliver live queue items to a processor
-  it is replaying.
-- **L2: mute outputs.** A replayed processor's sinks and publications still go out. In a real deployment that is
-  a second copy of real side effects (orders, messages). They must be captured for comparison, never delivered.
+**Needed even for one processor, before a replay runs anywhere real (both implemented, §3f):**
+- **L1: disconnect live inputs.** A replayed processor's queues mute live dispatch to it (`muteLive`); only the replay
+  reaches it (`processEventFor`). Other processors in the group keep their live inputs.
+- **L2: mute outputs.** A replayed processor's `MessageSink` services are replaced by a capture: what it sends is kept
+  for comparison (`GroupReplayer.outputs`) and never delivered, so a replay repeats no side effect. Output a processor
+  sends other than through a registered sink service is outside this (a hidden channel, like any other).
 
 **Several processors in one agent group:**
 - Recording is already right. The group runs them on one thread; each has its own stream; one queue item fanned out
@@ -290,10 +293,9 @@ commands) is recorded in its order at the instants it read, and replayed.
 - They interact only through queues (a publication that reaches another's feed is recorded as that one's input),
   **or through a shared mutable service or static state**, which is a hidden channel: a read of it is an input no
   replay supplies.
-- Replaying one of them: supported, given L1 and L2.
-- Replaying several together, each from its own stream: needs **L2**, because one processor's replayed output
-  would otherwise reach another, whose stream already holds it, and it would be handled twice. With L2, their
-  streams are independent: no order across processors is needed.
+- Replaying one of them: supported (L1, L2). The rest of the group runs live beside it, on the live scheduler.
+- Replaying several together, each from its own stream: supported. With L2 one processor's replayed output does not
+  reach another, whose stream already holds it, so their streams are independent: no order across processors is needed.
 
 **Several agent groups:**
 - Each group records its own processors on its own thread; nothing orders two groups, and nothing needs to. A
@@ -312,6 +314,30 @@ commands) is recorded in its order at the instants it read, and replayed.
 - D10: admin commands in the event cycle through option A (Mongoose only), with B and C in Fluxtion as the safety net
   for lambda commands.
 
+## 3f. The review of #47 (2026-09-29): findings and dispositions
+
+Each fix is behind a regression committed before it (`ReplayReviewRegressionTest`, `AgentHandoffTest`,
+`AuditSinkOnAgentThreadTest`), run on the reviewed code first; the commit messages record each pre-fix result.
+
+| # | finding | disposition |
+|---|---|---|
+| 1 | a `ReplayRecord` input recorded wrapped; the recording clock dropped; a silent divergence | fixed: recorded as the event given; a recorded processor's clock is pinned to the record's instant, still recording |
+| 2 | a replay stalls forever on a missing route or admin command | fixed: stops after `deliveryTimeout` (5 s), saying why |
+| 3 | a store failure recorded as a dispatch failure and retried | fixed, and worse than reviewed: it exited the JVM. Recording is after the dispatch, never throws; a named-event input is recorded as item + number |
+| 4 | a second recording into the same CSV files corrupts both | fixed: RECORD refuses a journal or store that holds a recording |
+| 5 | a torn last CSV line makes the file unreadable | fixed: dropped with a warning; line breaks in names refused |
+| 6 | REPLAY delivers live inputs (L1); outputs not muted (L2) | fixed: both, above |
+| 7 | the replay scheduler replaces the whole group's | fixed: replay time and timers for replayed processors only |
+| 8 | a clock-read count mismatch is not reported | fixed: stops as a clock divergence |
+| 9 | a timer that throws is recorded as fired | fixed: recorded as `Failed`. Through a server it still ends the process, because the default error handler exits on any agent error, with or without replay: an existing behaviour, not changed here |
+| 10 | a pooled item's catch-up snapshot replayed as the original (INFERRED) | not a defect: a published item's snapshot is never dispatched again; a test holds that |
+| 11 | `audit.start` timeout still installs later; a lost handoff (INFERRED) | fixed and shown: `AgentHandoff` makes handed-over work run at most once, never after its caller gave up |
+
+Also: the javadocs displaced by inserted members are back on their owners; `ReplayRouting` returns a one-method
+`ReplayRoute` rather than the internal agent; the replay API is `@Experimental`; the weak tests are strengthened
+(`awaitReplay` fails on timeout, witnesses check a full replay first, R1 checks the live clock, a typed-call witness).
+Remaining limit, stated not fixed: clock reads outside an input's cycle (`start()`, `@Initialise`) are not recorded.
+
 ## 4. Decisions
 
 | id | decision | by |
@@ -325,8 +351,6 @@ commands) is recorded in its order at the instants it read, and replayed.
 
 ## 5. Open
 
-- **Outputs during a replay.** A replayed processor's publications must not reach another processor, whose own
-  recording already holds them. Replaying one processor at a time avoids it; a group replay needs outputs muted.
 - **Durable journal and store.** The spike's are in memory. A Chronicle journal and store, retention, and the
   evidence bundle's reference into a remote journal (pinned by digest) are the next step.
 - **Direct exported-service calls** from code holding a processor: recordable only at Fluxtion's `beforeServiceCall`,

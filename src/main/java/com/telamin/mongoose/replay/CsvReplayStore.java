@@ -36,7 +36,7 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
         this.codec = codec;
         try {
             if (Files.exists(file)) {
-                List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
+                List<String> lines = Csv.lines(file);
                 for (int i = 0; i < lines.size(); i++) {
                     if (i == 0) {
                         if (!lines.get(0).equals(HEADER)) throw new IllegalArgumentException(file + " is not a replay store: " + lines.get(0));
@@ -62,14 +62,20 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
 
     @Override
     public synchronized void append(String processor, ReplayEntry entry) {
-        add(processor, entry);
+        String line = Csv.field(processor) + "," + format(entry);   // encoding first: an item that cannot be encoded adds nothing
         try {
-            out.write(Csv.field(processor) + "," + format(entry));
+            out.write(line);
             out.newLine();
             out.flush();
         } catch (IOException e) {
             throw new UncheckedIOException("cannot append to replay store " + file, e);
         }
+        add(processor, entry);                          // after the write, so memory never holds what the file does not
+    }
+
+    @Override
+    public boolean holdsRecording() {
+        return entries.values().stream().anyMatch(l -> !l.isEmpty());
     }
 
     @Override
@@ -84,7 +90,8 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
     private String format(ReplayEntry e) {
         return switch (e) {
             case ReplayEntry.Indexed i -> "INDEXED," + Csv.field(i.source()) + "," + i.seq() + ",," + reads(i.reads());
-            case ReplayEntry.Inline in -> "INLINE," + Csv.field(in.source()) + ",," + encode(in.event()) + "," + reads(in.reads());
+            case ReplayEntry.Inline in -> "INLINE," + Csv.field(in.source()) + "," + (in.seq() < 0 ? "" : in.seq()) + ","
+                    + encode(in.event()) + "," + reads(in.reads());
             case ReplayEntry.TimerFired t -> "TIMER,," + t.seq() + ",," + reads(t.reads());
             case ReplayEntry.AdminInvoked a -> "ADMIN," + Csv.field(a.command()) + ",," + encode(new ArrayList<>(a.args())) + "," + reads(a.reads());
             case ReplayEntry.Failed f -> "FAILED," + Csv.field(f.source()) + ",," + encode(f.description()) + "," + f.instant();
@@ -96,7 +103,7 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
         String kind = f.get(1), source = f.get(2), seq = f.get(3), payload = f.get(4), reads = f.get(5);
         return switch (kind) {
             case "INDEXED" -> new ReplayEntry.Indexed(source, Long.parseLong(seq), reads(reads));
-            case "INLINE" -> new ReplayEntry.Inline(source, decode(payload), reads(reads));
+            case "INLINE" -> new ReplayEntry.Inline(source, decode(payload), seq.isEmpty() ? -1 : Long.parseLong(seq), reads(reads));
             case "TIMER" -> new ReplayEntry.TimerFired(Long.parseLong(seq), reads(reads));
             case "ADMIN" -> new ReplayEntry.AdminInvoked(source, List.copyOf((List<String>) decode(payload)), reads(reads));
             case "FAILED" -> new ReplayEntry.Failed(source, (String) decode(payload), Long.parseLong(reads));
