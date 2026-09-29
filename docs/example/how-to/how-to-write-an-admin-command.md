@@ -226,7 +226,8 @@ On a processor built with **fluxtion runtime 1.1.0 or later**, the invoker runs 
 - nothing downstream reacts to the command itself. A command that needs the graph to react raises an event, as
   above, or is signal-routed (below).
 
-A processor generated before fluxtion runtime 1.1.0 has no `runInEventCycle` implementation. There the invoker
+A processor generated before fluxtion runtime 1.1.0 has no `runInEventCycle` implementation, and one whose override
+refuses (a generated processor may disable the path) does not run it either. There the invoker
 brackets the function with the processor's own audit calls. The command still gets its own audit record, but an event
 it raises is dispatched at once, inside the command. Regenerating the processor with a current Fluxtion generator
 gives it the event-cycle path.
@@ -253,10 +254,25 @@ audited, and the state it changes propagates to downstream nodes as any event's 
 request's `getOutput()` or `getErrOutput()`. A command that no handler replied to is answered with an error
 (`... no handler replied`). Use this form when the command should drive the graph, not just act on one node.
 
+### When a command cannot run
+
+A caller is always answered, and a command runs at most once:
+
+- If the command cannot run at all - for example its processor was left mid-cycle by a node that threw, and refuses
+  the cycle - the caller is answered with an error (`admin command '...' did not run: ...`) and released, and the
+  command is not run. The failure is also logged and reported (`ErrorReporting`, WARNING), so an operator sees a
+  processor that cannot run commands, not only the person who typed one.
+- If the command ran and something failed after it (an event it raised threw while its cycle drained), the caller
+  has already had the command's own reply. The failure is reported as any event's is, and the agent's retry does not
+  run the command again.
+
 Tests that show both:
 
 - [RunInEventCycleAdminTest.java]({{source_root}}/test/java/com/telamin/mongoose/replay/RunInEventCycleAdminTest.java):
-  a function's raised event runs after it, as its own cycle, and a command that throws runs once
+  a function's raised event runs after it, as its own cycle
+- [AdminCommandFailureTest.java]({{source_root}}/test/java/com/telamin/mongoose/replay/AdminCommandFailureTest.java):
+  a processor that cannot run the cycle answers the caller and does not run the command; a raised event that throws
+  does not run the command again
 - [SignalAdminCommandTest.java]({{source_root}}/test/java/com/telamin/mongoose/replay/SignalAdminCommandTest.java):
   a signal-routed command, its reply, and the no-reply error
 - [GeneratedAdminAuditTest.java]({{source_root}}/test/java/com/telamin/mongoose/replay/generated/GeneratedAdminAuditTest.java)

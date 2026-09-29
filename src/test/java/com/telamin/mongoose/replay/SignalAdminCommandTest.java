@@ -104,13 +104,17 @@ class SignalAdminCommandTest {
 
     record Server(MongooseServer server, InMemoryEventSource<Object> events, AdminCommandProcessor admin, AlarmNode node,
                   CountingProcessor processor, InMemoryMessageSink sink) implements AutoCloseable {
+        /** A replay's result is what the replayed processor sent, captured (L2); a live run's is the real sink's. */
         List<String> lines() {
-            return sink.getMessages().stream().map(String::valueOf).toList();
+            GroupReplayer replayer = server.replayers().get("processor-agent");
+            return replayer != null
+                    ? replayer.outputs("alarms").stream().map(String::valueOf).toList()
+                    : sink.getMessages().stream().map(String::valueOf).toList();
         }
 
         void awaitLines(int n) throws InterruptedException {
             long deadline = System.nanoTime() + 5_000_000_000L;
-            while (sink.getMessages().size() < n && System.nanoTime() < deadline) Thread.sleep(5);
+            while (lines().size() < n && System.nanoTime() < deadline) Thread.sleep(5);
             Thread.sleep(30);
         }
 

@@ -10,13 +10,19 @@ import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
 import com.telamin.mongoose.dispatch.AbstractEventToInvocationStrategy;
 
+import com.telamin.mongoose.service.error.ErrorEvent;
+import com.telamin.mongoose.service.error.ErrorReporting;
+
 import java.util.List;
+import java.util.logging.Logger;
 
 /**
  * Invocation strategy that executes AdminCommand events by calling executeCommand on receipt.
  */
 @Experimental
 public class AdminCommandInvoker extends AbstractEventToInvocationStrategy {
+
+    private static final Logger log = Logger.getLogger(AdminCommandInvoker.class.getName());
 
     /**
      * Create a new AdminCommandInvoker.
@@ -33,10 +39,25 @@ public class AdminCommandInvoker extends AbstractEventToInvocationStrategy {
             // raised threw while draining): the failure is already reported; the command's effects happen once
             return;
         }
-        if (adminCommand.isSignalRouted()) {
-            adminCommand.executeAsSignal(eventProcessor);           // option A: in the processor's event cycle
-        } else {
-            executeInAuditRecord(adminCommand, eventProcessor);     // a lambda: bracketed by the processor's audit record
+        try {
+            if (adminCommand.isSignalRouted()) {
+                adminCommand.executeAsSignal(eventProcessor);       // option A: in the processor's event cycle
+            } else {
+                executeInAuditRecord(adminCommand, eventProcessor); // a lambda: its own cycle, or the audit bracket
+            }
+        } catch (RuntimeException failed) {
+            if (adminCommand.executed()) {
+                // the command ran and answered; what failed came after it (e.g. an event it raised threw while its
+                // cycle drained). The agent reports and retries the dispatch, and the retry is a no-op (above)
+                throw failed;
+            }
+            // it failed BEFORE the command ran, wherever that was (a processor left mid-cycle refusing the cycle, the
+            // arguments, the audit bracket): the caller is answered and released - never left waiting - and the
+            // operator is told, since a processor that cannot run commands is what they must see
+            String why = cannotRun(adminCommand, failed);
+            log.warning(why);
+            ErrorReporting.report("AdminCommandInvoker", why, failed, ErrorEvent.Severity.WARNING);
+            adminCommand.refuse(why);                               // last: the caller is released once it is recorded
         }
     }
 
@@ -58,11 +79,11 @@ public class AdminCommandInvoker extends AbstractEventToInvocationStrategy {
         Object event = new com.telamin.mongoose.service.admin.AdminCommandEvent(
                 args.isEmpty() ? "" : args.get(0), args.size() > 1 ? List.copyOf(args.subList(1, args.size())) : List.of());
         // the proper form: the processor runs the command as its own event cycle (DataFlow.runInEventCycle, fluxtion
-        // runtime 1.1.0), so an event the command raises is queued and dispatched after it. A processor generated
-        // before that has no implementation, and the interface default refuses BEFORE running the action; only
-        // then is the command bracketed instead. Any other refusal answers the caller; a command runs at most once
+        // runtime 1.1.0), so an event the command raises is queued and dispatched after it. A processor that only
+        // inherits the refusing default (generated before 1.1.0), or whose override refuses, is bracketed instead.
+        // Anything that fails before the command runs answers the caller, and a command runs at most once
         // (dispatchEvent). AdminCommandFailureTest holds both.
-        if (!NO_CYCLE.containsKey(processor.getClass())) {
+        if (implementsTheCycle(processor.getClass())) {
             try {
                 processor.runInEventCycle(event, adminCommand::executeCommand);
                 return;
@@ -70,21 +91,8 @@ public class AdminCommandInvoker extends AbstractEventToInvocationStrategy {
                 if (adminCommand.executed()) {
                     throw refused;                                  // the cycle failed after the command ran
                 }
-                if (!refusedByTheDefault(refused)) {
-                    adminCommand.refuse(cannotRun(adminCommand, refused));
-                    return;
-                }
-                NO_CYCLE.put(processor.getClass(), Boolean.TRUE);   // a processor that predates it: bracket from now on
-            } catch (RuntimeException failed) {
-                if (adminCommand.executed()) {
-                    // the command ran and answered; closing its cycle failed (an event it raised threw). The agent
-                    // reports and retries the dispatch, and the retry is a no-op (dispatchEvent)
-                    throw failed;
-                }
-                // refused before the command ran, e.g. IllegalStateException from a processor left mid-cycle by a
-                // node that threw: answer the caller rather than leave it waiting; there is nothing to retry
-                adminCommand.refuse(cannotRun(adminCommand, failed));
-                return;
+                // an override that refuses (a generated processor may disable the path): this command is bracketed.
+                // Anything else thrown before the command ran reaches dispatchEvent, which answers the caller
             }
         }
         // for a processor without runInEventCycle: the processor's own audit calls, found by name (spec 3d: unsafe for
@@ -102,11 +110,18 @@ public class AdminCommandInvoker extends AbstractEventToInvocationStrategy {
         }
     }
 
-    /** The interface default's own refusal (thrown by DataFlow.runInEventCycle itself), as opposed to one from inside. */
-    private static boolean refusedByTheDefault(UnsupportedOperationException refused) {
-        StackTraceElement[] trace = refused.getStackTrace();
-        return trace.length > 0 && DataFlow.class.getName().equals(trace[0].getClassName())
-                && "runInEventCycle".equals(trace[0].getMethodName());
+    /**
+     * Whether {@code type} implements runInEventCycle, rather than inheriting the interface default that refuses (a
+     * processor generated before fluxtion runtime 1.1.0): decided once per class, from the method itself.
+     */
+    private static boolean implementsTheCycle(Class<?> type) {
+        return IMPLEMENTS_THE_CYCLE.computeIfAbsent(type, c -> {
+            try {
+                return !c.getMethod("runInEventCycle", Object.class, Runnable.class).isDefault();
+            } catch (NoSuchMethodException predatesTheRuntime) {
+                return false;
+            }
+        });
     }
 
     private static String cannotRun(AdminCommand adminCommand, RuntimeException why) {
@@ -115,8 +130,8 @@ public class AdminCommandInvoker extends AbstractEventToInvocationStrategy {
                 + " in an event cycle: " + why;
     }
 
-    /** Processor classes whose runInEventCycle refused (they predate it), so the refusal is paid once per class. */
-    private static final java.util.Map<Class<?>, Boolean> NO_CYCLE = new java.util.concurrent.ConcurrentHashMap<>();
+    /** Per processor class: whether it implements runInEventCycle (see {@link #implementsTheCycle}). */
+    private static final java.util.Map<Class<?>, Boolean> IMPLEMENTS_THE_CYCLE = new java.util.concurrent.ConcurrentHashMap<>();
 
     @SuppressWarnings("unchecked")
     private static <A> A auditor(DataFlow processor, String name) {

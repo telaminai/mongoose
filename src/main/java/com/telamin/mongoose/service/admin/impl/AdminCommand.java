@@ -111,6 +111,7 @@ public class AdminCommand {
         } else {
             try {
                 if (semaphore.tryAcquire(1, TimeUnit.SECONDS)) {
+                    executed = false;                   // each publish is a new execution: its retries share the flag
                     args = value;
                     targetQueue.publish(this);
                     semaphore.acquire();
@@ -169,12 +170,8 @@ public class AdminCommand {
     }
 
     /**
-     * Execute this command using current args and output consumers, handling and reporting exceptions. Marks the
-     * command {@link #executed()} first, so a retry of the dispatch that ran it does not run it again.
-     */
-    /**
      * Answer the caller with {@code message} and release it, without running the command: its processor could not
-     * run it. A caller is never left waiting.
+     * run it. The invoker calls it for anything that fails before the command runs, so a caller is never left waiting.
      */
     public void refuse(String message) {
         try {
@@ -189,6 +186,10 @@ public class AdminCommand {
         return executed;
     }
 
+    /**
+     * Execute this command using current args and output consumers, handling and reporting exceptions. Marks the
+     * command {@link #executed()} first, so a retry of the dispatch that ran it does not run it again.
+     */
     public void executeCommand() {
         executed = true;
         try {
