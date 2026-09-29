@@ -152,8 +152,11 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
             }
 
             // recorded after the dispatch, outside it: a recording failure is not a dispatch failure, so it is never
-            // retried as one (the processor would handle the input again) and never marks the processor as failing
-            if (done && recorder != null) {
+            // retried as one (the processor would handle the input again) and never marks the processor as failing.
+            // Only a dispatch that succeeded FIRST TIME is recorded: one that a retry recovered is already marked
+            // Failed (D4, a retry is a failure: marked, not reproduced), and recording it too would make a replay re-run
+            // it, with the retry's clock reads rather than those of the attempt that happened
+            if (done && recorder != null && attempt == 0) {
                 boolean wrapped = event instanceof ReplayRecord || event instanceof BroadcastEvent;
                 recorder.afterDispatch(sourceName, delivered(event), wrapped ? -1 : seq, targets);
             }

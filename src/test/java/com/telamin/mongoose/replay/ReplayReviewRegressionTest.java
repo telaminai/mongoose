@@ -338,6 +338,56 @@ class ReplayReviewRegressionTest {
         assertTrue(entries.stream().anyMatch(e -> e instanceof ReplayEntry.Failed), "recorded as a failure: " + entries);
     }
 
+    // ---- 12 (the #48 re-review's F4): a dispatch that a retry recovers -----------------------------------------
+
+    /** Fails the first time it sees "flaky", then handles it: a retry recovers the dispatch. */
+    public static class FlakyHandler extends ReplayDemoHandler {
+        private boolean failedOnce;
+
+        public FlakyHandler() {
+            super(ORDERS, CONTROLS);
+        }
+
+        @Override
+        protected boolean handleEvent(Object event) {
+            if ("flaky".equals(event) && !failedOnce) {
+                failedOnce = true;
+                throw new IllegalStateException("DEMO first attempt fails");
+            }
+            return super.handleEvent(event);
+        }
+    }
+
+    /**
+     * D4, a retry is a failure: marked, not reproduced. A dispatch whose first attempt threw and whose retry succeeded
+     * is recorded as Failed alone. Before, the retry also recorded the input, so the recording both marked it failed
+     * and invoked it (a replay would re-run it), with the reads of the retry, not of the attempt that happened.
+     */
+    @Test
+    void f12_aDispatchThatARetryRecovers_isRecordedAsFailedAlone() throws Exception {
+        InMemoryReplayStore store = new InMemoryReplayStore();
+        InMemoryEventSource<Object> controls = new InMemoryEventSource<>();
+        controls.setName(CONTROLS);
+        MongooseServerConfig config = MongooseServerConfig.builder()
+                .addProcessorGroup(EventProcessorGroupConfig.builder().agentName("processor-agent")
+                        .put(PROCESSOR, new EventProcessorConfig(new FlakyHandler())).build())
+                .addEventFeed(EventFeedConfig.builder().instance(controls).name(CONTROLS).broadcast(true)
+                        .agent("controls-agent", new BusySpinIdleStrategy()).build())
+                .replay(ReplayConfig.record(Set.of(PROCESSOR), Map.of(), null, store))
+                .build();
+        MongooseServer server = MongooseServer.bootServer(config, rec -> { });
+        try {
+            Thread.sleep(200);
+            controls.offer("flaky");
+            Thread.sleep(300);                                           // the retry (5 ms backoff) recovers it
+        } finally {
+            server.stop();
+        }
+        List<ReplayEntry> entries = store.entries(PROCESSOR);
+        assertEquals(1, entries.size(), "one entry for the one input: " + entries);
+        assertTrue(entries.get(0) instanceof ReplayEntry.Failed, "and it is the failure: " + entries);
+    }
+
     // ---- 10: a pooled item in a late subscriber's catch-up -----------------------------------------------------
 
     public static final class Pooled implements PoolAware, java.io.Serializable {
