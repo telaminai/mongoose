@@ -1,6 +1,6 @@
 # Spec: record and replay a processor's inputs in Mongoose
 
-**Status**: r4, 2026-09-29. Implemented and tested on `spike/replay-at-dispatch` (§3a); not reviewed, not for merge as is. Background, and the evidence each
+**Status**: r5, 2026-09-29. Implemented and tested on `spike/replay-at-dispatch` (§3a); not reviewed, not for merge as is. Background, and the evidence each
 decision rests on: [`replay-at-dispatch-spike.md`](replay-at-dispatch-spike.md).
 
 ## 1. Goal, and the boundary of the claim
@@ -56,7 +56,7 @@ behaviour is removed.
 All seven items are implemented, in `src/main`, behind `ReplayConfig` (off by default). Full suite: **232 / 0 / 0 / 9**
 (total / failures / errors / skips); the baseline before this work was 223 / 0 / 0 / 9, and the nine skips are the
 same. Controls: `python3 design-doc/replay_controls.py`. It runs each named test unmutated first (all green),
-then **17 of 17 controls caught**, each by a named assertion, with every file restored byte-identically.
+then **20 of 20 controls caught**, each by a named assertion, with every file restored byte-identically.
 
 | id | named test | controls |
 |---|---|---|
@@ -155,6 +155,39 @@ The proposal covers delivery in an event cycle, and what each option gives:
 **Only A puts a command fully in the event cycle, and it needs no Fluxtion change.** It is a new registration API; an
 existing lambda command is not converted. The proposal does not cover replay; under A the recorder still records
 `{name, args}` at the admin queue, and the replay rebuilds the command, which becomes the same `Signal`.
+
+**The requirement (owner, 2026-09-29):** a processor's admin command runs in its event cycle and audit-logs like any
+node. Admin commands are a Mongoose concept; Fluxtion is not given an admin API (improving Fluxtion's general event
+cycle is allowed). Nothing found argues against the requirement:
+- a command already blocks its processor's thread;
+- a queued command never lands mid-cycle;
+- a read-only command's audit record is part of the operator trail;
+- replay gains an ordinary input;
+- server-level commands touch no processor, so they are out of scope.
+
+The one care point is a handler that throws: it is answered as an error, but it leaves the processor with its
+`processing` flag set (finding 2), which is Fluxtion's to fix generally.
+
+**Option A, spiked** (`registerSignalCommand(name)`):
+- `AdminCommandInvoker` delivers a signal-routed command as `processor.onEvent(new Signal<>("admin:" + name, request))`;
+  the request carries the arguments and the reply channel.
+- A node handles it with a filtered signal handler and replies through `request.getOutput()`.
+- A command no handler replies to is answered with an error. A throwing handler is answered with the exception.
+- Registering one outside a processor is refused.
+
+`SignalAdminCommandTest`, 3/0/0/0, through a real server:
+- the command opens exactly one event cycle, and its handler runs inside it and replies;
+- an unanswered command is an error;
+- it is recorded as `AdminInvoked`, and replays as the same signal cycle at the same point and instant.
+
+Controls: `A-a-signal-command-runs-in-an-event-cycle`, `A-an-unanswered-command-is-an-error`,
+`A-each-invocation-keeps-its-routing`.
+
+**Not shown, and why:** the audit record and propagation in a *generated* processor. Every Fluxtion graph build, the
+interpreter included, runs in the generator: the cloud service with an API key (Fluxtion `claude.txt`, "There is no
+generate-without-a-generator path"). A hand-written `DefaultEventProcessor` has no `EventLogManager`. Both follow from
+`onEvent` by construction, but they are unmeasured. Showing them needs a generated processor with a
+`@OnEventHandler(filterString = "admin:<name>")` node, built with the owner's generator.
 
 ## 3e. One processor, several in one agent, several agents: what holds, and what is needed
 

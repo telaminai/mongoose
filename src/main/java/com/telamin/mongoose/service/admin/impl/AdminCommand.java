@@ -35,6 +35,17 @@ public class AdminCommand {
     private final EventToQueuePublisher<AdminCommand> targetQueue;
     private final Semaphore semaphore = new Semaphore(1);
     private transient List<String> args;
+    /** Option A: delivered to the processor as a {@code Signal} in an event cycle, not run as a lambda. */
+    private boolean signalRouted;
+
+    /** A signal-routed command: no lambda; the processor's own handler does the work, in an event cycle. */
+    public AdminCommand(EventToQueuePublisher<AdminCommand> targetQueue, boolean signalRouted) {
+        this.commandWithOutput = null;
+        this.output = System.out::println;
+        this.errOutput = System.err::println;
+        this.targetQueue = targetQueue;
+        this.signalRouted = signalRouted;
+    }
 
     /**
      * Create an AdminCommand that will publish to a target queue for asynchronous execution.
@@ -74,6 +85,7 @@ public class AdminCommand {
         this.errOutput = adminCommandRequest.getErrOutput();
         this.args = new ArrayList<>(adminCommandRequest.getArguments());
         this.args.add(0, adminCommandRequest.getCommand());
+        this.signalRouted = adminCommand.signalRouted;
     }
 
     /**
@@ -113,6 +125,42 @@ public class AdminCommand {
     /**
      * Execute this command using current args and output consumers, handling and reporting exceptions.
      */
+    /**
+     * Option A: deliver the command to {@code processor} as an ordinary event,
+     * {@code Signal("admin:<command>", request)}, so it runs in an event cycle. The request carries the arguments and
+     * the reply channel. No reply from any handler is answered with an error, so a caller is never left guessing
+     * whether anything ran. A handler that throws is answered with the exception; note that a Fluxtion processor whose
+     * node throws inside {@code onEvent} is left with its processing flag set, and stops processing (spec 3a finding 2).
+     */
+    public void executeAsSignal(com.telamin.fluxtion.runtime.DataFlow processor) {
+        String command = args.get(0);
+        AdminCommandRequest request = new AdminCommandRequest();
+        request.setCommand(command);
+        request.setArguments(List.copyOf(args.subList(1, args.size())));
+        boolean[] replied = {false};
+        request.setOutput(o -> {
+            replied[0] = true;
+            output.accept(o);
+        });
+        request.setErrOutput(o -> {
+            replied[0] = true;
+            errOutput.accept(o);
+        });
+        try {
+            processor.onEvent(new com.telamin.fluxtion.runtime.event.Signal<>(
+                    com.telamin.mongoose.service.admin.AdminCommandRegistry.SIGNAL_PREFIX + command, request));
+            if (!replied[0]) {
+                errOutput.accept("admin command '" + command + "' was delivered to its processor, and no handler replied");
+            }
+        } catch (Exception e) {
+            StringWriter sw = new StringWriter();
+            e.printStackTrace(new PrintWriter(sw));
+            errOutput.accept("problem executing command exception:" + e.getMessage() + "\n" + sw);
+        } finally {
+            semaphore.release();
+        }
+    }
+
     public void executeCommand() {
         try {
             commandWithOutput.processAdminCommand(args, output, errOutput);
