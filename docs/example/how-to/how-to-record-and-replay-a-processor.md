@@ -1,7 +1,9 @@
 # How-to: Record a processor's inputs and replay them
 
-Mongoose can record exactly what an event processor received, then replay it into a fresh server, so the processor
-does what it did. The output is the same, and so are the instants its clock read. Use it to reproduce an incident,
+Mongoose can record exactly what an event processor received, then replay it into a fresh server, giving the
+processor the same inputs at the same instants its clock read. When the processor depends on nothing else, it does
+what it did; whether it did is shown by comparing the replay's captured outputs, or its audit log, with the recorded
+run's. Use it to reproduce an incident,
 to check a fix against a real run, or to turn a run into a test.
 
 !!! note "A replay is isolated from the live world"
@@ -128,18 +130,29 @@ Sample code:
 - **Per processor.** A replay is per processor, against its own recorded inputs. Several processors in one agent group
   are recorded correctly, each with its own stream, and can be replayed together: each one's outputs are captured, so
   none reaches another whose stream already holds it.
-- **Hidden inputs are not supplied.** Randomness, iteration order, reads of files, databases or networks, or values
-  read back from injected services are detected by divergence on replay, not recorded.
+- **Hidden inputs are not supplied, and not detected.** Randomness, iteration order, reads of files, databases or
+  networks, or values read back from injected services are not recorded. A replay does not notice them either, unless
+  they change how often the processor reads its clock: the replay completes with no stop reason and a different
+  result. Compare `outputs(processor)`, or the audit log, with the recorded run's; `complete()` with a null `stopped()`
+  means every entry was delivered, not that the run was reproduced.
+- **An inline input is recorded as received.** It is copied just before the processor handles it, by Java
+  serialisation, so a handler that changes its input, or an application that reuses the object, does not change the
+  recording. An input that cannot be copied (not `Serializable`) is recorded as a failure, and a replay stops there.
+- **Each entry names its route.** A source that reaches a processor by more than one callback type replays each entry
+  through the one that delivered it.
 - **Calls outside Mongoose's paths**, from code holding a processor directly, are not recorded.
 - **After a failure** the recording is marked and a replay stops there. Determinism is not claimed after a failure.
-- **A replay stops, saying why,** rather than stalling or diverging silently: an entry that cannot be delivered within
-  `ReplayConfig.deliveryTimeout` (5 s), a journal missing an item, or a cycle that reads the clock a different number of
-  times from the recorded one (a divergence). `replayers().get(group).stopped(processor)` gives the reason.
+- **A replay stops, saying why,** rather than stalling, in the cases it can see: an entry that cannot be delivered
+  within `ReplayConfig.deliveryTimeout` (5 s), a journal missing an item, a store or decoder that fails, or a cycle that
+  reads the clock a different number of times from the recorded one. `replayers().get(group).stopped(processor)` gives
+  the reason. A replay failure stops that processor's replay; it does not end the server.
 - **A recording is refused over a recording.** `RECORD` needs an empty journal and store: a second run numbers its
-  items from 1 again. A torn last CSV line (a crash mid-write) is dropped with a warning.
+  items from 1 again. A torn last CSV line (a crash mid-write) is set aside with a warning; the file is still read,
+  but `RECORD` refuses it and nothing is appended to it.
 - **Clock reads outside an input's cycle** (in `start()` or `@Initialise`) are not recorded.
 - **Durability.** The CSV journal and store are samples; a production journal (for example Chronicle), with
   retention, is open work.
 
-With replay off, the default feed's dispatch allocates nothing and costs about 0.4 ns more per item than without this
-feature (measured with `DispatchPathJmh -prof gc`); recording itself allocates.
+With replay off, the default feed's dispatch allocates nothing, as before, and no stable timing difference from
+`main` is resolved. A named-event feed measures about 0.4 ns slower per item (`DispatchPathJmh -prof gc`, alternating
+runs). Recording itself allocates: each inline input is copied.

@@ -1,7 +1,7 @@
 # Spec: record and replay a processor's inputs in Mongoose
 
-**Status**: r5, 2026-09-29. Implemented and tested on `feat/replay-at-dispatch` (PR #47), reviewed once; every finding of
-that review is dispositioned in §3f, each fix with a regression that failed first. Background, and the evidence each
+**Status**: r6, 2026-09-29. Implemented and tested on `feat/replay-at-dispatch` (PR #47), reviewed, re-reviewed and
+independently reviewed; every finding is dispositioned in §3f, each fix with a regression that failed first. Background, and the evidence each
 decision rests on: [`replay-at-dispatch-spike.md`](replay-at-dispatch-spike.md).
 
 ## 1. Goal, and the boundary of the claim
@@ -12,8 +12,12 @@ with the same config, and the processor does exactly what it did, at the same in
 **The claim is bounded to what crosses Mongoose's boundary into a processor, and the processor's clock.** An input a
 node obtains itself is not supplied by a replay: a random value, the iteration order of an unordered
 collection, a file, database or network read, or a value read back from an injected service (scheduler time, pooled
-objects, controller snapshots). A replay detects such a read; it does not reproduce it: the replayed audit log diverges
-at the first one. Also out of scope: a retried dispatch (a failure: determinism is off from that point, and it is marked,
+objects, controller snapshots). A replay does not supply such a read, **and does not detect it**: it stops only when an
+entry cannot be delivered, a journal lacks an item, or the processor reads its clock a different number of times than
+the recorded cycle did. A hidden input that changes what the processor does without changing its clock reads replays
+to a different result with `complete()` true and `stopped()` null. **Reproduction is shown only by comparison**: the
+replay's captured outputs (`outputs(processor)`) or its audit log against the recorded run's. `complete()` with no stop
+reason means every entry was delivered, not that the run was reproduced. Also out of scope: a retried dispatch (a failure: determinism is off from that point, and it is marked,
 not reproduced) and calls made from outside Mongoose's paths (code holding a processor from `registeredProcessors()`).
 
 ## 2. Model
@@ -22,18 +26,23 @@ not reproduced) and calls made from outside Mongoose's paths (code holding a pro
   thread, after a queue (the one exception, `audit.start`/`audit.stop`, is fixed by R7). So recording at those points
   gives the processor's input order across all its sources, with no locking.
 - **An entry is an index or an event:**
-  - `Indexed{source, seq, instant}`: an input from a journalled feed; the event is in the feed's journal.
-  - `Inline{source, event, instant}`: an input from a feed with no journal.
-  - `TimerFired{seq, instant}`: a timer the processor scheduled fired.
-  - `AdminInvoked{command, args, instant}`: a processor-owned admin command ran.
+  - `Indexed{source, route, seq, instant, reads}`: an input from a journalled feed; the event is in the feed's journal.
+  - `Inline{source, route, event, instant, reads}`: an input from a feed with no journal, as a copy taken just before
+    the processor handled it (Java serialisation; a value that cannot change is kept as it is). An input that cannot
+    be copied is recorded `Failed`, never by reference. A delivered `NamedFeedEvent` is kept field by field and rebuilt.
+  - `TimerFired{seq, instant, reads}`: a timer the processor scheduled fired.
+  - `AdminInvoked{command, args, instant, reads}`: a processor-owned admin command ran.
   - `Failed{source, description}`: a dispatch threw. The stream is not reproducible past it.
-- **The callback is configuration.** An entry names its source; a replay boots the same config, and delivers the entry
-  through the strategy that config gives that source for this processor's group (an `onEvent`, a typed service call, an
-  admin invoker).
+- **The callback is configuration, and the entry names which one.** An entry names its source and its route, the
+  callback type that delivered it; a replay boots the same config, and delivers the entry through the strategy that
+  config gives that source and route for this processor's group (an `onEvent`, a typed service call, an admin
+  invoker). One source can reach a processor by more than one route. An entry that names no route is refused when more
+  than one could deliver it.
 - **The instants are the processor's own.** The processor's `Clock` auditor reads its clock strategy when an input
   arrives, before any node runs, and again for any event the graph raises during the cycle; a node may read it too. A
-  recording clock stays live, is armed just before a dispatch, and records every read until the dispatch returns.
-  Production reads are unchanged. A replay plays each entry's reads back in order.
+  recording clock stays live, is armed just before a dispatch, and records every read until the dispatch returns:
+  exactly those, none for a cycle that read no clock, with the input's instant kept beside them. Production reads are
+  unchanged. A replay plays each entry's reads back in order and requires the same count.
 - **Serialisation is configuration.** A journalled feed has a codec; the journal stores each published item once,
   encoded, after the publisher's data mapper, before its pooled object is returned.
 
@@ -119,7 +128,8 @@ rounds.
 | NAMED_EVENT | 41.44, 41.51 ns | 42.07, 41.28 ns | 48 B, the existing wrapper |
 
 - **Replay off costs about 0.4 ns per item on the default feed, and allocates nothing.** On the named-event feed the
-  difference is within the runs' noise.
+  difference is within the runs' noise. *Superseded (§3f, the independent review): longer alternating runs resolve no
+  stable difference on the default feed, and a consistent ~0.4 ns on the named-event feed. Allocation is confirmed.*
 - An earlier split of the cost between the publisher (+0.12 ns) and the agent (+0.5 ns) is withdrawn: it came from
   partial builds that are not committed, and the review could not reproduce it; the difference is below a short run's
   error. The benchmark is reproducible: copy `DispatchPathJmh.java` onto `main`, `mvn test-compile`, run
@@ -165,7 +175,8 @@ commands) is recorded in its order at the instants it read, and replayed.
 
 **The limits, for every case** (not solved by more processors):
 - Hidden inputs inside nodes: randomness, iteration order, file, database or network reads, values read back from
-  injected services. They are detected by divergence, not supplied.
+  injected services. They are not supplied, and a replay does not detect them: comparing its captured outputs or its
+  audit log with the recorded run's does.
 - Direct calls from code holding a processor (`registeredProcessors()`), outside Mongoose's paths.
 - After a failure the processor has stopped (the `processing` wedge, §3a finding 2); the stream ends there.
 
@@ -242,6 +253,59 @@ Remaining limit, stated not fixed: clock reads outside an input's cycle (`start(
 The controls harness is now a gate: it exits non-zero on any control not detected and on any file not restored; a
 detection by an `await` running out or by an error counts only when its message carries the fragment the mutation is
 expected to produce. 32 of 32 detected; a no-op control, added for the check, fails the gate.
+
+**The independent review of 90f0d9b** (review 5897482047) found five blockers and three should-fix findings. Each
+regression was committed with its prediction before it ran (`5cf34c3`), then run on 90f0d9b; the pre-fix results are in
+the commit messages and below. Regressions: `ReplayIndependentReviewTest`, two in `AgentHandoffTest`, two in
+`AuditSinkOnAgentThreadTest`; finding 1's run a real server in a child JVM (`ReplayFailureChildMain`).
+
+| # | finding | pre-fix result on 90f0d9b | disposition |
+|---|---|---|---|
+| 1 | a replay failure ends the server | both child JVMs exited 255 (store `entries` throwing at attach; a decoder's `AssertionError`) | fixed: contained (any `Throwable` but a `VirtualMachineError`) and published as `stopped()`; a processor whose store could not be read keeps its cursor, so its live inputs stay muted |
+| 2 | an inline input is not what was received | replayed `value=1` for `value=0` (memory and CSV); `[51, 52]` for a reused `[10, 50]`; fan-out `[2, 3]` for `[0, 1]`; a non-`Serializable` input held by reference | fixed: each processor's input is copied just before it is given it (`processEventRecording`), committed only after a first-attempt success; an input that cannot be copied is recorded `Failed`; a replay copies again |
+| 3 | an application's `NamedFeedEvent` on a NOWRAP feed is stripped | replayed `bare=DEMO-item` (both stores) | fixed: recorded field by field (`RecordedNamedEvent`) and rebuilt exactly |
+| 4 | the replay route is the first queue for the source | live went by `onEvent`; the replay sent every entry through the typed route, in both subscription orders | fixed: the queue carries its configured route, entries name it, routing matches source and route, an entry naming none is refused when two routes could deliver it |
+| 5 | an interrupted audit handoff runs after its refusal | the held install ran after the refusal; a running install had its sink closed under it | fixed: an interrupt cancels unclaimed work, and waits (uninterruptibly, keeping the interrupt) for work already running |
+| 6 | the clock-read count is padded | zero reads recorded as one; one recorded read taken zero times accepted | fixed: the instant is kept beside the actual reads; the count must match exactly |
+| 7 | a torn tail corrupts the next append | a store or journal whose only record was torn read as empty; RECORD accepted it | fixed: the torn line is set aside; the file reads, but RECORD refuses it and `append` refuses by name |
+| 8 | the docs claim automatic divergence detection | (wording) | corrected in §1, §3e, the how-to and the PR body: a hidden input can change the result undetected; reproduction is shown by comparing outputs or the audit log; `complete()` with a null `stopped()` does not prove it |
+
+Misses, recorded rather than dropped:
+- Finding 3's first pre-fix run failed on its own fixture: `NamedFeedEventImpl(String, long, T)` discards the number.
+  Corrected (`a299f6e`); re-run, both stores failed as predicted.
+- Finding 4's live run showed only the `onEvent` route delivering, and four lines for two offers (observed). The likely
+  cause, read from the code and not tested: `EventFlowManager` keys the queue by source and subscriber, not by callback
+  type, so both routes' agents drain one queue that the source targets once per route. That is Mongoose's existing
+  delivery, outside replay, and not changed here. Because live cannot show both routes, three
+  more tests drive entries naming each route directly.
+- Two finding-2 tests (a replay copies again; an uncopyable input) were written after the fix, for behaviour it added,
+  then run on 90f0d9b's code in a scratch worktree: both failed.
+- The inline copy is Java serialisation: a feed with non-`Serializable` items should be journalled with its own codec.
+
+**Controls.** 18 controls were added (`ir-*`), one per mechanism these fixes introduced, each required to fail a named
+assertion. The first full run detected 49 of 50: `review-F4-only-a-first-attempt-is-recorded` **survived**. Finding 2's
+capture hook had been used on the first attempt only, so a retry was kept out of the recording twice over, and removing
+the documented guard was an equivalent mutant. A single guard now decides (`317a80c`), and the control is caught by its
+named assertion. Final run: **50 of 50 detected**, 42 by a named assertion and 8 by an `await` running out or an error
+that carries the mutation's expected message (the same 8 as before: R4 never-fires, R5 pins, R5 alone, both CSV
+read-backs, review-2, review-5, review-reB). All 18 new controls are named-assertion detections. Each mutated file is
+restored with `cat f.orig > f` and its SHA-256 checked, and the sources are recompiled from clean after the run. The suite
+after it: 279 / 0 / 0 / 9 across 80 reports, no orphans. Evidence: `replay-evidence/independent-review-90f0d9b/`.
+
+**Replay off, re-measured** (the dispatch loop changed: RECORD takes a second branch). The same benchmark file
+(SHA-256 `fe2f102c18e46623…`) on `origin/main` (`ab44617`) and this PR (`6e409a5`), alternating three times,
+`-f 3 -wi 3 -i 5 -prof gc`, every run kept in the evidence directory:
+
+| path | `main` ns/op | PR #47 ns/op | allocated / op (both) |
+|---|---|---|---|
+| NOWRAP (default feed) | 24.44 ± 0.11, 24.62 ± 0.16, 24.99 ± 0.58 | 24.79 ± 0.08, 24.82 ± 0.09, 24.70 ± 0.04 | 0.0002 B, 0 collections |
+| NAMED_EVENT | 42.26 ± 0.11, 42.30 ± 0.10, 42.27 ± 0.16 | 42.59 ± 0.24, 42.70 ± 0.10, 42.75 ± 0.13 | 48 B, the existing wrapper |
+
+- **Allocation is unchanged and reproduced:** about 0 B/op on the default feed, 48 B/op on a named-event feed.
+- **On the default feed no stable timing difference is resolved.** The round-by-round differences are +0.35, +0.20
+  and −0.29 ns. The earlier "+0.4 ns" is not confirmed, and is no longer stated as a result.
+- **On a named-event feed the PR is 0.33 to 0.48 ns slower in all three rounds.** The earlier short runs called this
+  noise; these do not. Where it comes from is not measured.
 
 ## 4. Decisions
 
