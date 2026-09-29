@@ -12,18 +12,27 @@ import java.util.Set;
  * @param journal          where journalled items are written (RECORD) and read (REPLAY)
  * @param store            where each processor's entries are appended (RECORD) and read (REPLAY)
  * @param clock            the live clock a recorded processor reads; the system clock by default
+ * @param deliveryTimeout  REPLAY: how long an entry may wait for its route or admin command before the replay stops,
+ *                         saying why (5 s by default)
  */
 public record ReplayConfig(Mode mode, Set<String> processors, Map<String, EventCodec> journalledFeeds,
-                           EventJournal journal, ReplayStore store, java.util.function.LongSupplier clock) {
+                           EventJournal journal, ReplayStore store, java.util.function.LongSupplier clock,
+                           java.time.Duration deliveryTimeout) {
 
     public enum Mode { OFF, RECORD, REPLAY }
 
-    public static final ReplayConfig OFF = new ReplayConfig(Mode.OFF, Set.of(), Map.of(), null, null, null);
+    public static final ReplayConfig OFF = new ReplayConfig(Mode.OFF, Set.of(), Map.of(), null, null, null, null);
+
+    public ReplayConfig(Mode mode, Set<String> processors, Map<String, EventCodec> journalledFeeds, EventJournal journal,
+                        ReplayStore store, java.util.function.LongSupplier clock) {
+        this(mode, processors, journalledFeeds, journal, store, clock, null);
+    }
 
     public ReplayConfig {
         processors = processors == null ? Set.of() : Set.copyOf(processors);
         journalledFeeds = journalledFeeds == null ? Map.of() : Map.copyOf(journalledFeeds);
         clock = clock == null ? System::currentTimeMillis : clock;
+        deliveryTimeout = deliveryTimeout == null ? java.time.Duration.ofSeconds(5) : deliveryTimeout;
         if (mode != Mode.OFF && store == null) throw new IllegalArgumentException("replay mode " + mode + " needs a store");
         if (!journalledFeeds.isEmpty() && journal == null) throw new IllegalArgumentException("journalled feeds need a journal");
     }
@@ -40,7 +49,12 @@ public record ReplayConfig(Mode mode, Set<String> processors, Map<String, EventC
 
     /** The live clock recorded processors read (a test ticks one); the system clock by default. */
     public ReplayConfig withClock(java.util.function.LongSupplier liveClock) {
-        return new ReplayConfig(mode, processors, journalledFeeds, journal, store, liveClock);
+        return new ReplayConfig(mode, processors, journalledFeeds, journal, store, liveClock, deliveryTimeout);
+    }
+
+    /** REPLAY: how long an entry may wait for its route or admin command before the replay stops, saying why. */
+    public ReplayConfig withDeliveryTimeout(java.time.Duration timeout) {
+        return new ReplayConfig(mode, processors, journalledFeeds, journal, store, clock, timeout);
     }
 
     public boolean covers(String processorName) {

@@ -212,6 +212,11 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         }
 
         eventQueueToEventProcessor.registerProcessor(subscriber);
+        // REPLAY: a replayed processor receives only the replay; its live inputs are muted, not delivered beside it
+        if (replayer != null && replayer.replays(subscriber)
+                && eventQueueToEventProcessor instanceof EventQueueToEventProcessorAgent agent) {
+            agent.muteLiveInputs(subscriber);
+        }
         eventFlowManager.subscribe(subscriptionKey);
     }
 
@@ -281,12 +286,14 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
                 DataFlow eventProcessor = namedEventProcessor.eventProcessor();
                 registeredEventProcessors.put(namedEventProcessor.name(), namedEventProcessor);
                 com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(eventProcessor);
+                // replay: a recorded processor gets a live recording clock, a replayed one a pinned replay clock. Before
+                // anything that can subscribe it (services, the feed): a replayed processor's live inputs are muted as
+                // each subscription is made, so the replayer must already know it
+                if (recorder != null) recorder.attach(namedEventProcessor.name(), eventProcessor);
+                if (replayer != null) replayer.attach(namedEventProcessor.name(), eventProcessor);
                 eventProcessor.registerService(schedulerService);
                 registeredServices.values().forEach(eventProcessor::registerService);
                 eventProcessor.addEventFeed(this);
-                // replay: a recorded processor gets a live recording clock, a replayed one a pinned replay clock
-                if (recorder != null) recorder.attach(namedEventProcessor.name(), eventProcessor);
-                if (replayer != null) replayer.attach(namedEventProcessor.name(), eventProcessor);
                 if (eventProcessor instanceof Lifecycle) {
                     ((Lifecycle) eventProcessor).start();
                     ((Lifecycle) eventProcessor).startComplete();

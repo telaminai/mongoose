@@ -36,6 +36,9 @@ public final class GroupReplayer {
         final List<ReplayEntry> entries;
         int next;
         String stopped;
+        /** While the current entry cannot be delivered yet: since when (System.nanoTime) and why. */
+        long waitingSince;
+        String waitingFor;
 
         Cursor(String name, DataFlow flow, ReplayClock clock, List<ReplayEntry> entries) {
             this.name = name;
@@ -64,7 +67,16 @@ public final class GroupReplayer {
         if (!config.covers(name)) return;
         ReplayClock clock = new ReplayClock();
         flow.setClockStrategy(clock);
+        scheduler.replay(flow);
         cursors.add(new Cursor(name, flow, clock, config.store().entries(name)));
+    }
+
+    /** Whether {@code flow} is replayed here: its live inputs are then muted. */
+    public boolean replays(DataFlow flow) {
+        for (Cursor c : cursors) {
+            if (c.flow == flow) return true;
+        }
+        return false;
     }
 
     /** One entry per replayed processor per call, so the group's own work (subscriptions) interleaves. */
@@ -82,7 +94,16 @@ public final class GroupReplayer {
             }
             if (delivered) {
                 c.next++;
+                c.waitingSince = 0;
+                c.waitingFor = null;
                 work++;
+            } else if (c.waitingSince == 0) {
+                c.waitingSince = System.nanoTime();
+            } else if (System.nanoTime() - c.waitingSince > config.deliveryTimeout().toNanos()) {
+                // an entry that never becomes deliverable (a route or admin command the replayed configuration never
+                // makes) stops the replay, saying why, rather than stalling it silently forever
+                stop(c, "entry " + c.next + " could not be delivered within " + config.deliveryTimeout().toMillis()
+                        + " ms: " + c.waitingFor);
             }
         }
         return work;
@@ -108,7 +129,7 @@ public final class GroupReplayer {
         switch (entry) {
             case ReplayEntry.Indexed i -> {
                 EventQueueToEventProcessorAgent route = routing.routeFor(i.source(), c.flow);
-                if (route == null) return false;                          // not subscribed yet
+                if (route == null) return waiting(c, "no route delivers " + i.source() + " to " + c.name);
                 byte[] bytes = config.journal().get(i.source(), i.seq());
                 if (bytes == null) return stop(c, "the journal holds no " + i.source() + "#" + i.seq());
                 Object item = config.journalledFeeds().get(i.source()).decode(bytes);
@@ -119,21 +140,25 @@ public final class GroupReplayer {
                         : item;
                 pin(c, i.reads());
                 route.replayTo(c.flow, event);
+                return readsMatch(c, i.reads());
             }
             case ReplayEntry.Inline in -> {
                 EventQueueToEventProcessorAgent route = routing.routeFor(in.source(), c.flow);
-                if (route == null) return false;
+                if (route == null) return waiting(c, "no route delivers " + in.source() + " to " + c.name);
                 pin(c, in.reads());
-                route.replayTo(c.flow, in.event());
+                route.replayTo(c.flow, rewrapped(in.source(), in.event(), in.seq()));
+                return readsMatch(c, in.reads());
             }
             case ReplayEntry.TimerFired t -> {
                 pin(c, t.reads());
                 scheduler.fire(c.flow, t.seq());
+                return readsMatch(c, t.reads());
             }
             case ReplayEntry.AdminInvoked a -> {
                 AdminCommand template = routing.adminCommand(a.command());
                 EventQueueToEventProcessorAgent route = routing.routeFor("adminCommand." + a.command(), c.flow);
-                if (template == null || route == null) return false;      // not registered yet
+                if (template == null) return waiting(c, "admin command " + a.command() + " is not registered");
+                if (route == null) return waiting(c, "no route delivers admin command " + a.command() + " to " + c.name);
                 AdminCommandRequest request = new AdminCommandRequest();
                 request.setCommand(a.command());
                 request.setArguments(a.args());
@@ -141,12 +166,40 @@ public final class GroupReplayer {
                 request.setErrOutput(o -> adminReplies.add(c.name + " err: " + o));
                 pin(c, a.reads());
                 route.replayTo(c.flow, new AdminCommand(template, request));
+                return readsMatch(c, a.reads());
             }
             case ReplayEntry.Failed f -> {
                 return stop(c, "the recorded run failed here: " + f.description());
             }
         }
-        return true;
+    }
+
+    /** Not deliverable yet (a route or command the configuration makes shortly after boot): wait, and say for what. */
+    private static boolean waiting(Cursor c, String reason) {
+        c.waitingFor = reason;
+        return false;
+    }
+
+    /** An inline item of a named-event feed was recorded bare, with its number: rebuilt as the processor received it. */
+    private Object rewrapped(String source, Object event, long seq) {
+        if (event instanceof com.telamin.fluxtion.runtime.event.NamedFeedEvent<?>) return event;
+        EventSource.EventWrapStrategy wrap = routing.wrapOf(source);
+        return wrap == EventSource.EventWrapStrategy.SUBSCRIPTION_NAMED_EVENT
+                || wrap == EventSource.EventWrapStrategy.BROADCAST_NAMED_EVENT
+                ? new NamedFeedEventImpl<>(source).data(event).sequenceNumber(seq)
+                : event;
+    }
+
+    /**
+     * The cycle read the clock as often as the recorded one did, or this is a divergence, reported by stopping. One
+     * recorded reading that went unused is not: a cycle that read nothing is recorded as one reading, the instant.
+     */
+    private boolean readsMatch(Cursor c, List<Long> recorded) {
+        int taken = c.clock.taken();
+        boolean matches = taken == recorded.size() || (recorded.size() == 1 && taken == 0);
+        if (matches) return true;
+        return stop(c, "clock divergence: the replayed cycle read the clock " + taken + " time(s), the recorded one "
+                + recorded.size());
     }
 
     /** The entry's clock readings, played back in order: its processTime first, then any later reads in its cycle. */

@@ -30,8 +30,15 @@ public sealed interface ReplayEntry {
     /** An input from a journalled feed: the event is the journal's {@code (source, seq)}. */
     record Indexed(String source, long seq, List<Long> reads) implements Timed { }
 
-    /** An input from a feed with no journal, recorded as it was delivered. */
-    record Inline(String source, Object event, List<Long> reads) implements Timed { }
+    /**
+     * An input from a feed with no journal, recorded as it was delivered. For a named-event feed {@code event} is the
+     * item and {@code seq} its sequence number (the wrapper is rebuilt on replay, as for an index); otherwise -1.
+     */
+    record Inline(String source, Object event, long seq, List<Long> reads) implements Timed {
+        public Inline(String source, Object event, List<Long> reads) {
+            this(source, event, -1, reads);
+        }
+    }
 
     /** A timer the processor scheduled fired: its schedule number, in the processor's own count. */
     record TimerFired(long seq, List<Long> reads) implements Timed { }

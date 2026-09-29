@@ -8,7 +8,8 @@ import com.telamin.mongoose.service.scheduler.DeadWheelScheduler;
  * RECORD mode's scheduler (R4): fires as the live one does, and numbers each schedule call per processor, in the
  * processor's own count. A replay makes the same calls in the same order, so the numbers repeat. When a timer fires the
  * processor's clock is armed, the action runs in the scheduling processor's context (so a timer it schedules is
- * numbered as its own), and {@code TimerFired} is appended at the instant the processor read.
+ * numbered as its own), and {@code TimerFired} is appended at the instant the processor read; a timer whose action
+ * throws is appended as {@code Failed} instead, and the exception propagates as it does without recording.
  */
 public class RecordingScheduler extends DeadWheelScheduler {
 
@@ -38,8 +39,11 @@ public class RecordingScheduler extends DeadWheelScheduler {
             recorder.beforeTimer(flow);
             try {
                 action.run();
-            } finally {
                 recorder.timerFired(flow, seq);
+            } catch (RuntimeException | Error failed) {
+                recorder.timerFailed(flow, seq, failed);    // a timer that throws is a failure (D4), not a firing
+                throw failed;
+            } finally {
                 if (outer == null) ProcessorContext.removeCurrentProcessor();
                 else ProcessorContext.setCurrentProcessor(outer);
             }

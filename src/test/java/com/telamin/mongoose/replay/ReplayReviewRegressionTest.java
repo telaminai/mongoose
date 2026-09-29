@@ -77,6 +77,18 @@ class ReplayReviewRegressionTest {
         }
     }
 
+    /** The demo processor, receiving a named-event feed's items as the demo expects them, bare. */
+    public static class NamedFeedHandler extends ReplayDemoHandler {
+        public NamedFeedHandler() {
+            super(ORDERS, CONTROLS);
+        }
+
+        @Override
+        protected boolean handleEvent(Object event) {
+            return super.handleEvent(event instanceof com.telamin.fluxtion.runtime.event.NamedFeedEvent<?> n ? n.data() : event);
+        }
+    }
+
     /** The demo processor, and optionally a second one in the same group that is never replayed. */
     static Server boot(ReplayConfig replay, boolean withOther, boolean namedOrders) throws Exception {
         InMemoryEventSource<Object> orders = new InMemoryEventSource<>();
@@ -85,7 +97,7 @@ class ReplayReviewRegressionTest {
         controls.setName(CONTROLS);
         InMemoryMessageSink sink = new InMemoryMessageSink();
         EventProcessorGroupConfig.Builder group = EventProcessorGroupConfig.builder().agentName("processor-agent")
-                .put(PROCESSOR, new EventProcessorConfig(new ReplayDemoHandler(ORDERS, CONTROLS)));
+                .put(PROCESSOR, new EventProcessorConfig(namedOrders ? new NamedFeedHandler() : new ReplayDemoHandler(ORDERS, CONTROLS)));
         if (withOther) group.put(OTHER, new EventProcessorConfig(new ReplayDemoHandler(ORDERS, CONTROLS)));
         MongooseServerConfig config = MongooseServerConfig.builder()
                 .addProcessorGroup(group.build())
@@ -179,8 +191,9 @@ class ReplayReviewRegressionTest {
             Thread.sleep(300);                                          // room for the agent's retries
             assertEquals(List.of("control=suspend"), s.lines().stream().map(l -> l.substring(0, l.indexOf(" time="))).toList(),
                     "the processor handled its input once: a recording failure is not a dispatch failure to retry");
-            assertTrue(store.appended.stream().noneMatch(e -> e instanceof ReplayEntry.Failed),
-                    "and it is not recorded as the processor failing: " + store.appended);
+            assertTrue(store.appended.stream().noneMatch(e -> e instanceof ReplayEntry.Failed f && !f.source().equals("recording")),
+                    "and it is not recorded as the processor failing on its input (only as the recording stopping): "
+                            + store.appended);
         }
     }
 
@@ -276,52 +289,30 @@ class ReplayReviewRegressionTest {
 
     // ---- 9: a timer that throws --------------------------------------------------------------------------------
 
-    public static class ThrowingTimerHandler extends ReplayDemoHandler {
-        private SchedulerService scheduler;
-
-        public ThrowingTimerHandler() {
-            super(ORDERS, CONTROLS);
-        }
-
-        @Override
-        @ServiceRegistered
-        public void scheduler(SchedulerService scheduler, String name) {
-            super.scheduler(scheduler, name);
-            this.scheduler = scheduler;
-        }
-
-        @Override
-        protected boolean handleEvent(Object event) {
-            if ("arm-boom".equals(event)) {
-                scheduler.scheduleAfterDelay(20, () -> {
-                    throw new IllegalStateException("DEMO timer failure");
-                });
-                return true;
-            }
-            return super.handleEvent(event);
-        }
-    }
-
+    /**
+     * A timer that throws, on the recording scheduler itself. Through a server the throw ends the process (the default
+     * error handler exits on any agent error, with or without replay), so the recording is checked here, directly.
+     */
     @Test
-    void f9_aTimerThatThrows_isRecordedAsAFailure() throws Exception {
+    void f9_aTimerThatThrows_isRecordedAsAFailure() {
         InMemoryReplayStore store = new InMemoryReplayStore();
-        InMemoryEventSource<Object> controls = new InMemoryEventSource<>();
-        controls.setName(CONTROLS);
-        MongooseServerConfig config = MongooseServerConfig.builder()
-                .addProcessorGroup(EventProcessorGroupConfig.builder().agentName("processor-agent")
-                        .put(PROCESSOR, new EventProcessorConfig(new ThrowingTimerHandler())).build())
-                .addEventFeed(EventFeedConfig.builder().instance(controls).name(CONTROLS).broadcast(true)
-                        .agent("controls-agent", new BusySpinIdleStrategy()).build())
-                .replay(ReplayConfig.record(Set.of(PROCESSOR), Map.of(), null, store))
-                .build();
-        MongooseServer server = MongooseServer.bootServer(config, rec -> { });
+        GroupRecorder recorder = new GroupRecorder(ReplayConfig.record(Set.of(PROCESSOR), Map.of(), null, store), () -> 7L);
+        com.telamin.fluxtion.runtime.DataFlow flow =
+                new com.telamin.fluxtion.runtime.DefaultEventProcessor(new com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode());
+        recorder.attach(PROCESSOR, flow);
+        RecordingScheduler scheduler = new RecordingScheduler(recorder);
+        com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(flow);
         try {
-            Thread.sleep(200);
-            controls.offer("arm-boom");
-            Thread.sleep(400);
+            scheduler.scheduleAfterDelay(0, () -> {
+                throw new IllegalStateException("DEMO timer failure");
+            });
         } finally {
-            server.stop();
+            com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
         }
+        assertThrows(IllegalStateException.class, () -> {
+            long deadline = System.nanoTime() + 1_000_000_000L;
+            while (System.nanoTime() < deadline) scheduler.doWork();
+        }, "the timer's exception propagates, as it does without recording");
         List<ReplayEntry> entries = store.entries(PROCESSOR);
         assertTrue(entries.stream().noneMatch(e -> e instanceof ReplayEntry.TimerFired), "not recorded as fired: " + entries);
         assertTrue(entries.stream().anyMatch(e -> e instanceof ReplayEntry.Failed), "recorded as a failure: " + entries);

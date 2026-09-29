@@ -96,17 +96,27 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                 try {
                     if (recorder != null) recorder.beforeDispatch(targets);
                     if (event instanceof ReplayRecord replayRecord) {
-                        eventToInvokeStrategy.processEvent(replayRecord.getEvent(), replayRecord.getWallClockTime());
+                        if (recorder == null) {
+                            eventToInvokeStrategy.processEvent(replayRecord.getEvent(), replayRecord.getWallClockTime());
+                        } else {
+                            // a recorded processor keeps its recording clock, pinned to the record's instant as the
+                            // strategy's synthetic clock would be, so its reads are still recorded; the rest as before
+                            long time = replayRecord.getWallClockTime();
+                            for (DataFlow target : targets) {
+                                if (!recorder.pinSyntheticTime(target, time)) eventToInvokeStrategy.setSyntheticTime(target, time);
+                            }
+                            eventToInvokeStrategy.processEvent(replayRecord.getEvent());
+                        }
                     } else if (event instanceof BroadcastEvent broadcastEvent) {
                         eventToInvokeStrategy.processEvent(broadcastEvent.getEvent());
                     } else {
                         eventToInvokeStrategy.processEvent(event);
                     }
                     done = true;
-                    if (recorder != null) recorder.afterDispatch(sourceName, event, seq, targets);
                 } catch (Throwable t) {
-                    // D4: a retry is a failure; the recording is marked, not continued as if nothing happened
-                    if (recorder != null && attempt == 0) recorder.failed(sourceName, event, t, targets);
+                    // D4: a retry is a failure; the recording is marked, not continued as if nothing happened. The
+                    // recorder never throws (its own failures are its own), so this path stays the dispatch's
+                    if (recorder != null && attempt == 0) recorder.failed(sourceName, delivered(event), t, targets);
                     lastError = t;
                     attempt++;
                     String warnMsg = "event processing failed: agent=" + name +
@@ -138,6 +148,13 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                 }
             }
 
+            // recorded after the dispatch, outside it: a recording failure is not a dispatch failure, so it is never
+            // retried as one (the processor would handle the input again) and never marks the processor as failing
+            if (done && recorder != null) {
+                boolean wrapped = event instanceof ReplayRecord || event instanceof BroadcastEvent;
+                recorder.afterDispatch(sourceName, delivered(event), wrapped ? -1 : seq, targets);
+            }
+
             // After dispatching to all processors attempt to return to pool if no more references remain
             if (tracker != null) {
                 try {
@@ -153,6 +170,13 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
         return processed;
     }
 
+    /** What the processor was given: the event a ReplayRecord or BroadcastEvent carries, else the event itself. */
+    private static Object delivered(Object event) {
+        if (event instanceof ReplayRecord replayRecord) return replayRecord.getEvent();
+        if (event instanceof BroadcastEvent broadcastEvent) return broadcastEvent.getEvent();
+        return event;
+    }
+
     /** The source this queue drains. */
     public String sourceName() {
         return sourceName;
@@ -161,6 +185,12 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     /** RECORD mode: record what this queue dispatches (spec-replay-recording R2). */
     public void recordWith(com.telamin.mongoose.replay.GroupRecorder recorder) {
         this.recorder = recorder;
+    }
+
+    /** REPLAY mode: this queue's live inputs no longer reach {@code target}, which receives only its replay. */
+    public void muteLiveInputs(DataFlow target) {
+        logger.info("replay: live inputs from " + sourceName + " muted for " + target);
+        eventToInvokeStrategy.muteLive(target);
     }
 
     /** REPLAY mode: deliver a recorded input to {@code target} alone, as this queue delivered it (R5). */

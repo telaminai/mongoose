@@ -21,4 +21,9 @@ public class InMemoryReplayStore implements ReplayStore {
     public List<ReplayEntry> entries(String processor) {
         return List.copyOf(entries.getOrDefault(processor, List.of()));
     }
+
+    @Override
+    public boolean holdsRecording() {
+        return entries.values().stream().anyMatch(l -> !l.isEmpty());
+    }
 }

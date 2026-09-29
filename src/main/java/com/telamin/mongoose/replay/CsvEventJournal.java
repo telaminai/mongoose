@@ -34,7 +34,7 @@ public final class CsvEventJournal implements EventJournal, AutoCloseable {
         this.file = file;
         try {
             if (Files.exists(file)) {
-                List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
+                List<String> lines = Csv.lines(file);
                 for (int i = 0; i < lines.size(); i++) {
                     String line = lines.get(i);
                     if (i == 0) {
@@ -61,7 +61,6 @@ public final class CsvEventJournal implements EventJournal, AutoCloseable {
 
     @Override
     public synchronized void append(String source, long seq, byte[] encoded) {
-        put(source, seq, encoded);
         try {
             out.write(Csv.field(source) + "," + seq + "," + Base64.getEncoder().encodeToString(encoded));
             out.newLine();
@@ -69,6 +68,12 @@ public final class CsvEventJournal implements EventJournal, AutoCloseable {
         } catch (IOException e) {
             throw new UncheckedIOException("cannot append to journal " + file, e);
         }
+        put(source, seq, encoded);                      // after the write, so memory never holds what the file does not
+    }
+
+    @Override
+    public boolean holdsRecording() {
+        return !index.isEmpty();
     }
 
     @Override

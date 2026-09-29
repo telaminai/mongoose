@@ -60,6 +60,19 @@ public abstract class AbstractEventToInvocationStrategy implements EventToInvoke
         }
     }
 
+    /** REPLAY: processors whose live inputs are muted (they receive only their replay); empty otherwise. */
+    private final java.util.Set<DataFlow> mutedForReplay =
+            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+
+    /** False unless a replay muted something: the only cost replay OFF pays on the dispatch path, one field read. */
+    private boolean anyMuted;
+
+    @Override
+    public void muteLive(DataFlow target) {
+        mutedForReplay.add(target);
+        anyMuted = true;
+    }
+
     @Override
     public void processEvent(Object event) {
         if (fineLogEnabled) {
@@ -67,6 +80,7 @@ public abstract class AbstractEventToInvocationStrategy implements EventToInvoke
         }
         for (int i = 0, targetQueuesSize = eventProcessorSinks.size(); i < targetQueuesSize; i++) {
             DataFlow eventProcessor = eventProcessorSinks.get(i);
+            if (anyMuted && mutedForReplay.contains(eventProcessor)) continue;
             if (fineLogEnabled) {
                 log.fine(() -> "invokerId: " + id + " dispatchEvent to " + eventProcessor);
             }
@@ -79,15 +93,19 @@ public abstract class AbstractEventToInvocationStrategy implements EventToInvoke
     @Override
     public void processEvent(Object event, long time) {
         for (int i = 0, targetQueuesSize = eventProcessorSinks.size(); i < targetQueuesSize; i++) {
-            DataFlow eventProcessor = eventProcessorSinks.get(i);
-            syntheticClocks.computeIfAbsent(eventProcessor, k -> {
-                AtomicLong atomicLong = new AtomicLong();
-                eventProcessor.setClockStrategy(atomicLong::get);
-                return atomicLong;
-            }).set(time);
+            setSyntheticTime(eventProcessorSinks.get(i), time);
         }
 
         processEvent(event);
+    }
+
+    @Override
+    public void setSyntheticTime(DataFlow eventProcessor, long time) {
+        syntheticClocks.computeIfAbsent(eventProcessor, k -> {
+            AtomicLong atomicLong = new AtomicLong();
+            eventProcessor.setClockStrategy(atomicLong::get);
+            return atomicLong;
+        }).set(time);
     }
 
     @Override

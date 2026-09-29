@@ -160,6 +160,7 @@ public class MongooseServer implements MongooseServerController {
      * @param mongooseServerConfig application configuration used for thread, service, and event-flow setup
      */
     public MongooseServer(MongooseServerConfig mongooseServerConfig) {
+        refuseRecordingOverARecording(mongooseServerConfig == null ? null : mongooseServerConfig.getReplay());
         flowManager.setReplayConfig(mongooseServerConfig == null ? null : mongooseServerConfig.getReplay());
         this.mongooseServerConfig = mongooseServerConfig;
 
@@ -728,6 +729,20 @@ public class MongooseServer implements MongooseServerController {
      * @param feedConsumer  supplier creating the {@link DataFlow} instance
      * @throws IllegalArgumentException if a processor with {@code processorName} already exists in the group
      */
+    /**
+     * RECORD mode needs an empty journal and store: a run numbers its items from 1 again, so a second recording into
+     * the same files would overwrite the first one's items and append after its entries, and replay one as the other.
+     */
+    private static void refuseRecordingOverARecording(com.telamin.mongoose.replay.ReplayConfig replay) {
+        if (replay == null || replay.mode() != com.telamin.mongoose.replay.ReplayConfig.Mode.RECORD) return;
+        if (replay.journal() != null && replay.journal().holdsRecording()) {
+            throw new IllegalStateException("replay RECORD: the journal already holds a recording; record into an empty one");
+        }
+        if (replay.store().holdsRecording()) {
+            throw new IllegalStateException("replay RECORD: the store already holds a recording; record into an empty one");
+        }
+    }
+
     /** REPLAY mode: each group's replay driver, by group name (for status and tests). */
     public java.util.Map<String, com.telamin.mongoose.replay.GroupReplayer> replayers() {
         java.util.Map<String, com.telamin.mongoose.replay.GroupReplayer> out = new java.util.HashMap<>();

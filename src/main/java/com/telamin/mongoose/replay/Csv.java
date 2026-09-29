@@ -7,7 +7,27 @@ import java.util.List;
 final class Csv {
     private Csv() { }
 
+    private static final java.util.logging.Logger log = java.util.logging.Logger.getLogger(Csv.class.getName());
+
+    /**
+     * The file's lines. A last line with no line break is a write torn by a crash: it is dropped, with a warning, so
+     * the rest is still read. A malformed line anywhere else is still an error.
+     */
+    static List<String> lines(java.nio.file.Path file) throws java.io.IOException {
+        String text = java.nio.file.Files.readString(file, java.nio.charset.StandardCharsets.UTF_8);
+        List<String> lines = new ArrayList<>(text.lines().toList());
+        if (!text.isEmpty() && !text.endsWith("\n") && !lines.isEmpty()) {
+            String torn = lines.remove(lines.size() - 1);
+            log.warning(file + ": dropped a torn last line (no line break, a write the process did not finish): " + torn);
+        }
+        return lines;
+    }
+
     static String field(String s) {
+        // the files are read line by line, so a field may not span lines (a base64 payload never does)
+        if (s.indexOf('\n') >= 0 || s.indexOf('\r') >= 0) {
+            throw new IllegalArgumentException("a name holding a line break cannot be written to a CSV line: " + s);
+        }
         if (s.indexOf(',') < 0 && s.indexOf('"') < 0 && s.indexOf('\n') < 0 && s.indexOf('\r') < 0) return s;
         return '"' + s.replace("\"", "\"\"") + '"';
     }
