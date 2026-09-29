@@ -87,6 +87,13 @@ then **15 of 15 controls caught**, each by a named assertion, with every file re
 4. **A replay that cannot deliver an entry must not take the server down.** An exception in the group agent ended the
    test JVM. The driver now stops that processor's replay and says why (`GroupReplayer.stopped`).
 
+**A correction to the record.** Commit `b6565b5` says "full suite 232/0/0/9". The full run made just before that
+commit had **one failure**: `ObjectPoolServerIntegrationTest#testServerNamedEvent_tryWithResources`, a pool
+`availableCount` of 2 where 1 was expected (one message returned to its pool twice). It was committed anyway, which was
+a mistake. The test then passed six runs out of six on its own, the next full run was 232/0/0/9, and Mongoose CI at
+`b6565b5` succeeded. None of the replay changes runs in that test (replay is off: no journal, no recorder), so it looks
+like a pre-existing race in pooled named-event dispatch. That is unproven: it is intermittent and was not reproduced.
+
 Still open: outputs muted during a group replay; a durable journal and store; direct exported-service calls (§5).
 
 ## 4. Decisions
