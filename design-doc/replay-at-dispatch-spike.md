@@ -58,19 +58,18 @@ Mongoose's existing replay input reproduces the run.
 
 Not shown, and each needs a decision before this is more than a spike:
 
-1. **The clock semantics change while recording.** Dispatching with a time uses the synthetic clock, which then holds
-   that instant until the next event: a `getWallClockTime()` read later in the same cycle, or between cycles (a timer,
-   a service thread), no longer reads the live clock. The replay is exact because the live run was pinned the same way.
-   Whether production may run pinned is an owner decision.
+1. **The clock: settled, no pinning** (see *Index or event*). The first spike pinned the processor's clock to the
+   recorded instant, which freezes live wall-clock reads between events in production. It is not needed: a recording
+   clock stays live and captures the one read the processor makes for each input.
 2. **Order across queues.** A processor fed by several queues sees them interleaved by its group agent's duty cycle.
    Recording per strategy gives each queue's order; the processor's input order across queues needs one sequence per
    processor (the group runs on one thread, so a per-processor recorder shared by its strategies gives it).
 3. **Fan-out.** One event dispatched to several processors is one record per strategy call; a replay must deliver it to
    the same set.
-4. **Retries.** A retried dispatch is recorded once per attempt. The processor did see it twice; whether a replay
-   should, is open.
-5. **Serialisation.** The spike keeps `ReplayRecord` objects in memory. Writing them needs the codec: the processor's
-   handled event types (the analyser's DEMO writer has one, restricted to records of simple components).
+4. **Retries: a failure case** (owner, 2026-09-29). A retry means the processor threw, so determinism is off from that
+   point. Record one `Failed{input, exception}` marker in the processor's sequence, so a comparison stops there and names
+   it rather than reading AGREES across it.
+5. **Serialisation is configuration** (owner): a serialisation service at the feeds, below.
 6. **Other ways into a processor**: typed service calls and processor-owned admin commands pass this point (not as
    `onEvent`); timers, lifecycle and control do not (below).
 
@@ -188,10 +187,71 @@ caught; restored byte-identically.
 `new DeadWheelScheduler()` into each processor group, so the recording and replay schedulers cannot be installed today.
 A timer's firing is then recorded into the same per-processor sequence as the dispatched inputs.
 
+## Index or event, and a clock that stays live
+
+**The clock.** The processor's `Clock` auditor reads its clock strategy once when an input arrives, before any node
+runs (runtime `Clock.eventReceived`: `processTime = getWallClockTime()`). So `RecordingClock` wraps the processor's
+strategy and stays live. The dispatcher arms it just before it dispatches, and the first read after arming is the
+input's `processTime`: captured, and returned unchanged. A re-entrant event's own read comes later and is ignored.
+Nothing is pinned, so production reads are unchanged. A replay (Mongoose's `ReplayRecord` path) pins the clock to the
+recorded instant, so every read in a replayed cycle returns it. A node reading the live clock again mid-cycle is
+therefore not reproduced, the same limit as the audit log's `endTime`, and a node should read `getProcessTime()`.
+(Generated processors can set `Clock.shareReading` around their queued callbacks; that reuses the input's reading, so
+the first read after arming is still the input's.)
+
+**Index or event.** Each processor's record is one sequence of entries:
+- `Indexed{source, seq, instant}` for an input from a journalled feed. The event itself is in the feed's journal,
+  serialised once for every processor it fans out to.
+- `Inline{source, event, instant}` for anything else. That covers a feed without a journal, timer firings, admin
+  commands (their args) and failure markers.
+
+In Mongoose today, a feed configured `wrapWithNamedEvent(true)` delivers each item as a `NamedFeedEvent` carrying the
+publisher's `sequenceNumber`. With `cacheEventLog`, the publisher keeps every published event with that number
+(`EventToQueuePublisher.eventLog`), which is an in-memory journal already. A `*_NOWRAP` feed puts the bare object on
+the queue, with no id; a production recorder needs the id to travel with the item in that mode too (a wrapper, or
+`(source, seq)` carried by the queue).
+
+**Spiked** (`IndexedReplaySpikeTest`, 1/0/0/0). One processor is fed by `orders` (journalled, named events) and
+`controls` (plain), with `ord-1, suspend, ord-2, resume, ord-3`, and a control changes how later orders are handled.
+The live clock moves 7 ms on every read.
+- Recorded: an index for each order (no payload), the controls inline. Each entry's instant equals the `processTime`
+  the processor itself read. The clock was never pinned.
+- Replayed: the indexes are joined with the journal, and each entry goes back through its own source, in the
+  processor's order across both. The processor does exactly what it did.
+- Witness: each source replayed in its own order, not the processor's, does not reproduce the run.
+- Control: the recorder taking its own clock reading after the dispatch is caught ("each entry's instant is the
+  processor's own read"); restored byte-identically.
+
+**Replay order across sources.** Publishing into two queues does not fix the order the group agent drains them in. So
+the spike's replay publishes one entry, waits for it to be handled, then publishes the next. A production replay needs
+a per-processor driver that feeds one ordered stream.
+
+## The journal: serialisation at the feeds, the cache, and remote bundles
+
+A serialisation service plugged into feeds by default, with the codec per feed as configuration, generalises what the
+publisher's cache already does:
+- **The cache is a journal.** `cacheEventLog` keeps each published event with its sequence number and replays them to
+  a late subscriber (`dispatchCachedEventLog`). A durable, serialised journal does the same across restarts
+  (fault-tolerant catch-up) and is also the store the indexes point into. A re-dispatched cached event carries its
+  original sequence number, so it is indexed as the same event.
+- **Ids.** `(source, sequenceNumber)` is unique within a run. A snowflake id makes it unique across restarts and
+  nodes, which a journal kept across runs needs.
+- **Journal what the processor received.** The publisher applies a data mapper and a wrap strategy before the queue,
+  so the journal stores the item after mapping, or a replay must re-apply the mapping.
+- **Pooled objects.** Serialise before the object returns to its pool; the publisher knows when that happens.
+- **Cost.** Opt in per feed, or per processor when recording starts.
+
+**Remote journals and evidence bundles.** With a remote journal, an evidence bundle can carry each processor's small
+index stream and a reference into the journal instead of the events. It stays verifiable only if the reference is
+pinned by digest: a bundle's manifest already holds each member's sha256, and a reference needs the same, for each
+referenced event or for the journal segment, so a later fetch is checked against what was captured. Two practical
+needs: an option to resolve the references into the bundle when it is sent, for a recipient without access; and
+journal retention that outlives the bundle.
+
 ## Recommendation
 
-1. **Record feed events at dispatch** (this spike): a recording `EventToInvokeStrategy` from config, one sequence per
-   processor across its queues, the processor's clock pinned to the recorded instant (decision 1 above).
+1. **Record at dispatch** (this spike): one sequence per processor across its queues, each entry an index into its
+   feed's journal or an inline event, at the instant the processor read from its live clock.
 2. **Admin commands**: record `{command, args}` at `AdminCommandInvoker`; with the proposal's option B they also get an
    audit record to check a replay against.
 3. **Service calls** through a typed invoke strategy: recorded at dispatch like events, with their callback type, and
