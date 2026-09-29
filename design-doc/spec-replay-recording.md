@@ -1,6 +1,6 @@
 # Spec: record and replay a processor's inputs in Mongoose
 
-**Status**: r1, 2026-09-29. Spiked on `spike/replay-at-dispatch`; not for merge as is. Background, and the evidence each
+**Status**: r2, 2026-09-29. Implemented and tested on `spike/replay-at-dispatch` (§3a); not reviewed, not for merge as is. Background, and the evidence each
 decision rests on: [`replay-at-dispatch-spike.md`](replay-at-dispatch-spike.md).
 
 ## 1. Goal, and the boundary of the claim
@@ -49,6 +49,37 @@ behaviour is removed.
 | R5 | **Replay driver**: in REPLAY each group drains one ordered stream per processor, delivering each entry to that processor alone, through its source's configured strategy, at its instant; indexes are joined with the journal | `dutycycle/ComposingEventProcessorAgent`, `dispatch` (`processEventFor`) | feed events, typed service calls, timers and admin commands replay in the processor's order and the processor does what it did; a stream replayed per source instead does not |
 | R6 | **Admin commands**: a processor-owned command is recorded as its name and args; replayed by rebuilding it from the command the replayed processor registered, with stub replies | `service/admin/impl` | a command changing processor state between two inputs replays at that point |
 | R7 | **mongoose#46**: `audit.start`/`audit.stop` change the audit sink on the processor's agent thread, and reply once it has | `internal/ChronicleAuditCaptureService`, `ComposingEventProcessorAgent` | the sink is installed on the group's thread, not the caller's |
+
+## 3a. Results (spiked 2026-09-29, `spike/replay-at-dispatch`)
+
+All seven items are implemented, in `src/main`, behind `ReplayConfig` (off by default). Full suite: **232 / 0 / 0 / 9**
+(total / failures / errors / skips); the baseline before this work was 223 / 0 / 0 / 9, and the nine skips are the
+same. Controls: `python3 design-doc/replay_controls.py`. It runs each of the nine named tests unmutated first (all green),
+then **14 of 14 controls caught**, each by a named assertion, with every file restored byte-identically.
+
+| id | named test | controls |
+|---|---|---|
+| R1 | `ReplayRecordingAcceptanceTest#R1_offChangesNothing`, and the existing suite unchanged | — |
+| R2 | `#R2_R3_R5_twoSourcesAndTheGraphsOwnEvent_replayInTheProcessorsOrder`: two sources, a graph-raised event never recorded, each instant the processor's own read | `R2-arms-the-processors-clock`, `R2-graph-raised-events-never-pass-dispatch` |
+| R3 | `JournalSequenceTest` (both), and the index entries above | `R3-journalled-nowrap-carries-its-seq`, `R3-cached-items-carry-their-own-seq`, `R3-journalled-once` |
+| R4 | `#R4_aTimeoutFiringBetweenInputs_replaysThere`, through a real server's scheduler | `R4-records-timer-firings`, `R4-replay-never-fires-by-itself` |
+| R5 | the R2 test's replay and its per-source witness; `TypedCallReplayAcceptanceTest` | `R5-pins-the-entry-instant`, `R5-delivers-to-the-processor-alone`, `R5-a-typed-call-replays-through-the-configured-strategy` |
+| R6 | `#R6_anAdminCommandBetweenInputs_replaysThere`: the command rebuilt from the replayed processor's registration, its reply collected | `R6-records-an-admin-command-by-its-args` |
+| D4 | `#D4_aFailedDispatchIsMarked_andTheReplayStopsThere` | `D4-marks-a-failed-dispatch` |
+| R7 | `AuditSinkOnAgentThreadTest` (both): the sink installed and restored on the group's thread, never the caller's | `R7-the-server-passes-the-groups-thread`, `R7-the-sink-changes-on-the-agent-thread` |
+
+**Found on the way:**
+1. **A late subscriber's cached catch-up carried the wrong sequence number.** `dispatchCachedEventLog` sent every cached
+   item with the publisher's current number, not its own. Fixed: each item carries its own number
+   (`R3-cached-items-carry-their-own-seq`).
+2. **One exception wedges a processor.** `DefaultEventProcessor.onEvent`, and generated processors (runtime 1.0.16),
+   set `processing = true` and clear it with no `try`/`finally`. A node that throws leaves it set, and every later
+   event is queued as re-entrant and never processed. Mongoose's retry then "succeeds" by queuing. So after a failure
+   the live processor has stopped, not just lost determinism. Recorded, not fixed: it is a Fluxtion change.
+3. **A replay that cannot deliver an entry must not take the server down.** An exception in the group agent ended the
+   test JVM. The driver now stops that processor's replay and says why (`GroupReplayer.stopped`).
+
+Still open: outputs muted during a group replay; a durable journal and store; direct exported-service calls (§5).
 
 ## 4. Decisions
 

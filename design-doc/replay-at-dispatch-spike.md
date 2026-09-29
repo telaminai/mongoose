@@ -1,6 +1,7 @@
 # Spike: record replay inputs at Mongoose's dispatch point
 
-**Status**: spike (branch `spike/replay-at-dispatch`, test code only, nothing in `src/main` changed). 2026-09-29.
+**Status**: spike, 2026-09-29. The evidence for the decisions in [`spec-replay-recording.md`](spec-replay-recording.md),
+which is now implemented in `src/main` on this branch (spec §3a). This page's own spikes are test code.
 
 ## The question
 

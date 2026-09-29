@@ -97,15 +97,23 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
 
     @Override
     public void attach(DataFlow dataFlow, String processorName, LogRecordListener configuredListener) {
+        attach(dataFlow, processorName, configuredListener, Runnable::run);
+    }
+
+    @Override
+    public void attach(DataFlow dataFlow, String processorName, LogRecordListener configuredListener,
+                       java.util.concurrent.Executor onAgentThread) {
         // Hold a weak reference to the DataFlow keyed by name so start()
         // can install a listener later. Idempotent — re-attach replaces.
         sinks.compute(processorName, (k, existing) -> {
             if (existing == null) {
                 ProcessorSink created = new ProcessorSink(dataFlow, processorName);
                 created.configuredListener = configuredListener;
+                created.onAgentThread = onAgentThread;
                 return created;
             }
             existing.dataFlow = dataFlow;
+            existing.onAgentThread = onAgentThread;
             // Re-attach: take the listener again. The server may have replaced it, and a re-registered
             // processor is a NEW DataFlow whose listener is the one just installed on it.
             if (configuredListener != null) existing.configuredListener = configuredListener;
@@ -131,7 +139,8 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             // Idempotent — don't roll the sink.
             return;
         }
-        sink.startRecording(config, counters);
+        // mongoose#46: installed on the processor's agent thread; awaited here, outside the sink's lock
+        awaitOnAgent(sink.startRecording(config, counters), processorName, "start");
         liveSinkMutation.run();
         log.info("audit-capture STARTED for processor '" + processorName + "' at " + sink.path());
     }
@@ -180,9 +189,26 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
     }
 
     /** Per-processor state holder — keeps the wiring local. */
+    /** Wait for a sink change the processor's agent thread applies; refused by name rather than hanging. */
+    private static void awaitOnAgent(java.util.concurrent.CompletableFuture<Void> applied, String processorName, String what) {
+        try {
+            applied.get(5, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (java.util.concurrent.TimeoutException e) {
+            throw new IllegalStateException("audit " + what + " for '" + processorName
+                    + "' was not applied on its agent thread within 5s");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted waiting for audit " + what + " on '" + processorName + "'", e);
+        } catch (java.util.concurrent.ExecutionException e) {
+            throw new IllegalStateException("audit " + what + " for '" + processorName + "' failed on its agent thread", e.getCause());
+        }
+    }
+
     private static final class ProcessorSink {
         private final String processorName;
         private DataFlow dataFlow;
+        /** mongoose#46: the processor's agent thread; the processor is only driven from it. */
+        private java.util.concurrent.Executor onAgentThread = Runnable::run;
         private ChronicleQueue queue;
         private ExcerptAppender appender;
         /** The listener the server configured, taken at attach. Restored on stop; fanned to while recording. */
@@ -243,7 +269,22 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
                     true);
         }
 
-        synchronized void startRecording(AuditCaptureConfig cfg, MongooseCountersService counters) {
+        /** Change the processor's audit sink on its agent thread; the future completes once it has. */
+        private java.util.concurrent.CompletableFuture<Void> installOnAgent(LogRecordListener listener) {
+            java.util.concurrent.CompletableFuture<Void> applied = new java.util.concurrent.CompletableFuture<>();
+            DataFlow flow = dataFlow;
+            onAgentThread.execute(() -> {
+                try {
+                    if (flow != null) flow.setAuditLogProcessor(listener);
+                    applied.complete(null);
+                } catch (Throwable t) {
+                    applied.completeExceptionally(t);
+                }
+            });
+            return applied;
+        }
+
+        synchronized java.util.concurrent.CompletableFuture<Void> startRecording(AuditCaptureConfig cfg, MongooseCountersService counters) {
             Path procDir = Path.of(cfg.getDirectory(), processorName);
             try {
                 Files.createDirectories(procDir);
@@ -265,7 +306,7 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             // installed a no-op, so stopping capture sent audit nowhere at all until restart (MA-5b).
             this.previousListener = configuredListener;
             this.captureListener = this::onRecordFanOut;
-            dataFlow.setAuditLogProcessor(captureListener);
+            return installOnAgent(captureListener);
         }
 
         /**
@@ -277,17 +318,26 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
          */
         synchronized void adoptWhileRecording() {
             if (captureListener != null && dataFlow != null) {
-                dataFlow.setAuditLogProcessor(captureListener);
+                installOnAgent(captureListener);                // called on the agent thread, at attach: runs now
             }
         }
 
-        synchronized void stopRecording() {
-            // Restore the listener the server configured, so audit keeps flowing after capture stops.
-            // A no-op here is what made stopping capture discard audit entirely (MA-5b).
-            if (dataFlow != null) {
-                dataFlow.setAuditLogProcessor(
-                        previousListener != null ? previousListener : NoOpLogRecordListener.INSTANCE);
-            }
+        /**
+         * Restore the listener the server configured, so audit keeps flowing after capture stops (a no-op here is what
+         * made stopping capture discard audit entirely, MA-5b), on the agent thread (mongoose#46). The queue is closed
+         * by {@link #closeRecording} only after this has been applied, so no record in flight meets a closed queue.
+         */
+        synchronized java.util.concurrent.CompletableFuture<Void> restoreListener() {
+            return installOnAgent(previousListener != null ? previousListener : NoOpLogRecordListener.INSTANCE);
+        }
+
+        void stopRecording() {
+            // not synchronized: the agent thread may need this sink's lock (adoptWhileRecording) while it is awaited
+            awaitOnAgent(restoreListener(), processorName, "stop");
+            closeRecording();
+        }
+
+        synchronized void closeRecording() {
             if (appender != null) {
                 appender = null;
             }

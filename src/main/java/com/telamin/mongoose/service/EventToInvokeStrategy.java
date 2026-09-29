@@ -34,6 +34,17 @@ public interface EventToInvokeStrategy {
     void processEvent(Object event, long time);
 
     /**
+     * Deliver {@code event} to ONE registered processor, as {@link #processEvent(Object)} would deliver it to each
+     * (spec-replay-recording R5: a replay delivers each recorded input to the processor that received it, alone).
+     * The caller owns the processor's clock.
+     *
+     * @throws IllegalArgumentException when {@code target} is not registered with this strategy
+     */
+    default void processEventFor(DataFlow target, Object event) {
+        throw new UnsupportedOperationException(getClass().getName() + " cannot deliver to a single processor");
+    }
+
+    /**
      * Register a processor as a target for dispatched events.
      *
      * @param eventProcessor the processor to register

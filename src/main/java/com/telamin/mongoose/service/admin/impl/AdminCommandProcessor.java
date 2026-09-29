@@ -30,6 +30,11 @@ import java.util.stream.Collectors;
 public class AdminCommandProcessor implements AdminCommandRegistry, LifeCycleEventSource<AdminCommand> {
 
     private final Map<String, AdminCommand> registeredCommandMap = new HashMap<>();
+
+    /** The command registered under {@code name}, or null (spec-replay-recording R6: a replay rebuilds from it). */
+    public AdminCommand registeredCommand(String name) {
+        return registeredCommandMap.get(name);
+    }
     private EventFlowManager eventFlowManager;
 
     private static final String HELP_MESSAGE = """

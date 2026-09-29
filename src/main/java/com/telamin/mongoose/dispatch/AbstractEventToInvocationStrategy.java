@@ -90,6 +90,19 @@ public abstract class AbstractEventToInvocationStrategy implements EventToInvoke
         processEvent(event);
     }
 
+    @Override
+    public void processEventFor(DataFlow target, Object event) {
+        if (!eventProcessorSinks.contains(target)) {
+            throw new IllegalArgumentException("invokerId: " + id + " " + target + " is not registered with this strategy");
+        }
+        ProcessorContext.setCurrentProcessor(target);
+        try {
+            dispatchEvent(event, target);
+        } finally {
+            ProcessorContext.removeCurrentProcessor();
+        }
+    }
+
     /**
      * Map the event to a callback invocation on the supplied eventProcessor
      *

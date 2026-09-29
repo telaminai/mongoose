@@ -160,6 +160,7 @@ public class MongooseServer implements MongooseServerController {
      * @param mongooseServerConfig application configuration used for thread, service, and event-flow setup
      */
     public MongooseServer(MongooseServerConfig mongooseServerConfig) {
+        flowManager.setReplayConfig(mongooseServerConfig == null ? null : mongooseServerConfig.getReplay());
         this.mongooseServerConfig = mongooseServerConfig;
 
         // Counters service — register FIRST, before any other service or
@@ -727,6 +728,15 @@ public class MongooseServer implements MongooseServerController {
      * @param feedConsumer  supplier creating the {@link DataFlow} instance
      * @throws IllegalArgumentException if a processor with {@code processorName} already exists in the group
      */
+    /** REPLAY mode: each group's replay driver, by group name (for status and tests). */
+    public java.util.Map<String, com.telamin.mongoose.replay.GroupReplayer> replayers() {
+        java.util.Map<String, com.telamin.mongoose.replay.GroupReplayer> out = new java.util.HashMap<>();
+        composingEventProcessorAgents.forEach((name, runner) -> {
+            if (runner.group().replayer() != null) out.put(name, runner.group().replayer());
+        });
+        return out;
+    }
+
     public void addEventProcessor(
             String processorName,
             String groupName,
@@ -737,7 +747,22 @@ public class MongooseServer implements MongooseServerController {
                 groupName,
                 ket -> {
                     //build a subscriber group
-                    ComposingEventProcessorAgent group = new ComposingEventProcessorAgent(groupName, flowManager, this, new DeadWheelScheduler(), registeredServices);
+                    // replay (spec-replay-recording R4): the group's scheduler follows the replay mode
+                    com.telamin.mongoose.replay.ReplayConfig replayCfg = flowManager.getReplayConfig();
+                    ComposingEventProcessorAgent group;
+                    switch (replayCfg.mode()) {
+                        case RECORD -> {
+                            var recorder = new com.telamin.mongoose.replay.GroupRecorder(replayCfg, System::currentTimeMillis);
+                            group = new ComposingEventProcessorAgent(groupName, flowManager, this,
+                                    new com.telamin.mongoose.replay.RecordingScheduler(recorder), registeredServices, recorder, null);
+                        }
+                        case REPLAY -> {
+                            var scheduler = new com.telamin.mongoose.replay.ReplayScheduler();
+                            group = new ComposingEventProcessorAgent(groupName, flowManager, this, scheduler, registeredServices,
+                                    null, routing -> new com.telamin.mongoose.replay.GroupReplayer(replayCfg, routing, scheduler));
+                        }
+                        default -> group = new ComposingEventProcessorAgent(groupName, flowManager, this, new DeadWheelScheduler(), registeredServices);
+                    }
                     //threading to be configured by file
                     AtomicCounter errorCounter = new AtomicCounter(new UnsafeBuffer(new byte[4096]), 0);
                     //run subscriber group
@@ -770,7 +795,9 @@ public class MongooseServer implements MongooseServerController {
             // Hand the capture service the listener this server configured, so it can fan out to it
             // and restore it on stop. Taken here, at attach: logRecordListener is a static that each
             // bootServer call overwrites, so reading it later would restore another server's listener.
-            auditCaptureService.attach(eventProcessor, processorName, logRecordListener);
+            // mongoose#46: the capture service changes this processor's audit sink on the group's own thread
+            auditCaptureService.attach(eventProcessor, processorName, logRecordListener,
+                    composingEventProcessorAgentRunner.group()::runOnAgentThread);
             if (auditCaptureConfig != null && auditCaptureConfig.getAutoStart() != null
                     && auditCaptureConfig.getAutoStart().contains(processorName)) {
                 auditCaptureService.start(processorName);

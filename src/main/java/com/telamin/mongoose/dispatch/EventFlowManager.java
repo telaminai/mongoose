@@ -68,6 +68,23 @@ public class EventFlowManager {
      * default before this call is the no-op service, so any pre-binding access
      * (typically only test harnesses) still returns a valid handle.
      */
+    private com.telamin.mongoose.replay.ReplayConfig replayConfig = com.telamin.mongoose.replay.ReplayConfig.OFF;
+
+    /** Set before any event source registers (spec-replay-recording R1). */
+    public void setReplayConfig(com.telamin.mongoose.replay.ReplayConfig replayConfig) {
+        this.replayConfig = replayConfig == null ? com.telamin.mongoose.replay.ReplayConfig.OFF : replayConfig;
+    }
+
+    public com.telamin.mongoose.replay.ReplayConfig getReplayConfig() {
+        return replayConfig;
+    }
+
+    /** How {@code sourceName}'s publisher wraps its items, or null when no such source is registered. */
+    public EventSource.EventWrapStrategy wrapStrategyOf(String sourceName) {
+        EventSource_QueuePublisher<?> p = eventSourceToQueueMap.get(new EventSourceKey<>(sourceName));
+        return p == null ? null : p.queuePublisher().getEventWrapStrategy();
+    }
+
     public void setCountersService(MongooseCountersService countersService) {
         this.countersService = Objects.requireNonNull(countersService, "countersService must be non-null");
     }
@@ -159,6 +176,10 @@ public class EventFlowManager {
                         eventSource));
 
         EventToQueuePublisher<T> queuePublisher = (EventToQueuePublisher<T>) eventSourceQueuePublisher.queuePublisher();
+        // R3: a journalled feed's items are journalled once, and carry their sequence number to every queue
+        if (replayConfig.mode() == com.telamin.mongoose.replay.ReplayConfig.Mode.RECORD && replayConfig.journalled(sourceName)) {
+            queuePublisher.journal(replayConfig.journal(), replayConfig.journalledFeeds().get(sourceName));
+        }
         eventSource.setEventToQueuePublisher(queuePublisher);
         return queuePublisher;
     }
@@ -197,7 +218,7 @@ public class EventFlowManager {
 
         Runnable unsubscribe = createUnsubscribeAction(sourcePublisher, name, keySubscriber);
 
-        return new EventQueueToEventProcessorAgent(eventQueue, eventMapperSupplier.get(), name)
+        return new EventQueueToEventProcessorAgent(eventQueue, eventMapperSupplier.get(), name, eventSourceKey.sourceName())
                 .withUnsubscribeAction(unsubscribe);
     }
 

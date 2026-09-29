@@ -29,14 +29,27 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     private final Logger logger;
     private com.telamin.mongoose.dispatch.RetryPolicy retryPolicy = com.telamin.mongoose.dispatch.RetryPolicy.defaultProcessingPolicy();
     private Runnable unsubscribeAction;
+    /** The source this queue drains (spec-replay-recording R2: an entry names its source). */
+    private final String sourceName;
+    /** RECORD mode: set by the group when it subscribes this queue. */
+    private com.telamin.mongoose.replay.GroupRecorder recorder;
 
     public EventQueueToEventProcessorAgent(
             OneToOneConcurrentArrayQueue<?> inputQueue,
             EventToInvokeStrategy eventToInvokeStrategy,
             String name) {
+        this(inputQueue, eventToInvokeStrategy, name, name);
+    }
+
+    public EventQueueToEventProcessorAgent(
+            OneToOneConcurrentArrayQueue<?> inputQueue,
+            EventToInvokeStrategy eventToInvokeStrategy,
+            String name,
+            String sourceName) {
         this.inputQueue = inputQueue;
         this.eventToInvokeStrategy = eventToInvokeStrategy;
         this.name = name;
+        this.sourceName = sourceName;
 
         logger = Logger.getLogger("EventQueueToEventProcessorAgent." + name);
     }
@@ -62,11 +75,22 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                 }
             }
 
+            // R3: a journalled item carries its feed's sequence number; the processor receives the bare item
+            long seq = -1;
+            if (event instanceof com.telamin.mongoose.replay.JournalledItem journalled) {
+                seq = journalled.seq();
+                event = journalled.item();
+            } else if (event instanceof com.telamin.fluxtion.runtime.event.NamedFeedEvent<?> named) {
+                seq = named.sequenceNumber();
+            }
+            java.util.Collection<DataFlow> targets = recorder == null ? null : eventToInvokeStrategy.registeredProcessors();
+
             int attempt = 0;
             boolean done = false;
             Throwable lastError = null;
             while (!done) {
                 try {
+                    if (recorder != null) recorder.beforeDispatch(targets);
                     if (event instanceof ReplayRecord replayRecord) {
                         eventToInvokeStrategy.processEvent(replayRecord.getEvent(), replayRecord.getWallClockTime());
                     } else if (event instanceof BroadcastEvent broadcastEvent) {
@@ -75,7 +99,10 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                         eventToInvokeStrategy.processEvent(event);
                     }
                     done = true;
+                    if (recorder != null) recorder.afterDispatch(sourceName, event, seq, targets);
                 } catch (Throwable t) {
+                    // D4: a retry is a failure; the recording is marked, not continued as if nothing happened
+                    if (recorder != null && attempt == 0) recorder.failed(sourceName, event, t, targets);
                     lastError = t;
                     attempt++;
                     String warnMsg = "event processing failed: agent=" + name +
@@ -120,6 +147,21 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
             processed++;
         }
         return processed;
+    }
+
+    /** The source this queue drains. */
+    public String sourceName() {
+        return sourceName;
+    }
+
+    /** RECORD mode: record what this queue dispatches (spec-replay-recording R2). */
+    public void recordWith(com.telamin.mongoose.replay.GroupRecorder recorder) {
+        this.recorder = recorder;
+    }
+
+    /** REPLAY mode: deliver a recorded input to {@code target} alone, as this queue delivered it (R5). */
+    public void replayTo(DataFlow target, Object event) {
+        eventToInvokeStrategy.processEventFor(target, event);
     }
 
     @Override
@@ -186,6 +228,9 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     private PoolTracker<?> trackerOf(Object event) {
         if (event == null) return null;
         Object candidate = event;
+        if (candidate instanceof com.telamin.mongoose.replay.JournalledItem journalled) {
+            candidate = journalled.item();
+        }
         if (candidate instanceof ReplayRecord rr) {
             candidate = rr.getEvent();
         }
