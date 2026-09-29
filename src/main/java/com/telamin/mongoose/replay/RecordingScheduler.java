@@ -1,5 +1,6 @@
 package com.telamin.mongoose.replay;
 
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
 import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.mongoose.dispatch.ProcessorContext;
 import com.telamin.mongoose.service.scheduler.DeadWheelScheduler;
@@ -11,6 +12,7 @@ import com.telamin.mongoose.service.scheduler.DeadWheelScheduler;
  * numbered as its own), and {@code TimerFired} is appended at the instant the processor read; a timer whose action
  * throws is appended as {@code Failed} instead, and the exception propagates as it does without recording.
  */
+@Experimental
 public class RecordingScheduler extends DeadWheelScheduler {
 
     private final GroupRecorder recorder;

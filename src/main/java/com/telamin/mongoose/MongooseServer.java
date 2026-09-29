@@ -6,11 +6,6 @@
 package com.telamin.mongoose;
 
 
-import com.telamin.mongoose.replay.GroupRecorder;
-import com.telamin.mongoose.replay.GroupReplayer;
-import com.telamin.mongoose.replay.RecordingScheduler;
-import com.telamin.mongoose.replay.ReplayConfig;
-import com.telamin.mongoose.replay.ReplayScheduler;
 import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered;
 import com.telamin.fluxtion.runtime.audit.LogRecordListener;
@@ -23,6 +18,11 @@ import com.telamin.mongoose.dutycycle.ComposingServiceAgent;
 import com.telamin.mongoose.dutycycle.NamedEventProcessor;
 import com.telamin.mongoose.dutycycle.ServiceAgent;
 import com.telamin.mongoose.internal.*;
+import com.telamin.mongoose.replay.GroupRecorder;
+import com.telamin.mongoose.replay.GroupReplayer;
+import com.telamin.mongoose.replay.RecordingScheduler;
+import com.telamin.mongoose.replay.ReplayConfig;
+import com.telamin.mongoose.replay.ReplayScheduler;
 import com.telamin.mongoose.service.CallBackType;
 import com.telamin.mongoose.service.EventFlowService;
 import com.telamin.mongoose.service.EventSource;

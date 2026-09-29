@@ -1,5 +1,6 @@
 package com.telamin.mongoose.replay;
 
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -22,6 +23,7 @@ import java.util.stream.Collectors;
  * {@code codec}; each entry's clock readings are {@code ;}-separated. Appended and flushed per entry; read back whole
  * when opened again. A sample, like {@link CsvEventJournal}.
  */
+@Experimental
 public final class CsvReplayStore implements ReplayStore, AutoCloseable {
 
     static final String HEADER = "processor,kind,source,seq,payload,reads";

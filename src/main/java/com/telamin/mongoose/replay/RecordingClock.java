@@ -1,5 +1,6 @@
 package com.telamin.mongoose.replay;
 
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
 import com.telamin.fluxtion.runtime.time.ClockStrategy;
 
 import java.util.ArrayList;
@@ -13,6 +14,7 @@ import java.util.function.LongSupplier;
  * rest are any later reads in the same cycle, such as an event the graph raised itself. Every read returns the live
  * time, so production is unchanged.
  */
+@Experimental
 public final class RecordingClock implements ClockStrategy {
     private final LongSupplier live;
     private boolean recording;

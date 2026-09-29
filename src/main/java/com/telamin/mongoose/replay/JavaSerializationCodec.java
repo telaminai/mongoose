@@ -1,5 +1,6 @@
 package com.telamin.mongoose.replay;
 
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -11,6 +12,7 @@ import java.io.UncheckedIOException;
  * An {@link EventCodec} using Java serialisation, for items that are {@code Serializable}. Each journalled feed names
  * its codec in {@link ReplayConfig}; a feed carrying non-serialisable or schema-evolving items supplies its own.
  */
+@Experimental
 public class JavaSerializationCodec implements EventCodec {
     @Override
     public byte[] encode(Object item) {

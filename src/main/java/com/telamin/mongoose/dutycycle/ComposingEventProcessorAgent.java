@@ -5,10 +5,6 @@
 
 package com.telamin.mongoose.dutycycle;
 
-import com.telamin.mongoose.replay.GroupRecorder;
-import com.telamin.mongoose.replay.GroupReplayer;
-import com.telamin.mongoose.replay.ReplayRoute;
-import com.telamin.mongoose.replay.ReplayRouting;
 import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
 import com.telamin.fluxtion.runtime.input.EventFeed;
@@ -16,6 +12,10 @@ import com.telamin.fluxtion.runtime.lifecycle.Lifecycle;
 import com.telamin.fluxtion.runtime.service.Service;
 import com.telamin.mongoose.MongooseServer;
 import com.telamin.mongoose.dispatch.EventFlowManager;
+import com.telamin.mongoose.replay.GroupRecorder;
+import com.telamin.mongoose.replay.GroupReplayer;
+import com.telamin.mongoose.replay.ReplayRoute;
+import com.telamin.mongoose.replay.ReplayRouting;
 import com.telamin.mongoose.service.EventSubscriptionKey;
 import com.telamin.mongoose.service.counters.MongooseCounter;
 import com.telamin.mongoose.service.scheduler.DeadWheelScheduler;
@@ -174,7 +174,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
 
     /**
      * Run {@code work} on this group's thread (mongoose#46): directly when called on it, or when the group is not
-     * running (then nothing else drives its processors); otherwise queued, and run at the start of the next duty cycle.
+     * running (then nothing else drives its processors); otherwise queued for the start of the next duty cycle. Best
+     * effort: work queued as the group closes may be left unrun, so a caller that needs it applied awaits it with a
+     * timeout ({@link AgentHandoff}), which then cancels it rather than leave it half applied.
      */
     public void runOnAgentThread(Runnable work) {
         Thread agent = agentThread;
@@ -186,8 +188,10 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         if (!onAgentThread.offer(once)) {
             throw new IllegalStateException("group " + roleName() + " cannot take more work from other threads");
         }
-        // the thread may have stopped between the check above and the offer: then nothing will poll the queue, so run
-        // it here; the claim makes it run once, whichever of the two gets to it
+        // best effort, not a delivery guarantee: if the thread stopped between the check above and the offer, run it
+        // here (the claim makes it run once, whichever gets to it). A window remains (a close that drains before this
+        // offer and clears the thread after this re-read), in which the work is left unrun; a caller that awaits it
+        // times out, and AgentHandoff then cancels it, so nothing is half applied
         Thread after = agentThread;
         if (after == null || !after.isAlive()) once.run();
     }

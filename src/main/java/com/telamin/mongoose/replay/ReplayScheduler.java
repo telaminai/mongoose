@@ -1,5 +1,6 @@
 package com.telamin.mongoose.replay;
 
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
 import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.mongoose.dispatch.ProcessorContext;
 import com.telamin.mongoose.service.scheduler.DeadWheelScheduler;
@@ -14,6 +15,7 @@ import java.util.Map;
  * the replay's. Everything else in the group (a processor that is not replayed, or a call outside any processor) gets
  * the live scheduler it inherits: armed on the wheel, fired by the group's duty cycle, on live time.
  */
+@Experimental
 public class ReplayScheduler extends DeadWheelScheduler {
 
     private final Map<DataFlow, Map<Long, Runnable>> actions = new IdentityHashMap<>();
