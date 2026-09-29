@@ -10,6 +10,7 @@ You’ll learn:
 - How to register commands from processors and services using AdminCommandRegistry
 - Command function signature, arguments, and output/error channels
 - How commands are dispatched through the event flow (asynchronously) or executed directly
+- How a processor's command runs in its event cycle, and audits like an event
 - How to invoke commands from a CLI or programmatically
 - Tips, patterns, and references in this repository
 
@@ -53,7 +54,8 @@ AdminCommandRegistry (via @ServiceRegistered) and register commands. When a comm
   the caller thread.
 
 This lets you choose between async delivery into a processor’s single-threaded context, or immediate synchronous
-execution.
+execution. A command delivered to a processor runs in that processor's event cycle: see
+[Admin commands in the event cycle](#admin-commands-in-the-event-cycle).
 
 ## Registering a command
 
@@ -191,7 +193,78 @@ What happens under the hood:
 
 - The AdminCommandProcessor looks up your registered command. If it was registered inside a processor context, it
   publishes an AdminCommand event into that processor’s input queue and the AdminCommandInvoker executes it on the
-  processor’s agent thread. Otherwise, it executes immediately in the caller thread.
+  processor’s agent thread, in the processor's event cycle (next section). Otherwise, it executes immediately in the
+  caller thread.
+
+## Admin commands in the event cycle
+
+A command registered by a processor runs on the processor's agent thread as an event cycle of that processor, so it
+audits like an event: it has its own record in the audit log, the node's `auditLog` writes land in that record, and
+the processor's clock takes the command's instant. Without this, a command's audit writes had no record of their own
+and spliced into the next event's record.
+
+There are two ways to register one.
+
+### `registerCommand`: a function, run as its own cycle
+
+```java
+@ServiceRegistered
+public void admin(AdminCommandRegistry registry, String name) {
+    registry.registerCommand("quotes.refresh", (args, out, err) -> {
+        // runs in the processor's event cycle; audit writes land in this command's own record
+        getContext().getParentDataFlow().onEvent("DEMO-refresh");   // queued: handled AFTER the command returns
+        out.accept("refreshed");
+    });
+}
+```
+
+On a processor built with **fluxtion runtime 1.1.0 or later**, the invoker runs the function through
+`DataFlow.runInEventCycle(new AdminCommandEvent(name, args), function)`:
+
+- the audit record names the command (`AdminCommandEvent`, with its name and arguments);
+- an event the function raises is queued, and is dispatched after the command, as its own cycle;
+- nothing downstream reacts to the command itself. A command that needs the graph to react raises an event, as
+  above, or is signal-routed (below).
+
+A processor generated before fluxtion runtime 1.1.0 has no `runInEventCycle` implementation. There the invoker
+brackets the function with the processor's own audit calls. The command still gets its own audit record, but an event
+it raises is dispatched at once, inside the command. Regenerating the processor with a current Fluxtion generator
+gives it the event-cycle path.
+
+### `registerSignalCommand`: an event the graph handles
+
+```java
+@ServiceRegistered
+public void admin(AdminCommandRegistry registry, String name) {
+    registry.registerSignalCommand("alarm.reset");
+}
+
+@OnEventHandler(filterString = "admin:alarm.reset")
+public boolean reset(Signal<AdminCommandRequest> signal) {
+    raised = false;
+    auditLog.info("reset", true);
+    signal.getValue().getOutput().accept("alarm cleared");      // the reply
+    return true;                                                // propagates, as any event handler's result does
+}
+```
+
+The processor receives `onEvent(new Signal<>("admin:alarm.reset", request))`: an ordinary event. So the command is
+audited, and the state it changes propagates to downstream nodes as any event's does. A handler replies through the
+request's `getOutput()` or `getErrOutput()`. A command that no handler replied to is answered with an error
+(`... no handler replied`). Use this form when the command should drive the graph, not just act on one node.
+
+Tests that show both:
+
+- [RunInEventCycleAdminTest.java]({{source_root}}/test/java/com/telamin/mongoose/replay/RunInEventCycleAdminTest.java):
+  a function's raised event runs after it, as its own cycle, and a command that throws runs once
+- [SignalAdminCommandTest.java]({{source_root}}/test/java/com/telamin/mongoose/replay/SignalAdminCommandTest.java):
+  a signal-routed command, its reply, and the no-reply error
+- [GeneratedAdminAuditTest.java]({{source_root}}/test/java/com/telamin/mongoose/replay/generated/GeneratedAdminAuditTest.java)
+  with [AlarmNodes.java]({{source_root}}/test/java/com/telamin/mongoose/replay/generated/AlarmNodes.java): on a
+  generated processor, each form's own audit record, and propagation for the signal-routed one
+
+Admin commands are also recorded and replayed with the processor's other inputs: see
+[Record and replay a processor](how-to-record-and-replay-a-processor.md).
 
 ## Command function signature and args
 
@@ -208,7 +281,8 @@ void processAdminCommand(List<String> args, Consumer<OUT> out, Consumer<ERR> err
 ## Tips and patterns
 
 - Keep commands small and fast. If you need to run in a processor context, the infrastructure will deliver your command
-  asynchronously to that single‑threaded agent.
+  asynchronously to that single‑threaded agent, where it runs as an event cycle and blocks the processor's other
+  events while it runs.
 - Validate args and produce helpful `err` messages; don’t throw unless exceptional.
 - For long operations, consider returning a quick acknowledgement and performing the work asynchronously; stream
   progress to `out` if appropriate.

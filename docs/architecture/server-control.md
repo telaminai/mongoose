@@ -79,7 +79,9 @@ Notes:
 
 When your command is registered from within a processor context, AdminCommandProcessor wires an event queue per
 command (keyed as "adminCommand.<name>") and subscribes the owning processor. When invoked, the command is delivered via
-that queue and executed on the correct processor thread. Implementation reference:
+that queue and executed on the correct processor thread, as an event cycle of that processor: it audits like an
+event ([details](../example/how-to/how-to-write-an-admin-command.md#admin-commands-in-the-event-cycle)).
+Implementation reference:
 
 - queue registration and subscription: AdminCommandProcessor.addCommand(...)
 - registration behavior based on ProcessorContext: AdminCommandProcessor.registerCommand(...)
