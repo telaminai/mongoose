@@ -98,6 +98,8 @@ for name,path,old,new,test in CONTROLS:
         p.write_bytes(orig)
     restored=hashlib.sha256(p.read_bytes()).hexdigest()==h
     results.append((name,verdict,restored)); print(name, verdict, 'restored' if restored else 'NOT RESTORED', '|', message, flush=True)
+detected=('caught','caught-by-timeout','error')
 print(sum(1 for r in results if r[1]=='caught'), 'of', len(results), 'caught by the named assertion;',
-      sum(1 for r in results if r[1]=='caught-by-timeout'), 'by a timeout;',
-      sum(1 for r in results if r[1] not in ('caught','caught-by-timeout')), 'not caught')
+      sum(1 for r in results if r[1]=='caught-by-timeout'), 'by an await running out;',
+      sum(1 for r in results if r[1]=='error'), 'by an error (read its message: a hang shows as a TimeoutException);',
+      sum(1 for r in results if r[1] not in detected), 'NOT detected')
