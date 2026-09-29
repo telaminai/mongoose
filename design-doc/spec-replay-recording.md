@@ -139,8 +139,10 @@ retains by policy.
 
 ## 3d. Admin commands and the event cycle (validated 2026-09-29)
 
-**They do not run in an event cycle yet.** `AdminCommandAuditTest`, through a real server, shows that a processor-owned
-command runs on the processor's thread, changes node state, and opens **no** event cycle: the processor's `onEvent`
+**Status (PR #48, fluxtion runtime 1.1.0): they do.** A lambda command runs through `DataFlow.runInEventCycle` as its own
+cycle (`AdminCommandAuditTest`, inverted), and a signal-routed one as an ordinary event. What follows is how it stood
+before, and why. **Before:** `AdminCommandAuditTest`, through a real server, showed that a processor-owned
+command ran on the processor's thread, changed node state, and opened **no** event cycle: the processor's `onEvent`
 count is unchanged, and the command's code runs outside any cycle. That is the cause the proposal
 (`origin/proposal/admin-commands-in-event-cycle`) describes: `AdminCommandInvoker` calls the lambda directly. The
 consequences (no audit record, `auditLog` lines spliced into the next record in a generated processor, no dirty
@@ -220,8 +222,10 @@ That nested record corrupts the log, and the queued-callback dispatch never runs
 
 **The proper form is a general Fluxtion trigger, not an admin API.** It runs a supplied action as an event cycle of the
 processor, with a supplied event as its audit context:
-`DataFlow.runInEventCycle(Object auditEvent, Runnable action)`, with a default of `action.run()` for older
-processors. A generated processor implements it with the boundary it already has for exported service calls:
+`DataFlow.runInEventCycle(Object auditEvent, Runnable action)`. Released in fluxtion runtime 1.1.0, whose interface
+default throws `UnsupportedOperationException` (the spike's default ran the action with no cycle, which a caller could
+not tell apart; the release made it refuse). A generated processor implements it with the boundary it already has for
+exported service calls:
 1. `auditEvent(auditEvent)`: every auditor sees it.
 2. `processing = true`.
 3. The action runs.
@@ -232,7 +236,10 @@ The event is not dispatched to any node, and nothing is marked dirty. Mongoose's
 `processor.runInEventCycle(new AdminCommandEvent(name, args), command::executeCommand)`: the trigger is the command,
 carrying all its state.
 
-**Spiked 2026-09-29, both Fluxtion repos, branch `spike/run-in-event-cycle`, not pushed.**
+**Spiked 2026-09-29, both Fluxtion repos, then released: fluxtion runtime 1.1.0 and compiler 1.0.76, hosted
+generator deployed.** The released form closes the cycle in a `finally`, orders the buffered calculation first, and gives
+an `Event` context its own event time; generated source has no `@Override`, so it also compiles on runtime 1.0.16. The
+spike's record:
 - Runtime (`b8e97b4`): the `DataFlow` default plus the `DefaultEventProcessor` override. `RunInEventCycleTest` 5/0/0/0,
   suite 274/0/0/1, three controls caught.
 - Compiler (`632d99a1`): the method is added in `javaTemplate.vsl` and in `InMemoryEventProcessor`, with **no change to the
@@ -241,13 +248,16 @@ carrying all its state.
   The only change to the pre-split goldens is the added method.
 - The audit log it produces: the command's record carries the node's line and nothing from downstream. The event it
   raised follows as its own record, with the publisher firing.
-- Mongoose (`a91a2fd`): the invoker uses `runInEventCycle` when the processor's class overrides it, and keeps the
-  bracket otherwise. `RunInEventCycleAdminTest` passes on 1.0.17-SNAPSHOT and skips on 1.0.15.
+- Mongoose (PR #48, on 1.1.0): the invoker calls `runInEventCycle` when the processor's class implements it (the method
+  is not the inherited default, `Method.isDefault`, decided once per class); a processor that inherits the refusing
+  default, or whose override refuses, has the command bracketed by its audit calls. Anything that fails before the
+  command runs answers the caller with an error and is reported; a command runs at most once (`AdminCommandFailureTest`).
+  `RunInEventCycleAdminTest` runs, no longer skipping.
 
 **Why a default method cannot run the cycle:** it sees only `DataFlow`'s public API. The auditor fan-out, the
 `processing` flag, `afterEvent()` and the callback queue are private to each implementation. Exposing them as public
-begin and end calls would let any caller leave a cycle half-open. So the default runs the action without a cycle, and
-each implementation overrides it. A template that wants the path closed makes the override throw.
+begin and end calls would let any caller leave a cycle half-open. So the default refuses (runtime 1.1.0), and each
+implementation overrides it. A template that wants the path closed makes the override throw; Mongoose then brackets.
 
 Security of such a trigger:
 1. It grants no new privilege in-process. Its caller holds the `DataFlow`, and can already call `onEvent`, exported

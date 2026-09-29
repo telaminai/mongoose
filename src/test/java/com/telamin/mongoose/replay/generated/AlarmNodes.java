@@ -35,6 +35,13 @@ public final class AlarmNodes {
                 auditLog.info("lambdaReset", true).info("at", context.getClock().getProcessTime());
                 out.accept("lambda cleared");
             });
+            // a lambda that raises an event: on runInEventCycle it is queued and runs after the command, as its own
+            // record; under the audit bracket (a processor generated before 1.1.0) it runs inside the command's record
+            registry.registerCommand("alarm.refresh", (args, out, err) -> {
+                auditLog.info("refreshRequested", true);
+                context.getParentDataFlow().onEvent(new Reading(5));
+                out.accept("refreshed");
+            });
         }
 
         @Start
