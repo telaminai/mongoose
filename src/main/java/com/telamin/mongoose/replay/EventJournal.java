@@ -1,6 +1,9 @@
 package com.telamin.mongoose.replay;
 
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
+
 /** Each journalled item once, by {@code (source, seq)}, encoded with its feed's codec. */
+@Experimental
 public interface EventJournal {
     void append(String source, long seq, byte[] encoded);
 

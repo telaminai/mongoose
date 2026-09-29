@@ -1,8 +1,9 @@
 package com.telamin.mongoose.replay;
 
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
+
 import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.fluxtion.runtime.event.NamedFeedEventImpl;
-import com.telamin.mongoose.dutycycle.EventQueueToEventProcessorAgent;
 import com.telamin.mongoose.service.EventSource;
 import com.telamin.mongoose.service.admin.AdminCommandRequest;
 import com.telamin.mongoose.service.admin.impl.AdminCommand;
@@ -19,6 +20,7 @@ import java.util.logging.Logger;
  * journal first. A timer fires when the stream reaches it. An admin command is rebuilt from the one the replayed
  * processor registered, with its replies collected. A {@code Failed} entry ends that processor's replay.
  */
+@Experimental
 public final class GroupReplayer {
 
     private static final Logger log = Logger.getLogger(GroupReplayer.class.getName());
@@ -28,6 +30,10 @@ public final class GroupReplayer {
     private final ReplayScheduler scheduler;
     private final List<Cursor> cursors = new ArrayList<>();
     private final List<String> adminReplies = new CopyOnWriteArrayList<>();
+    /** L2: what each replayed processor sent to its sinks, captured instead of delivered (D8). */
+    private final java.util.Map<String, List<Object>> outputs = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Map<DataFlow, java.util.Map<com.telamin.fluxtion.runtime.service.Service<?>,
+            com.telamin.fluxtion.runtime.service.Service<?>>> captured = new java.util.IdentityHashMap<>();
 
     private static final class Cursor {
         final String name;
@@ -69,6 +75,51 @@ public final class GroupReplayer {
         flow.setClockStrategy(clock);
         scheduler.replay(flow);
         cursors.add(new Cursor(name, flow, clock, config.store().entries(name)));
+    }
+
+    /**
+     * L2 (D8): the service {@code flow} is given. A replayed processor's sinks are replaced by a capture, so what it sends
+     * is kept for comparison ({@link #outputs}) and never delivered: a replay must not repeat a run's side effects
+     * (orders, messages) or feed another processor what it already received. Any other service, or any other processor,
+     * gets {@code service} itself. The same capture is returned for the same service, so it is deregistered too.
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public com.telamin.fluxtion.runtime.service.Service<?> serviceFor(DataFlow flow, com.telamin.fluxtion.runtime.service.Service<?> service) {
+        Cursor cursor = null;
+        for (Cursor c : cursors) {
+            if (c.flow == flow) cursor = c;
+        }
+        if (cursor == null || !(service.instance() instanceof com.telamin.fluxtion.runtime.output.MessageSink<?>)) return service;
+        String name = cursor.name;
+        return captured.computeIfAbsent(flow, f -> new java.util.IdentityHashMap<>()).computeIfAbsent(service,
+                s -> new com.telamin.fluxtion.runtime.service.Service(new CapturingSink(outputs.computeIfAbsent(name,
+                        n -> new CopyOnWriteArrayList<>())), s.serviceClass(), s.serviceName()));
+    }
+
+    /** What {@code processor} sent to its sinks during the replay, in order (L2: captured, not delivered). */
+    public List<Object> outputs(String processor) {
+        return List.copyOf(outputs.getOrDefault(processor, List.of()));
+    }
+
+    /** A sink that keeps what it is given, after the processor's own value mapper, and delivers nothing. */
+    private static final class CapturingSink implements com.telamin.fluxtion.runtime.output.MessageSink<Object> {
+        private final List<Object> into;
+        private java.util.function.Function<Object, ?> mapper = java.util.function.Function.identity();
+
+        CapturingSink(List<Object> into) {
+            this.into = into;
+        }
+
+        @Override
+        public void accept(Object value) {
+            into.add(mapper.apply(value));
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public void setValueMapper(java.util.function.Function<? super Object, ?> valueMapper) {
+            this.mapper = (java.util.function.Function<Object, ?>) valueMapper;
+        }
     }
 
     /** Whether {@code flow} is replayed here: its live inputs are then muted. */
@@ -128,7 +179,7 @@ public final class GroupReplayer {
     private boolean deliver(Cursor c, ReplayEntry entry) {
         switch (entry) {
             case ReplayEntry.Indexed i -> {
-                EventQueueToEventProcessorAgent route = routing.routeFor(i.source(), c.flow);
+                ReplayRoute route = routing.routeFor(i.source(), c.flow);
                 if (route == null) return waiting(c, "no route delivers " + i.source() + " to " + c.name);
                 byte[] bytes = config.journal().get(i.source(), i.seq());
                 if (bytes == null) return stop(c, "the journal holds no " + i.source() + "#" + i.seq());
@@ -143,7 +194,7 @@ public final class GroupReplayer {
                 return readsMatch(c, i.reads());
             }
             case ReplayEntry.Inline in -> {
-                EventQueueToEventProcessorAgent route = routing.routeFor(in.source(), c.flow);
+                ReplayRoute route = routing.routeFor(in.source(), c.flow);
                 if (route == null) return waiting(c, "no route delivers " + in.source() + " to " + c.name);
                 pin(c, in.reads());
                 route.replayTo(c.flow, rewrapped(in.source(), in.event(), in.seq()));
@@ -156,7 +207,7 @@ public final class GroupReplayer {
             }
             case ReplayEntry.AdminInvoked a -> {
                 AdminCommand template = routing.adminCommand(a.command());
-                EventQueueToEventProcessorAgent route = routing.routeFor("adminCommand." + a.command(), c.flow);
+                ReplayRoute route = routing.routeFor("adminCommand." + a.command(), c.flow);
                 if (template == null) return waiting(c, "admin command " + a.command() + " is not registered");
                 if (route == null) return waiting(c, "no route delivers admin command " + a.command() + " to " + c.name);
                 AdminCommandRequest request = new AdminCommandRequest();

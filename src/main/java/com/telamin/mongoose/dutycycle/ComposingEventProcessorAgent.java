@@ -5,6 +5,10 @@
 
 package com.telamin.mongoose.dutycycle;
 
+import com.telamin.mongoose.replay.GroupRecorder;
+import com.telamin.mongoose.replay.GroupReplayer;
+import com.telamin.mongoose.replay.ReplayRoute;
+import com.telamin.mongoose.replay.ReplayRouting;
 import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
 import com.telamin.fluxtion.runtime.input.EventFeed;
@@ -68,8 +72,8 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     private final MongooseCounter eventsProcessedCounter;
     private final MongooseCounter idleCyclesCounter;
     /** Replay (spec-replay-recording): at most one of these is set, by the server's replay mode. */
-    private final com.telamin.mongoose.replay.GroupRecorder recorder;
-    private final com.telamin.mongoose.replay.GroupReplayer replayer;
+    private final GroupRecorder recorder;
+    private final GroupReplayer replayer;
     /** mongoose#46: work other threads hand to this group's thread, drained in doWork. */
     private final org.agrona.concurrent.ManyToOneConcurrentArrayQueue<Runnable> onAgentThread =
             new org.agrona.concurrent.ManyToOneConcurrentArrayQueue<>(256);
@@ -88,9 +92,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
                                         MongooseServer mongooseServer,
                                         DeadWheelScheduler scheduler,
                                         ConcurrentHashMap<String, Service<?>> registeredServices,
-                                        com.telamin.mongoose.replay.GroupRecorder recorder,
-                                        java.util.function.Function<com.telamin.mongoose.replay.ReplayRouting,
-                                                com.telamin.mongoose.replay.GroupReplayer> replayerFactory) {
+                                        GroupRecorder recorder,
+                                        java.util.function.Function<ReplayRouting,
+                                                GroupReplayer> replayerFactory) {
         super(roleName, scheduler);
         this.recorder = recorder;
         this.replayer = replayerFactory == null ? null : replayerFactory.apply(routing());
@@ -247,15 +251,15 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     }
 
     /** REPLAY mode's driver for this group, or null. */
-    public com.telamin.mongoose.replay.GroupReplayer replayer() {
+    public GroupReplayer replayer() {
         return replayer;
     }
 
     /** The routes a replay takes: each source's queue agent in this group, as this group's config made it (D2). */
-    private com.telamin.mongoose.replay.ReplayRouting routing() {
-        return new com.telamin.mongoose.replay.ReplayRouting() {
+    private ReplayRouting routing() {
+        return new ReplayRouting() {
             @Override
-            public EventQueueToEventProcessorAgent routeFor(String source, DataFlow flow) {
+            public ReplayRoute routeFor(String source, DataFlow flow) {
                 for (var e : queueProcessorMap.entrySet()) {
                     if (e.getKey().eventSourceKey().sourceName().equals(source)
                             && e.getValue() instanceof EventQueueToEventProcessorAgent agent
@@ -300,7 +304,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
                 if (recorder != null) recorder.attach(namedEventProcessor.name(), eventProcessor);
                 if (replayer != null) replayer.attach(namedEventProcessor.name(), eventProcessor);
                 eventProcessor.registerService(schedulerService);
-                registeredServices.values().forEach(eventProcessor::registerService);
+                registeredServices.values().forEach(svc -> eventProcessor.registerService(serviceFor(eventProcessor, svc)));
                 eventProcessor.addEventFeed(this);
                 if (eventProcessor instanceof Lifecycle) {
                     ((Lifecycle) eventProcessor).start();
@@ -332,6 +336,11 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         });
     }
 
+    /** The service a processor is given: REPLAY swaps a replayed processor's sinks for a capture (L2); else itself. */
+    private Service<?> serviceFor(DataFlow eventProcessor, Service<?> service) {
+        return replayer == null ? service : replayer.serviceFor(eventProcessor, service);
+    }
+
     /** Drains pending service-broadcast queues onto every running
      *  processor in this group. Runs on the agent thread so the
      *  per-processor {@code registerService} / {@code deRegisterService}
@@ -344,7 +353,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
                     registeredEventProcessors.values().forEach(np -> {
                         com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(np.eventProcessor());
                         try {
-                            np.eventProcessor().registerService(svc);
+                            np.eventProcessor().registerService(serviceFor(np.eventProcessor(), svc));
                         } finally {
                             com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
                         }
@@ -355,7 +364,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
                     registeredEventProcessors.values().forEach(np -> {
                         com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(np.eventProcessor());
                         try {
-                            np.eventProcessor().deRegisterService(svc);
+                            np.eventProcessor().deRegisterService(serviceFor(np.eventProcessor(), svc));
                         } finally {
                             com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
                         }

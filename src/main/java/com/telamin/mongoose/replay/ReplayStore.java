@@ -1,8 +1,11 @@
 package com.telamin.mongoose.replay;
 
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
+
 import java.util.List;
 
 /** Each processor's entries, in its input order. */
+@Experimental
 public interface ReplayStore {
     void append(String processor, ReplayEntry entry);
 

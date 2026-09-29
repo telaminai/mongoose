@@ -33,7 +33,10 @@ class TypedCallReplayAcceptanceTest {
     static final String SERVICE = "quoteControl", FEED = "asEvents", PROCESSOR = "quotes";
 
     record Server(MongooseServer server, QuoteControlService service, InMemoryMessageSink sink) implements AutoCloseable {
+        /** A replay's result is what the replayed processor sent, captured (L2); a live run's is the real sink's. */
         List<String> lines() {
+            GroupReplayer replayer = server.replayers().get("processor-agent");
+            if (replayer != null) return replayer.outputs(PROCESSOR).stream().map(String::valueOf).toList();
             return sink.getMessages().stream().map(String::valueOf).toList();
         }
 
@@ -66,7 +69,7 @@ class TypedCallReplayAcceptanceTest {
 
     static void await(Server s, int n) throws InterruptedException {
         long deadline = System.nanoTime() + 5_000_000_000L;
-        while (s.sink().getMessages().size() < n && System.nanoTime() < deadline) Thread.sleep(5);
+        while (s.lines().size() < n && System.nanoTime() < deadline) Thread.sleep(5);
         Thread.sleep(50);
     }
 
@@ -88,6 +91,17 @@ class TypedCallReplayAcceptanceTest {
         try (Server r = boot(ReplayConfig.replay(Set.of(PROCESSOR), Map.of(), null, store))) {
             await(r, 2);
             assertEquals(live, r.lines(), "the driver makes the same service calls, at the same instants");
+        }
+        // witness: the same calls, recorded in the other order, replay in that order - so the store decides it
+        InMemoryReplayStore reversed = new InMemoryReplayStore();
+        java.util.List<ReplayEntry> backwards = new java.util.ArrayList<>(entries);
+        java.util.Collections.reverse(backwards);
+        backwards.forEach(e -> reversed.append(PROCESSOR, e));
+        try (Server w = boot(ReplayConfig.replay(Set.of(PROCESSOR), Map.of(), null, reversed))) {
+            await(w, 2);
+            assertEquals(2, w.lines().size(), "the witness replays both calls: " + w.lines());
+            assertEquals(List.of(live.get(1), live.get(0)).stream().map(l -> l.replaceAll(" time=\\d+", "")).toList(),
+                    w.lines().stream().map(l -> l.replaceAll(" time=\\d+", "")).toList(), "in the store's order");
         }
     }
 }

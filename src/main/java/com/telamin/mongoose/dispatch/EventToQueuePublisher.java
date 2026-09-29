@@ -5,6 +5,9 @@
 
 package com.telamin.mongoose.dispatch;
 
+import com.telamin.mongoose.replay.EventCodec;
+import com.telamin.mongoose.replay.EventJournal;
+import com.telamin.mongoose.replay.JournalledItem;
 import com.telamin.fluxtion.runtime.event.NamedFeedEvent;
 import com.telamin.fluxtion.runtime.event.NamedFeedEventImpl;
 import com.telamin.fluxtion.runtime.event.ReplayRecord;
@@ -66,14 +69,14 @@ public class EventToQueuePublisher<T> {
     private Function<T, ?> dataMapper = Function.identity();
     private int cacheReadPointer = 0;
     /** Replay R3: when set, each item is journalled once, encoded, and carries its sequence number to the queue. */
-    private com.telamin.mongoose.replay.EventJournal journal;
-    private com.telamin.mongoose.replay.EventCodec journalCodec;
+    private EventJournal journal;
+    private EventCodec journalCodec;
     private final boolean logWarning = log.isLoggable(Level.WARNING);
     private final boolean logInfo = log.isLoggable(Level.INFO);
     private final boolean logFine = log.isLoggable(Level.FINE);
 
     /** Journal this feed's items (spec-replay-recording R3). */
-    public void journal(com.telamin.mongoose.replay.EventJournal journal, com.telamin.mongoose.replay.EventCodec codec) {
+    public void journal(EventJournal journal, EventCodec codec) {
         this.journal = journal;
         this.journalCodec = codec;
     }
@@ -239,7 +242,7 @@ public class EventToQueuePublisher<T> {
             OneToOneConcurrentArrayQueue<Object> targetQueue = namedQueue.targetQueue();
             switch (eventWrapStrategy) {
                 case SUBSCRIPTION_NOWRAP, BROADCAST_NOWRAP -> writeToQueue(namedQueue,
-                        journal == null ? mappedItem : new com.telamin.mongoose.replay.JournalledItem(seq, mappedItem));
+                        journal == null ? mappedItem : new JournalledItem(seq, mappedItem));
                 case SUBSCRIPTION_NAMED_EVENT, BROADCAST_NAMED_EVENT -> {
                     //TODO reduce memory pressure by using copy or a recyclable wrapper if needed
                     NamedFeedEventImpl<Object> namedFeedEvent = new NamedFeedEventImpl<>(name)
@@ -306,7 +309,7 @@ public class EventToQueuePublisher<T> {
     }
 
     private PoolTracker<?> trackerOf(Object item) {
-        if (item instanceof com.telamin.mongoose.replay.JournalledItem journalled) {
+        if (item instanceof JournalledItem journalled) {
             item = journalled.item();
         }
         if (item instanceof PoolAware pa) {

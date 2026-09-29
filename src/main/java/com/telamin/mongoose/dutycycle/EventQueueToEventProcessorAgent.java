@@ -5,6 +5,9 @@
 
 package com.telamin.mongoose.dutycycle;
 
+import com.telamin.mongoose.replay.GroupRecorder;
+import com.telamin.mongoose.replay.JournalledItem;
+import com.telamin.mongoose.replay.ReplayRoute;
 import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
 import com.telamin.fluxtion.runtime.event.BroadcastEvent;
@@ -21,7 +24,7 @@ import java.util.logging.Logger;
 
 @Experimental
 @Log
-public class EventQueueToEventProcessorAgent implements EventQueueToEventProcessor {
+public class EventQueueToEventProcessorAgent implements EventQueueToEventProcessor, ReplayRoute {
 
     private final OneToOneConcurrentArrayQueue<?> inputQueue;
     private final EventToInvokeStrategy eventToInvokeStrategy;
@@ -32,7 +35,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     /** The source this queue drains (spec-replay-recording R2: an entry names its source). */
     private final String sourceName;
     /** RECORD mode: set by the group when it subscribes this queue. */
-    private com.telamin.mongoose.replay.GroupRecorder recorder;
+    private GroupRecorder recorder;
 
     public EventQueueToEventProcessorAgent(
             OneToOneConcurrentArrayQueue<?> inputQueue,
@@ -80,7 +83,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
             long seq = -1;
             java.util.Collection<DataFlow> targets = null;
             if (recorder != null) {
-                if (event instanceof com.telamin.mongoose.replay.JournalledItem journalled) {
+                if (event instanceof JournalledItem journalled) {
                     seq = journalled.seq();
                     event = journalled.item();
                 } else if (event instanceof com.telamin.fluxtion.runtime.event.NamedFeedEvent<?> named) {
@@ -183,7 +186,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     }
 
     /** RECORD mode: record what this queue dispatches (spec-replay-recording R2). */
-    public void recordWith(com.telamin.mongoose.replay.GroupRecorder recorder) {
+    public void recordWith(GroupRecorder recorder) {
         this.recorder = recorder;
     }
 
@@ -194,6 +197,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     }
 
     /** REPLAY mode: deliver a recorded input to {@code target} alone, as this queue delivered it (R5). */
+    @Override
     public void replayTo(DataFlow target, Object event) {
         eventToInvokeStrategy.processEventFor(target, event);
     }
@@ -262,7 +266,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     private PoolTracker<?> trackerOf(Object event) {
         if (event == null) return null;
         Object candidate = event;
-        if (recorder != null && candidate instanceof com.telamin.mongoose.replay.JournalledItem journalled) {
+        if (recorder != null && candidate instanceof JournalledItem journalled) {
             candidate = journalled.item();
         }
         if (candidate instanceof ReplayRecord rr) {

@@ -1,5 +1,7 @@
 package com.telamin.mongoose.replay;
 
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
+
 import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.mongoose.service.admin.impl.AdminCommand;
 
@@ -15,6 +17,7 @@ import java.util.logging.Logger;
  * thread: every Mongoose path into a processor does (R7 makes {@code audit.*} do so too), so a processor's entries are
  * appended in its true input order with no locking.
  */
+@Experimental
 public final class GroupRecorder {
 
     private static final Logger log = Logger.getLogger(GroupRecorder.class.getName());

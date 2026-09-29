@@ -194,7 +194,6 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
         }
     }
 
-    /** Per-processor state holder — keeps the wiring local. */
     /** Wait for a sink change the processor's agent thread applies; refused by name rather than hanging. */
     private static void awaitOnAgent(com.telamin.mongoose.dutycycle.AgentHandoff applied, String processorName, String what) {
         try {
@@ -210,6 +209,7 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
         }
     }
 
+    /** Per-processor state holder — keeps the wiring local. */
     private static final class ProcessorSink {
         private final String processorName;
         private DataFlow dataFlow;

@@ -1,5 +1,7 @@
 package com.telamin.mongoose.replay;
 
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
+
 import java.util.Map;
 import java.util.Set;
 
@@ -15,6 +17,7 @@ import java.util.Set;
  * @param deliveryTimeout  REPLAY: how long an entry may wait for its route or admin command before the replay stops,
  *                         saying why (5 s by default)
  */
+@Experimental
 public record ReplayConfig(Mode mode, Set<String> processors, Map<String, EventCodec> journalledFeeds,
                            EventJournal journal, ReplayStore store, java.util.function.LongSupplier clock,
                            java.time.Duration deliveryTimeout) {

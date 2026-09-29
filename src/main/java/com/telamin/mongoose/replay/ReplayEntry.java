@@ -1,5 +1,7 @@
 package com.telamin.mongoose.replay;
 
+import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
+
 import java.util.List;
 
 /**
@@ -12,6 +14,7 @@ import java.util.List;
  * node's own live read. A replay plays them back in the same order, so all of them are reproduced (found on CI: a
  * graph-raised event's second read fell a millisecond after the first, and a replay pinned to one instant differed).
  */
+@Experimental
 public sealed interface ReplayEntry {
 
     /** The instant the processor read first for this input: its {@code processTime}. */

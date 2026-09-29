@@ -48,14 +48,23 @@ class ReplayReviewRegressionTest {
 
     record Server(MongooseServer server, InMemoryEventSource<Object> orders, ReplayableEventSource controls,
                   InMemoryMessageSink sink) implements AutoCloseable {
+        /** A replay's result is what the replayed processor sent, captured (L2); a live run's is the real sink's. */
         List<String> lines() {
+            GroupReplayer replayer = server.replayers().get("processor-agent");
+            return replayer != null
+                    ? replayer.outputs(PROCESSOR).stream().map(String::valueOf).toList()
+                    : sink.getMessages().stream().map(String::valueOf).toList();
+        }
+
+        /** What reached the real sink, replay or not. */
+        List<String> sinkLines() {
             return sink.getMessages().stream().map(String::valueOf).toList();
         }
 
         void await(int n) throws InterruptedException {
             long deadline = System.nanoTime() + 5_000_000_000L;
-            while (sink.getMessages().size() < n && System.nanoTime() < deadline) Thread.sleep(5);
-            assertTrue(sink.getMessages().size() >= n, "expected " + n + " lines: " + lines());
+            while (lines().size() < n && System.nanoTime() < deadline) Thread.sleep(5);
+            assertTrue(lines().size() >= n, "expected " + n + " lines: " + lines());
         }
 
         GroupReplayer replayer() {
@@ -266,9 +275,20 @@ class ReplayReviewRegressionTest {
         try (Server r = boot(replaying(new InMemoryReplayStore(), new InMemoryEventJournal()), true, false)) {
             r.controls().offer("arm");                                  // the OTHER processor arms a 40 ms timer
             long deadline = System.nanoTime() + 3_000_000_000L;
-            while (r.lines().stream().noneMatch(l -> l.startsWith("timeout")) && System.nanoTime() < deadline) Thread.sleep(10);
-            assertTrue(r.lines().stream().anyMatch(l -> l.startsWith("timeout")),
-                    "a processor that is not replayed runs on the live scheduler: " + r.lines());
+            while (r.sinkLines().stream().noneMatch(l -> l.startsWith("timeout")) && System.nanoTime() < deadline) Thread.sleep(10);
+            assertTrue(r.sinkLines().stream().anyMatch(l -> l.startsWith("timeout")),
+                    "a processor that is not replayed runs on the live scheduler, and its output is delivered: " + r.sinkLines());
+        }
+    }
+
+    @Test
+    void l2_aReplayedProcessorsOutputs_areCaptured_andNeverDelivered() throws Exception {
+        InMemoryReplayStore store = new InMemoryReplayStore();
+        store.append(PROCESSOR, new ReplayEntry.Inline(CONTROLS, "suspend", List.of(1_000L)));
+        try (Server r = boot(replaying(store, new InMemoryEventJournal()), false, false)) {
+            r.awaitReplayDone();
+            assertEquals(List.of("control=suspend time=1000"), r.lines(), "captured for comparison");
+            assertEquals(List.of(), r.sinkLines(), "and a replay repeats no side effect: nothing reached the real sink");
         }
     }
 

@@ -5,6 +5,7 @@
 
 package com.telamin.mongoose.config;
 
+import com.telamin.mongoose.replay.ReplayConfig;
 import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
 import com.telamin.mongoose.MongooseEventHandler;
@@ -118,7 +119,7 @@ public class MongooseServerConfig {
     private PerformanceMonitoringConfig performanceMonitoring;
 
     /** Record or replay processors' inputs (spec-replay-recording R1); off by default. */
-    private com.telamin.mongoose.replay.ReplayConfig replay;
+    private ReplayConfig replay;
 
     /**
      * Gets the list of event handler groups, initializing if {@code null} and adding
@@ -472,7 +473,7 @@ public class MongooseServerConfig {
         private final List<ThreadConfig> agentThreads = new ArrayList<>();
         private IdleStrategy idleStrategy;
         private final Map<CallBackType, Supplier<EventToInvokeStrategy>> eventInvokeStrategies = new HashMap<>();
-        private com.telamin.mongoose.replay.ReplayConfig replay;
+        private ReplayConfig replay;
 
         private Builder() {
         }
@@ -570,18 +571,18 @@ public class MongooseServerConfig {
             return this;
         }
 
+        /** Record or replay processors' inputs (spec-replay-recording R1). */
+        public Builder replay(ReplayConfig replay) {
+            this.replay = replay;
+            return this;
+        }
+
         /**
          * Convenience for the common ON_EVENT callback type.
          *
          * @param factory supplier that produces the strategy instance
          * @return this builder
          */
-        /** Record or replay processors' inputs (spec-replay-recording R1). */
-        public Builder replay(com.telamin.mongoose.replay.ReplayConfig replay) {
-            this.replay = replay;
-            return this;
-        }
-
         public Builder onEventInvokeStrategy(Supplier<EventToInvokeStrategy> factory) {
             return eventInvokeStrategy(CallBackType.ON_EVENT_CALL_BACK, factory);
         }

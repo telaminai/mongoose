@@ -41,25 +41,38 @@ class ReplayRecordingAcceptanceTest {
     /** A booted server and its handles. */
     record Server(MongooseServer server, InMemoryEventSource<Object> orders, InMemoryEventSource<Object> controls,
                   AdminCommandProcessor admin, InMemoryMessageSink sink) implements AutoCloseable {
+        /** A replay's result is what the replayed processor sent, captured (L2); a live run's is the real sink's. */
         List<String> lines() {
+            GroupReplayer replayer = server.replayers().get("processor-agent");
+            return replayer != null
+                    ? replayer.outputs(PROCESSOR).stream().map(String::valueOf).toList()
+                    : sink.getMessages().stream().map(String::valueOf).toList();
+        }
+
+        /** What reached the real sink, replay or not. */
+        List<String> sinkLines() {
             return sink.getMessages().stream().map(String::valueOf).toList();
         }
 
         void await(int n) throws InterruptedException {
             long deadline = System.nanoTime() + 5_000_000_000L;
-            while (sink.getMessages().size() < n && System.nanoTime() < deadline) Thread.sleep(5);
-            assertTrue(sink.getMessages().size() >= n, "expected " + n + " lines: " + lines());
+            while (lines().size() < n && System.nanoTime() < deadline) Thread.sleep(5);
+            assertTrue(lines().size() >= n, "expected " + n + " lines: " + lines());
         }
 
         GroupReplayer replayer() {
             return server.replayers().get("processor-agent");
         }
 
+        /** Until the replay has completed and emitted {@code lines}; fails, saying where it is, if it does not. */
         void awaitReplay(int lines) throws InterruptedException {
             long deadline = System.nanoTime() + 5_000_000_000L;
-            while ((replayer() == null || !replayer().complete() || sink.getMessages().size() < lines) && System.nanoTime() < deadline) {
+            while ((replayer() == null || !replayer().complete() || lines().size() < lines) && System.nanoTime() < deadline) {
                 Thread.sleep(5);
             }
+            assertTrue(replayer() != null && replayer().complete() && lines().size() >= lines,
+                    "the replay did not complete with " + lines + " lines: complete=" + (replayer() != null && replayer().complete())
+                            + " stopped=" + (replayer() == null ? null : replayer().stopped(PROCESSOR)) + " lines=" + lines());
             Thread.sleep(50);
         }
 
@@ -161,6 +174,7 @@ class ReplayRecordingAcceptanceTest {
         bySource.addAll(entries.stream().filter(e -> e instanceof ReplayEntry.Inline).toList());
         try (Server w = boot(replaying(storeOf(bySource), journal))) {
             w.awaitReplay(6);
+            assertEquals(live.size(), w.lines().size(), "the witness replays everything, in another order");
             assertNotEquals(live, w.lines(), "the order across sources is the processor's");
         }
     }
@@ -192,6 +206,7 @@ class ReplayRecordingAcceptanceTest {
         // witness: without the firing, the timeout never happens in the replay
         try (Server w = boot(replaying(storeOf(entries.stream().filter(e -> !(e instanceof ReplayEntry.TimerFired)).toList()), journal))) {
             w.awaitReplay(3);
+            assertEquals(live.size() - 1, w.lines().size(), "the witness replays every input but the firing");
             assertNotEquals(live, w.lines(), "the firing is an input");
         }
     }
@@ -267,9 +282,15 @@ class ReplayRecordingAcceptanceTest {
     @Test
     void R1_offChangesNothing() throws Exception {
         try (Server s = boot(null)) {
+            long before = System.currentTimeMillis();
             s.orders().offer("ord-1");
             s.await(1);
-            assertFalse(s.server().replayers().containsKey("processor-agent"));
+            long after = System.currentTimeMillis();
+            assertFalse(s.server().replayers().containsKey("processor-agent"), "no replay driver");
+            assertEquals(1, s.lines().size(), "the input is handled once: " + s.lines());
+            long time = times(s.lines()).get(0);
+            assertTrue(time >= before && time <= after,
+                    "on the live system clock, neither a recording nor a replay clock: " + time + " not in [" + before + "," + after + "]");
         }
     }
 }
