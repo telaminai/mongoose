@@ -117,17 +117,17 @@ public final class GroupReplayer {
                         || wrap == EventSource.EventWrapStrategy.BROADCAST_NAMED_EVENT
                         ? new NamedFeedEventImpl<>(i.source()).data(item).sequenceNumber(i.seq())
                         : item;
-                pin(c, i.instant());
+                pin(c, i.reads());
                 route.replayTo(c.flow, event);
             }
             case ReplayEntry.Inline in -> {
                 EventQueueToEventProcessorAgent route = routing.routeFor(in.source(), c.flow);
                 if (route == null) return false;
-                pin(c, in.instant());
+                pin(c, in.reads());
                 route.replayTo(c.flow, in.event());
             }
             case ReplayEntry.TimerFired t -> {
-                pin(c, t.instant());
+                pin(c, t.reads());
                 scheduler.fire(c.flow, t.seq());
             }
             case ReplayEntry.AdminInvoked a -> {
@@ -139,7 +139,7 @@ public final class GroupReplayer {
                 request.setArguments(a.args());
                 request.setOutput(o -> adminReplies.add(c.name + ": " + o));
                 request.setErrOutput(o -> adminReplies.add(c.name + " err: " + o));
-                pin(c, a.instant());
+                pin(c, a.reads());
                 route.replayTo(c.flow, new AdminCommand(template, request));
             }
             case ReplayEntry.Failed f -> {
@@ -149,9 +149,10 @@ public final class GroupReplayer {
         return true;
     }
 
-    private void pin(Cursor c, long instant) {
-        scheduler.setNow(instant);
-        c.clock.pin(instant);
+    /** The entry's clock readings, played back in order: its processTime first, then any later reads in its cycle. */
+    private void pin(Cursor c, List<Long> reads) {
+        scheduler.setNow(reads.get(0));
+        c.clock.play(reads);
     }
 
     private boolean stop(Cursor c, String why) {

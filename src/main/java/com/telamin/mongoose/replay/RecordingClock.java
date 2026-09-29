@@ -2,19 +2,21 @@ package com.telamin.mongoose.replay;
 
 import com.telamin.fluxtion.runtime.time.ClockStrategy;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.LongSupplier;
 
 /**
- * A processor's clock that stays live, and captures the instant the processor used for each input (D3). The
- * processor's {@code Clock} auditor reads its strategy once when an input arrives, before any node runs; the dispatcher
- * {@link #arm arms} this clock just before it dispatches, so the first read after that is the input's
- * {@code processTime}. Every read returns the live time.
+ * A processor's clock that stays live, and records every reading the processor takes while it handles an input (D3).
+ * The dispatcher {@link #arm arms} it just before it dispatches and {@link #captured takes} the readings just after.
+ * The first is the input's {@code processTime} (the processor's {@code Clock} auditor reads before any node runs); the
+ * rest are any later reads in the same cycle, such as an event the graph raised itself. Every read returns the live
+ * time, so production is unchanged.
  */
 public final class RecordingClock implements ClockStrategy {
     private final LongSupplier live;
-    private boolean armed;
-    private boolean caught;
-    private long captured;
+    private boolean recording;
+    private final List<Long> reads = new ArrayList<>();
 
     public RecordingClock(LongSupplier live) {
         this.live = live;
@@ -23,22 +25,18 @@ public final class RecordingClock implements ClockStrategy {
     @Override
     public long getWallClockTime() {
         long now = live.getAsLong();
-        if (armed) {
-            captured = now;
-            caught = true;
-            armed = false;
-        }
+        if (recording) reads.add(now);
         return now;
     }
 
     public void arm() {
-        armed = true;
-        caught = false;
+        recording = true;
+        reads.clear();
     }
 
-    /** The processor's read for the input just dispatched; or, if it made none (a call outside an event cycle), now. */
-    public long capturedOrNow() {
-        armed = false;
-        return caught ? captured : live.getAsLong();
+    /** The readings the processor took since {@link #arm}; if it took none (a call outside an event cycle), now. */
+    public List<Long> captured() {
+        recording = false;
+        return reads.isEmpty() ? List.of(live.getAsLong()) : List.copyOf(reads);
     }
 }

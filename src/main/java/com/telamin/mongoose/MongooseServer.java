@@ -752,7 +752,7 @@ public class MongooseServer implements MongooseServerController {
                     ComposingEventProcessorAgent group;
                     switch (replayCfg.mode()) {
                         case RECORD -> {
-                            var recorder = new com.telamin.mongoose.replay.GroupRecorder(replayCfg, System::currentTimeMillis);
+                            var recorder = new com.telamin.mongoose.replay.GroupRecorder(replayCfg, replayCfg.clock());
                             group = new ComposingEventProcessorAgent(groupName, flowManager, this,
                                     new com.telamin.mongoose.replay.RecordingScheduler(recorder), registeredServices, recorder, null);
                         }

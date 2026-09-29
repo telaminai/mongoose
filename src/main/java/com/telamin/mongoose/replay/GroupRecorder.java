@@ -64,15 +64,15 @@ public final class GroupRecorder {
         for (DataFlow t : targets) {
             Recorded r = byFlow.get(t);
             if (r == null) continue;
-            long instant = r.clock.capturedOrNow();
+            List<Long> reads = r.clock.captured();
             ReplayEntry entry;
             if (event instanceof AdminCommand admin && admin.getArgs() != null && !admin.getArgs().isEmpty()) {
                 List<String> args = admin.getArgs();
-                entry = new ReplayEntry.AdminInvoked(args.get(0), List.copyOf(args.subList(1, args.size())), instant);
+                entry = new ReplayEntry.AdminInvoked(args.get(0), List.copyOf(args.subList(1, args.size())), reads);
             } else if (seq >= 0 && config.journalled(source)) {
-                entry = new ReplayEntry.Indexed(source, seq, instant);
+                entry = new ReplayEntry.Indexed(source, seq, reads);
             } else {
-                entry = new ReplayEntry.Inline(source, event, instant);
+                entry = new ReplayEntry.Inline(source, event, reads);
             }
             config.store().append(r.name, entry);
         }
@@ -83,7 +83,7 @@ public final class GroupRecorder {
         for (DataFlow t : targets) {
             Recorded r = byFlow.get(t);
             if (r == null) continue;
-            config.store().append(r.name, new ReplayEntry.Failed(source, error + " on " + event, r.clock.capturedOrNow()));
+            config.store().append(r.name, new ReplayEntry.Failed(source, error + " on " + event, r.clock.captured().get(0)));
         }
     }
 
@@ -100,6 +100,6 @@ public final class GroupRecorder {
 
     public void timerFired(DataFlow flow, long seq) {
         Recorded r = byFlow.get(flow);
-        if (r != null) config.store().append(r.name, new ReplayEntry.TimerFired(seq, r.clock.capturedOrNow()));
+        if (r != null) config.store().append(r.name, new ReplayEntry.TimerFired(seq, r.clock.captured()));
     }
 }

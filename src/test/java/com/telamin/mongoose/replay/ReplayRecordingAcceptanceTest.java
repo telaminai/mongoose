@@ -120,7 +120,10 @@ class ReplayRecordingAcceptanceTest {
         InMemoryReplayStore store = new InMemoryReplayStore();
         InMemoryEventJournal journal = new InMemoryEventJournal();
         List<String> live;
-        try (Server s = boot(recording(store, journal))) {
+        // a live clock that moves 1 ms on EVERY read, so a graph-raised event's own read always differs from its
+        // input's (found on CI: a real clock moved a millisecond between them, and a replay pinned to one instant lost it)
+        java.util.concurrent.atomic.AtomicLong ticking = new java.util.concurrent.atomic.AtomicLong(1_767_258_000_000L);
+        try (Server s = boot(recording(store, journal).withClock(ticking::incrementAndGet))) {
             s.orders().offer("ord-1");     s.await(1);
             s.controls().offer("suspend"); s.await(2);
             s.orders().offer("ord-2");     s.await(4);  // and the breach the graph raises on it
@@ -130,6 +133,7 @@ class ReplayRecordingAcceptanceTest {
         }
         assertEquals(6, live.size(), live.toString());
         assertTrue(live.get(3).startsWith("breach=Breach[orderId=ord-2, live=2]"), live.toString());
+        assertTrue(times(live).get(3) > times(live).get(2), "the breach read the clock again, later: " + live);
         assertTrue(live.stream().noneMatch(l -> l.contains("JournalledItem")), "the processor received the bare items: " + live);
 
         // R2/R3: an index for each order (the journalled feed), the controls inline, never the graph's breach
@@ -176,7 +180,9 @@ class ReplayRecordingAcceptanceTest {
         assertTrue(live.get(2).startsWith("timeout armedAt="), live.toString());
         List<ReplayEntry> entries = store.entries(PROCESSOR);
         assertEquals(4, entries.size(), entries.toString());
-        assertEquals(new ReplayEntry.TimerFired(1, times(live).get(2)), entries.get(2), "recorded where it fired, at the instant read");
+        ReplayEntry.TimerFired fired = assertInstanceOf(ReplayEntry.TimerFired.class, entries.get(2), entries.toString());
+        assertEquals(1, fired.seq());
+        assertEquals(times(live).get(2), fired.instant(), "recorded where it fired, at the instant read");
 
         try (Server r = boot(replaying(store, journal))) {
             r.awaitReplay(4);
