@@ -324,6 +324,46 @@ class ReplayIndependentReviewTest {
         assertEquals(live, replayed.stream().sorted().toList(), "each processor replays what it, not the other, received");
     }
 
+    @Test
+    void f2_aReplayedHandlerThatChangesItsInput_doesNotChangeTheRecording() throws Exception {
+        InMemoryReplayStore store = new InMemoryReplayStore();
+        try (Server s = boot(ReplayConfig.record(Set.of("probe"), Map.of(), null, store), false, one())) {
+            s.feed().offer(new MutableValue(0));
+            s.awaitLive(1);
+        }
+        for (int run = 1; run <= 2; run++) {
+            try (Server r = boot(ReplayConfig.replay(Set.of("probe"), Map.of(), null, store), false, one())) {
+                r.awaitReplayDone();
+                assertEquals(List.of("value=0"), r.replayed("probe"), "replay " + run + " gives what was received");
+            }
+        }
+    }
+
+    /** Not Serializable: it cannot be copied, so it cannot be recorded as received. */
+    public static class Opaque {
+        @Override
+        public String toString() {
+            return "DEMO-opaque";
+        }
+    }
+
+    @Test
+    void f2_anInputThatCannotBeCopied_isRecordedFailed_notByReference() throws Exception {
+        InMemoryReplayStore store = new InMemoryReplayStore();
+        try (Server s = boot(ReplayConfig.record(Set.of("probe"), Map.of(), null, store), false, one())) {
+            s.feed().offer(new Opaque());
+            s.awaitLive(1);
+            assertEquals(List.of("bare=DEMO-opaque"), s.live(), "the processor still receives it");
+        }
+        ReplayEntry recorded = store.entries("probe").get(0);
+        assertTrue(recorded instanceof ReplayEntry.Failed f && f.description().contains("could not be recorded as received"),
+                "marked, not held by reference: " + recorded);
+        try (Server r = boot(ReplayConfig.replay(Set.of("probe"), Map.of(), null, store), false, one())) {
+            r.awaitReplayDone();
+            assertNotNull(r.replayer().stopped("probe"), "and a replay stops there");
+        }
+    }
+
     // ---- 3: an application's NamedFeedEvent on a NOWRAP feed --------------------------------------------------
 
     @Test
