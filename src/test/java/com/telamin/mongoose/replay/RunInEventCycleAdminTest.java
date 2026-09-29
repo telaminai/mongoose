@@ -20,15 +20,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * A lambda admin command run through DataFlow.runInEventCycle (fluxtion runtime 1.1.0): an event the command
- * redispatches is queued and handled AFTER the command, as its own cycle, not inside it; and a command that itself
- * throws UnsupportedOperationException runs once - the invoker falls back to the audit bracket only when the
- * processor refused the cycle before running it (the fallback is GeneratedAdminAuditTest's older processor).
+ * redispatches is queued and handled AFTER the command, as its own cycle, not inside it. The fallback to the audit
+ * bracket is GeneratedAdminAuditTest's older processor; failures around the cycle are AdminCommandFailureTest.
  */
 class RunInEventCycleAdminTest {
 
     public static class RedispatchingNode extends ObjectEventHandlerNode {
         final List<String> order = new CopyOnWriteArrayList<>();
-        final java.util.concurrent.atomic.AtomicInteger unsupportedRuns = new java.util.concurrent.atomic.AtomicInteger();
 
         @ServiceRegistered
         public void admin(AdminCommandRegistry registry, String name) {
@@ -37,10 +35,6 @@ class RunInEventCycleAdminTest {
                 getContext().getParentDataFlow().onEvent("DEMO-refresh");   // the command redispatches
                 order.add("command ends");
                 out.accept("refreshed");
-            });
-            registry.registerCommand("quotes.unsupported", (args, out, err) -> {
-                unsupportedRuns.incrementAndGet();
-                throw new UnsupportedOperationException("DEMO: not supported by this command");
             });
         }
 
@@ -58,29 +52,6 @@ class RunInEventCycleAdminTest {
         request.setOutput(replies::add);
         request.setErrOutput(o -> replies.add("ERR " + o));
         return request;
-    }
-
-    @Test
-    void aCommandThatThrowsUnsupportedOperation_runsOnce_andTheProcessorCarriesOn() throws Exception {
-        RedispatchingNode node = new RedispatchingNode();
-        AdminCommandProcessor admin = new AdminCommandProcessor();
-        MongooseServerConfig config = MongooseServerConfig.builder()
-                .addProcessorGroup(EventProcessorGroupConfig.builder().agentName("processor-agent")
-                        .put("quotes", EventProcessorConfig.builder().handler(new DefaultEventProcessor(node)).build()).build())
-                .addService(new ServiceConfig<>(admin, AdminCommandRegistry.class, "adminService"))
-                .build();
-        MongooseServer server = MongooseServer.bootServer(config, r -> { });
-        try {
-            Thread.sleep(200);
-            admin.processAdminCommandRequest(request("quotes.unsupported", new CopyOnWriteArrayList<>()));
-            Thread.sleep(200);
-            assertEquals(1, node.unsupportedRuns.get(), "the command's own exception is not a refusal: it is never re-run");
-            List<Object> replies = new CopyOnWriteArrayList<>();
-            admin.processAdminCommandRequest(request("quotes.refresh", replies));
-            assertEquals(List.of("refreshed"), replies, "and the processor still runs the next command");
-        } finally {
-            server.stop();
-        }
     }
 
     @Test
