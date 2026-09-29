@@ -50,6 +50,22 @@ public class AdminCommandInvoker extends AbstractEventToInvocationStrategy {
         List<String> args = adminCommand.getArgs();
         Object event = new com.telamin.mongoose.service.admin.AdminCommandEvent(
                 args.isEmpty() ? "" : args.get(0), args.size() > 1 ? List.copyOf(args.subList(1, args.size())) : List.of());
+        // the proper form: the processor runs the command as its own event cycle (DataFlow.runInEventCycle), so an event
+        // the command raises is queued and dispatched after it. Only a processor that IMPLEMENTS it: the interface
+        // default runs the action with no cycle at all, which would lose the audit record the bracket below gives
+        java.lang.reflect.Method inCycle = runInEventCycle(processor);
+        if (inCycle != null) {
+            try {
+                inCycle.invoke(processor, event, (Runnable) adminCommand::executeCommand);
+                return;
+            } catch (IllegalAccessException e) {
+                // fall back to the bracket
+            } catch (java.lang.reflect.InvocationTargetException e) {
+                throw e.getCause() instanceof RuntimeException r ? r : new IllegalStateException(e.getCause());
+            }
+        }
+        // interim, for a runtime without it: the processor's own audit calls, found by name (spec 3d: unsafe for a
+        // command that redispatches, which dispatches at once inside the open record)
         com.telamin.fluxtion.runtime.time.Clock clock = auditor(processor, "clock");
         com.telamin.fluxtion.runtime.audit.EventLogManager log =
                 auditor(processor, com.telamin.fluxtion.runtime.audit.EventLogManager.NODE_NAME);
@@ -61,6 +77,21 @@ public class AdminCommandInvoker extends AbstractEventToInvocationStrategy {
             if (clock != null) clock.processingComplete();
             if (log != null) log.processingComplete();
         }
+    }
+
+    private static final java.util.Map<Class<?>, java.util.Optional<java.lang.reflect.Method>> IN_CYCLE =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** The processor's own runInEventCycle(Object, Runnable), when its class implements it; else null. */
+    private static java.lang.reflect.Method runInEventCycle(DataFlow processor) {
+        return IN_CYCLE.computeIfAbsent(processor.getClass(), c -> {
+            try {
+                java.lang.reflect.Method m = c.getMethod("runInEventCycle", Object.class, Runnable.class);
+                return m.getDeclaringClass().isInterface() ? java.util.Optional.empty() : java.util.Optional.of(m);
+            } catch (NoSuchMethodException e) {
+                return java.util.Optional.empty();              // a runtime that predates it
+            }
+        }).orElse(null);
     }
 
     @SuppressWarnings("unchecked")
