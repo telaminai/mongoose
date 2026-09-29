@@ -97,6 +97,90 @@ class AuditSinkOnAgentThreadTest {
         org.junit.jupiter.api.Assertions.assertFalse(svc.isRecording("p"), "and the refused start left nothing recording");
     }
 
+    static DataFlow notingFlow(List<String> installedOn, java.util.concurrent.CountDownLatch installing,
+                               java.util.concurrent.CountDownLatch release) {
+        return (DataFlow) Proxy.newProxyInstance(DataFlow.class.getClassLoader(), new Class<?>[]{DataFlow.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "setAuditLogProcessor" -> {
+                        if (installing != null) installing.countDown();
+                        if (release != null) release.await();
+                        installedOn.add(Thread.currentThread().getName());
+                        yield null;
+                    }
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    case "equals" -> proxy == args[0];
+                    case "toString" -> "DEMO-flow";
+                    default -> null;
+                });
+    }
+
+    /**
+     * Review of 90f0d9b, finding 5: a start whose caller is interrupted before the agent thread reached the install is
+     * refused and then changes nothing. Before, the interrupt refused it and closed the sink, but the install stayed
+     * queued and ran later, installing a listener onto a closed queue.
+     */
+    @Test
+    void aStartInterruptedBeforeItsInstallRan_changesNothing(@TempDir Path dir) throws Exception {
+        List<String> installedOn = new CopyOnWriteArrayList<>();
+        List<Runnable> held = new CopyOnWriteArrayList<>();
+        ChronicleAuditCaptureService svc = new ChronicleAuditCaptureService(capture(dir), NoOpCountersService.INSTANCE);
+        svc.attach(notingFlow(installedOn, null, null), "p", r -> { }, held::add);
+        java.util.concurrent.atomic.AtomicReference<Throwable> refused = new java.util.concurrent.atomic.AtomicReference<>();
+        Thread admin = new Thread(() -> {
+            try {
+                svc.start("p");
+            } catch (Throwable t) {
+                refused.set(t);
+            }
+        });
+        admin.start();
+        while (held.isEmpty()) Thread.onSpinWait();
+        admin.interrupt();
+        admin.join(5_000);
+        held.forEach(Runnable::run);                                 // the agent thread gets to it, after the refusal
+        assertTrue(refused.get() instanceof IllegalStateException, "refused by name: " + refused.get());
+        assertEquals(List.of(), installedOn, "the install the interrupted caller gave up on never runs");
+        assertFalse(svc.isRecording("p"), "and nothing is left recording");
+    }
+
+    /**
+     * Finding 5: a start whose install is already running on the agent thread when its caller is interrupted waits for
+     * it; it must not close the sink under a listener that is being installed.
+     */
+    @Test
+    void aStartInterruptedWhileItsInstallRuns_doesNotCloseTheSinkUnderIt(@TempDir Path dir) throws Exception {
+        List<String> installedOn = new CopyOnWriteArrayList<>();
+        java.util.concurrent.CountDownLatch installing = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        ExecutorService agent = Executors.newSingleThreadExecutor(r -> new Thread(r, "DEMO-agent"));
+        try {
+            ChronicleAuditCaptureService svc = new ChronicleAuditCaptureService(capture(dir), NoOpCountersService.INSTANCE);
+            svc.attach(notingFlow(installedOn, installing, release), "p", r -> { }, agent::execute);
+            java.util.concurrent.atomic.AtomicReference<Throwable> refused = new java.util.concurrent.atomic.AtomicReference<>();
+            Thread admin = new Thread(() -> {
+                try {
+                    svc.start("p");
+                } catch (Throwable t) {
+                    refused.set(t);
+                }
+            });
+            admin.start();
+            installing.await();
+            admin.interrupt();
+            admin.join(200);
+            boolean recordingWhileInstalling = svc.isRecording("p");
+            release.countDown();
+            admin.join(5_000);
+            assertTrue(recordingWhileInstalling, "the sink stays open while its listener is being installed");
+            assertEquals(List.of("DEMO-agent"), installedOn, "the install completed");
+            assertEquals(null, refused.get(), "and the start that installed it reports success");
+            assertTrue(svc.isRecording("p"), "recording, consistently with the installed listener");
+            svc.stop("p");
+        } finally {
+            agent.shutdownNow();
+        }
+    }
+
     /** A processor that notes the thread each audit sink is installed on. */
     public static class ThreadNotingProcessor extends DefaultEventProcessor {
         final List<String> installedOn = new CopyOnWriteArrayList<>();
