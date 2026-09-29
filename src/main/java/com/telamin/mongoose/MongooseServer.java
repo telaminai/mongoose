@@ -722,10 +722,10 @@ public class MongooseServer implements MongooseServerController {
     private static void refuseRecordingOverARecording(ReplayConfig replay) {
         if (replay == null || replay.mode() != ReplayConfig.Mode.RECORD) return;
         if (replay.journal() != null && replay.journal().holdsRecording()) {
-            throw new IllegalStateException("replay RECORD: the journal already holds a recording; record into an empty one");
+            throw new IllegalStateException("replay RECORD: the journal already holds a recording (or a torn one); record into an empty one");
         }
         if (replay.store().holdsRecording()) {
-            throw new IllegalStateException("replay RECORD: the store already holds a recording; record into an empty one");
+            throw new IllegalStateException("replay RECORD: the store already holds a recording (or a torn one); record into an empty one");
         }
     }
 

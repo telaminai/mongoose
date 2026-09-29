@@ -30,13 +30,17 @@ public final class CsvEventJournal implements EventJournal, AutoCloseable {
     private final Path file;
     private final Map<String, Map<Long, byte[]>> index = new ConcurrentHashMap<>();
     private final BufferedWriter out;
+    /** A torn last line found on opening, or null: the file is then read, and never appended to. */
+    private String torn;
 
     /** Open {@code file}, reading back what it already holds, and append to it. */
     public CsvEventJournal(Path file) {
         this.file = file;
         try {
             if (Files.exists(file)) {
-                List<String> lines = Csv.lines(file);
+                Csv.Lines read = Csv.read(file);
+                torn = read.torn();
+                List<String> lines = read.lines();
                 for (int i = 0; i < lines.size(); i++) {
                     String line = lines.get(i);
                     if (i == 0) {
@@ -63,6 +67,7 @@ public final class CsvEventJournal implements EventJournal, AutoCloseable {
 
     @Override
     public synchronized void append(String source, long seq, byte[] encoded) {
+        if (torn != null) throw Csv.tornRefusal(file, torn);
         try {
             out.write(Csv.field(source) + "," + seq + "," + Base64.getEncoder().encodeToString(encoded));
             out.newLine();
@@ -75,7 +80,7 @@ public final class CsvEventJournal implements EventJournal, AutoCloseable {
 
     @Override
     public boolean holdsRecording() {
-        return !index.isEmpty();
+        return torn != null || !index.isEmpty();
     }
 
     @Override

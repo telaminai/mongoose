@@ -436,10 +436,12 @@ class ReplayIndependentReviewTest {
         Files.writeString(file, CsvReplayStore.HEADER + "\nprobe,INLINE,", StandardCharsets.UTF_8);    // torn first record
         try (CsvReplayStore store = new CsvReplayStore(file, new JavaSerializationCodec())) {
             assertEquals(List.of(), store.entries("probe"));
-            assertThrows(Exception.class, () -> boot(ReplayConfig.record(Set.of("probe"), Map.of(), null, store), false, one())
-                    .close(), "a file with a torn tail is not recorded into");
-            assertThrows(Exception.class, () -> store.append("probe", new ReplayEntry.TimerFired(1, List.of(5L))),
-                    "nor appended to directly");
+            Exception refused = assertThrows(Exception.class, () -> boot(ReplayConfig.record(Set.of("probe"), Map.of(), null, store),
+                    false, one()).close(), "a file with a torn tail is not recorded into");
+            assertTrue(String.valueOf(refused.getMessage()).contains("torn"), "refused naming the torn line: " + refused);
+            Exception appended = assertThrows(IllegalStateException.class,
+                    () -> store.append("probe", new ReplayEntry.TimerFired(1, List.of(5L))), "nor appended to directly");
+            assertTrue(appended.getMessage().contains("torn"), appended.getMessage());
         }
         try (CsvReplayStore again = new CsvReplayStore(file, new JavaSerializationCodec())) {
             assertEquals(List.of(), again.entries("probe"), "and it still reads");
@@ -453,7 +455,9 @@ class ReplayIndependentReviewTest {
         try (CsvEventJournal journal = new CsvEventJournal(file)) {
             assertEquals(0, journal.size(FEED));
             assertTrue(journal.holdsRecording(), "a torn journal is not an empty one: RECORD refuses it");
-            assertThrows(Exception.class, () -> journal.append(FEED, 1, new byte[]{1}), "and it is not appended to");
+            Exception appended = assertThrows(IllegalStateException.class, () -> journal.append(FEED, 1, new byte[]{1}),
+                    "and it is not appended to");
+            assertTrue(appended.getMessage().contains("torn"), appended.getMessage());
         }
         try (CsvEventJournal again = new CsvEventJournal(file)) {
             assertEquals(0, again.size(FEED), "and it still reads");

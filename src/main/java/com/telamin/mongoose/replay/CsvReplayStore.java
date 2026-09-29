@@ -32,13 +32,17 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
     private final EventCodec codec;
     private final Map<String, List<ReplayEntry>> entries = new ConcurrentHashMap<>();
     private final BufferedWriter out;
+    /** A torn last line found on opening, or null: the file is then read, and never appended to. */
+    private String torn;
 
     public CsvReplayStore(Path file, EventCodec codec) {
         this.file = file;
         this.codec = codec;
         try {
             if (Files.exists(file)) {
-                List<String> lines = Csv.lines(file);
+                Csv.Lines read = Csv.read(file);
+                torn = read.torn();
+                List<String> lines = read.lines();
                 for (int i = 0; i < lines.size(); i++) {
                     if (i == 0) {
                         if (!lines.get(0).equals(HEADER)) throw new IllegalArgumentException(file + " is not a replay store: " + lines.get(0));
@@ -64,6 +68,7 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
 
     @Override
     public synchronized void append(String processor, ReplayEntry entry) {
+        if (torn != null) throw Csv.tornRefusal(file, torn);
         String line = Csv.field(processor) + "," + format(entry);   // encoding first: an item that cannot be encoded adds nothing
         try {
             out.write(line);
@@ -77,7 +82,7 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
 
     @Override
     public boolean holdsRecording() {
-        return entries.values().stream().anyMatch(l -> !l.isEmpty());
+        return torn != null || entries.values().stream().anyMatch(l -> !l.isEmpty());
     }
 
     @Override
