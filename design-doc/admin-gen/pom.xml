@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>demo</groupId>
+    <artifactId>admin-gen</artifactId>
+    <version>1.0.0</version>
+    <properties>
+        <maven.compiler.release>21</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- the pairing the analyser's fixture generator holds: builder 1.0.71 with the hosted generator, runtime 1.0.16 -->
+        <fluxtion.version>1.0.16</fluxtion.version>
+        <fluxtion.builder.version>1.0.71</fluxtion.builder.version>
+    </properties>
+    <dependencies>
+        <dependency><groupId>com.telamin.fluxtion</groupId><artifactId>fluxtion-runtime</artifactId><version>${fluxtion.version}</version></dependency>
+        <dependency><groupId>com.telamin.fluxtion</groupId><artifactId>fluxtion-builder</artifactId><version>${fluxtion.builder.version}</version><scope>provided</scope></dependency>
+        <dependency><groupId>com.telamin</groupId><artifactId>mongoose</artifactId><version>1.0.31-SNAPSHOT</version>
+            <exclusions><exclusion><groupId>com.telamin.fluxtion</groupId><artifactId>fluxtion-runtime</artifactId></exclusion></exclusions></dependency>
+    </dependencies>
+    <repositories>
+        <repository><id>central</id><url>https://repo.maven.apache.org/maven2</url></repository>
+        <repository><id>repsy-fluxtion-public</id><url>https://repo.repsy.io/mvn/fluxtion/fluxtion-public</url></repository>
+    </repositories>
+    <pluginRepositories>
+        <pluginRepository><id>central</id><url>https://repo.maven.apache.org/maven2</url></pluginRepository>
+        <pluginRepository><id>repsy-fluxtion-public</id><url>https://repo.repsy.io/mvn/fluxtion/fluxtion-public</url></pluginRepository>
+    </pluginRepositories>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>com.telamin.fluxtion</groupId>
+                <artifactId>fluxtion-maven-plugin</artifactId>
+                <version>1.3.0</version>
+                <executions><execution><phase>process-classes</phase><goals><goal>scan</goal></goals></execution></executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
