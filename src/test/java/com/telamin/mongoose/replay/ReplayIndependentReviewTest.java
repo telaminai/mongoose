@@ -87,7 +87,7 @@ class ReplayIndependentReviewTest {
                 sink.accept("value=" + m.value);
                 m.value++;                                              // the handler changes what it was given
             } else if (event instanceof NamedFeedEvent<?> n) {
-                sink.accept("named=" + n.eventFeedName() + "#" + n.sequenceNumber() + ":" + n.data());
+                sink.accept("named=" + n.eventFeedName() + "/" + n.topic() + "#" + n.sequenceNumber() + ":" + n.data());
             } else {
                 sink.accept("bare=" + event);
             }
@@ -329,8 +329,8 @@ class ReplayIndependentReviewTest {
         InMemoryReplayStore store = new InMemoryReplayStore();
         List<String> live = new ArrayList<>();
         List<String> replayed = recordThenReplay(store, () -> store, "probe", one(), one(),
-                s -> s.feed().offer(new NamedFeedEventImpl<>("DEMO-inner", 123, "DEMO-item")), 1, live);
-        assertEquals(List.of("named=DEMO-inner#123:DEMO-item"), live);
+                s -> s.feed().offer(new NamedFeedEventImpl<>("DEMO-inner", "DEMO-topic", 123L, "DEMO-item")), 1, live);
+        assertEquals(List.of("named=DEMO-inner/DEMO-topic#123:DEMO-item"), live);
         assertEquals(live, replayed, "the application's event, with its type and fields");
     }
 
@@ -340,10 +340,11 @@ class ReplayIndependentReviewTest {
         List<String> live = new ArrayList<>();
         try (CsvReplayStore recordInto = new CsvReplayStore(file, new JavaSerializationCodec());
              Server s = boot(ReplayConfig.record(Set.of("probe"), Map.of(), null, recordInto), false, one())) {
-            s.feed().offer(new NamedFeedEventImpl<>("DEMO-inner", 123, "DEMO-item"));
+            s.feed().offer(new NamedFeedEventImpl<>("DEMO-inner", "DEMO-topic", 123L, "DEMO-item"));
             s.awaitLive(1);
             live.addAll(s.live());
         }
+        assertEquals(List.of("named=DEMO-inner/DEMO-topic#123:DEMO-item"), live);
         try (CsvReplayStore from = new CsvReplayStore(file, new JavaSerializationCodec());
              Server r = boot(ReplayConfig.replay(Set.of("probe"), Map.of(), null, from), false, one())) {
             r.awaitReplayDone();
