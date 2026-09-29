@@ -281,6 +281,12 @@ Misses, recorded rather than dropped:
 - Two finding-2 tests (a replay copies again; an uncopyable input) were written after the fix, for behaviour it added,
   then run on 90f0d9b's code in a scratch worktree: both failed.
 - The inline copy is Java serialisation: a feed with non-`Serializable` items should be journalled with its own codec.
+- CI at `1fd693d` failed once (the push run; the pull-request run at the same head passed):
+  `R4_aTimeoutFiringBetweenInputs_replaysThere`. It was a race in the test, present since the test was written: the
+  recorded run's lines were read after 4, between the second order's line and the breach the graph raises in the same
+  cycle, so the expected list lacked the breach that the replay correctly produced. It now waits for all 5. Reasoned
+  from the CI log and the handler, not reproduced locally. The two controls on that test are still detected (R4
+  records-timer-firings by its named assertion, R4 never-fires by its expected message).
 
 **Controls.** 18 controls were added (`ir-*`), one per mechanism these fixes introduced, each required to fail a named
 assertion. The first full run detected 49 of 50: `review-F4-only-a-first-attempt-is-recorded` **survived**. Finding 2's
