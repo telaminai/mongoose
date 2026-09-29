@@ -123,15 +123,11 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                             for (DataFlow target : targets) {
                                 if (!recorder.pinSyntheticTime(target, time)) eventToInvokeStrategy.setSyntheticTime(target, time);
                             }
-                            if (attempt == 0) {
-                                eventToInvokeStrategy.processEventRecording(replayRecord.getEvent(), received);
-                            } else {
-                                eventToInvokeStrategy.processEvent(replayRecord.getEvent());
-                            }
+                            eventToInvokeStrategy.processEventRecording(replayRecord.getEvent(), received);
                         }
-                    } else if (recorder != null && attempt == 0) {
-                        // RECORD, first attempt: each recorded processor's input is copied just before it is given it
-                        // (review of 90f0d9b, finding 2); a retry is already marked Failed, so it is not copied again
+                    } else if (recorder != null) {
+                        // RECORD: each recorded processor's input is copied just before it is given it (review of
+                        // 90f0d9b, finding 2). Only a first-attempt success commits the copy, below: one guard, D4
                         eventToInvokeStrategy.processEventRecording(delivered(event), received);
                     } else if (event instanceof BroadcastEvent broadcastEvent) {
                         eventToInvokeStrategy.processEvent(broadcastEvent.getEvent());
