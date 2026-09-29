@@ -45,12 +45,14 @@ public final class AgentHandoff {
     }
 
     /**
-     * Wait for the work. On timeout it is cancelled, if it has not started, and the caller is told so; if it had already
-     * started, the wait continues until it finishes, so the caller never returns with it half applied.
+     * Wait for the work. On timeout, or when the caller is interrupted, it is cancelled if it has not started, and the
+     * caller is told so; if it had already started, the wait continues until it finishes, so the caller never returns
+     * with it half applied (or closes what it is using). An interrupt is never swallowed: the caller's thread is left
+     * interrupted.
      *
      * @return true when the work ran, false when it was cancelled unrun
      */
-    public boolean await(long timeout, TimeUnit unit) throws InterruptedException, java.util.concurrent.ExecutionException {
+    public boolean await(long timeout, TimeUnit unit) throws java.util.concurrent.ExecutionException {
         try {
             done.get(timeout, unit);
             return true;
@@ -58,8 +60,30 @@ public final class AgentHandoff {
             if (claimed.compareAndSet(false, true)) {
                 return false;                           // cancelled: it will never run
             }
-            done.get();                                 // it is running on the agent thread: let it finish
-            return true;
+            return awaitStarted();                      // it is running on the agent thread: let it finish
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            if (claimed.compareAndSet(false, true)) {
+                return false;                           // cancelled on interrupt: it will never run (review of 90f0d9b, 5)
+            }
+            return awaitStarted();
+        }
+    }
+
+    /** Work the agent thread claimed: wait for it to finish, through interrupts, keeping any interrupt for the caller. */
+    private boolean awaitStarted() throws java.util.concurrent.ExecutionException {
+        boolean interrupted = false;
+        try {
+            while (true) {
+                try {
+                    done.get();
+                    return true;
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                }
+            }
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
         }
     }
 }
