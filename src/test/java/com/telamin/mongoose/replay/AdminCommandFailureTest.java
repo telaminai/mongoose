@@ -49,6 +49,7 @@ class AdminCommandFailureTest {
                 plainRuns.incrementAndGet();
                 out.accept("plain ok");
             });
+            registry.registerSignalCommand("p.sig");
             registry.registerCommand("p.raise", (args, out, err) -> {
                 raiseRuns.incrementAndGet();
                 getContext().getParentDataFlow().onEvent("boom");     // queued; throws when the cycle drains it
@@ -62,9 +63,14 @@ class AdminCommandFailureTest {
         }
 
         @Override
+        @SuppressWarnings("unchecked")
         protected boolean handleEvent(Object event) {
             if ("boom".equals(event)) {
                 throw new IllegalStateException("DEMO failure on " + event);
+            }
+            if (event instanceof com.telamin.fluxtion.runtime.event.Signal<?> signal
+                    && "admin:p.sig".equals(signal.filterString())) {
+                ((AdminCommandRequest) signal.getValue()).getOutput().accept("sig ok");
             }
             return true;
         }
@@ -79,13 +85,26 @@ class AdminCommandFailureTest {
     }
 
     static Server boot() throws Exception {
+        return boot(false);
+    }
+
+    /** {@code refusingCycle}: a processor whose own runInEventCycle refuses, as one that disabled the path does. */
+    static Server boot(boolean refusingCycle) throws Exception {
         InMemoryEventSource<Object> feed = new InMemoryEventSource<>();
         feed.setName(FEED);
         FragileNode node = new FragileNode();
+        DefaultEventProcessor processor = refusingCycle
+                ? new DefaultEventProcessor(node) {
+                    @Override
+                    public void runInEventCycle(Object auditEvent, Runnable action) {
+                        throw new UnsupportedOperationException("DEMO: this processor disabled runInEventCycle");
+                    }
+                }
+                : new DefaultEventProcessor(node);
         AdminCommandProcessor admin = new AdminCommandProcessor();
         MongooseServerConfig config = MongooseServerConfig.builder()
                 .addProcessorGroup(EventProcessorGroupConfig.builder().agentName("processor-agent")
-                        .put("fragile", EventProcessorConfig.builder().handler(new DefaultEventProcessor(node)).build()).build())
+                        .put("fragile", EventProcessorConfig.builder().handler(processor).build()).build())
                 .addEventFeed(EventFeedConfig.builder().instance(feed).name(FEED).broadcast(true)
                         .agent("feed-agent", new BusySpinIdleStrategy()).build())
                 .addService(new ServiceConfig<>(admin, AdminCommandRegistry.class, "adminService"))
@@ -96,10 +115,14 @@ class AdminCommandFailureTest {
     }
 
     static List<Object> invoke(AdminCommandProcessor admin, String command) throws Exception {
+        return invoke(admin, command, List.of());
+    }
+
+    static List<Object> invoke(AdminCommandProcessor admin, String command, List<String> arguments) throws Exception {
         List<Object> replies = new CopyOnWriteArrayList<>();
         AdminCommandRequest request = new AdminCommandRequest();
         request.setCommand(command);
-        request.setArguments(List.of());
+        request.setArguments(arguments);
         request.setOutput(replies::add);
         request.setErrOutput(o -> replies.add("ERR " + o));
         CompletableFuture.runAsync(() -> admin.processAdminCommandRequest(request)).get(5, TimeUnit.SECONDS);
@@ -125,6 +148,51 @@ class AdminCommandFailureTest {
             Thread.sleep(500);                              // room for the agent's retries (5 ms, 10 ms backoff)
             assertEquals(1, s.node().raiseRuns.get(), "the command ran once, whatever the retry policy does");
             assertEquals(List.of("raised"), replies, "and answered once");
+        }
+    }
+
+    /** A null argument fails building the command's event or request, before it runs: the caller is still answered. */
+    @Test
+    void aCommandThatFailsBeforeItRuns_onEitherPath_answersTheCaller() throws Exception {
+        try (Server s = boot()) {
+            List<Object> lambda = invoke(s.admin(), "p.plain", java.util.Arrays.asList("DEMO", null));
+            assertEquals(1, lambda.size(), "the lambda path answers once: " + lambda);
+            assertTrue(String.valueOf(lambda.get(0)).startsWith("ERR "), lambda.toString());
+            assertEquals(0, s.node().plainRuns.get(), "and did not run the command");
+            List<Object> signal = invoke(s.admin(), "p.sig", java.util.Arrays.asList("DEMO", null));
+            assertEquals(1, signal.size(), "the signal path answers once: " + signal);
+            assertTrue(String.valueOf(signal.get(0)).startsWith("ERR "), signal.toString());
+        }
+    }
+
+    /** A processor that cannot run commands is what an operator must see, not only whoever typed the command. */
+    @Test
+    void aRefusedCommand_isReportedToOperations() throws Exception {
+        List<com.telamin.mongoose.service.error.ErrorEvent> reported = new CopyOnWriteArrayList<>();
+        com.telamin.mongoose.service.error.ErrorListener listener = reported::add;
+        com.telamin.mongoose.service.error.ErrorReporting.getReporter().addListener(listener);
+        try (Server s = boot()) {
+            s.feed().offer("boom");                         // left mid-cycle: it refuses the cycle
+            Thread.sleep(300);
+            invoke(s.admin(), "p.plain");
+            assertTrue(reported.stream().anyMatch(e -> e.getSeverity() == com.telamin.mongoose.service.error.ErrorEvent.Severity.WARNING
+                            && e.getMessage().contains("p.plain") && e.getMessage().contains("did not run")),
+                    "reported as a WARNING naming the command: " + reported.stream().map(e -> e.getSeverity() + " " + e.getMessage()).toList());
+        } finally {
+            com.telamin.mongoose.service.error.ErrorReporting.getReporter().removeListener(listener);
+        }
+    }
+
+    /**
+     * A processor whose own runInEventCycle refuses (it disabled the path) is not wedged and not old: its command is run
+     * through the audit bracket, as a processor generated before 1.1.0 is, and is never refused to the caller.
+     */
+    @Test
+    void aProcessorWhoseOverrideRefusesTheCycle_runsTheCommandBracketed() throws Exception {
+        try (Server s = boot(true)) {
+            assertEquals(List.of("plain ok"), invoke(s.admin(), "p.plain"));
+            assertEquals(List.of("plain ok"), invoke(s.admin(), "p.plain"), "every time: the class is not cached as refusing");
+            assertEquals(2, s.node().plainRuns.get());
         }
     }
 }
