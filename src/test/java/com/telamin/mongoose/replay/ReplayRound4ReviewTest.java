@@ -116,6 +116,34 @@ class ReplayRound4ReviewTest {
         assertEquals(17, ((CodecOnly) second.items().get(0)).value, "and so does the second, however the decoder treats its input");
     }
 
+    /** A deterministic codec whose decoder clears its input: an unchanged input is recorded by index. */
+    static final class ConsumingCodec implements EventCodec {
+        @Override
+        public byte[] encode(Object item) {
+            return new byte[]{(byte) ((CodecOnly) item).value};
+        }
+
+        @Override
+        public Object decode(byte[] bytes) {
+            Object value = new CodecOnly(bytes[0]);
+            bytes[0] = 0;
+            return value;
+        }
+    }
+
+    @Test
+    void g1_anIndexedInputsDecoderThatConsumesItsInput_neverRewritesTheJournalForTheNextReplay() {
+        ConsumingCodec codec = new ConsumingCodec();
+        InMemoryEventJournal journal = new InMemoryEventJournal();
+        journal.append(FEED, 1, codec.encode(new CodecOnly(17)));
+        InMemoryReplayStore store = new InMemoryReplayStore();
+        capture(new CodecOnly(17), codec, journal, store);
+        assertTrue(store.entries("probe").get(0) instanceof ReplayEntry.Indexed, "precondition: recorded by index");
+        Run first = replay(store, journal, codec), second = replay(store, journal, codec);
+        assertEquals(17, ((CodecOnly) first.items().get(0)).value, "the first replay gives the journalled value");
+        assertEquals(17, ((CodecOnly) second.items().get(0)).value, "and so does the second: the journal's bytes are decoded from a copy");
+    }
+
     // ---- G2: a failed recording leaves live time handling as it was --------------------------------------------
 
     /** A processor whose clock reads 99, which refuses the recording's clock (when {@code refuses}), and notes each input's time. */
