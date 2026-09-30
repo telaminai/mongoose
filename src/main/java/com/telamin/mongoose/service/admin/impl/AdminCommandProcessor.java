@@ -99,17 +99,20 @@ public class AdminCommandProcessor implements AdminCommandRegistry, LifeCycleEve
         log.info("processing: " + command + " name: '" + commandName + "'");
         AdminCommand adminCommand = registeredCommandMap.get(commandName);
         if (adminCommand != null) {
-            adminCommand.publishCommand(command);
+            adminCommand.publishCommand(command);       // the command's registered name, not this spelling (finding 4)
         } else {
             log.info("command not found: " + commandName);
         }
     }
 
+
     @Override
     @SuppressWarnings("unchecked")
     public <OUT, ERR> void registerCommand(String name, AdminFunction<OUT, ERR> command) {
         if (com.telamin.mongoose.dispatch.ProcessorContext.currentProcessor() == null) {
-            registeredCommandMap.put(name, new AdminCommand((AdminFunction<Object, Object>) command));
+            AdminCommand direct = new AdminCommand((AdminFunction<Object, Object>) command);
+            direct.setName(name);
+            registeredCommandMap.put(name, direct);
         } else {
             String queueKey = "adminCommand." + name;
             addCommand(
@@ -117,6 +120,16 @@ public class AdminCommandProcessor implements AdminCommandRegistry, LifeCycleEve
                     queueKey,
                     new AdminCommand((AdminFunction<Object, Object>) command, eventFlowManager.registerEventSource(queueKey, this)));
         }
+    }
+
+    @Override
+    public void registerSignalCommand(String name) {
+        if (com.telamin.mongoose.dispatch.ProcessorContext.currentProcessor() == null) {
+            throw new IllegalStateException("a signal-routed command belongs to a processor: register '" + name
+                    + "' from a processor's @ServiceRegistered");
+        }
+        String queueKey = "adminCommand." + name;
+        addCommand(name, queueKey, new AdminCommand(eventFlowManager.registerEventSource(queueKey, this), true));
     }
 
     @Override
@@ -155,6 +168,7 @@ public class AdminCommandProcessor implements AdminCommandRegistry, LifeCycleEve
     }
 
     private void addCommand(String name, String queueKey, AdminCommand adminCommand) {
+        adminCommand.setName(name);                     // its identity, bound once (#48 review, finding 4)
         DataFlow DataFlow = com.telamin.mongoose.dispatch.ProcessorContext.currentProcessor();
         log.info("registered command:" + name + " queue:" + queueKey + " processor:" + DataFlow);
 

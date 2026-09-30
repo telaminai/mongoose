@@ -1,0 +1,74 @@
+R2-arms-the-processors-clock caught restored | expected: <[1767258000018, 1767258000020, 1767258000022, 1767258000025, 1767258000027]> but was: <[1767258000019, 1767258000021, 1767258000024, 1767258000026, 1
+R2-graph-raised-events-never-pass-dispatch caught restored | [Indexed[source=orders, seq=1, reads=[1767258000018]], Indexed[source=orders, seq=1, reads=[1767258000018]], Inline[source=controls, event=suspend, seq=-1, read
+R3-journalled-nowrap-carries-its-seq caught restored | expected: <[JournalledItem[seq=1, item=ord-1], JournalledItem[seq=2, item=ord-2]]> but was: <[ord-1, ord-2]>
+R3-cached-items-carry-their-own-seq caught restored | each cached item with its own number, not the latest ==> expected: <[1, 2, 3]> but was: <[3, 3, 3]>
+R3-journalled-once caught restored | once for both queues ==> expected: <2> but was: <0>
+R4-records-timer-firings caught restored | [Indexed[source=orders, seq=1, reads=[1790777543191]], Inline[source=controls, event=arm, seq=-1, reads=[1790777543195]], Indexed[source=orders, seq=2, reads=[1
+R4-replay-never-fires-by-itself caught-by-timeout restored | the replay did not complete with 4 lines: complete=true stopped=entry 2 could not be replayed: java.lang.IllegalStateException: the replay fired timer 1, which
+R5-pins-the-entry-instant caught-by-timeout restored | the replay did not complete with 6 lines: complete=true stopped=clock divergence: the replayed cycle read the clock 18 time(s), the recorded one 1 lines=[order=
+R5-plays-every-read-of-the-cycle caught restored | the replay does what the run did, at the same instants ==> expected: <[order=ord-1 live=1 suspended=false time=1767258000018, control=suspend time=1767258000019
+R5-delivers-to-the-processor-alone caught-by-timeout restored | the replay did not complete with 6 lines: complete=true stopped=clock divergence: the replayed cycle read the clock 3 time(s), the recorded one 1 lines=[order=o
+R6-records-an-admin-command-by-its-args caught restored | Unexpected type, expected: <com.telamin.mongoose.replay.ReplayEntry.AdminInvoked> but was: <com.telamin.mongoose.replay.ReplayEntry.Inline>
+D4-marks-a-failed-dispatch caught restored | [Indexed[source=orders, seq=1, reads=[1790777584140]], Indexed[source=orders, seq=3, reads=[1790777584455]]] ==> Unexpected type, expected: <com.telamin.mongoos
+R7-the-server-passes-the-groups-thread caught restored | never on the caller's thread: [main, main] ==> expected: <false> but was: <true>
+R7-the-sink-changes-on-the-agent-thread caught restored | installed on the agent thread, and applied before start returned ==> expected: <[DEMO-agent]> but was: <[main]>
+R5-a-typed-call-replays-through-the-configured-strategy caught restored | the driver makes the same service calls, at the same instants ==> expected: <[call=suspend suspended=true time=1790777597300, call=resume suspended=false time=1
+csv-the-journal-reads-back-its-file caught-by-timeout restored | the replay did not complete with 6 lines: complete=true stopped=the journal holds no orders#1 lines=[] ==> expected: <true> but was: <false>
+csv-the-store-reads-back-its-file caught-by-timeout restored | the replay did not complete with 6 lines: complete=true stopped=null lines=[] ==> expected: <true> but was: <false>
+A-a-signal-command-runs-in-an-event-cycle caught restored | the handler replied ==> expected: <[alarm cleared]> but was: <[ERR problem executing command exception:Cannot invoke "com.telamin.mongoose.service.admin.AdminFu
+A-an-unanswered-command-is-an-error caught restored | [] ==> expected: <1> but was: <0>
+A-each-invocation-keeps-its-routing caught restored | in a cycle in the replay too ==> expected: <true> but was: <null>
+A-the-generated-processor-audits-the-command caught restored | eventLogRecord:
+    eventTime: 1790777654131
+    logTime: 1790777654131
+    groupingId: null
+    event: Reading
+    eventToString: Reading[value=12.0]
+    thre
+A-the-generated-source-stays-publishable caught restored | no header before the package ==> expected: <true> but was: <false>
+A-a-lambda-command-is-bracketed-by-an-audit-record caught restored | every record well formed:
+        - alarmMonitor: { lambdaReset: true, at: 1790777682456}
+    endTime: 1790777682456 ==> expected: <true> but was: <false>
+A-a-lambda-record-carries-the-commands-instant caught restored | its own instant, later than the previous event's 1790777686817: eventLogRecord:
+    eventTime: 1790777686817
+    logTime: 1790777686817
+    groupingId: null
+
+B2-a-retried-command-does-not-run-again caught restored | the command ran once, whatever the retry policy does ==> expected: <1> but was: <3>
+B1-F2-a-refused-caller-is-answered error restored | java.util.concurrent.TimeoutException
+F2-a-command-failing-before-it-runs-is-answered error restored | java.util.concurrent.TimeoutException
+F1-a-refusal-is-reported caught restored | reported as a WARNING naming the command: [WARNING event processing failed: agent=processor-agent/orders/onEventCallBack, attempt=1, eventClass=java.lang.String
+F3-a-declared-processor-is-bracketed caught restored | expected: <[plain ok]> but was: <[ERR admin command 'p.plain' did not run: its processor could not run it in an event cycle: java.lang.UnsupportedOperationExcep
+review-1-a-ReplayRecord-keeps-the-recording-clock caught restored | expected: <null> but was: <clock divergence: the replayed cycle read the clock 2 time(s), the recorded one 1>
+review-2-an-undeliverable-entry-stops-the-replay caught-by-timeout restored | the replay neither completed nor stopped: stopped=null ==> expected: <true> but was: <false>
+review-3-a-named-input-is-recorded-as-its-item caught restored | the named event was recorded, not failed: [Failed[source=recording, description=the recording stopped here: java.io.UncheckedIOException: cannot journal NamedFe
+review-4-record-refuses-a-recording caught restored | Expected java.lang.Exception to be thrown, but nothing was thrown.
+review-5-a-torn-last-line-is-dropped error restored | <tmp> line 3 has 4 fields, not 6
+review-6-L1-live-inputs-are-muted caught restored | the replayed processor sees only the replay: [control=suspend time=1000, order=ord-LIVE live=1 suspended=true time=1000] ==> expected: <true> but was: <false>
+review-6-L2-outputs-are-captured caught restored | captured for comparison ==> expected: <[control=suspend time=1000]> but was: <[]>
+review-7-other-processors-keep-live-timers caught restored | a processor that is not replayed runs on the live scheduler, and its output is delivered: [armed time=1790777760852] ==> expected: <true> but was: <false>
+review-8-a-clock-divergence-is-reported caught restored | a different number of clock reads is a divergence, and is reported ==> expected: not <null>
+review-9-a-throwing-timer-is-a-failure caught restored | not recorded as fired: [TimerFired[seq=1, reads=[7]]] ==> expected: <true> but was: <false>
+review-11-handed-over-work-runs-at-most-once caught restored | and the late agent thread does not run it ==> expected: <0> but was: <1>
+review-F4-only-a-first-attempt-is-recorded caught restored | one entry for the one input: [Failed[source=controls, description=java.lang.IllegalStateException: DEMO first attempt fails on flaky, instant=1790777779738], In
+review-reA-a-replayed-processors-clock-is-not-replaced caught restored | the last entry replays at its recorded instant ==> expected: <[control=suspend time=999999]> but was: <[control=suspend time=42]>
+review-reB-a-journal-failure-never-escapes-publish error restored | java.io.IOException: DEMO disk full
+review-11-a-refused-start-closes-its-sink caught restored | and the refused start left nothing recording ==> expected: <false> but was: <true>
+adm1-a-signal-failure-reaches-the-dispatch caught restored | a failed command is a failed input (D4), not an invocation: [AdminInvoked[command=DEMO.throw, args=[], reads=[1790777803844]]] ==> Unexpected type, expected: <c
+adm1-a-failure-after-the-reply-reaches-it-too caught restored | recorded as failed: [AdminInvoked[command=DEMO.replyThenFail, args=[], reads=[1790777807958, 1790777807959]]] ==> Unexpected type, expected: <com.telamin.mongoo
+adm2-a-failing-cycle-never-falls-back caught restored | a command whose cycle failed to start is not run by another route ==> expected: <0> but was: <1>
+adm3-cancelled-work-never-runs caught restored | only the barrier ran: a command cancelled before it was claimed never runs later ==> expected: <1> but was: <2>
+adm3-the-wait-is-bounded caught restored | the caller is answered within the bound, not left waiting ==> expected: <true> but was: <false>
+adm3-a-muted-processor-is-refused caught restored | and the live command did not reach the replayed processor ==> expected: <0> but was: <1>
+adm3-a-late-reply-is-dropped caught restored | its late reply did not reach the departed caller: [ERR admin command 'DEMO.hold' started on its processor and had not completed (its caller was interrupted); it
+adm4-the-registered-name-is-the-identity caught restored | the same handler answers ==> expected: <[DEMO-ok]> but was: <[ERR admin command ' DEMO.ok ' was delivered to its processor, and no handler replied during the ca
+F6-a-reused-template-starts-afresh caught restored | each publish is its own execution (1 replies) ==> expected: <2> but was: <1>
+cr-N1-a-command-that-did-not-run-is-no-invocation caught restored | only the command that ran is recorded as an invocation: [Inline[source=events, event=Block[name=DEMO-agent], seq=-1, reads=[1790777850706]], AdminInvoked[comman
+cr-N2-a-publish-never-completes-another caught restored | the second caller waits for its OWN command, not the first's completion ==> expected: <true> but was: <false>
+cr-N2-a-cancelled-slot-is-never-revived caught restored | the cancelled slot never runs, not even revived as the second: each runs in its own place ==> expected: <[X, 2]> but was: <[2, X]>
+cr-N3-no-lock-is-held-while-a-reply-is-delivered caught restored | the bound releases the caller while the reply consumer blocks: BLOCKED ==> expected: <false> but was: <true>
+cr-N3-nor-while-an-error-reply-is-delivered caught restored | the bound releases the caller while the reply consumer blocks: BLOCKED ==> expected: <false> but was: <true>
+cr-N3-a-completion-that-wins-the-race-is-the-outcome caught restored | completed is the outcome: no 'started' message after its reply ==> expected: <0> but was: <1>
+49 of 59 caught by the named assertion; 10 by an await or error carrying the mutation's expected message; 0 NOT detected []
+recompiled the restored sources from clean: ok
+controls exit=0

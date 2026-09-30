@@ -31,11 +31,12 @@ then filters, redispatch and fan-out have happened, so the record is what the pr
 | an item from a **journalled** feed | an index, `(feed, sequence number)`. The item itself is written once, to the `EventJournal` |
 | an item from any other feed, or a typed service call | the event itself (inline) |
 | a scheduler timer firing | a timer entry, so it fires at the same point on replay |
-| a processor-owned admin command | its name and arguments |
+| a processor-owned admin command | its name and arguments, once it ran; a cancelled or refused command records nothing |
 | a dispatch that threw | a failure marker; a replay stops there |
 
 Each entry also carries every clock reading the processor made in that cycle, including readings for events the
-graph raised itself. On replay the processor reads the same instants.
+graph raised itself. On replay the processor reads the same instants. An admin command runs as the processor's own
+event cycle, so its entry carries that cycle's readings: a `DefaultEventProcessor` takes one when the cycle opens.
 
 ## Configure it
 

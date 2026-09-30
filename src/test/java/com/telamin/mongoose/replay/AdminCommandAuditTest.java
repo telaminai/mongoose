@@ -25,14 +25,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Do processor-owned admin commands run in an event cycle, and audit properly? (Asked 2026-09-29; the proposal is
- * origin/proposal/admin-commands-in-event-cycle.) Not yet. This CHARACTERISES the current behaviour: the command runs on
- * the processor's thread through {@code AdminCommandInvoker}, which calls the lambda directly, never
- * {@code onEvent}. So no event cycle opens for it: no audit record (in a generated processor its {@code auditLog}
- * lines splice into the next record, the proposal's live evidence), no dirty flags, nothing downstream triggered.
- * A hand-written {@code DefaultEventProcessor} has no {@code EventLogManager} and writes no audit log, and Mongoose's
- * tests have no generated processor, so the audit half is shown there, not here; what is shown here is the cause.
- * When admin commands are delivered in an event cycle (the proposal's option A, or B), invert the marked assertion.
+ * Do processor-owned admin commands run in an event cycle? (Asked 2026-09-29; the proposal is #45.) Yes, on fluxtion
+ * runtime 1.1.0: a lambda command runs through {@code DataFlow.runInEventCycle}, as its own cycle of the processor, not
+ * through {@code onEvent} and so not as an input the graph dispatches. Before, it ran outside any cycle; this test then
+ * characterised that, and is now inverted, as it said it would be. (Its audit record on a generated processor:
+ * GeneratedAdminAuditTest. A signal-routed command, which propagates: SignalAdminCommandTest.)
  */
 class AdminCommandAuditTest {
 
@@ -64,9 +61,10 @@ class AdminCommandAuditTest {
         }
     }
 
-    /** A processor that counts its event cycles and knows when one is open. */
+    /** A processor that counts its event cycles, and its host cycles, and knows when one is open. */
     public static class CountingProcessor extends DefaultEventProcessor {
         final java.util.concurrent.atomic.AtomicInteger cycles = new java.util.concurrent.atomic.AtomicInteger();
+        final java.util.concurrent.atomic.AtomicInteger hostCycles = new java.util.concurrent.atomic.AtomicInteger();
         volatile boolean inCycle;
 
         CountingProcessor(AlarmNode node) {
@@ -85,10 +83,22 @@ class AdminCommandAuditTest {
                 inCycle = outer;
             }
         }
+
+        @Override
+        public void runInEventCycle(Object auditEvent, Runnable action) {
+            hostCycles.incrementAndGet();
+            boolean outer = inCycle;
+            inCycle = true;
+            try {
+                super.runInEventCycle(auditEvent, action);
+            } finally {
+                inCycle = outer;
+            }
+        }
     }
 
     @Test
-    void anAdminCommandToday_runsOutsideAnEventCycle() throws Exception {
+    void anAdminCommand_runsInItsOwnEventCycle_notAsAnInput() throws Exception {
         AlarmNode node = new AlarmNode();
         CountingProcessor processor = new CountingProcessor(node);
         InMemoryEventSource<Object> events = new InMemoryEventSource<>();
@@ -110,6 +120,7 @@ class AdminCommandAuditTest {
             while (!node.raised && System.nanoTime() < deadline) Thread.sleep(5);
             assertTrue(node.raised, "the event raised the alarm");
             int before = processor.cycles.get();
+            int hostBefore = processor.hostCycles.get();
             List<Object> replies = new CopyOnWriteArrayList<>();
             AdminCommandRequest request = new AdminCommandRequest();
             request.setCommand("alarm.reset");
@@ -119,9 +130,9 @@ class AdminCommandAuditTest {
             admin.processAdminCommandRequest(request);        // returns once the processor has run it
             assertEquals(List.of("alarm cleared"), replies, "the command ran");
             assertFalse(node.raised, "and changed the node's state");
-            // INVERT when admin commands run in an event cycle: then the command opens one, and runs inside it
-            assertEquals(before, processor.cycles.get(), "today the command opens no event cycle");
-            assertFalse(node.inCycleDuringCommand, "today the command's code runs outside any event cycle");
+            assertEquals(hostBefore + 1, processor.hostCycles.get(), "the command opens one cycle of its own");
+            assertEquals(before, processor.cycles.get(), "not through onEvent: it is not an input the graph dispatches");
+            assertTrue(node.inCycleDuringCommand, "and the command's code runs inside that cycle");
         } finally {
             server.stop();
         }

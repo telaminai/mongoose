@@ -1,0 +1,22 @@
+R6-records-an-admin-command-by-its-args caught restored | Unexpected type, expected: <com.telamin.mongoose.replay.ReplayEntry.AdminInvoked> but was: <com.telamin.mongoose.replay.ReplayEntry.Inline>
+B2-a-retried-command-does-not-run-again caught restored | the command ran once, whatever the retry policy does ==> expected: <1> but was: <3>
+adm1-a-signal-failure-reaches-the-dispatch caught restored | a failed command is a failed input (D4), not an invocation: [AdminInvoked[command=DEMO.throw, args=[], reads=[1790777184420]]] ==> Unexpected type, expected: <c
+adm1-a-failure-after-the-reply-reaches-it-too caught restored | recorded as failed: [AdminInvoked[command=DEMO.replyThenFail, args=[], reads=[1790777188476, 1790777188476]]] ==> Unexpected type, expected: <com.telamin.mongoo
+adm2-a-failing-cycle-never-falls-back caught restored | a command whose cycle failed to start is not run by another route ==> expected: <0> but was: <1>
+adm3-cancelled-work-never-runs caught restored | only the barrier ran: a command cancelled before it was claimed never runs later ==> expected: <1> but was: <2>
+adm3-the-wait-is-bounded caught restored | the caller is answered within the bound, not left waiting ==> expected: <true> but was: <false>
+adm3-a-muted-processor-is-refused caught restored | and the live command did not reach the replayed processor ==> expected: <0> but was: <1>
+adm3-a-late-reply-is-dropped caught restored | its late reply did not reach the departed caller: [ERR admin command 'DEMO.hold' started on its processor and had not completed (its caller was interrupted); it
+adm4-the-registered-name-is-the-identity caught restored | the same handler answers ==> expected: <[DEMO-ok]> but was: <[ERR admin command ' DEMO.ok ' was delivered to its processor, and no handler replied during the ca
+F6-a-reused-template-starts-afresh caught restored | each publish is its own execution (1 replies) ==> expected: <2> but was: <1>
+cr-N1-a-command-that-did-not-run-is-no-invocation caught restored | only the command that ran is recorded as an invocation: [Inline[source=events, event=Block[name=DEMO-agent], seq=-1, reads=[1790777231217]], AdminInvoked[comman
+cr-N2-a-publish-never-completes-another caught restored | the second caller waits for its OWN command, not the first's completion ==> expected: <true> but was: <false>
+cr-N2-a-cancelled-slot-is-never-revived caught restored | the cancelled slot never runs, not even revived as the second: each runs in its own place ==> expected: <[X, 2]> but was: <[2, X]>
+cr-N3-no-lock-is-held-while-a-reply-is-delivered caught restored | the bound releases the caller while the reply consumer blocks: BLOCKED ==> expected: <false> but was: <true>
+cr-N3-nor-while-an-error-reply-is-delivered caught restored | the bound releases the caller while the reply consumer blocks: BLOCKED ==> expected: <false> but was: <true>
+cr-N3-a-completion-that-wins-the-race-is-the-outcome caught-by-timeout restored | completed is the outcome: no 'started' message after its reply ==> expected: <[DEMO-done]> but was: <[DEMO-done, ERR admin command 'DEMO.cmd' started on its pro
+16 of 17 caught by the named assertion; 0 by an await or error carrying the mutation's expected message; 1 NOT detected ['cr-N3-a-completion-that-wins-the-race-is-the-outcome']
+recompiled the restored sources from clean: ok
+cr-N3-a-completion-that-wins-the-race-is-the-outcome caught restored | completed is the outcome: no 'started' message after its reply ==> expected: <0> but was: <1>
+1 of 1 caught by the named assertion; 0 by an await or error carrying the mutation's expected message; 0 NOT detected []
+recompiled the restored sources from clean: ok

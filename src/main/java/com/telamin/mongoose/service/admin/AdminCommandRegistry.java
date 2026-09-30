@@ -46,4 +46,21 @@ public interface AdminCommandRegistry {
      * @return a list of command names representing all available administrative commands
      */
     List<String> commandList();
+
+    /** The filter string prefix of a signal-routed command's {@code Signal}: {@code admin:<command>}. */
+    String SIGNAL_PREFIX = "admin:";
+
+    /**
+     * Register a command that runs IN the registering processor's event cycle (option A of
+     * design-doc admin-commands-in-an-event-cycle): when invoked, the processor receives
+     * {@code onEvent(new Signal<>("admin:" + name, request))}, an ordinary event, so the command is audited, a node's
+     * {@code auditLog} writes land in its record, and state it changes propagates as any event's does. A node handles it
+     * with a filtered signal handler, {@code @OnEventHandler(filterString = "admin:<name>")} taking a
+     * {@code Signal<AdminCommandRequest>}, and replies through {@code request.getOutput()}. A command no handler replies
+     * to is answered with an error. Must be called by a processor (from {@code @ServiceRegistered}): the command belongs
+     * to it. Admin commands stay a Mongoose concept: only the generic {@code Signal} event is Fluxtion's.
+     */
+    default void registerSignalCommand(String name) {
+        throw new UnsupportedOperationException(getClass().getName() + " does not support signal-routed commands");
+    }
 }
