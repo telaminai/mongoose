@@ -213,9 +213,17 @@ class ReplayIndependentReviewTest {
         java.lang.management.ManagementFactory.getRuntimeMXBean().getInputArguments().stream()
                 .filter(a -> a.startsWith("--add-opens") || a.startsWith("--add-exports")).forEach(command::add);
         command.addAll(List.of("-cp", System.getProperty("java.class.path"), ReplayFailureChildMain.class.getName(), mode));
-        Process p = new ProcessBuilder(command).redirectErrorStream(true).start();
-        String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        assertTrue(p.waitFor(60, TimeUnit.SECONDS), "the child finished");
+        // bounded BEFORE reading: reading to EOF first did not bound a child that never closes its output
+        Path file = Files.createTempFile("DEMO-child", ".out");
+        Process p = new ProcessBuilder(command).redirectErrorStream(true).redirectOutput(file.toFile()).start();
+        String out;
+        try {
+            assertTrue(p.waitFor(60, TimeUnit.SECONDS), "the child finished within 60 s");
+            out = Files.readString(file, StandardCharsets.UTF_8);
+        } finally {
+            if (p.isAlive()) p.destroyForcibly().waitFor(10, TimeUnit.SECONDS);
+            Files.deleteIfExists(file);
+        }
         String survived = out.lines().filter(l -> l.startsWith("SURVIVED")).findFirst().orElse(null);
         assertEquals(0, p.exitValue(), "the server process survived the failed replay (exit 0): " + (survived != null ? survived
                 : out.lines().filter(l -> l.contains("Exception") || l.contains("Error")).limit(3).toList()));
@@ -349,7 +357,11 @@ class ReplayIndependentReviewTest {
                 reused.value = 50;
             });
             producer.start();
-            while (producer.getState() != Thread.State.WAITING) Thread.onSpinWait();
+            long deadline = System.nanoTime() + 5_000_000_000L;   // bounded: a producer that TERMINATED instead is a failure
+            while (producer.getState() != Thread.State.WAITING && producer.isAlive() && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertEquals(Thread.State.WAITING, producer.getState(), "the producer is waiting behind the completion barrier");
             assertEquals(10, reused.value, "a producer behind the completion barrier has not written");
             release.countDown();
             producer.join(5_000);
