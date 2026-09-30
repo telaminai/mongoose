@@ -36,12 +36,21 @@ public interface EventToInvokeStrategy {
     /**
      * Replay RECORD: process as {@link #processEvent(Object)} does, calling {@code beforeEach} with each processor and
      * the event just before that processor is given it, so the recording can copy what each one actually received
-     * (with fan-out, a later processor receives what an earlier one's handler left). Replay OFF never calls it. This
-     * default, for a strategy that cannot say, calls it for every registered processor first; a fan-out strategy that
-     * lets processors change their input should override it.
+     * (with fan-out, a later processor receives what an earlier one's handler left). Replay OFF never calls it.
+     *
+     * <p>This default cannot see inside {@link #processEvent(Object)}, so it cannot say what a later processor received.
+     * With one registered processor the event it is given IS what that processor receives, and it is recorded. With
+     * more, it FAILS CLOSED (re-review N4): each is given an {@link com.telamin.mongoose.replay.UncapturedInput} naming
+     * this strategy, so the recording marks the input failed instead of recording a copy that may not be what the
+     * processor received. The live dispatch is exactly {@code processEvent(event)}. A fan-out strategy that should be
+     * recordable overrides this, as {@code AbstractEventToInvocationStrategy} does.
      */
     default void processEventRecording(Object event, java.util.function.BiConsumer<DataFlow, Object> beforeEach) {
-        for (DataFlow target : registeredProcessors()) beforeEach.accept(target, event);
+        Collection<DataFlow> targets = registeredProcessors();
+        Object given = targets.size() <= 1 ? event : new com.telamin.mongoose.replay.UncapturedInput(getClass().getName()
+                + " dispatches to " + targets.size() + " processors through the default processEventRecording, which cannot"
+                + " say what each received; override it to record this fan-out");
+        for (DataFlow target : targets) beforeEach.accept(target, given);
         processEvent(event);
     }
 

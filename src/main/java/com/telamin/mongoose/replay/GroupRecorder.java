@@ -100,6 +100,11 @@ public final class GroupRecorder {
         Recorded r = byFlow.get(target);
         if (r == null || r.broken != null) return;
         r.received = true;
+        if (event instanceof UncapturedInput uncaptured) {
+            r.uncopyable = uncaptured.reason();         // the strategy cannot say what this processor received (N4)
+            r.notAsJournalled = true;
+            return;
+        }
         if (event instanceof AdminCommand) {
             r.input = event;                            // recorded by name and arguments: not copied
             return;
