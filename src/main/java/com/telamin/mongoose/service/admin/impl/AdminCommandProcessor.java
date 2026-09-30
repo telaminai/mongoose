@@ -97,11 +97,6 @@ public class AdminCommandProcessor implements AdminCommandRegistry, LifeCycleEve
     public void processAdminCommandRequest(AdminCommandRequest command) {
         String commandName = command.getCommand().trim();
         log.info("processing: " + command + " name: '" + commandName + "'");
-        if (stopped) {
-            // #48 review, finding 3: after stop nothing drains a command's queue, so its caller would wait for nothing
-            answer(command, "admin command '" + commandName + "' was refused: the server is stopped");
-            return;
-        }
         AdminCommand adminCommand = registeredCommandMap.get(commandName);
         if (adminCommand != null) {
             adminCommand.publishCommand(command);       // the command's registered name, not this spelling (finding 4)
@@ -110,11 +105,6 @@ public class AdminCommandProcessor implements AdminCommandRegistry, LifeCycleEve
         }
     }
 
-    private volatile boolean stopped;
-
-    private static void answer(AdminCommandRequest command, String message) {
-        if (command.getErrOutput() != null) command.getErrOutput().accept(message);
-    }
 
     @Override
     @SuppressWarnings("unchecked")
@@ -149,13 +139,11 @@ public class AdminCommandProcessor implements AdminCommandRegistry, LifeCycleEve
 
     @Override
     public void stop() {
-        stopped = true;
         log.info("stop");
     }
 
     @Override
     public void tearDown() {
-        stopped = true;
         log.info("stop");
     }
 

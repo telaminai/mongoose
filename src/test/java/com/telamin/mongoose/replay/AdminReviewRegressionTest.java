@@ -343,7 +343,11 @@ class AdminReviewRegressionTest {
         assertTrue(c.finishedWithin(10), "the caller of a stopped server is answered, not left waiting");
         assertEquals(0, s.node().okCalls.get(), "and the command did not run");
         assertEquals(1, c.replies().size(), c.replies().toString());
-        assertTrue(c.replies().get(0).toString().startsWith("ERR "), "refused: " + c.replies());
+        // after stop nothing drains the command's queue; the server does not stop its LifeCycleEventSources (the
+        // admin processor among them: LifecycleManager.stop skips them), so the refusal is the bound's cancellation,
+        // which names that the command will not run. An immediate "stopped" refusal is an owner decision (spec 3d)
+        assertTrue(c.replies().get(0).toString().startsWith("ERR ") && c.replies().get(0).toString().contains("will not run"),
+                "refused, naming that it will not run: " + c.replies());
     }
 
     @Test
@@ -356,7 +360,28 @@ class AdminReviewRegressionTest {
             assertTrue(c.finishedWithin(10), "the caller of a replay-muted processor is answered, not left waiting");
             assertEquals(0, r.node().okCalls.get(), "and the live command did not reach the replayed processor");
             assertEquals(1, c.replies().size(), c.replies().toString());
-            assertTrue(c.replies().get(0).toString().startsWith("ERR "), "refused: " + c.replies());
+            assertTrue(c.replies().get(0).toString().startsWith("ERR ") && c.replies().get(0).toString().contains("replaying"),
+                    "refused, naming why: " + c.replies());
+        }
+    }
+
+    /**
+     * The bound itself: a command its processor does not claim within it (the agent is held) is cancelled, its caller is
+     * told so, and it never runs once the agent is free. Written with the fix; run against f8deed60's code, where the
+     * caller waited without bound.
+     */
+    @Test
+    void f3_aCommandNotClaimedWithinTheBound_isCancelled_andNeverRunsLater() throws Exception {
+        System.setProperty("mongoose.admin.completionTimeoutMs", "300");
+        try (Server s = boot(null)) {
+            s.events().offer(new Block("DEMO-agent"));
+            assertTrue(s.node().agentHeld.await(5, TimeUnit.SECONDS), "the agent is held: nothing can be claimed");
+            Call c = call(s, "DEMO.ok");
+            assertTrue(c.finishedWithin(10), "the caller is answered within the bound, not left waiting");
+            assertTrue(c.replies().stream().anyMatch(r -> r.toString().contains("cancelled")), "told it was cancelled: " + c.replies());
+            s.node().releaseAgent.countDown();
+            s.drained("after-bound");
+            assertEquals(0, s.node().okCalls.get(), "a command cancelled at the bound never runs later");
         }
     }
 
