@@ -54,6 +54,9 @@ class AdminReviewRegressionTest {
 
     public record Marker(String name) { }
 
+    /** Installs a clock strategy on the agent thread, after boot (the server sets the processor's clock at boot). */
+    public record InstallClock(com.telamin.fluxtion.runtime.time.ClockStrategy strategy) { }
+
     /** A node owning signal and lambda commands, counting each run. */
     public static class CmdNode extends ObjectEventHandlerNode {
         final AtomicInteger okCalls = new AtomicInteger(), throwCalls = new AtomicInteger(), replyThenFailCalls = new AtomicInteger(),
@@ -100,6 +103,8 @@ class AdminReviewRegressionTest {
             if (event instanceof Block) {
                 agentHeld.countDown();
                 await(releaseAgent);
+            } else if (event instanceof InstallClock ic) {
+                getContext().getParentDataFlow().setClockStrategy(ic.strategy());
             } else if (event instanceof Marker m) {
                 markers.add(m.name());
             } else if (event instanceof Downstream d) {
@@ -133,16 +138,14 @@ class AdminReviewRegressionTest {
         }
     }
 
-    /** A processor whose clock throws UnsupportedOperationException once, when armed, then reads 42 (finding 2). */
-    public static class OnceFailingClockProcessor extends DefaultEventProcessor {
+    /** A clock that throws UnsupportedOperationException once, when armed, then reads 42 (finding 2). */
+    static final class OnceFailingClock implements com.telamin.fluxtion.runtime.time.ClockStrategy {
         final AtomicBoolean armed = new AtomicBoolean();
 
-        OnceFailingClockProcessor(CmdNode node) {
-            super(node);
-            setClockStrategy(() -> {
-                if (armed.compareAndSet(true, false)) throw new UnsupportedOperationException("DEMO clock unavailable once");
-                return 42L;
-            });
+        @Override
+        public long getWallClockTime() {
+            if (armed.compareAndSet(true, false)) throw new UnsupportedOperationException("DEMO clock unavailable once");
+            return 42L;
         }
     }
 
@@ -174,9 +177,9 @@ class AdminReviewRegressionTest {
         }
     }
 
-    static Server boot(ReplayConfig replay, boolean onceFailingClock) throws Exception {
+    static Server boot(ReplayConfig replay) throws Exception {
         CmdNode node = new CmdNode();
-        DefaultEventProcessor processor = onceFailingClock ? new OnceFailingClockProcessor(node) : new DefaultEventProcessor(node);
+        DefaultEventProcessor processor = new DefaultEventProcessor(node);
         InMemoryEventSource<Object> events = new InMemoryEventSource<>();
         events.setName("events");
         AdminCommandProcessor admin = new AdminCommandProcessor();
@@ -193,10 +196,6 @@ class AdminReviewRegressionTest {
         MongooseServer server = MongooseServer.bootServer(config, r -> { });
         Thread.sleep(200);
         return new Server(server, events, admin, node, processor, sink);
-    }
-
-    static Server boot(ReplayConfig replay) throws Exception {
-        return boot(replay, false);
     }
 
     static AdminCommandRequest request(String name, List<Object> replies) {
@@ -317,9 +316,15 @@ class AdminReviewRegressionTest {
 
     @Test
     void f2_aSetupFailureInsideRunInEventCycle_refusesTheCommand_andNeverRunsIt() throws Exception {
-        try (Server s = boot(null, true)) {
-            ((OnceFailingClockProcessor) s.processor()).armed.set(true);   // the next clock read, the command's audit setup
+        try (Server s = boot(null)) {
+            // an UNMODIFIED DefaultEventProcessor, given a clock after boot, on its agent thread (the first version of this
+            // test set it in a constructor; the server replaced it at boot, so the clock never failed: see the commit)
+            OnceFailingClock clock = new OnceFailingClock();
+            s.events().offer(new InstallClock(clock));
+            s.drained("clock-installed");
+            clock.armed.set(true);                                          // the next read: the command's audit setup
             List<Object> replies = command(s, "DEMO.lambda");
+            assertFalse(clock.armed.get(), "precondition: the clock failed, inside runInEventCycle's setup");
             assertEquals(0, s.node().lambdaRuns.get(), "a command whose cycle failed to start is not run by another route");
             assertEquals(1, replies.size(), replies.toString());
             assertTrue(replies.get(0).toString().startsWith("ERR admin command 'DEMO.lambda' did not run")
