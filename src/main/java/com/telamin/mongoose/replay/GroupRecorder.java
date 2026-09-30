@@ -82,7 +82,11 @@ public final class GroupRecorder {
             if (r == null) continue;
             List<Long> reads = r.clock.captured();
             ReplayEntry entry;
-            if (event instanceof AdminCommand admin && admin.getArgs() != null && !admin.getArgs().isEmpty()) {
+            if (event instanceof AdminCommand admin && !admin.ran()) {
+                // cancelled by its caller, or refused before it ran: nothing reached the processor, so nothing is an
+                // input. Recorded as an invocation, a replay ran a command that never ran live (#48 correction, N1)
+                continue;
+            } else if (event instanceof AdminCommand admin && admin.getArgs() != null && !admin.getArgs().isEmpty()) {
                 List<String> args = admin.getArgs();
                 entry = new ReplayEntry.AdminInvoked(args.get(0), List.copyOf(args.subList(1, args.size())), reads);
             } else if (seq >= 0 && config.journalled(source)) {

@@ -274,6 +274,16 @@ public class AdminCommand {
         }
     }
 
+    /**
+     * This invocation's outcome for a recording: whether its command RAN (started to execute) in the dispatch that
+     * delivered it. False when its caller cancelled it before it was claimed, or it was refused before it ran: then it is
+     * not an input of the processor, and must not be recorded as an invocation (#48 correction, N1). A command that ran and
+     * threw is recorded as the failed dispatch it is.
+     */
+    public boolean ran() {
+        return executed;
+    }
+
     /** Whether this command has started to execute: a retried dispatch of it must not run it again. */
     public boolean executed() {
         return executed;
