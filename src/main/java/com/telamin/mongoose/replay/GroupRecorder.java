@@ -32,6 +32,8 @@ public final class GroupRecorder {
         long timerSeq;
         /** Why this processor's recording stopped (its store failed), or null while it records. */
         String broken;
+        /** Whether the recording clock was installed: a processor that refused it keeps its own (review of 8211858, G2). */
+        boolean clockInstalled;
         /** This dispatch: whether the processor was given the input, the copy taken just before, or why none could be. */
         boolean received;
         Object input;
@@ -62,6 +64,7 @@ public final class GroupRecorder {
         // never stops a processor (D1); what it cannot do is claim to have recorded it.
         try {
             flow.setClockStrategy(clock);
+            r.clockInstalled = true;
         } catch (VirtualMachineError e) {
             throw e;
         } catch (Throwable t) {
@@ -79,7 +82,10 @@ public final class GroupRecorder {
     /** A ReplayRecord input: pin a recorded processor's clock to its instant; false when {@code flow} is not recorded. */
     public boolean pinSyntheticTime(DataFlow flow, long time) {
         Recorded r = byFlow.get(flow);
-        if (r == null) return false;
+        // a processor that refused the recording clock does not run on it, so its time is not ours to pin: returning
+        // false gives it the strategy's synthetic clock, exactly as replay OFF does (review of 8211858, G2: it kept its
+        // own clock's time, 99, where a live ReplayRecord said 42; its recording stays failed, by name and durably)
+        if (r == null || !r.clockInstalled) return false;
         r.clock.pin(time);
         return true;
     }
