@@ -23,6 +23,7 @@ import com.telamin.mongoose.service.EventSubscriptionKey;
 import com.telamin.mongoose.service.admin.AdminCommandRegistry;
 import com.telamin.mongoose.service.admin.AdminCommandRequest;
 import com.telamin.mongoose.service.admin.impl.AdminCommandProcessor;
+import com.telamin.mongoose.service.scheduler.SchedulerService;
 import org.agrona.concurrent.BusySpinIdleStrategy;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -77,9 +78,23 @@ class ReplayIndependentReviewTest {
             this.sink = sink;
         }
 
+        private SchedulerService scheduler;
+
+        @ServiceRegistered
+        public void scheduler(SchedulerService scheduler, String name) {
+            this.scheduler = scheduler;
+        }
+
         @ServiceRegistered
         public void admin(AdminCommandRegistry registry, String name) {
-            registry.registerCommand("probe.noop", (args, out, err) -> out.accept("noop"));   // reads no clock
+            // the command itself reads no clock; with #48 it runs as the processor's own event cycle, whose receipt is
+            // one reading (DefaultEventProcessor.runInEventCycle -> Clock.eventReceived), so its entry records one
+            registry.registerCommand("probe.noop", (args, out, err) -> out.accept("noop"));
+            // a timer whose action reads no clock and dispatches nothing: a firing that takes no reading at all
+            registry.registerCommand("probe.arm", (args, out, err) -> {
+                scheduler.scheduleAfterDelay(1, () -> { });
+                out.accept("armed");
+            });
         }
 
         @Override
@@ -554,14 +569,33 @@ class ReplayIndependentReviewTest {
         return replies;
     }
 
-    @Test
-    void f6_aCycleThatReadNoClock_replaysAsZeroReads() throws Exception {
+    /** RECORD: arm the probe's timer and wait until its firing is recorded; the store holds the command, then the timer. */
+    static List<ReplayEntry> recordAnArmedTimer() throws Exception {
         InMemoryReplayStore store = new InMemoryReplayStore();
         try (Server s = boot(ReplayConfig.record(Set.of("probe"), Map.of(), null, store), false, one())) {
-            assertEquals(List.of("noop"), invoke(s.admin(), "probe.noop"));
+            assertEquals(List.of("armed"), invoke(s.admin(), "probe.arm"));
+            long deadline = System.nanoTime() + 5_000_000_000L;
+            while (store.entries("probe").size() < 2 && System.nanoTime() < deadline) Thread.sleep(5);
         }
-        ReplayEntry.AdminInvoked recorded = (ReplayEntry.AdminInvoked) store.entries("probe").get(0);
-        assertEquals(List.of(), recorded.reads(), "a cycle that read no clock records no reading");
+        List<ReplayEntry> entries = store.entries("probe");
+        assertEquals(2, entries.size(), "the command and its timer's firing: " + entries);
+        return entries;
+    }
+
+    /**
+     * Integration with #48: an admin command runs as its processor's own event cycle, and a DefaultEventProcessor's
+     * cycle takes one reading on receipt, so the vehicle for "a cycle that read no clock" is a timer firing whose action
+     * reads none (main used a lambda admin command, which read none before #48 gave it a cycle).
+     */
+    @Test
+    void f6_aCycleThatReadNoClock_replaysAsZeroReads() throws Exception {
+        List<ReplayEntry> entries = recordAnArmedTimer();
+        ReplayEntry.AdminInvoked command = (ReplayEntry.AdminInvoked) entries.get(0);
+        assertEquals(1, command.reads().size(), "an admin command's own cycle takes exactly its receipt's reading");
+        ReplayEntry.TimerFired timer = (ReplayEntry.TimerFired) entries.get(1);
+        assertEquals(List.of(), timer.reads(), "a cycle that read no clock records no reading");
+        InMemoryReplayStore store = new InMemoryReplayStore();
+        entries.forEach(e -> store.append("probe", e));
         try (Server r = boot(ReplayConfig.replay(Set.of("probe"), Map.of(), null, store), false, one())) {
             r.awaitReplayDone();
             assertEquals(null, r.replayer().stopped("probe"), "zero to zero is not a divergence");
@@ -570,8 +604,11 @@ class ReplayIndependentReviewTest {
 
     @Test
     void f6_aRecordedReadThatTheReplayDoesNotTake_isADivergence() throws Exception {
+        List<ReplayEntry> entries = recordAnArmedTimer();
+        ReplayEntry.TimerFired timer = (ReplayEntry.TimerFired) entries.get(1);
         InMemoryReplayStore store = new InMemoryReplayStore();
-        store.append("probe", new ReplayEntry.AdminInvoked("probe.noop", List.of(), List.of(42L)));   // one real read
+        store.append("probe", entries.get(0));
+        store.append("probe", new ReplayEntry.TimerFired(timer.seq(), 42L, List.of(42L)));   // one read the firing never takes
         try (Server r = boot(ReplayConfig.replay(Set.of("probe"), Map.of(), null, store), false, one())) {
             r.awaitReplayDone();
             String stopped = r.replayer().stopped("probe");

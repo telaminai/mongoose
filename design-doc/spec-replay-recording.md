@@ -1,7 +1,9 @@
 # Spec: record and replay a processor's inputs in Mongoose
 
-**Status**: r9, 2026-09-30. Implemented and tested on `feat/replay-at-dispatch` (PR #47), reviewed, re-reviewed,
-independently reviewed and independently re-reviewed; every finding is dispositioned in §3f, each fix with a regression that failed first. Background, and the evidence each
+**Status**: r10, 2026-09-30. Implemented and tested on `feat/replay-at-dispatch` (PR #47, released in mongoose 1.0.31),
+reviewed, re-reviewed, independently reviewed and independently re-reviewed; every finding is dispositioned in §3f, each
+fix with a regression that failed first. Admin commands in the event cycle (§3d) are on `feat/admin-commands-in-cycle`
+(PR #48), reviewed and corrected (§3d.1, §3d.2), and integrated with released main (§3d.3). Background, and the evidence each
 decision rests on: [`replay-at-dispatch-spike.md`](replay-at-dispatch-spike.md).
 
 ## 1. Goal, and the boundary of the claim
@@ -69,7 +71,7 @@ behaviour is removed.
 All seven items are implemented, in `src/main`, behind `ReplayConfig` (off by default). Full suite: **232 / 0 / 0 / 9**
 (total / failures / errors / skips); the baseline before this work was 223 / 0 / 0 / 9, and the nine skips are the
 same. Controls: `python3 design-doc/replay_controls.py`. It runs each named test unmutated first (all green),
-then **17 of 17 controls caught**, each by a named assertion, with every file restored byte-identically.
+then **24 of 24 controls caught**, each by a named assertion, with every file restored byte-identically.
 
 | id | named test | controls |
 |---|---|---|
@@ -151,8 +153,10 @@ retains by policy.
 
 ## 3d. Admin commands and the event cycle (validated 2026-09-29)
 
-**They do not run in an event cycle yet.** `AdminCommandAuditTest`, through a real server, shows that a processor-owned
-command runs on the processor's thread, changes node state, and opens **no** event cycle: the processor's `onEvent`
+**Status (PR #48, fluxtion runtime 1.1.0): they do.** A lambda command runs through `DataFlow.runInEventCycle` as its own
+cycle (`AdminCommandAuditTest`, inverted), and a signal-routed one as an ordinary event. What follows is how it stood
+before, and why. **Before:** `AdminCommandAuditTest`, through a real server, showed that a processor-owned
+command ran on the processor's thread, changed node state, and opened **no** event cycle: the processor's `onEvent`
 count is unchanged, and the command's code runs outside any cycle. That is the cause the proposal
 (`origin/proposal/admin-commands-in-event-cycle`) describes: `AdminCommandInvoker` calls the lambda directly. The
 consequences (no audit record, `auditLog` lines spliced into the next record in a generated processor, no dirty
@@ -170,6 +174,304 @@ The proposal covers delivery in an event cycle, and what each option gives:
 **Only A puts a command fully in the event cycle, and it needs no Fluxtion change.** It is a new registration API; an
 existing lambda command is not converted. The proposal does not cover replay; under A the recorder still records
 `{name, args}` at the admin queue, and the replay rebuilds the command, which becomes the same `Signal`.
+
+**The requirement (owner, 2026-09-29):** a processor's admin command runs in its event cycle and audit-logs like any
+node. Admin commands are a Mongoose concept; Fluxtion is not given an admin API (improving Fluxtion's general event
+cycle is allowed). Nothing found argues against the requirement:
+- a command already blocks its processor's thread;
+- a queued command never lands mid-cycle;
+- a read-only command's audit record is part of the operator trail;
+- replay gains an ordinary input;
+- server-level commands touch no processor, so they are out of scope.
+
+The one care point is a handler that throws: it is answered as an error, but it leaves the processor with its
+`processing` flag set (finding 2), which is Fluxtion's to fix generally.
+
+**Option A, spiked** (`registerSignalCommand(name)`):
+- `AdminCommandInvoker` delivers a signal-routed command as `processor.onEvent(new Signal<>("admin:" + name, request))`;
+  the request carries the arguments and the reply channel.
+- A node handles it with a filtered signal handler and replies through `request.getOutput()`.
+- A command no handler replies to is answered with an error. A throwing handler is answered with the exception.
+- Registering one outside a processor is refused.
+
+`SignalAdminCommandTest`, 3/0/0/0, through a real server:
+- the command opens exactly one event cycle, and its handler runs inside it and replies;
+- an unanswered command is an error;
+- it is recorded as `AdminInvoked`, and replays as the same signal cycle at the same point and instant.
+
+Controls: `A-a-signal-command-runs-in-an-event-cycle`, `A-an-unanswered-command-is-an-error`,
+`A-each-invocation-keeps-its-routing`.
+
+**Proved on a generated processor** (owner approved the generator, 2026-09-29). `AlarmProcessor` was generated by
+the hosted generator (builder 1.0.71, runtime 1.0.16; `design-doc/admin-gen`) from `AlarmNodes`, with audit logging
+on. `AlarmMonitor` raises an alarm, handles `admin:alarm.reset` with an ordinary filtered signal handler, and also
+registers a lambda command. `AlarmPublisher` is downstream of it. The source is committed without the generator's
+copyright header, and a test fails if it returns.
+
+`GeneratedAdminAuditTest`, through a real server capturing the audit log:
+- **The signal command has its own record**:
+  ```
+  event: Signal
+  eventFilter: admin:alarm.reset
+  nodeLogs:
+      - alarmMonitor: { reset: true, resetBy: [DEMO-operator]}
+      - alarmPublisher: { published: false, changes: 2}
+  ```
+  The node's `auditLog` writes are in it, and **the change propagated**: the downstream node fired in the same cycle.
+  Exactly one record names it, and every record is well formed.
+- **A lambda command still works** (it replies). The invoker now brackets it with the processor's own audit calls, found
+  by name: `clock.eventReceived` / `eventLogger.eventReceived(AdminCommandEvent)` before it, and
+  `processingComplete()` on both after it. So it has a record of its own, `event: AdminCommandEvent`,
+  `eventToString: AdminCommandEvent[command=alarm.lambda, args=[DEMO-operator]]`. Its `auditLog` line is in it, at
+  the command's own instant, and the next record is clean: the mangled log is gone. Its change does not propagate,
+  which is wanted (owner: an admin command redispatches if it needs a reaction).
+
+Controls: `A-the-generated-processor-audits-the-command`, `A-the-generated-source-stays-publishable`,
+`A-a-lambda-command-is-bracketed-by-an-audit-record`, `A-a-lambda-record-carries-the-commands-instant`.
+
+**The bracket is an interim, and unsafe for a command that redispatches** (owner, 2026-09-29: "we don't get the
+queued dispatch or any other event mechanics"). The bracket does not set the processor's private `processing` flag.
+So an event the command raises is dispatched at once, as a nested cycle, while the command's record is still open.
+That nested record corrupts the log, and the queued-callback dispatch never runs.
+
+**The proper form is a general Fluxtion trigger, not an admin API.** It runs a supplied action as an event cycle of the
+processor, with a supplied event as its audit context:
+`DataFlow.runInEventCycle(Object auditEvent, Runnable action)`. Released in fluxtion runtime 1.1.0, whose interface
+default throws `UnsupportedOperationException` (the spike's default ran the action with no cycle, which a caller could
+not tell apart; the release made it refuse). A generated processor implements it with the boundary it already has for
+exported service calls:
+1. `auditEvent(auditEvent)`: every auditor sees it.
+2. `processing = true`.
+3. The action runs.
+4. `afterEvent()`, then `dispatchQueuedCallbacks()`, so anything the action redispatched runs after it, in order.
+5. `processing = false`, in a `finally`.
+
+The event is not dispatched to any node, and nothing is marked dirty. Mongoose's invoker becomes
+`processor.runInEventCycle(new AdminCommandEvent(name, args), command::executeCommand)`: the trigger is the command,
+carrying all its state.
+
+**Spiked 2026-09-29, both Fluxtion repos, then released: fluxtion runtime 1.1.0 and compiler 1.0.76, hosted
+generator deployed.** The released form closes the cycle in a `finally`, orders the buffered calculation first, and gives
+an `Event` context its own event time; generated source has no `@Override`, so it also compiles on runtime 1.0.16. The
+spike's record:
+- Runtime (`b8e97b4`): the `DataFlow` default plus the `DefaultEventProcessor` override. `RunInEventCycleTest` 5/0/0/0,
+  suite 274/0/0/1, three controls caught.
+- Compiler (`632d99a1`): the method is added in `javaTemplate.vsl` and in `InMemoryEventProcessor`, with **no change to the
+  generator model**. `RunInEventCycleTest` 15/0/0/0 across the five targets (three compiled, serialised, interpreted).
+  Removing the template override fails the compiled targets, and removing the interpreter's fails the interpreted one.
+  The only change to the pre-split goldens is the added method.
+- The audit log it produces: the command's record carries the node's line and nothing from downstream. The event it
+  raised follows as its own record, with the publisher firing.
+- Mongoose (PR #48, on 1.1.0): the invoker calls `runInEventCycle` when the processor's class implements it (the method
+  is not the inherited default, `Method.isDefault`, decided once per class); a processor that inherits the refusing
+  default, or whose override refuses, has the command bracketed by its audit calls. Anything that fails before the
+  command runs answers the caller with an error and is reported; a command runs at most once (`AdminCommandFailureTest`).
+  `RunInEventCycleAdminTest` runs, no longer skipping.
+
+**Why a default method cannot run the cycle:** it sees only `DataFlow`'s public API. The auditor fan-out, the
+`processing` flag, `afterEvent()` and the callback queue are private to each implementation. Exposing them as public
+begin and end calls would let any caller leave a cycle half-open. So the default refuses (runtime 1.1.0), and each
+implementation overrides it. A template that wants the path closed makes the override throw; Mongoose then brackets.
+
+Security of such a trigger:
+1. It grants no new privilege in-process. Its caller holds the `DataFlow`, and can already call `onEvent`, exported
+   services and nodes. The boundary that matters is Mongoose's: the admin transport sends a registered command name
+   and arguments, never code, and must go on doing so.
+2. Re-entrancy: called inside an open cycle, it must queue, as a re-entrant event does, or refuse. The spike refuses.
+3. Thread: it must run on the processor's thread (the #46 class of race). Mongoose guarantees that through the admin
+   queue; Fluxtion could assert it.
+4. Exceptions: the `finally` must clear `processing` and close the record (finding 2).
+5. Audit spoofing: the caller chooses the audit event. Such records should be marked as actions, distinct from inputs.
+6. Secrets: the audit event's `toString` is written to the log, so a command's arguments need redaction where they are
+   sensitive.
+
+**Who writes the handler:** the processor's author, the same person who writes a lambda today. They register the name
+(`registerSignalCommand`) and add a filtered signal handler to a node (or a Spring XML `signalHandlers` binding). It
+is a real graph node, which is why it audits and propagates, and why the generator must see it. That is option A's
+cost: each lambda command must be rewritten this way to gain the cycle.
+
+**One detail:** a `Signal` record's `eventTime` is `-1`, because `Signal` is a Fluxtion `Event` with no producer time
+(`logTime` is correct). The analyser's time-order checks read `eventTime`.
+
+### 3d.1 The independent review of #48 at f8deed60 (review 5910486472)
+
+Regressions (`AdminReviewRegressionTest`, real servers) were committed with predictions before they ran (`2d45bde`),
+then run on f8deed60's code; results in the commit messages and `replay-evidence/admin-review-f8deed60/`.
+
+| # | finding | pre-fix result on f8deed60 | disposition |
+|---|---|---|---|
+| 1 | a throwing signal command is recorded and replayed as a success | RECORD stored `AdminInvoked` (a handler that throws, and a cycle that fails after the handler replied); the replay ran the handler again, `complete` with no stop | fixed (`ee6254c`): the caller is answered and released once, then the failure is rethrown to the dispatch: reported, recorded `Failed` (D4), the replay stops before running it again, the retry is a no-op |
+| 2 | an internal cycle failure is taken for a disabled cycle | an unmodified `DefaultEventProcessor` whose clock failed inside `runInEventCycle`'s setup ran the command by the bracket and answered success | fixed (`7d92726`): the route is decided before invoking, from a declaration (`AdminCommandsBracketed`) or an inherited default; anything failing before the command runs refuses it by name |
+| 3 | the caller is not always answered; an interrupted caller's command still runs | caller left waiting (stopped server; replay-muted processor; a command never claimed); an interrupted caller's queued command ran later and replied to it; a started command's late reply reached its departed caller | fixed (`ee6254c`, `e1ae20f`): per request QUEUED / CLAIMED / CANCELLED, a bounded wait (`mongoose.admin.completionTimeoutMs`, 10 s), cancellation only of unclaimed work (never run later), an honest "started" answer otherwise, the reply channel closed once, a muted processor refused at once |
+| 4 | lookup trims the name, the signal does not | `" DEMO.ok "` answered "no handler replied" | fixed (`ee6254c`): a command's registered name is bound once and used for routing and identity |
+| nit | head-specific counts stale | the PR body said 266 tests and 42 controls; f8deed60 ran 270 / 0 / 0 / 9 across 84 reports, and its gate held 44 controls (34 named assertions, 10 expected-message timeout or error) | corrected in the PR body, labelled by revision |
+
+**Owner decisions** raised, not taken:
+- **An override that refuses the cycle without declaring `AdminCommandsBracketed`** was bracketed at f8deed60 and is
+  refused now. Fluxtion 1.1.0 has no capability query, so the existing API cannot tell a deliberate disable from a
+  failure.
+- **An immediate "the server is stopped" refusal** needs `LifecycleManager.stop` to stop `LifeCycleEventSource`
+  services (it skips them). Today a stopped server's command is cancelled at the bound.
+- **The completion bound's default (10 s).** It caps what used to be an unbounded wait, so a legitimately longer
+  command's caller now gets the "started" answer.
+
+Misses, recorded:
+- Finding 2's first fixture set the failing clock in a constructor; the server replaces the clock at boot, so it never
+  failed. Its pre-fix FAILURE (the command ran) was the command running normally. Corrected (`48edb46`) and re-run: the
+  clock fails inside the setup, and the command still ran pre-fix.
+- `ee6254c` claimed a stopped server refuses at once (its message was amended before push, so `e1ae20f`, which corrects it, cites its earlier hash `7e78802`). The flag it relied on is never set on server stop, and tightening
+  the test to require the named reason exposed it. The dead flag was removed (`e1ae20f`).
+- Two finding-3 tests used a marker on another feed as a barrier. Nothing orders two queues, and a control that let a
+  cancelled command run survived. They now use a second request queued behind the first on its own queue (`97a3c22`),
+  and still fail on f8deed60's code.
+- An unknown command name is still not answered (older than #48, stated in the how-to).
+
+**Stack integration with #47.** #48 is stacked on #47 at the merge that f8deed60 carries, NOT on #47's current head
+(`cd52628`), which has moved twice since: entries with route and instant, `ReplayRouting.routeFor(source, route, flow)`,
+the N1-N7 round (`GroupReplayer.attach` order, `InputCopy`, `RecordedNamedEvent`, the default
+`processEventRecording`), and a controls list of 59. Integration must keep both sides' recorder and replayer changes,
+merge the two controls lists by name rather than take either wholesale (anchors move on both sides), and re-run both
+sides' regressions and the gate on the combined tree.
+
+**Controls.** Nine were added (`adm1` x2, `adm2`, `adm3` x4, `adm4`, `F6`), one per protection. Two earlier ones
+moved with the code: B2's retry guard is now the claim; F3 protected the undeclared fallback finding 2 removed and now
+protects the declared route. The first runs caught 9 of 11 (the misses above), then 3 of 3 re-run. The full gate at
+this head: **53 of 53 detected, 43 by a named assertion and 10 by an await running out or an error carrying the
+mutation's expected message** (the ten the review listed; all nine new controls are named-assertion detections).
+Requested and detected names match (53, no duplicates). The harness now restores each file with `cat f.orig > f`,
+checks its SHA-256, and recompiles from clean. `mvn -q test`: 282 / 0 / 0 / 9 across 85 reports, no orphans; after the
+controls, `mvn -q clean test`: the same. The ordinary dispatch path did not change (a new protected accessor on
+`AbstractEventToInvocationStrategy`, and an override in the admin invoker only), so `DispatchPathJmh` was not re-run.
+
+### 3d.2 The correction-round review of #48 at b4e80c1 (review 5912663051)
+
+It resolved findings 1, 2 and 4 and the counts nit, found finding 3 partly resolved, and raised N1-N3. Regressions
+(`AdminCorrectionRegressionTest`, real servers, through `AdminReviewRegressionTest`'s fixture) were committed with
+predictions before they ran (`a7f02ec`), then run on b4e80c1's code; results in the commit messages and
+`replay-evidence/admin-correction-b4e80c1/`.
+
+| # | finding | pre-fix result on b4e80c1 | disposition |
+|---|---|---|---|
+| N1 | a cancelled command is recorded as an invocation | 2 `AdminInvoked` entries for 1 command that ran; the replay ran both | fixed (`bdf68d2`): an invocation's outcome, `ran()`, is carried into the recording; a command that did not run records nothing; a command that ran and threw is still `Failed` |
+| N2 | a template reused after a timeout mixes two requests | the second caller returned on the FIRST command's completion; a cancelled slot, revived by the next publish, ran first with its arguments (`[2, X]` for `[X, 2]`) | fixed (`3b6b97c`): every publish is its own invocation (arguments, claim, latch, reply lifetime; never reset); the template keeps only admission, for `publishCommand(List)` ("busy", retained and tested); the `AdminCommandRequest` overload admits each request alone, and a no-queue command runs synchronously (review of 8d224fb, nit 2) |
+| N3 | a reply consumer defeats the bound | the caller was BLOCKED behind a blocked output consumer, and a blocked error consumer | fixed (`3b6b97c`, `210b8a4`): one atomic phase (QUEUED, CLAIMED, COMPLETED, CANCELLED, ABANDONED); no lock while a reply is delivered; the caller's final message on its own thread |
+
+**Delivery, stated:** a reply that has not begun when the channel closes is dropped. A delivery already executing is not
+retracted, and can finish after the caller's final message. The bound covers the command's completion, not
+end-to-end transport of its replies.
+
+Written with the fix, for behaviour it added (`AdminCommandLifetimeTest`, a real publisher, queue and invoker):
+- completion winning the race with the expiry, through a seam (`beforeExpiry`, a no-op in the product) that b4e80c1
+  lacks;
+- a reply begun after the caller gave up being suppressed.
+
+Retained, passing on both trees: busy admission; F6's completed reuse; a late asynchronous reply gated.
+
+Misses, recorded: the cancelled-slot test as first designed would have passed on b4e80c1. The revived object ran
+once with the second publish's arguments, so only the queue position showed the revival. A request in between made it
+visible. The race control was first scored a timeout, because its assertion printed replies carrying the harness's marker.
+
+**Stack integration with #47** (as planned at 8d224fb; done in §3d.3):
+- **The recorder check:** #47's per-target hook (`recorder.received` before `dispatchEvent`) sees a command before its
+  claim, so inheriting it does not carry N1. #47's `afterDispatch` needs the same `ran()` check before it builds
+  `AdminInvoked`.
+- **The controls:** the two branches' lists have 80 distinct names (at the reviewed heads), with seven shared names
+  whose definitions differ. They must be merged by name, with each shared control's anchor re-derived from the
+  combined source, and both harness copies merged.
+- **The recorder and replayer:** the entry signatures (route, instant, `routeFor(source, route, flow)`) must be
+  reconciled.
+- **Gates:** both sides' regressions and the gate must pass on the combined tree before release.
+
+**Controls.** Six were added (`cr-*`). Four anchors moved with this round's code and still remove the same protection:
+adm3-cancelled (the phase claim), adm3-a-late-reply (the phase gate), F6 (now: reuse the template without reset) and R6
+(an else-if after N1's check). The targeted run requested 17 (the six new, plus the affected adm1 x2, adm2, adm3 x4,
+adm4, B2, F6, R6). All 17 were detected at named assertions, after the race control's assertion was changed to stop
+printing replies. The full gate: **59 of 59 detected, 49 by a named assertion and 10 by an await running out or an error
+carrying the mutation's expected message** (the ten of b4e80c1). Requested and detected names match (59, no duplicates);
+restored with `cat f.orig > f`, SHA-256 checked, recompiled from clean. `mvn -q test`: 291 / 0 / 0 / 9 across 87
+reports, no orphans; after the controls, `mvn -q clean test`: the same. Ordinary event dispatch is unchanged, so
+`DispatchPathJmh` was not re-run.
+
+### 3d.3 Integration with released main (1.0.31), and the review of 8d224fb
+
+The review of 8d224fb (comment 5919428341) approved N1-N3 on the branch and raised two non-blocking nits. Released main
+(`59b9d8f`, mongoose 1.0.31 with #47) was merged into the branch (`1c18def`), not rebased. Predictions were committed
+first (`1195dd4`, `replay-evidence/integration-main-1.0.31/predictions.md`).
+
+**The nits.**
+- **Nit 1, the timeout wording.** An abandoned command's message promised "nothing more from it will reach this caller",
+  but a delivery already begun may finish after it. The message now says "no new reply delivery will begin, and a
+  delivery already in progress may still finish" (`621045b`). The delivery policy is unchanged. Regression
+  `n3_aDeliveryInProgressAtTheBound_mayFinishAfterward_andTheFinalMessageSaysSo`: it holds an output consumer, lets the caller
+  expire, releases the consumer, and asserts the order (the final message, then `DEMO-ok`) and the wording. On 8d224fb it
+  failed at the wording assertion; the order already held. Control `nit1-the-timeout-message-promises-no-retraction`.
+- **Nit 2, admission.** Documentation only (§3d.2's N2 row, the how-to). Shared template admission and "busy" apply to
+  `publishCommand(List)`. The `AdminCommandRequest` overload admits each request alone. A no-queue command runs
+  synchronously, outside the bound.
+
+**Conflicts, and how each was resolved.**
+- `design-doc/replay_controls.py`: the union of both lists, 99 names (main 72, the branch 59, 32 in the merge base, none
+  dropped by either side). Eight shared names had different definitions. Seven were changed by main to follow its own
+  code, while the branch kept the base: R2-arms-the-processors-clock, R2-graph-raised-events-never-pass-dispatch,
+  R5-pins-the-entry-instant, R5-plays-every-read-of-the-cycle, csv-the-store-reads-back-its-file,
+  review-3-a-named-input-is-recorded-as-its-item and review-5-a-torn-last-line-is-dropped. These take main's definitions.
+  R6-records-an-admin-command-by-its-args was changed by the branch (an `else if` after the `ran()` check) and takes the
+  branch's. Every anchor occurs exactly once in the merged source.
+  Harness: the branch's body is a superset of main's. It has main's `.orig` byte copy, `cat` restore and recompile from
+  clean, plus lookup of a report by simple class name in any package, with ambiguity refused.
+- The spec's status line: combined (r10).
+
+**Merged textually, checked by reading.**
+- `GroupRecorder.afterDispatch`: the `ran()` check sits after the clock capture and `if (!r.received) continue;`, and
+  before `AdminInvoked` is built. Main's `received` hook runs before the invoker's claim, so receipt is not proof that a
+  command ran.
+- `AbstractEventToInvocationStrategy`: it keeps both main's `processEventRecording` and the branch's `mutedForReplay`
+  accessor. `processEventRecording` bypasses the invoker's `processEvent` override, so a muted processor is skipped
+  there rather than refused. Under standard server construction, with a fixed replay configuration, the server builds a
+  recorder or a replayer for a group, never both (one `ReplayConfig.Mode`), so the difference cannot be observed there.
+  **Manual assembly can combine them**: a queue given a recorder (`recordWith`) and a strategy with muted processors,
+  directly or by a live `ReplayRecord`. There a live command for a muted processor is skipped, never run and never
+  recorded, but its caller is cancelled at the bound instead of refused at once (review of b699146, note 1). Stated,
+  not rejected: rejecting mixed assembly is an owner choice.
+- `pom.xml`: 1.0.32-SNAPSHOT (main), fluxtion 1.1.0 (the branch; main was on 1.0.15).
+- `ReplayEntry` and routing: main's route, explicit instants and `routeFor(source, route, flow)` stand.
+  - The recorder builds `AdminInvoked` with the instant it captured.
+  - The replayer pins `a.instant()` and routes by `adminCommand.<name>`.
+  - The branch's only use of a compatibility constructor is a test's never-deliverable `TimerFired`.
+
+**Semantic interaction despite a clean merge: an admin command now takes a clock reading.** The branch runs a lambda
+command as its processor's own event cycle. In fluxtion 1.1.0, `DefaultEventProcessor.runInEventCycle` opens the cycle
+with `auditEvent`, and `Clock.eventReceived` reads the clock, so the command's entry records one reading. That is
+faithful, and a replay takes it again. Main's f6 pair in `ReplayIndependentReviewTest` (finding 6 of §3f: zero reads
+recorded as zero, and a read the replay does not take is a divergence) used a lambda command as its "reads no clock"
+vehicle. On the merged tree both failed at their named assertions (`[<a reading>]` for `[]`; no divergence).
+Their meaning is kept on a vehicle that still reads nothing: a timer firing whose action reads no clock. The first test
+also asserts the new fact: an admin command's cycle takes exactly one reading. Main's controls
+ir-6-a-cycle-with-no-reads-records-none and ir-6-the-read-count-must-match-exactly are both caught at their named
+assertions.
+
+**New regression, the refused case through main's capture.** `AdminIntegrationRegressionTest`, a real server:
+- RECORD, where a processor's declared event cycle fails while it sets up;
+- the caller is answered with an error;
+- the next command runs;
+- the store holds exactly one `AdminInvoked`;
+- the replay completes, running one command.
+
+The cancelled case is N1's regression, and it now runs through main's recorder. Control
+`int-refused-work-is-no-invocation` removes the `ran()` check, and the refused command is recorded as a second
+`AdminInvoked`.
+
+**Results on the integrated tree** (JDK 21.0.9, Maven serially):
+- Focused suites (the branch's admin suites and main's replay suites) before the f6 change: 112 / 2 / 0 / 0, the two
+  f6 tests; after it, green.
+- `mvn -q clean test`: 349 / 0 / 0 / 9 across 92 reports, no orphans.
+- Gate: 101 registered (99 merged plus the two new), **101 of 101 detected**: 91 at a named assertion, 6 by an
+  expected-message timeout and 4 by an expected-message error. Requested and detected names match (101 each, no
+  duplicates). Restored with `cat`, SHA-256 checked, recompiled from clean.
+- After the gate, `mvn -q clean test`: 349 / 0 / 0 / 9 across 92 reports, no orphans; `src/` identical to HEAD.
+
+*Historical, by revision:* 8d224fb 291 / 0 / 0 / 9, 87 reports, gate 59 of 59; main 59b9d8f (1.0.31) 312 / 0 / 0 / 9,
+83 reports, gate 72 registered.
 
 ## 3e. One processor, several in one agent, several agents: what holds, and what is needed
 

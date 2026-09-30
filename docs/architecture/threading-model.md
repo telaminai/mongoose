@@ -153,7 +153,9 @@ Key details:
   them.
 - Scheduler expiry actions run on the Scheduler Agent thread.
 - Admin commands registered within a processor context are delivered into that processor’s queue and executed on its
-  thread; otherwise they execute on the caller thread.
+  thread, as an event cycle of that processor with its own audit record
+  ([details](../example/how-to/how-to-write-an-admin-command.md#admin-commands-in-the-event-cycle)); otherwise they
+  execute on the caller thread.
 
 Implications:
 

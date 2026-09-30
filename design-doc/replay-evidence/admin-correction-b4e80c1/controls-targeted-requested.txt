@@ -1,0 +1,17 @@
+cr-N1-a-command-that-did-not-run-is-no-invocation
+cr-N2-a-publish-never-completes-another
+cr-N2-a-cancelled-slot-is-never-revived
+cr-N3-no-lock-is-held-while-a-reply-is-delivered
+cr-N3-nor-while-an-error-reply-is-delivered
+cr-N3-a-completion-that-wins-the-race-is-the-outcome
+adm1-a-signal-failure-reaches-the-dispatch
+adm1-a-failure-after-the-reply-reaches-it-too
+adm2-a-failing-cycle-never-falls-back
+adm3-cancelled-work-never-runs
+adm3-the-wait-is-bounded
+adm3-a-muted-processor-is-refused
+adm3-a-late-reply-is-dropped
+adm4-the-registered-name-is-the-identity
+B2-a-retried-command-does-not-run-again
+F6-a-reused-template-starts-afresh
+R6-records-an-admin-command-by-its-args
