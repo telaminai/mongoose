@@ -107,6 +107,7 @@ for control in CONTROLS:
     name,path,old,new,test=control[:5]
     if only and name not in only: continue
     p=pathlib.Path(path); orig=p.read_bytes(); h=hashlib.sha256(orig).hexdigest()
+    bak=pathlib.Path(path+'.orig'); shutil.copyfile(p,bak)          # a byte copy on disk, so a crash leaves it
     text=orig.decode()
     assert text.count(old)==1,(name,'anchor count',text.count(old))
     try:
@@ -114,8 +115,9 @@ for control in CONTROLS:
         verdict,message=run_and_read(test)
         if verdict=='green': verdict='survived'
     finally:
-        p.write_bytes(orig)
+        subprocess.run(['sh','-c','cat "$1" > "$2"','restore',str(bak),str(p)],check=True)
     restored=hashlib.sha256(p.read_bytes()).hexdigest()==h
+    if restored: bak.unlink()
     expect=control[5] if len(control)>5 else None
     # a named assertion is a detection; an await running out, or an error, only when its message is the mutation's
     detected = verdict=='caught' or (verdict in ('caught-by-timeout','error') and expect is not None and expect in message)
@@ -127,5 +129,10 @@ unrestored=[r[0] for r in results if not r[2]]
 print(caught, 'of', len(results), 'caught by the named assertion;', by_message,
       'by an await or error carrying the mutation\'s expected message;', len(undetected), 'NOT detected', undetected)
 if unrestored: print('NOT RESTORED:', unrestored)
+# no mutated compiled class is left behind: every restored source is compiled again from clean
+if results and not unrestored:
+    c=subprocess.run(['mvn','-o','-q','clean','test-compile'],capture_output=True,text=True)
+    print('recompiled the restored sources from clean:', 'ok' if c.returncode==0 else 'FAILED')
+    if c.returncode!=0: unrestored.append('recompile')
 # a gate, not a report: any control not detected, or any file left mutated, fails the run
 sys.exit(1 if undetected or unrestored else 0)
