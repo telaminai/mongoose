@@ -37,6 +37,11 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
     private final BufferedWriter out;
     /** A torn last line found on opening, or null: the file is then read, and never appended to. */
     private String torn;
+    /**
+     * The file is in the earlier six-field format (re-review N6): it is read, and never appended to, because this writer
+     * writes eight fields and the next open would read them under the six-field header and refuse the file.
+     */
+    private boolean earlierFormat;
 
     public CsvReplayStore(Path file, EventCodec codec) {
         this.file = file;
@@ -51,6 +56,7 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
                     if (i == 0) {
                         fields = lines.get(0).equals(HEADER) ? 8 : lines.get(0).equals(HEADER_6) ? 6 : 0;
                         if (fields == 0) throw new IllegalArgumentException(file + " is not a replay store: " + lines.get(0));
+                        earlierFormat = fields == 6;
                         continue;
                     }
                     if (lines.get(i).isEmpty()) continue;
@@ -74,6 +80,10 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
     @Override
     public synchronized void append(String processor, ReplayEntry entry) {
         if (torn != null) throw Csv.tornRefusal(file, torn);
+        if (earlierFormat) {
+            throw new IllegalStateException(file + " is a replay store in the earlier six-field format; it is read, never "
+                    + "appended to (an eight-field entry under its header would make it unreadable): record into an empty file");
+        }
         String line = Csv.field(processor) + "," + format(entry);   // encoding first: an item that cannot be encoded adds nothing
         try {
             out.write(line);
@@ -87,7 +97,7 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
 
     @Override
     public boolean holdsRecording() {
-        return torn != null || entries.values().stream().anyMatch(l -> !l.isEmpty());
+        return torn != null || earlierFormat || entries.values().stream().anyMatch(l -> !l.isEmpty());
     }
 
     @Override

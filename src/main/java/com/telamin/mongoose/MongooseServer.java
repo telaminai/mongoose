@@ -725,7 +725,7 @@ public class MongooseServer implements MongooseServerController {
             throw new IllegalStateException("replay RECORD: the journal already holds a recording (or a torn one); record into an empty one");
         }
         if (replay.store().holdsRecording()) {
-            throw new IllegalStateException("replay RECORD: the store already holds a recording (or a torn one); record into an empty one");
+            throw new IllegalStateException("replay RECORD: the store already holds a recording (or a torn one, or one in an earlier format); record into an empty one");
         }
     }
 
