@@ -1,0 +1,30 @@
+ReplayIndependentReviewTest#f1_aReplayStoreThatCannotBeRead_isAStoppedReplay_notAnExitedServer: FAILURE AssertionFailedError: the server process survived the failed replay (exit 0): [Sept 29, 2026 9:01:18 PM com.telamin.mongoose.dutycycle.GlobalErrorHandler onError, java.lang.IllegalStateException: DEMO replay store unavailable] ==> expected: <0> but was: <255>
+ReplayIndependentReviewTest#f1_aDecoderThatThrowsAnError_isAStoppedReplay_notAnExitedServer: FAILURE AssertionFailedError: the server process survived the failed replay (exit 0): [Sept 29, 2026 9:01:19 PM com.telamin.mongoose.dutycycle.GlobalErrorHandler onError, java.lang.AssertionError: DEMO decoder failure] ==> expected: <0> but was: <255>
+ReplayIndependentReviewTest#f2_anInputTheHandlerChanges_replaysAsReceived_memoryStore: FAILURE AssertionFailedError: the replay gives what the processor received, not what its handler left ==> expected: <[value=0]> but was: <[value=1]>
+ReplayIndependentReviewTest#f2_anInputTheHandlerChanges_replaysAsReceived_csvStore: NOT RUN
+ReplayIndependentReviewTest#f2_aPayloadTheApplicationReuses_replaysAsEachDeliveryWas: FAILURE AssertionFailedError: expected: <[value=10, value=50]> but was: <[value=51, value=52]>
+ReplayIndependentReviewTest#f2_fannedOut_eachProcessorsRecordingIsWhatItReceived: FAILURE AssertionFailedError: each processor replays what it, not the other, received ==> expected: <[value=0, value=1]> but was: <[value=2, value=3]>
+ReplayIndependentReviewTest#f3_anApplicationNamedFeedEvent_onANowrapFeed_replaysAsItself: FAILURE AssertionFailedError: expected: <[named=DEMO-inner#123:DEMO-item]> but was: <[named=DEMO-inner#1:DEMO-item]>
+ReplayIndependentReviewTest#f3_anApplicationNamedFeedEvent_toACsvStore_replaysAsItself: NOT RUN
+ReplayIndependentReviewTest#f4_twoRoutesFromOneSource_typedSubscribedFirst: FAILURE AssertionFailedError: each entry replays through the route that delivered it ==> expected: <[bare=DEMO-item, bare=DEMO-item, bare=DEMO-item, bare=DEMO-item]> but was: <[bare=TYPE:DEMO-item, bare=TYPE:DEMO-item, bare=TYPE:DEMO-item, bare=TYPE:DEMO-item]>
+ReplayIndependentReviewTest#f4_twoRoutesFromOneSource_onEventSubscribedFirst: FAILURE AssertionFailedError: each entry replays through the route that delivered it ==> expected: <[bare=DEMO-item, bare=DEMO-item, bare=DEMO-item, bare=DEMO-item]> but was: <[bare=TYPE:DEMO-item, bare=TYPE:DEMO-item, bare=TYPE:DEMO-item, bare=TYPE:DEMO-item]>
+ReplayIndependentReviewTest#f6_aCycleThatReadNoClock_replaysAsZeroReads: FAILURE AssertionFailedError: a cycle that read no clock records no reading ==> expected: <[]> but was: <[1790712098891]>
+ReplayIndependentReviewTest#f6_aRecordedReadThatTheReplayDoesNotTake_isADivergence: FAILURE AssertionFailedError: one recorded read taken zero times is a divergence ==> expected: not <null>
+ReplayIndependentReviewTest#f7_aTornTail_isNeverAppendedTo_andTheFileStaysReadable: NOT RUN
+AgentHandoffTest#workWhoseCallerWasInterrupted_beforeItStarted_neverRuns: FAILURE AssertionFailedError: work a caller was interrupted out of never runs later ==> expected: <0> but was: <1>
+AgentHandoffTest#workAlreadyRunning_whenItsCallerIsInterrupted_isWaitedFor: FAILURE AssertionFailedError: the caller does not return while its work is running ==> expected: <false> but was: <true>
+AuditSinkOnAgentThreadTest#aStartInterruptedBeforeItsInstallRan_changesNothing: NOT RUN
+AuditSinkOnAgentThreadTest#aStartInterruptedWhileItsInstallRuns_doesNotCloseTheSinkUnderIt: NOT RUN
+ReplayIndependentReviewTest#f2_anInputTheHandlerChanges_replaysAsReceived_csvStore: FAILURE AssertionFailedError: expected: <[value=0]> but was: <[value=1]>
+ReplayIndependentReviewTest#f3_anApplicationNamedFeedEvent_toACsvStore_replaysAsItself: FAILURE AssertionFailedError: expected: <[named=DEMO-inner#1:DEMO-item]> but was: <[bare=DEMO-item]>
+ReplayIndependentReviewTest#f7_aTornTail_isNeverAppendedTo_andTheFileStaysReadable: FAILURE AssertionFailedError: a file with a torn tail is not recorded into ==> Expected java.lang.Exception to be thrown, but nothing was thrown.
+AuditSinkOnAgentThreadTest#aStartInterruptedBeforeItsInstallRan_changesNothing: FAILURE AssertionFailedError: the install the interrupted caller gave up on never runs ==> expected: <[]> but was: <[main]>
+AuditSinkOnAgentThreadTest#aStartInterruptedWhileItsInstallRuns_doesNotCloseTheSinkUnderIt: FAILURE AssertionFailedError: the sink stays open while its listener is being installed ==> expected: <true> but was: <false>
+--- rerun after fixture correction (constructor dropped seq)
+ReplayIndependentReviewTest#f3_anApplicationNamedFeedEvent_onANowrapFeed_replaysAsItself: FAILURE AssertionFailedError: the application's event, with its type and fields ==> expected: <[named=DEMO-inner/DEMO-topic#123:DEMO-item]> but was: <[bare=DEMO-item]>
+ReplayIndependentReviewTest#f3_anApplicationNamedFeedEvent_toACsvStore_replaysAsItself: FAILURE AssertionFailedError: expected: <[named=DEMO-inner/DEMO-topic#123:DEMO-item]> but was: <[bare=DEMO-item]>
+ReplayIndependentReviewTest#f7_aJournalWithATornTail_isNeverAppendedTo_andStaysReadable: FAILURE AssertionFailedError: a torn journal is not an empty one: RECORD refuses it ==> expected: <true> but was: <false>
+PRE-FIX(90f0d9b main) ReplayIndependentReviewTest#f2_aReplayedHandlerThatChangesItsInput_doesNotChangeTheRecording: no report (exit 1)
+PRE-FIX(90f0d9b main) ReplayIndependentReviewTest#f2_anInputThatCannotBeCopied_isRecordedFailed_notByReference: no report (exit 1)
+PRE-FIX(90f0d9b main) ReplayIndependentReviewTest#f2_aReplayedHandlerThatChangesItsInput_doesNotChangeTheRecording: FAILURE AssertionFailedError: replay 1 gives what was received ==> expected: <[value=0]> but was: <[value=1]>
+PRE-FIX(90f0d9b main) ReplayIndependentReviewTest#f2_anInputThatCannotBeCopied_isRecordedFailed_notByReference: FAILURE AssertionFailedError: marked, not held by reference: Inline[source=feed, event=DEMO-opaque, seq=-1, reads=[1790712976586]] ==> expected: <true> but was: <false>

@@ -39,18 +39,18 @@ public final class GroupReplayer {
         final String name;
         final DataFlow flow;
         final ReplayClock clock;
-        final List<ReplayEntry> entries;
+        /** Empty until the store is read at attach; stays empty when setup failed (the cursor is then stopped). */
+        List<ReplayEntry> entries = List.of();
         int next;
         String stopped;
         /** While the current entry cannot be delivered yet: since when (System.nanoTime) and why. */
         long waitingSince;
         String waitingFor;
 
-        Cursor(String name, DataFlow flow, ReplayClock clock, List<ReplayEntry> entries) {
+        Cursor(String name, DataFlow flow, ReplayClock clock) {
             this.name = name;
             this.flow = flow;
             this.clock = clock;
-            this.entries = entries;
         }
 
         boolean done() {
@@ -68,13 +68,37 @@ public final class GroupReplayer {
         return scheduler;
     }
 
-    /** A processor joins the group: when it is replayed, its clock is pinned by the replay. */
+    /**
+     * A processor joins the group: when it is replayed, its clock is pinned by the replay. Runs on the group's agent
+     * thread, so NOTHING here may throw out: the agent's default error handler ends the process. The cursor is
+     * registered FIRST, so whatever fails after it - installing the replay clock, reading the store - leaves the processor
+     * replayed (its live inputs muted, its sinks captured) and stopped with the reason (re-review N1: a processor that
+     * refused the ReplayClock escaped before its cursor existed, unmuted, and a real server exited 255).
+     */
     public void attach(String name, DataFlow flow) {
         if (!config.covers(name)) return;
         ReplayClock clock = new ReplayClock();
-        flow.setClockStrategy(clock);
-        scheduler.replay(flow);
-        cursors.add(new Cursor(name, flow, clock, config.store().entries(name)));
+        Cursor cursor = new Cursor(name, flow, clock);
+        cursors.add(cursor);
+        scheduler.replay(flow);                          // its timers are the replay's, whatever follows
+        String failed = null;
+        try {
+            flow.setClockStrategy(clock);
+        } catch (VirtualMachineError e) {
+            throw e;
+        } catch (Throwable t) {
+            failed = "the replay clock could not be installed: " + t;
+        }
+        if (failed == null) {
+            try {
+                cursor.entries = config.store().entries(name);
+            } catch (VirtualMachineError e) {
+                throw e;
+            } catch (Throwable t) {
+                failed = "the replay store could not be read: " + t;
+            }
+        }
+        if (failed != null) stop(cursor, failed);
     }
 
     /**
@@ -138,9 +162,12 @@ public final class GroupReplayer {
             boolean delivered;
             try {
                 delivered = deliver(c, c.entries.get(c.next));
-            } catch (RuntimeException e) {
+            } catch (VirtualMachineError e) {
+                throw e;
+            } catch (Throwable e) {
                 // a replay that cannot deliver an entry stops that processor's replay and says why; it does not
-                // take the group (or the server) down with it
+                // take the group (or the server) down with it. Any Throwable: a decoder's AssertionError reached the
+                // agent's error handler, which ended the process (review of 90f0d9b, finding 1)
                 delivered = stop(c, "entry " + c.next + " could not be replayed: " + e);
             }
             if (delivered) {
@@ -179,29 +206,34 @@ public final class GroupReplayer {
     private boolean deliver(Cursor c, ReplayEntry entry) {
         switch (entry) {
             case ReplayEntry.Indexed i -> {
-                ReplayRoute route = routing.routeFor(i.source(), c.flow);
-                if (route == null) return waiting(c, "no route delivers " + i.source() + " to " + c.name);
+                ReplayRoute route = routing.routeFor(i.source(), i.route(), c.flow);
+                if (route == null) return waiting(c, "no route " + routeName(i.route()) + "delivers " + i.source() + " to " + c.name);
                 byte[] bytes = config.journal().get(i.source(), i.seq());
                 if (bytes == null) return stop(c, "the journal holds no " + i.source() + "#" + i.seq());
-                Object item = config.journalledFeeds().get(i.source()).decode(bytes);
+                Object item = config.journalledFeeds().get(i.source()).decode(bytes.clone());   // from a copy: G1's contract
                 EventSource.EventWrapStrategy wrap = routing.wrapOf(i.source());
                 Object event = wrap == EventSource.EventWrapStrategy.SUBSCRIPTION_NAMED_EVENT
                         || wrap == EventSource.EventWrapStrategy.BROADCAST_NAMED_EVENT
                         ? new NamedFeedEventImpl<>(i.source()).data(item).sequenceNumber(i.seq())
                         : item;
-                pin(c, i.reads());
+                pin(c, i.instant(), i.reads());
                 route.replayTo(c.flow, event);
                 return readsMatch(c, i.reads());
             }
             case ReplayEntry.Inline in -> {
-                ReplayRoute route = routing.routeFor(in.source(), c.flow);
-                if (route == null) return waiting(c, "no route delivers " + in.source() + " to " + c.name);
-                pin(c, in.reads());
-                route.replayTo(c.flow, rewrapped(in.source(), in.event(), in.seq()));
+                ReplayRoute route = routing.routeFor(in.source(), in.route(), c.flow);
+                if (route == null) return waiting(c, "no route " + routeName(in.route()) + "delivers " + in.source() + " to " + c.name);
+                // a copy, so a replayed handler that changes its input cannot change the recording (finding 2); a
+                // recorded NamedFeedEvent is rebuilt with its own fields, whatever the feed's wrap (finding 3); an input
+                // held in its feed's codec, or in the journal, is read back through that codec, never another (cd52628 F1)
+                Object event = materialised(in.event());
+                pin(c, in.instant(), in.reads());
+                route.replayTo(c.flow, event instanceof RecordedNamedEvent named ? named.rebuild(materialised(named.data()))
+                        : rewrapped(in.source(), event, in.seq()));
                 return readsMatch(c, in.reads());
             }
             case ReplayEntry.TimerFired t -> {
-                pin(c, t.reads());
+                pin(c, t.instant(), t.reads());
                 scheduler.fire(c.flow, t.seq());
                 return readsMatch(c, t.reads());
             }
@@ -215,7 +247,7 @@ public final class GroupReplayer {
                 request.setArguments(a.args());
                 request.setOutput(o -> adminReplies.add(c.name + ": " + o));
                 request.setErrOutput(o -> adminReplies.add(c.name + " err: " + o));
-                pin(c, a.reads());
+                pin(c, a.instant(), a.reads());
                 route.replayTo(c.flow, new AdminCommand(template, request));
                 return readsMatch(c, a.reads());
             }
@@ -223,6 +255,28 @@ public final class GroupReplayer {
                 return stop(c, "the recorded run failed here: " + f.description());
             }
         }
+    }
+
+    /**
+     * What an Inline entry holds, as the processor is given it: a feed codec's bytes and a journal reference through that
+     * feed's codec (fresh each replay, so a replayed handler cannot change the recording); a named event as recorded, its
+     * payload resolved when it is rebuilt; anything else copied (InputCopy).
+     */
+    private Object materialised(Object recorded) {
+        if (recorded instanceof EncodedInput encoded) return codecOf(encoded.source()).decode(encoded.bytes());
+        if (recorded instanceof JournalRef ref) {
+            byte[] bytes = config.journal() == null ? null : config.journal().get(ref.source(), ref.seq());
+            if (bytes == null) throw new IllegalStateException("the journal holds no " + ref.source() + "#" + ref.seq());
+            return codecOf(ref.source()).decode(bytes.clone());    // a decoder that consumes its input cannot change the journal (G1)
+        }
+        if (recorded instanceof RecordedNamedEvent) return recorded;
+        return InputCopy.of(recorded);
+    }
+
+    private EventCodec codecOf(String source) {
+        EventCodec codec = config.journalledFeeds().get(source);
+        if (codec == null) throw new IllegalStateException("no codec is configured for " + source + ", whose input was recorded in it");
+        return codec;
     }
 
     /** Not deliverable yet (a route or command the configuration makes shortly after boot): wait, and say for what. */
@@ -242,21 +296,25 @@ public final class GroupReplayer {
     }
 
     /**
-     * The cycle read the clock as often as the recorded one did, or this is a divergence, reported by stopping. One
-     * recorded reading that went unused is not: a cycle that read nothing is recorded as one reading, the instant.
+     * The cycle read the clock exactly as often as the recorded one did, or this is a divergence, reported by stopping.
+     * A cycle that read nothing records no reading, so zero to zero matches and a recorded read the replay did not take
+     * is a divergence (review of 90f0d9b, finding 6: it used to be accepted as the padded instant).
      */
     private boolean readsMatch(Cursor c, List<Long> recorded) {
         int taken = c.clock.taken();
-        boolean matches = taken == recorded.size() || (recorded.size() == 1 && taken == 0);
-        if (matches) return true;
+        if (taken == recorded.size()) return true;
         return stop(c, "clock divergence: the replayed cycle read the clock " + taken + " time(s), the recorded one "
                 + recorded.size());
     }
 
-    /** The entry's clock readings, played back in order: its processTime first, then any later reads in its cycle. */
-    private void pin(Cursor c, List<Long> reads) {
-        scheduler.setNow(reads.get(0));
-        c.clock.play(reads);
+    /** The entry's instant, and its clock readings played back in order: its processTime first, then any later reads. */
+    private void pin(Cursor c, long instant, List<Long> reads) {
+        scheduler.setNow(instant);
+        c.clock.play(instant, reads);
+    }
+
+    private static String routeName(String route) {
+        return route.isEmpty() ? "" : "(" + route + ") ";
     }
 
     private boolean stop(Cursor c, String why) {

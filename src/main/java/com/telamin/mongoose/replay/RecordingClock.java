@@ -52,9 +52,18 @@ public final class RecordingClock implements ClockStrategy {
         reads.clear();
     }
 
-    /** The readings the processor took since {@link #arm}; if it took none (a call outside an event cycle), now. */
+    /**
+     * The readings the processor took since {@link #arm}, exactly: none when it read no clock (a call outside an event
+     * cycle). The count is what a replay checks, so it is never padded (review of 90f0d9b, finding 6); the instant the
+     * input was handled at is {@link #instant}.
+     */
     public List<Long> captured() {
         recording = false;
-        return reads.isEmpty() ? List.of(now()) : List.copyOf(reads);
+        return List.copyOf(reads);
+    }
+
+    /** The instant of a cycle whose readings are {@code captured}: its first reading, or now when it took none. */
+    public long instant(List<Long> captured) {
+        return captured.isEmpty() ? now() : captured.get(0);
     }
 }

@@ -12,7 +12,8 @@ import java.util.List;
  */
 @Experimental
 public final class ReplayClock implements ClockStrategy {
-    private volatile List<Long> reads = List.of(0L);
+    private volatile List<Long> reads = List.of();
+    private volatile long instant;
     private int next;
     private int taken;
 
@@ -20,12 +21,14 @@ public final class ReplayClock implements ClockStrategy {
     public long getWallClockTime() {
         List<Long> r = reads;
         taken++;
-        return next < r.size() ? r.get(next++) : r.get(r.size() - 1);
+        return next < r.size() ? r.get(next++) : r.isEmpty() ? instant : r.get(r.size() - 1);
     }
 
-    public void play(List<Long> readings) {
+    /** An entry's readings, played back in order; beyond them (a divergence, reported) the last, or the instant. */
+    public void play(long instant, List<Long> readings) {
         this.next = 0;
         this.taken = 0;
+        this.instant = instant;
         this.reads = readings;
     }
 

@@ -188,10 +188,13 @@ class ReplayRecordingAcceptanceTest {
             s.orders().offer("ord-1");  s.await(1);
             s.controls().offer("arm");  s.await(2);
             s.await(3);                                 // the 40 ms timeout fires, on the live scheduler
-            s.orders().offer("ord-2");  s.await(4);
+            // and the breach the graph raises on it, in the same cycle: awaiting 4 read the lines between the two
+            // (seen on CI at 1fd693d: the recorded list lacked the breach, the replay's had it)
+            s.orders().offer("ord-2");  s.await(5);
             live = s.lines();
         }
         assertTrue(live.get(2).startsWith("timeout armedAt="), live.toString());
+        assertTrue(live.get(4).startsWith("breach="), "the recorded run's own output is whole: " + live);
         List<ReplayEntry> entries = store.entries(PROCESSOR);
         assertEquals(4, entries.size(), entries.toString());
         ReplayEntry.TimerFired fired = assertInstanceOf(ReplayEntry.TimerFired.class, entries.get(2), entries.toString());

@@ -9,18 +9,29 @@ final class Csv {
 
     private static final java.util.logging.Logger log = java.util.logging.Logger.getLogger(Csv.class.getName());
 
+    /** A file's complete lines, and its torn last line (null when it ends cleanly). */
+    record Lines(List<String> lines, String torn) { }
+
     /**
-     * The file's lines. A last line with no line break is a write torn by a crash: it is dropped, with a warning, so
-     * the rest is still read. A malformed line anywhere else is still an error.
+     * The file's lines. A last line with no line break is a write torn by a crash: it is set aside, with a warning, so
+     * the rest is still read. The file must not then be appended to: the next line would join the torn one (review of
+     * 90f0d9b, finding 7). A malformed line anywhere else is still an error.
      */
-    static List<String> lines(java.nio.file.Path file) throws java.io.IOException {
+    static Lines read(java.nio.file.Path file) throws java.io.IOException {
         String text = java.nio.file.Files.readString(file, java.nio.charset.StandardCharsets.UTF_8);
         List<String> lines = new ArrayList<>(text.lines().toList());
+        String torn = null;
         if (!text.isEmpty() && !text.endsWith("\n") && !lines.isEmpty()) {
-            String torn = lines.remove(lines.size() - 1);
-            log.warning(file + ": dropped a torn last line (no line break, a write the process did not finish): " + torn);
+            torn = lines.remove(lines.size() - 1);
+            log.warning(file + ": set aside a torn last line (no line break, a write the process did not finish): " + torn);
         }
-        return lines;
+        return new Lines(lines, torn);
+    }
+
+    /** The refusal for appending to a file with a torn last line. */
+    static IllegalStateException tornRefusal(java.nio.file.Path file, String torn) {
+        return new IllegalStateException(file + " ends in a torn line, a write the process did not finish (" + torn
+                + "); it is read, never appended to: record into an empty file");
     }
 
     static String field(String s) {

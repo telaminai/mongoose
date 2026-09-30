@@ -1,0 +1,10 @@
+"Benchmark","Mode","Threads","Samples","Score","Score Error (99.9%)","Unit","Param: wrap"
+"com.telamin.mongoose.benchmark.dispatch.DispatchPathJmh.publishAndDispatch","avgt",1,15,24.786121,0.078047,"ns/op",SUBSCRIPTION_NOWRAP
+"com.telamin.mongoose.benchmark.dispatch.DispatchPathJmh.publishAndDispatch:gc.alloc.rate","avgt",1,15,0.006526,0.000027,"MB/sec",SUBSCRIPTION_NOWRAP
+"com.telamin.mongoose.benchmark.dispatch.DispatchPathJmh.publishAndDispatch:gc.alloc.rate.norm","avgt",1,15,0.000170,0.000001,"B/op",SUBSCRIPTION_NOWRAP
+"com.telamin.mongoose.benchmark.dispatch.DispatchPathJmh.publishAndDispatch:gc.count","avgt",1,15,0.000000,NaN,"counts",SUBSCRIPTION_NOWRAP
+"com.telamin.mongoose.benchmark.dispatch.DispatchPathJmh.publishAndDispatch","avgt",1,15,42.588021,0.241168,"ns/op",SUBSCRIPTION_NAMED_EVENT
+"com.telamin.mongoose.benchmark.dispatch.DispatchPathJmh.publishAndDispatch:gc.alloc.rate","avgt",1,15,1074.778713,6.100204,"MB/sec",SUBSCRIPTION_NAMED_EVENT
+"com.telamin.mongoose.benchmark.dispatch.DispatchPathJmh.publishAndDispatch:gc.alloc.rate.norm","avgt",1,15,48.000293,0.000002,"B/op",SUBSCRIPTION_NAMED_EVENT
+"com.telamin.mongoose.benchmark.dispatch.DispatchPathJmh.publishAndDispatch:gc.count","avgt",1,15,25.000000,NaN,"counts",SUBSCRIPTION_NAMED_EVENT
+"com.telamin.mongoose.benchmark.dispatch.DispatchPathJmh.publishAndDispatch:gc.time","avgt",1,15,28.000000,NaN,"ms",SUBSCRIPTION_NAMED_EVENT

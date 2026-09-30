@@ -198,12 +198,12 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
     private static void awaitOnAgent(com.telamin.mongoose.dutycycle.AgentHandoff applied, String processorName, String what) {
         try {
             if (!applied.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
-                throw new IllegalStateException("audit " + what + " for '" + processorName
-                        + "' was not applied on its agent thread within 5s; it was cancelled, and nothing changed");
+                // cancelled unrun: it never runs later, so closing what it would have used is safe. Work the agent
+                // thread had already started is waited for instead, even through an interrupt (review of 90f0d9b, 5)
+                throw new IllegalStateException("audit " + what + " for '" + processorName + "' was "
+                        + (Thread.currentThread().isInterrupted() ? "interrupted" : "not applied on its agent thread within 5s")
+                        + " before it started; it was cancelled, and nothing changed");
             }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("interrupted waiting for audit " + what + " on '" + processorName + "'", e);
         } catch (java.util.concurrent.ExecutionException e) {
             throw new IllegalStateException("audit " + what + " for '" + processorName + "' failed on its agent thread", e.getCause());
         }

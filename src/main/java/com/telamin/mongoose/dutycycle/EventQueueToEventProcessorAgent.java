@@ -34,8 +34,18 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     private Runnable unsubscribeAction;
     /** The source this queue drains (spec-replay-recording R2: an entry names its source). */
     private final String sourceName;
+    /** The configured route (callback type) this queue delivers by: an entry names it (review of 90f0d9b, finding 4). */
+    private final String route;
+    /**
+     * The processors this queue registered with its strategy, known here whatever the strategy reports: RECORD uses it
+     * only to fail a recording the strategy cannot name the processors of (cd52628 F4). Registration only, not dispatch.
+     */
+    private final java.util.Set<DataFlow> subscribed =
+            java.util.Collections.synchronizedSet(java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
     /** RECORD mode: set by the group when it subscribes this queue. */
     private GroupRecorder recorder;
+    /** RECORD mode: the recorder's per-processor copy of each input, taken just before the processor is given it. */
+    private java.util.function.BiConsumer<DataFlow, Object> received;
 
     public EventQueueToEventProcessorAgent(
             OneToOneConcurrentArrayQueue<?> inputQueue,
@@ -49,6 +59,16 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
             EventToInvokeStrategy eventToInvokeStrategy,
             String name,
             String sourceName) {
+        this(inputQueue, eventToInvokeStrategy, name, sourceName, "");
+    }
+
+    public EventQueueToEventProcessorAgent(
+            OneToOneConcurrentArrayQueue<?> inputQueue,
+            EventToInvokeStrategy eventToInvokeStrategy,
+            String name,
+            String sourceName,
+            String route) {
+        this.route = route;
         this.inputQueue = inputQueue;
         this.eventToInvokeStrategy = eventToInvokeStrategy;
         this.name = name;
@@ -90,6 +110,15 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                     seq = named.sequenceNumber();
                 }
                 targets = eventToInvokeStrategy.registeredProcessors();
+                if (event instanceof ReplayRecord || event instanceof BroadcastEvent) seq = -1;
+                // a strategy that delivers but names no processor (registeredProcessors() left at its empty default)
+                // cannot be recorded: the processors this queue registered with it are known here, so each recorded one
+                // is marked failed, by name, rather than recording nothing for an input it delivered (cd52628 F4)
+                if (targets.isEmpty() && !subscribed.isEmpty()) {
+                    recorder.cannotRecord(sourceName, java.util.List.copyOf(subscribed), eventToInvokeStrategy.getClass().getName()
+                            + " delivers to processors it does not name (registeredProcessors() is empty), so what each"
+                            + " received cannot be recorded; implement registeredProcessors() to record through it");
+                }
             }
 
             int attempt = 0;
@@ -97,7 +126,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
             Throwable lastError = null;
             while (!done) {
                 try {
-                    if (recorder != null) recorder.beforeDispatch(targets);
+                    if (recorder != null) recorder.beforeDispatch(sourceName, seq, targets);
                     if (event instanceof ReplayRecord replayRecord) {
                         if (recorder == null) {
                             eventToInvokeStrategy.processEvent(replayRecord.getEvent(), replayRecord.getWallClockTime());
@@ -108,8 +137,12 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                             for (DataFlow target : targets) {
                                 if (!recorder.pinSyntheticTime(target, time)) eventToInvokeStrategy.setSyntheticTime(target, time);
                             }
-                            eventToInvokeStrategy.processEvent(replayRecord.getEvent());
+                            eventToInvokeStrategy.processEventRecording(replayRecord.getEvent(), received);
                         }
+                    } else if (recorder != null) {
+                        // RECORD: each recorded processor's input is copied just before it is given it (review of
+                        // 90f0d9b, finding 2). Only a first-attempt success commits the copy, below: one guard, D4
+                        eventToInvokeStrategy.processEventRecording(delivered(event), received);
                     } else if (event instanceof BroadcastEvent broadcastEvent) {
                         eventToInvokeStrategy.processEvent(broadcastEvent.getEvent());
                     } else {
@@ -157,8 +190,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
             // Failed (D4, a retry is a failure: marked, not reproduced), and recording it too would make a replay re-run
             // it, with the retry's clock reads rather than those of the attempt that happened
             if (done && recorder != null && attempt == 0) {
-                boolean wrapped = event instanceof ReplayRecord || event instanceof BroadcastEvent;
-                recorder.afterDispatch(sourceName, delivered(event), wrapped ? -1 : seq, targets);
+                recorder.afterDispatch(sourceName, route, delivered(event), seq, targets);
             }
 
             // After dispatching to all processors attempt to return to pool if no more references remain
@@ -191,6 +223,12 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     /** RECORD mode: record what this queue dispatches (spec-replay-recording R2). */
     public void recordWith(GroupRecorder recorder) {
         this.recorder = recorder;
+        this.received = recorder == null ? null : recorder::received;
+    }
+
+    /** The configured route (callback type name) this queue delivers by; empty when it was built without one. */
+    public String route() {
+        return route;
     }
 
     /** REPLAY mode: this queue's live inputs no longer reach {@code target}, which receives only its replay. */
@@ -237,6 +275,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     public int registerProcessor(DataFlow eventProcessor) {
         logger.info("registerProcessor: " + eventProcessor);
         eventToInvokeStrategy.registerProcessor(eventProcessor);
+        subscribed.add(eventProcessor);
         logger.info("listener count:" + listenerCount());
         return listenerCount();
     }
@@ -245,6 +284,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     public int deregisterProcessor(DataFlow eventProcessor) {
         logger.info("deregisterProcessor: " + eventProcessor);
         eventToInvokeStrategy.deregisterProcessor(eventProcessor);
+        subscribed.remove(eventProcessor);
         int listeners = listenerCount();
         if (listeners < 1 && unsubscribeAction != null) {
             try {

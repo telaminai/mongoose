@@ -95,6 +95,19 @@ public abstract class AbstractEventToInvocationStrategy implements EventToInvoke
         }
     }
 
+    /** RECORD: as {@link #processEvent(Object)}, telling the recording each processor's input just before it is given it. */
+    @Override
+    public void processEventRecording(Object event, java.util.function.BiConsumer<DataFlow, Object> beforeEach) {
+        for (int i = 0, targetQueuesSize = eventProcessorSinks.size(); i < targetQueuesSize; i++) {
+            DataFlow eventProcessor = eventProcessorSinks.get(i);
+            if (anyMuted && mutedForReplay.contains(eventProcessor)) continue;
+            beforeEach.accept(eventProcessor, event);
+            ProcessorContext.setCurrentProcessor(eventProcessor);
+            dispatchEvent(event, eventProcessor);
+            ProcessorContext.removeCurrentProcessor();
+        }
+    }
+
     @Override
     public void processEvent(Object event, long time) {
         for (int i = 0, targetQueuesSize = eventProcessorSinks.size(); i < targetQueuesSize; i++) {

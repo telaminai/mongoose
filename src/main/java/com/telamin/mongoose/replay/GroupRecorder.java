@@ -32,6 +32,14 @@ public final class GroupRecorder {
         long timerSeq;
         /** Why this processor's recording stopped (its store failed), or null while it records. */
         String broken;
+        /** Whether the recording clock was installed: a processor that refused it keeps its own (review of 8211858, G2). */
+        boolean clockInstalled;
+        /** This dispatch: whether the processor was given the input, the copy taken just before, or why none could be. */
+        boolean received;
+        Object input;
+        String uncopyable;
+        /** A journalled input this processor received in a state the journal does not hold: recorded inline (N3). */
+        boolean notAsJournalled;
 
         Recorded(String name, RecordingClock clock) {
             this.name = name;
@@ -48,8 +56,23 @@ public final class GroupRecorder {
     public void attach(String name, DataFlow flow) {
         if (!config.covers(name)) return;
         RecordingClock clock = new RecordingClock(live);
-        byFlow.put(flow, new Recorded(name, clock));
-        flow.setClockStrategy(clock);
+        Recorded r = new Recorded(name, clock);
+        byFlow.put(flow, r);
+        // on the group's agent thread: a processor that refuses the recording's clock must not reach the agent's error
+        // handler, which ends the process (review of cd52628, F3; N1's RECORD counterpart). Its recording is FAILED, by
+        // name and durably (a Failed entry, so a replay stops there), and it goes on running live, unrecorded: RECORD
+        // never stops a processor (D1); what it cannot do is claim to have recorded it.
+        try {
+            flow.setClockStrategy(clock);
+            r.clockInstalled = true;
+        } catch (VirtualMachineError e) {
+            throw e;
+        } catch (Throwable t) {
+            String why = "the recording could not start: the recording clock could not be installed: " + t;
+            log.severe("replay recording of " + name + " failed: " + why);
+            append(r, new ReplayEntry.Failed("recording", why, live.getAsLong()));
+            r.broken = why;
+        }
     }
 
     public void detach(DataFlow flow) {
@@ -59,28 +82,116 @@ public final class GroupRecorder {
     /** A ReplayRecord input: pin a recorded processor's clock to its instant; false when {@code flow} is not recorded. */
     public boolean pinSyntheticTime(DataFlow flow, long time) {
         Recorded r = byFlow.get(flow);
-        if (r == null) return false;
+        // a processor that refused the recording clock does not run on it, so its time is not ours to pin: returning
+        // false gives it the strategy's synthetic clock, exactly as replay OFF does (review of 8211858, G2: it kept its
+        // own clock's time, 99, where a live ReplayRecord said 42; its recording stays failed, by name and durably)
+        if (r == null || !r.clockInstalled) return false;
         r.clock.pin(time);
         return true;
     }
 
-    /** Just before a queue dispatches to {@code targets}. */
-    public void beforeDispatch(Collection<DataFlow> targets) {
+    /** Whether the current dispatch's input is journalled, so recorded by index while it is what the journal holds. */
+    private boolean indexedDispatch;
+    private String dispatchSource;
+    private long dispatchSeq;
+
+    /** Just before a queue dispatches an input of {@code source} (numbered {@code seq}, or -1) to {@code targets}. */
+    public void beforeDispatch(String source, long seq, Collection<DataFlow> targets) {
+        indexedDispatch = seq >= 0 && config.journalled(source);
+        dispatchSource = source;
+        dispatchSeq = seq;
         for (DataFlow t : targets) {
             Recorded r = byFlow.get(t);
-            if (r != null) r.clock.arm();
+            if (r == null) continue;
+            r.clock.arm();
+            r.received = false;
+            r.input = null;
+            r.uncopyable = null;
+            r.notAsJournalled = false;
         }
     }
 
     /**
-     * Just after: one entry per recorded target, at the instant it read. An admin command is recorded by its name and
-     * arguments; an input of a journalled feed that carried its sequence number by index; anything else inline.
+     * Just before the strategy gives {@code event} to {@code target} (first attempt only): a copy of it as that
+     * processor receives it. Per target, because with fan-out a later processor receives what an earlier one's handler
+     * left (review of 90f0d9b, finding 2); committed only by {@link #afterDispatch}, once the dispatch succeeded.
      */
-    public void afterDispatch(String source, Object event, long seq, Collection<DataFlow> targets) {
+    public void received(DataFlow target, Object event) {
+        Recorded r = byFlow.get(target);
+        if (r == null || r.broken != null) return;
+        r.received = true;
+        if (event instanceof UncapturedInput uncaptured) {
+            r.uncopyable = uncaptured.reason();         // the strategy cannot say what this processor received (N4)
+            r.notAsJournalled = true;
+            return;
+        }
+        if (event instanceof AdminCommand) {
+            r.input = event;                            // recorded by name and arguments: not copied
+            return;
+        }
+        if (indexedDispatch) {
+            asJournalled(r, event);
+            return;
+        }
+        try {
+            r.input = InputCopy.of(event);
+        } catch (Throwable t) {
+            r.uncopyable = String.valueOf(t);
+        }
+    }
+
+    /**
+     * A journalled input is an index only while this processor receives what the journal holds. With fan-out an earlier
+     * processor can change the published object before a later one is given it; both entries then named the one journal
+     * item, and the later processor replayed the earlier one's input (re-review N3). So the input as THIS processor
+     * receives it is encoded with the feed's own codec and compared with the journal's bytes: equal, it is recorded by
+     * index; different, it is recorded inline, as the codec's copy of what it received. A journal that holds no such item
+     * (its append failed: see EventToQueuePublisher) keeps the index, so a replay stops at the gap as before.
+     */
+    private void asJournalled(Recorded r, Object event) {
+        r.input = event;
+        boolean named = event instanceof com.telamin.fluxtion.runtime.event.NamedFeedEvent<?>;
+        try {
+            EventCodec codec = config.journalledFeeds().get(dispatchSource);
+            byte[] held = config.journal().get(dispatchSource, dispatchSeq);
+            Object item = named ? ((com.telamin.fluxtion.runtime.event.NamedFeedEvent<?>) event).data() : event;
+            // the payload: the journal's item while this processor received what the journal holds (or the journal lacks
+            // it, so a replay stops at the gap); otherwise the FEED'S CODEC's own bytes for what it received (F1: never
+            // decoded here and copied by Java serialisation, which is not the codec the configuration chose)
+            Object payload = new JournalRef(dispatchSource, dispatchSeq);
+            if (held != null) {
+                byte[] now = codec.encode(item);
+                if (!java.util.Arrays.equals(now, held)) payload = new EncodedInput(dispatchSource, now);
+            }
+            if (named) {
+                // a wrapper is recorded with its own fields whether or not its payload is indexed (F2: rebuilt from the
+                // feed's config, a replay gave it another event time, and could not give its topic, delete flag or filter)
+                r.input = RecordedNamedEvent.of((com.telamin.fluxtion.runtime.event.NamedFeedEvent<?>) event, payload);
+                r.notAsJournalled = true;
+            } else if (payload instanceof EncodedInput) {
+                r.input = payload;
+                r.notAsJournalled = true;
+            }
+        } catch (Throwable t) {
+            r.notAsJournalled = true;
+            r.uncopyable = "a journalled input could not be recorded through its feed's codec: " + t;
+        }
+    }
+
+    /**
+     * Just after a dispatch that succeeded first time: one entry per recorded target that was given the input, at the
+     * instant it handled it, naming the {@code route} that delivered it. An admin command is recorded by its name and
+     * arguments; an input of a journalled feed that carried its sequence number by index; anything else inline, as the
+     * copy taken before the processor handled it. An input that could not be copied is marked Failed, so a replay stops
+     * there rather than give something other than what was received.
+     */
+    public void afterDispatch(String source, String route, Object event, long seq, Collection<DataFlow> targets) {
         for (DataFlow t : targets) {
             Recorded r = byFlow.get(t);
             if (r == null) continue;
             List<Long> reads = r.clock.captured();
+            long instant = r.clock.instant(reads);
+            if (!r.received) continue;                  // the strategy did not give it this processor
             ReplayEntry entry;
             if (event instanceof AdminCommand admin && !admin.ran()) {
                 // cancelled by its caller, or refused before it ran: nothing reached the processor, so nothing is an
@@ -88,16 +199,33 @@ public final class GroupRecorder {
                 continue;
             } else if (event instanceof AdminCommand admin && admin.getArgs() != null && !admin.getArgs().isEmpty()) {
                 List<String> args = admin.getArgs();
-                entry = new ReplayEntry.AdminInvoked(args.get(0), List.copyOf(args.subList(1, args.size())), reads);
-            } else if (seq >= 0 && config.journalled(source)) {
-                entry = new ReplayEntry.Indexed(source, seq, reads);
-            } else if (event instanceof com.telamin.fluxtion.runtime.event.NamedFeedEvent<?> named) {
-                // the item and its number: the wrapper is configuration, rebuilt on replay (and is not serialisable)
-                entry = new ReplayEntry.Inline(source, named.data(), named.sequenceNumber(), reads);
+                entry = new ReplayEntry.AdminInvoked(args.get(0), List.copyOf(args.subList(1, args.size())), instant, reads);
+            } else if (seq >= 0 && config.journalled(source) && !r.notAsJournalled) {
+                entry = new ReplayEntry.Indexed(source, route, seq, instant, reads);
+            } else if (r.uncopyable != null) {
+                entry = new ReplayEntry.Failed(source, "the input could not be recorded as received, so it cannot be "
+                        + "replayed: " + r.uncopyable, instant);
             } else {
-                entry = new ReplayEntry.Inline(source, event, reads);
+                long number = r.input instanceof RecordedNamedEvent named ? named.sequenceNumber() : -1;
+                entry = new ReplayEntry.Inline(source, route, r.input, number, instant, reads);
             }
+            r.input = null;
             append(r, entry);
+        }
+    }
+
+    /**
+     * An input of {@code source} was delivered to {@code targets} by a strategy that cannot say what each received (it
+     * names no processor): each recorded one's recording is failed, by name and durably, and stops (cd52628 F4). Live
+     * delivery is not affected.
+     */
+    public void cannotRecord(String source, Collection<DataFlow> targets, String why) {
+        for (DataFlow t : targets) {
+            Recorded r = byFlow.get(t);
+            if (r == null || r.broken != null) continue;
+            log.severe("replay recording of " + r.name + " failed: " + why);
+            append(r, new ReplayEntry.Failed(source, why, live.getAsLong()));
+            r.broken = why;
         }
     }
 
@@ -106,7 +234,8 @@ public final class GroupRecorder {
         for (DataFlow t : targets) {
             Recorded r = byFlow.get(t);
             if (r == null) continue;
-            append(r, new ReplayEntry.Failed(source, error + " on " + event, r.clock.captured().get(0)));
+            r.input = null;
+            append(r, new ReplayEntry.Failed(source, error + " on " + event, r.clock.instant(r.clock.captured())));
         }
     }
 
@@ -152,12 +281,14 @@ public final class GroupRecorder {
 
     public void timerFired(DataFlow flow, long seq) {
         Recorded r = byFlow.get(flow);
-        if (r != null) append(r, new ReplayEntry.TimerFired(seq, r.clock.captured()));
+        if (r == null) return;
+        List<Long> reads = r.clock.captured();
+        append(r, new ReplayEntry.TimerFired(seq, r.clock.instant(reads), reads));
     }
 
     /** A timer's action threw: marked, as a dispatch that throws is (D4). */
     public void timerFailed(DataFlow flow, long seq, Throwable error) {
         Recorded r = byFlow.get(flow);
-        if (r != null) append(r, new ReplayEntry.Failed("timer#" + seq, String.valueOf(error), r.clock.captured().get(0)));
+        if (r != null) append(r, new ReplayEntry.Failed("timer#" + seq, String.valueOf(error), r.clock.instant(r.clock.captured())));
     }
 }
