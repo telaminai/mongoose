@@ -130,20 +130,31 @@ public final class GroupRecorder {
      */
     private void asJournalled(Recorded r, Object event) {
         r.input = event;
+        boolean named = event instanceof com.telamin.fluxtion.runtime.event.NamedFeedEvent<?>;
         try {
             EventCodec codec = config.journalledFeeds().get(dispatchSource);
             byte[] held = config.journal().get(dispatchSource, dispatchSeq);
-            if (held == null) return;
-            boolean named = event instanceof com.telamin.fluxtion.runtime.event.NamedFeedEvent<?>;
             Object item = named ? ((com.telamin.fluxtion.runtime.event.NamedFeedEvent<?>) event).data() : event;
-            byte[] now = codec.encode(item);
-            if (java.util.Arrays.equals(now, held)) return;
-            Object copy = codec.decode(now);
-            r.notAsJournalled = true;
-            r.input = named ? RecordedNamedEvent.of((com.telamin.fluxtion.runtime.event.NamedFeedEvent<?>) event, copy) : copy;
+            // the payload: the journal's item while this processor received what the journal holds (or the journal lacks
+            // it, so a replay stops at the gap); otherwise the FEED'S CODEC's own bytes for what it received (F1: never
+            // decoded here and copied by Java serialisation, which is not the codec the configuration chose)
+            Object payload = new JournalRef(dispatchSource, dispatchSeq);
+            if (held != null) {
+                byte[] now = codec.encode(item);
+                if (!java.util.Arrays.equals(now, held)) payload = new EncodedInput(dispatchSource, now);
+            }
+            if (named) {
+                // a wrapper is recorded with its own fields whether or not its payload is indexed (F2: rebuilt from the
+                // feed's config, a replay gave it another event time, and could not give its topic, delete flag or filter)
+                r.input = RecordedNamedEvent.of((com.telamin.fluxtion.runtime.event.NamedFeedEvent<?>) event, payload);
+                r.notAsJournalled = true;
+            } else if (payload instanceof EncodedInput) {
+                r.input = payload;
+                r.notAsJournalled = true;
+            }
         } catch (Throwable t) {
             r.notAsJournalled = true;
-            r.uncopyable = "a journalled input could not be compared with the journal: " + t;
+            r.uncopyable = "a journalled input could not be recorded through its feed's codec: " + t;
         }
     }
 

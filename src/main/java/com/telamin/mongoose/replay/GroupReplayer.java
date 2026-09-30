@@ -224,10 +224,11 @@ public final class GroupReplayer {
                 ReplayRoute route = routing.routeFor(in.source(), in.route(), c.flow);
                 if (route == null) return waiting(c, "no route " + routeName(in.route()) + "delivers " + in.source() + " to " + c.name);
                 // a copy, so a replayed handler that changes its input cannot change the recording (finding 2); a
-                // recorded NamedFeedEvent is rebuilt with its own fields, whatever the feed's wrap (finding 3)
-                Object event = InputCopy.of(in.event());
+                // recorded NamedFeedEvent is rebuilt with its own fields, whatever the feed's wrap (finding 3); an input
+                // held in its feed's codec, or in the journal, is read back through that codec, never another (cd52628 F1)
+                Object event = materialised(in.event());
                 pin(c, in.instant(), in.reads());
-                route.replayTo(c.flow, event instanceof RecordedNamedEvent named ? named.rebuild()
+                route.replayTo(c.flow, event instanceof RecordedNamedEvent named ? named.rebuild(materialised(named.data()))
                         : rewrapped(in.source(), event, in.seq()));
                 return readsMatch(c, in.reads());
             }
@@ -254,6 +255,28 @@ public final class GroupReplayer {
                 return stop(c, "the recorded run failed here: " + f.description());
             }
         }
+    }
+
+    /**
+     * What an Inline entry holds, as the processor is given it: a feed codec's bytes and a journal reference through that
+     * feed's codec (fresh each replay, so a replayed handler cannot change the recording); a named event as recorded, its
+     * payload resolved when it is rebuilt; anything else copied (InputCopy).
+     */
+    private Object materialised(Object recorded) {
+        if (recorded instanceof EncodedInput encoded) return codecOf(encoded.source()).decode(encoded.bytes());
+        if (recorded instanceof JournalRef ref) {
+            byte[] bytes = config.journal() == null ? null : config.journal().get(ref.source(), ref.seq());
+            if (bytes == null) throw new IllegalStateException("the journal holds no " + ref.source() + "#" + ref.seq());
+            return codecOf(ref.source()).decode(bytes);
+        }
+        if (recorded instanceof RecordedNamedEvent) return recorded;
+        return InputCopy.of(recorded);
+    }
+
+    private EventCodec codecOf(String source) {
+        EventCodec codec = config.journalledFeeds().get(source);
+        if (codec == null) throw new IllegalStateException("no codec is configured for " + source + ", whose input was recorded in it");
+        return codec;
     }
 
     /** Not deliverable yet (a route or command the configuration makes shortly after boot): wait, and say for what. */
