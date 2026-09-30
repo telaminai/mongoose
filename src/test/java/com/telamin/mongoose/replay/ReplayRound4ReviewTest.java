@@ -52,6 +52,23 @@ class ReplayRound4ReviewTest {
         return new Run(items, replayer.stopped("probe"));
     }
 
+    /** Records journalled inputs {@code seq} of {@code item} into one recording, through the recorder's own boundary. */
+    static void captureAt(Object item, long seq, EventCodec codec, EventJournal journal, ReplayStore store) {
+        GroupRecorder recorder = RECORDERS.computeIfAbsent(store, s ->
+                new GroupRecorder(ReplayConfig.record(Set.of("probe"), Map.of(FEED, codec), journal, s), () -> 99L));
+        DataFlow flow = FLOWS.computeIfAbsent(recorder, r -> {
+            DataFlow f = inertFlow();
+            r.attach("probe", f);
+            return f;
+        });
+        recorder.beforeDispatch(FEED, seq, List.of(flow));
+        recorder.received(flow, item);
+        recorder.afterDispatch(FEED, "DEMO-route", item, seq, List.of(flow));
+    }
+
+    private static final Map<ReplayStore, GroupRecorder> RECORDERS = new java.util.IdentityHashMap<>();
+    private static final Map<GroupRecorder, DataFlow> FLOWS = new java.util.IdentityHashMap<>();
+
     /** Records one journalled input of {@code item}, through the recorder's own boundary. */
     static void capture(Object item, EventCodec codec, EventJournal journal, ReplayStore store) {
         GroupRecorder recorder = new GroupRecorder(ReplayConfig.record(Set.of("probe"), Map.of(FEED, codec), journal, store), () -> 99L);
@@ -157,13 +174,17 @@ class ReplayRound4ReviewTest {
         OneToOneConcurrentArrayQueue<Object> queue = new OneToOneConcurrentArrayQueue<>(8);
         publisher.addTargetQueue(queue, "DEMO-queue");
         publisher.publish(new CodecOnly(17));
-        JournalledItem first = (JournalledItem) queue.poll();
+        publisher.publish(new CodecOnly(19));
+        JournalledItem first = (JournalledItem) queue.poll(), second = (JournalledItem) queue.poll();
         InMemoryReplayStore store = new InMemoryReplayStore();
-        capture(first.item(), codec, journal, store);
+        captureAt(first.item(), 1, codec, journal, store);
+        captureAt(second.item(), 2, codec, journal, store);
         publisher.publish(new CodecOnly(23));                     // the feed's next item, through the same codec buffer
         Run r = replay(store, journal, codec);
         assertNull(r.stopped(), "the replay does not stop");
-        assertEquals(17, ((CodecOnly) r.items().get(0)).value, "the journalled input is replayed as journalled, not as the next item");
+        // every journalled item, not only the first (the local reviewer's surviving mutation copied only the first)
+        assertEquals(List.of(17, 19), r.items().stream().map(o -> ((CodecOnly) o).value).toList(),
+                "each journalled input is replayed as journalled, not as the feed's next item");
     }
 
     /** The JournalRef path (a named wrapper around a journalled payload) decodes from a copy too: two replays agree. */

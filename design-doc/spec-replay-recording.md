@@ -349,8 +349,9 @@ there, and live delivery is never affected):
   (`registeredProcessors()` empty) cannot be recorded: each processor its queue registered has its recording failed;
 - a processor whose recording clock can be installed. One that refuses it has its recording failed at setup, by name,
   and goes on running live, unrecorded, with its live time as replay OFF gives it (a live `ReplayRecord` still sets its
-  time). Its timers are still numbered and wrapped by the recording scheduler, which records nothing for it; a clock
-  install that throws AFTER installing is treated as not installed.
+  time). Its timers are still numbered and wrapped by the recording scheduler, which records nothing for it. A clock
+  install that throws AFTER installing is treated as not installed: that processor runs on the installed recording
+  clock, which reads the live clock, until a live `ReplayRecord` gives it the strategy's synthetic clock.
 
 **Owner decisions** raised, not taken: whether to offer a per-type snapshot codec for inline inputs that cannot meet the
 serialisation contract; whether a journalled Java codec should get the transient check the inline path has.
@@ -431,7 +432,11 @@ must be thread-safe (the configuration's). The OFF dispatch path did not change;
 **Results.** The full gate: **71 of 71 detected, 63 by a named assertion and 8 by an await running out or an error
 carrying the mutation's expected message** (the same eight). Requested and detected names match (71, no duplicates);
 restored with `cat f.orig > f`, SHA-256 checked, recompiled from clean. `mvn -q test`: 312 / 0 / 0 / 9 across 83
-reports, no orphans; after the controls, `mvn -q clean test`: the same.
+reports, no orphans; after the controls, `mvn -q clean test`: the same. The local independent review then APPROVED 8963a56 with two
+nits, both closed: its surviving mutation "copy only the first journalled item" is now a registered control
+(`r4-G1-every-journalled-item-is-copied`), caught at the strengthened publisher test (which journals three items and
+replays two); and the throw-after-install caveat is stated. Those two publisher controls re-ran caught; the full gate's
+last run is 8963a56's 71/71, now 72 registered.
 
 ## 4. Decisions
 
