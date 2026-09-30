@@ -298,6 +298,9 @@ Limits, stated rather than hidden:
 
 - **A stopped server is not refused at once.** The server does not stop its admin service, so nothing tells a command
   the server has stopped. Its caller is answered at the bound, and the command will not run.
+- **A server assembled by hand to both record and replay.** A queue given a recorder with a strategy that has muted
+  processors skips a live command for a muted one: it is never run or recorded, but its caller hears only at the bound,
+  not at once. A server built from its configuration never combines them.
 - **An unknown command name is not answered.** A request for a name that is not registered is logged, and its caller
   hears nothing.
 

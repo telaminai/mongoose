@@ -427,8 +427,12 @@ first (`1195dd4`, `replay-evidence/integration-main-1.0.31/predictions.md`).
   command ran.
 - `AbstractEventToInvocationStrategy`: it keeps both main's `processEventRecording` and the branch's `mutedForReplay`
   accessor. `processEventRecording` bypasses the invoker's `processEvent` override, so a muted processor is skipped
-  there rather than refused. A server has one `ReplayConfig.Mode`, so a recorder and a muted processor never coexist, and
-  the difference cannot be observed.
+  there rather than refused. Under standard server construction, with a fixed replay configuration, the server builds a
+  recorder or a replayer for a group, never both (one `ReplayConfig.Mode`), so the difference cannot be observed there.
+  **Manual assembly can combine them**: a queue given a recorder (`recordWith`) and a strategy with muted processors,
+  directly or by a live `ReplayRecord`. There a live command for a muted processor is skipped, never run and never
+  recorded, but its caller is cancelled at the bound instead of refused at once (review of b699146, note 1). Stated,
+  not rejected: rejecting mixed assembly is an owner choice.
 - `pom.xml`: 1.0.32-SNAPSHOT (main), fluxtion 1.1.0 (the branch; main was on 1.0.15).
 - `ReplayEntry` and routing: main's route, explicit instants and `routeFor(source, route, flow)` stand.
   - The recorder builds `AdminInvoked` with the instant it captured.

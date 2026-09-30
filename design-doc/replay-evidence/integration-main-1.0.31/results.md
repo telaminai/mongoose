@@ -7,9 +7,11 @@ Predictions: [`predictions.md`](predictions.md), committed first (`1195dd4`).
 
 | prediction | outcome |
 |---|---|
-| conflicts in the controls harness and the spec; the other files merge clean | as predicted, but `GroupRecorder`, `AbstractEventToInvocationStrategy` and `pom.xml` auto-merged and were read, not trusted |
+| conflicts in the controls harness and the spec | as predicted |
+| a conflict in `GroupRecorder.afterDispatch` | **missed**: it merged textually clean, and was read, not trusted (review of b699146, note 2) |
+| a possible adjacent-hunk conflict in `AbstractEventToInvocationStrategy`; `pom.xml` clean | both merged clean, and were read |
 | the `ran()` check must sit in main's `afterDispatch` after the clock capture, before `AdminInvoked` | it merged there textually; read and confirmed |
-| `processEventRecording` bypasses the invoker's muted refusal, harmlessly | confirmed: one `ReplayConfig.Mode` per server, so a recorder and muting never coexist |
+| `processEventRecording` bypasses the invoker's muted refusal, harmlessly | confirmed under standard server construction, which builds a recorder or a replayer per group from one `ReplayConfig.Mode`. Manual assembly (a queue given `recordWith` and a muted strategy) can combine them: the command is never run or recorded, but its caller is cancelled at the bound instead of refused at once (review of b699146, note 1) |
 | 99 distinct controls, 8 differing | 99 and 8. Main changed 7 to follow its own code, and the branch changed R6 |
 | the refused-case regression records no `AdminInvoked`, and a control removing `ran()` catches it | as predicted: caught with two `AdminInvoked` for one command that ran |
 | **not predicted** | main's f6 pair (`ReplayIndependentReviewTest`) failed. A lambda admin command now runs as the processor's own event cycle, and fluxtion 1.1.0's `runInEventCycle` reads the clock once on receipt. Both tests were moved to a timer firing that reads no clock; main's two ir-6 controls still catch them |
@@ -20,7 +22,7 @@ Predictions: [`predictions.md`](predictions.md), committed first (`1195dd4`).
 |---|---|---|
 | focused suites, merged tree, before the f6 change | 112 / 2 / 0 / 0 (the two f6 tests) | 15 |
 | `mvn -q clean test`, before the gate | 349 / 0 / 0 / 9 | 92, no orphans |
-| gate `python3 design-doc/replay_controls.py` | 101 of 101 detected: 91 named assertions, 6 expected-message timeouts, 4 expected-message errors; exit 0 | [`controls-gate.txt`](controls-gate.txt) |
+| gate `python3 design-doc/replay_controls.py` | 101 of 101 detected: 91 named assertions, 6 expected-message timeouts, 4 expected-message errors; exit 0 | [`controls-gate.txt`](controls-gate.txt), sanitised: machine-local temporary paths replaced by `<tmp>`, trailing whitespace removed; nothing else changed |
 | restored-green `mvn -q clean test` | 349 / 0 / 0 / 9 | 92, no orphans |
 
 Requested and detected names match: 101 each, none missing, none extra, no duplicates. Before the full gate, targeted runs

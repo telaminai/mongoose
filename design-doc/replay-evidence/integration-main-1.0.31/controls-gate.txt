@@ -93,7 +93,7 @@ R3-journalled-nowrap-carries-its-seq caught restored | expected: <[JournalledIte
 R3-cached-items-carry-their-own-seq caught restored | each cached item with its own number, not the latest ==> expected: <[1, 2, 3]> but was: <[3, 3, 3]>
 R3-journalled-once caught restored | once for both queues ==> expected: <2> but was: <0>
 R4-records-timer-firings caught restored | [Indexed[source=orders, route=onEventCallBack, seq=1, instant=1790802861348, reads=[1790802861348]], Inline[source=controls, route=onEventCallBack, event=arm, s
-R4-replay-never-fires-by-itself caught-by-timeout restored | the replay did not complete with 4 lines: complete=true stopped=entry 2 could not be replayed: java.lang.IllegalStateException: the replay fired timer 1, which 
+R4-replay-never-fires-by-itself caught-by-timeout restored | the replay did not complete with 4 lines: complete=true stopped=entry 2 could not be replayed: java.lang.IllegalStateException: the replay fired timer 1, which
 R5-pins-the-entry-instant caught-by-timeout restored | the replay did not complete with 6 lines: complete=true stopped=clock divergence: the replayed cycle read the clock 18 time(s), the recorded one 1 lines=[order=
 R5-plays-every-read-of-the-cycle caught restored | the replay does what the run did, at the same instants ==> expected: <[order=ord-1 live=1 suspended=false time=1767258000018, control=suspend time=1767258000019
 R5-delivers-to-the-processor-alone caught-by-timeout restored | the replay did not complete with 6 lines: complete=true stopped=clock divergence: the replayed cycle read the clock 3 time(s), the recorded one 1 lines=[order=o
@@ -107,7 +107,7 @@ csv-the-store-reads-back-its-file caught-by-timeout restored | the replay did no
 A-a-signal-command-runs-in-an-event-cycle caught restored | the handler replied ==> expected: <[alarm cleared]> but was: <[ERR problem executing command exception:Cannot invoke "com.telamin.mongoose.service.admin.AdminFu
 A-an-unanswered-command-is-an-error caught restored | [] ==> expected: <1> but was: <0>
 A-each-invocation-keeps-its-routing caught restored | in a cycle in the replay too ==> expected: <true> but was: <null>
-A-the-generated-processor-audits-the-command caught restored | eventLogRecord: 
+A-the-generated-processor-audits-the-command caught restored | eventLogRecord:
     eventTime: 1790802977638
     logTime: 1790802977638
     groupingId: null
@@ -115,14 +115,14 @@ A-the-generated-processor-audits-the-command caught restored | eventLogRecord:
     eventToString: Reading[value=12.0]
     thre
 A-the-generated-source-stays-publishable caught restored | no header before the package ==> expected: <true> but was: <false>
-A-a-lambda-command-is-bracketed-by-an-audit-record caught restored | every record well formed: 
+A-a-lambda-command-is-bracketed-by-an-audit-record caught restored | every record well formed:
         - alarmMonitor: { lambdaReset: true, at: 1790803006981}
     endTime: 1790803006981 ==> expected: <true> but was: <false>
-A-a-lambda-record-carries-the-commands-instant caught restored | its own instant, later than the previous event's 1790803012021: eventLogRecord: 
+A-a-lambda-record-carries-the-commands-instant caught restored | its own instant, later than the previous event's 1790803012021: eventLogRecord:
     eventTime: 1790803012021
     logTime: 1790803012021
     groupingId: null
-  
+
 B2-a-retried-command-does-not-run-again caught restored | the command ran once, whatever the retry policy does ==> expected: <1> but was: <3>
 B1-F2-a-refused-caller-is-answered error restored | java.util.concurrent.TimeoutException
 F2-a-command-failing-before-it-runs-is-answered error restored | java.util.concurrent.TimeoutException
@@ -132,7 +132,7 @@ review-1-a-ReplayRecord-keeps-the-recording-clock caught restored | expected: <n
 review-2-an-undeliverable-entry-stops-the-replay caught-by-timeout restored | the replay neither completed nor stopped: stopped=null ==> expected: <true> but was: <false>
 review-3-a-named-input-is-recorded-as-its-item caught restored | the named event was recorded, not failed: [Failed[source=orders, description=the input could not be recorded as received, so it cannot be replayed: java.lang.Il
 review-4-record-refuses-a-recording caught restored | Expected java.lang.Exception to be thrown, but nothing was thrown.
-review-5-a-torn-last-line-is-dropped error restored | /var/folders/jw/qy248v_j4_34b9l6c_wt_xcc0000gn/T/junit-13844135941177597690/store.csv line 3 has 4 fields, not 8
+review-5-a-torn-last-line-is-dropped error restored | <tmp>/junit-13844135941177597690/store.csv line 3 has 4 fields, not 8
 review-6-L1-live-inputs-are-muted caught restored | the replayed processor sees only the replay: [control=suspend time=1000, order=ord-LIVE live=1 suspended=true time=1000] ==> expected: <true> but was: <false>
 review-6-L2-outputs-are-captured caught restored | captured for comparison ==> expected: <[control=suspend time=1000]> but was: <[]>
 review-7-other-processors-keep-live-timers caught restored | a processor that is not replayed runs on the live scheduler, and its output is delivered: [armed time=1790803091886] ==> expected: <true> but was: <false>
@@ -166,8 +166,8 @@ ir-2-each-fanned-out-input-is-copied-at-its-own-dispatch caught restored | expec
 ir-2-a-replay-copies-its-input-again caught restored | replay 2 gives what was received ==> expected: <[value=0]> but was: <[value=1]>
 ir-2-an-uncopyable-input-is-marked-failed caught restored | marked, not held by reference: Inline[source=feed, route=onEventCallBack, event=null, seq=-1, instant=1790803258744, reads=[1790803258744]] ==> expected: <true>
 ir-3-a-named-event-is-rebuilt-as-itself caught restored | the application's event, with its type and fields ==> expected: <[named=DEMO-inner/DEMO-topic#123:DEMO-item]> but was: <[bare=DEMO-item]>
-ir-4-the-queue-carries-its-configured-route caught restored | each entry names its route, so none is ambiguous ==> expected: <null> but was: <entry 0 could not be replayed: java.lang.IllegalStateException: the entry names 
-ir-4-a-replay-takes-the-entrys-route caught restored | expected: <null> but was: <entry 0 could not be replayed: java.lang.IllegalStateException: the entry names no route, and feed reaches the processor by 2 routes 
+ir-4-the-queue-carries-its-configured-route caught restored | each entry names its route, so none is ambiguous ==> expected: <null> but was: <entry 0 could not be replayed: java.lang.IllegalStateException: the entry names
+ir-4-a-replay-takes-the-entrys-route caught restored | expected: <null> but was: <entry 0 could not be replayed: java.lang.IllegalStateException: the entry names no route, and feed reaches the processor by 2 routes
 ir-4-an-ambiguous-route-is-refused caught restored | an entry that names no route is refused when two routes could deliver it ==> expected: not <null>
 ir-5-an-interrupt-cancels-unclaimed-work caught restored | work a caller was interrupted out of never runs later ==> expected: <0> but was: <1>
 ir-5-an-interrupt-waits-for-running-work caught restored | the sink stays open while its listener is being installed ==> expected: <true> but was: <false>
@@ -178,15 +178,15 @@ ir-7-a-torn-store-is-refused-by-record caught restored | a file with a torn tail
 ir-7-a-torn-journal-is-refused-by-record caught restored | a torn journal is not an empty one: RECORD refuses it ==> expected: <true> but was: <false>
 rr-N1-the-replay-clock-install-is-contained caught restored | the server survived a replay clock it could not install (exit 0): [Sept 30, 2026 10:21:59 PM com.telamin.mongoose.dutycycle.GlobalErrorHandler onError, java.lan
 rr-N1-the-cursor-exists-before-the-setup caught restored | it stays replayed, so its live inputs are muted ==> expected: <true> but was: <false>
-rr-N2-a-named-event-keeps-its-time caught restored | its event time is the recorded one, not the replaying machine's ==> expected: <[named class=NamedFeedEventImpl feed=DEMO-inner topic=DEMO-topic seq=123 time=17 
+rr-N2-a-named-event-keeps-its-time caught restored | its event time is the recorded one, not the replaying machine's ==> expected: <[named class=NamedFeedEventImpl feed=DEMO-inner topic=DEMO-topic seq=123 time=17
 rr-N2-a-named-subclass-is-refused caught restored | replayed as itself, with its own state ==> expected: <[named class=DemoNamedEvent feed=DEMO-inner topic=DEMO-topic seq=7 time=1790803333393 delete=false data=DE
 rr-N3-a-journalled-input-is-compared-with-the-journal caught restored | each recipient replays what it, not the journal, received ==> expected: <[value=0, value=1]> but was: <[value=0, value=0]>
 rr-N4-the-default-strategy-fails-closed-on-fan-out caught restored | replayed as each received it ==> expected: <[value=0, value=1]> but was: <[value=0, value=0]>
 rr-N5-a-transient-field-is-refused caught restored | replayed as received ==> expected: <[transient=17 kept=5]> but was: <[transient=0 kept=5]>
-rr-N6-an-earlier-format-store-is-never-appended-to caught restored | the file reopens after the append or its refusal ==> Unexpected exception thrown: java.lang.IllegalArgumentException: /var/folders/jw/qy248v_j4_34b9l6c_wt_xcc00
+rr-N6-an-earlier-format-store-is-never-appended-to caught restored | the file reopens after the append or its refusal ==> Unexpected exception thrown: java.lang.IllegalArgumentException: <tmp>/…
 rr-N6-record-refuses-an-earlier-format-store caught restored | holding what was recorded ==> expected: <1> but was: <0>
 r3-F1-a-codec-input-is-read-back-by-its-codec caught restored | the feed's codec, not Java serialisation, carries the input to the replay ==> expected: <[codec=17]> but was: <[codec=0]>
-r3-F1-the-fallback-records-the-codecs-bytes caught restored | a codec-only input is not refused as not Serializable ==> expected: <[]> but was: <[entry 0 could not be replayed: java.lang.IllegalArgumentException: an input 
+r3-F1-the-fallback-records-the-codecs-bytes caught restored | a codec-only input is not refused as not Serializable ==> expected: <[]> but was: <[entry 0 could not be replayed: java.lang.IllegalArgumentException: an input
 r3-F2-a-journalled-wrapper-keeps-its-fields caught restored | the wrapper as received: its event time, name, topic, number, flag and filters ==> expected: <[named class=NamedFeedEventImpl feed=feed topic=null seq=1 time=17
 r3-F2-an-integer-filter-is-set-back caught restored | replayed with its integer filter, which selects its handler ==> expected: <[named class=NamedFeedEventImpl feed=DEMO-inner topic=DEMO-topic seq=5 time=179080337
 r3-F3-the-recording-clock-install-is-contained caught restored | the server survived (exit 0): [Sept 30, 2026 10:23:03 PM com.telamin.mongoose.dutycycle.GlobalErrorHandler onError, java.lang.IllegalStateException: DEMO cannot
