@@ -202,7 +202,8 @@ class ReplayReReviewTest {
                     @Override public com.telamin.mongoose.service.EventSource.EventWrapStrategy wrapOf(String source) { return null; }
                     @Override public com.telamin.mongoose.service.admin.impl.AdminCommand adminCommand(String name) { return null; }
                 }, new ReplayScheduler());
-        replayer.attach("probe", refuses);                             // must not throw out of the agent's setup
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> replayer.attach("probe", refuses),
+                "nothing escapes the agent's setup");
         assertTrue(replayer.replays(refuses), "it stays replayed, so its live inputs are muted");
         String stopped = replayer.stopped("probe");
         assertNotNull(stopped, "stopped, with a reason");
@@ -391,8 +392,10 @@ class ReplayReReviewTest {
         if (!appended) {
             assertEquals(before, sha(file), "a refused append leaves the file byte for byte as it was");
         }
-        try (CsvReplayStore again = new CsvReplayStore(file, new JavaSerializationCodec())) {
-            assertEquals(appended ? 1 : 0, again.entries("probe").size(), "and the file reopens, holding what was written");
+        CsvReplayStore again = org.junit.jupiter.api.Assertions.assertDoesNotThrow(
+                () -> new CsvReplayStore(file, new JavaSerializationCodec()), "the file reopens after the append or its refusal");
+        try (again) {
+            assertEquals(appended ? 1 : 0, again.entries("probe").size(), "holding what was written");
         }
     }
 
@@ -411,8 +414,10 @@ class ReplayReReviewTest {
             }
         }
         if (!recorded) assertEquals(before, sha(file), "a refused RECORD leaves the file unchanged");
-        try (CsvReplayStore again = new CsvReplayStore(file, new JavaSerializationCodec())) {
-            assertEquals(recorded ? 1 : 0, again.entries("probe").size(), "the file reopens");
+        CsvReplayStore again = org.junit.jupiter.api.Assertions.assertDoesNotThrow(
+                () -> new CsvReplayStore(file, new JavaSerializationCodec()), "the file reopens after RECORD or its refusal");
+        try (again) {
+            assertEquals(recorded ? 1 : 0, again.entries("probe").size(), "holding what was recorded");
         }
     }
 }
