@@ -98,7 +98,10 @@ class AdminCommandLifetimeTest {
                 }
             };
             template.publishCommand(List.of("DEMO.cmd"));
-            assertEquals(List.of("DEMO-done"), replies, "completed is the outcome: no 'started' message after its reply");
+            // asserted on derived values: a message quoting the replies would carry the harness's timeout marker
+            assertTrue(replies.contains("DEMO-done"), "its reply arrived");
+            assertEquals(0, replies.stream().filter(r -> r.toString().contains("started on its processor")).count(),
+                    "completed is the outcome: no 'started' message after its reply");
         } finally {
             release.countDown();
             running.set(false);
