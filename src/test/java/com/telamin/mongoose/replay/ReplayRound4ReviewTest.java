@@ -144,6 +144,45 @@ class ReplayRound4ReviewTest {
         assertEquals(17, ((CodecOnly) second.items().get(0)).value, "and so does the second: the journal's bytes are decoded from a copy");
     }
 
+    /**
+     * Found by the local independent review of d2c6428: the contract above says a codec may reuse its buffers, but the
+     * real publisher journalled the codec's array as returned, so the feed's next item rewrote the journalled one.
+     */
+    @Test
+    void g1_thePublishersJournal_ownsItsBytes_whenTheCodecReusesItsBuffer() {
+        ReusedBufferCodec codec = new ReusedBufferCodec();
+        InMemoryEventJournal journal = new InMemoryEventJournal();
+        com.telamin.mongoose.dispatch.EventToQueuePublisher<Object> publisher = new com.telamin.mongoose.dispatch.EventToQueuePublisher<>(FEED);
+        publisher.journal(journal, codec);
+        OneToOneConcurrentArrayQueue<Object> queue = new OneToOneConcurrentArrayQueue<>(8);
+        publisher.addTargetQueue(queue, "DEMO-queue");
+        publisher.publish(new CodecOnly(17));
+        JournalledItem first = (JournalledItem) queue.poll();
+        InMemoryReplayStore store = new InMemoryReplayStore();
+        capture(first.item(), codec, journal, store);
+        publisher.publish(new CodecOnly(23));                     // the feed's next item, through the same codec buffer
+        Run r = replay(store, journal, codec);
+        assertNull(r.stopped(), "the replay does not stop");
+        assertEquals(17, ((CodecOnly) r.items().get(0)).value, "the journalled input is replayed as journalled, not as the next item");
+    }
+
+    /** The JournalRef path (a named wrapper around a journalled payload) decodes from a copy too: two replays agree. */
+    @Test
+    void g1_aNamedJournalledInputsDecoderThatConsumesItsInput_neverRewritesTheJournal() {
+        ConsumingCodec codec = new ConsumingCodec();
+        InMemoryEventJournal journal = new InMemoryEventJournal();
+        journal.append(FEED, 1, codec.encode(new CodecOnly(17)));
+        InMemoryReplayStore store = new InMemoryReplayStore();
+        capture(new com.telamin.fluxtion.runtime.event.NamedFeedEventImpl<Object>(FEED, null, 1L, new CodecOnly(17)), codec, journal, store);
+        assertTrue(store.entries("probe").get(0) instanceof ReplayEntry.Inline in && in.event() instanceof RecordedNamedEvent n
+                && n.data() instanceof JournalRef, "precondition: a wrapper around a JournalRef: " + store.entries("probe"));
+        Run first = replay(store, journal, codec), second = replay(store, journal, codec);
+        Object a = ((com.telamin.fluxtion.runtime.event.NamedFeedEvent<?>) first.items().get(0)).data();
+        Object b = ((com.telamin.fluxtion.runtime.event.NamedFeedEvent<?>) second.items().get(0)).data();
+        assertEquals(17, ((CodecOnly) a).value, "the first replay gives the journalled payload");
+        assertEquals(17, ((CodecOnly) b).value, "and so does the second: the journal's bytes are decoded from a copy");
+    }
+
     // ---- G2: a failed recording leaves live time handling as it was --------------------------------------------
 
     /** A processor whose clock reads 99, which refuses the recording's clock (when {@code refuses}), and notes each input's time. */
