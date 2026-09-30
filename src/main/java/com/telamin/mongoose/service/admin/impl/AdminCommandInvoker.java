@@ -108,17 +108,12 @@ public class AdminCommandInvoker extends AbstractEventToInvocationStrategy {
         // inherits the refusing default (generated before 1.1.0), or whose override refuses, is bracketed instead.
         // Anything that fails before the command runs answers the caller, and a command runs at most once
         // (dispatchEvent). AdminCommandFailureTest holds both.
-        if (implementsTheCycle(processor.getClass())) {
-            try {
-                processor.runInEventCycle(event, adminCommand::executeCommand);
-                return;
-            } catch (UnsupportedOperationException refused) {
-                if (adminCommand.executed()) {
-                    throw refused;                                  // the cycle failed after the command ran
-                }
-                // an override that refuses (a generated processor may disable the path): this command is bracketed.
-                // Anything else thrown before the command ran reaches dispatchEvent, which answers the caller
-            }
+        // #48 review, finding 2: which route is decided BEFORE invoking, from what the processor declares, never from an
+        // exception it throws: a supported cycle that fails while setting up is refused by dispatchEvent, not bracketed
+        if (implementsTheCycle(processor.getClass())
+                && !(processor instanceof com.telamin.mongoose.service.admin.AdminCommandsBracketed)) {
+            processor.runInEventCycle(event, adminCommand::executeCommand);
+            return;
         }
         // for a processor without runInEventCycle: the processor's own audit calls, found by name (spec 3d: unsafe for
         // a command that redispatches, which dispatches at once inside the open record)

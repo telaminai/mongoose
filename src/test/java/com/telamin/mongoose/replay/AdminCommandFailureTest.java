@@ -88,12 +88,41 @@ class AdminCommandFailureTest {
         return boot(false);
     }
 
-    /** {@code refusingCycle}: a processor whose own runInEventCycle refuses, as one that disabled the path does. */
+    /**
+     * A processor that disabled runInEventCycle by overriding it to refuse, and DECLARES that its lambda commands are
+     * bracketed (#48 review, finding 2: the route is decided from the declaration, before invoking; the override is never
+     * called).
+     */
+    public static class DeclaredBracketedProcessor extends DefaultEventProcessor
+            implements com.telamin.mongoose.service.admin.AdminCommandsBracketed {
+        final java.util.concurrent.atomic.AtomicInteger cycleCalls = new java.util.concurrent.atomic.AtomicInteger();
+
+        DeclaredBracketedProcessor(FragileNode node) {
+            super(node);
+        }
+
+        @Override
+        public void runInEventCycle(Object auditEvent, Runnable action) {
+            cycleCalls.incrementAndGet();
+            throw new UnsupportedOperationException("DEMO: this processor disabled runInEventCycle");
+        }
+    }
+
     static Server boot(boolean refusingCycle) throws Exception {
+        return boot(refusingCycle, false);
+    }
+
+    /**
+     * {@code refusingCycle}: a processor whose own runInEventCycle refuses; {@code declared}: and which declares
+     * AdminCommandsBracketed. An override that refuses WITHOUT declaring is, under the #48 review's contract, a cycle that
+     * failed: refused by name, never bracketed.
+     */
+    static Server boot(boolean refusingCycle, boolean declared) throws Exception {
         InMemoryEventSource<Object> feed = new InMemoryEventSource<>();
         feed.setName(FEED);
         FragileNode node = new FragileNode();
-        DefaultEventProcessor processor = refusingCycle
+        DefaultEventProcessor processor = declared ? new DeclaredBracketedProcessor(node)
+                : refusingCycle
                 ? new DefaultEventProcessor(node) {
                     @Override
                     public void runInEventCycle(Object auditEvent, Runnable action) {
@@ -184,15 +213,32 @@ class AdminCommandFailureTest {
     }
 
     /**
-     * A processor whose own runInEventCycle refuses (it disabled the path) is not wedged and not old: its command is run
-     * through the audit bracket, as a processor generated before 1.1.0 is, and is never refused to the caller.
+     * A processor that declares AdminCommandsBracketed (it disabled the cycle deliberately) is not wedged and not old: its
+     * command is run through the audit bracket, as a processor generated before 1.1.0 is, every time, and its refusing
+     * runInEventCycle is never called: the route is decided before invoking (#48 review, finding 2).
      */
     @Test
-    void aProcessorWhoseOverrideRefusesTheCycle_runsTheCommandBracketed() throws Exception {
-        try (Server s = boot(true)) {
+    void aProcessorThatDeclaresItsCommandsBracketed_runsThemBracketed() throws Exception {
+        try (Server s = boot(true, true)) {
             assertEquals(List.of("plain ok"), invoke(s.admin(), "p.plain"));
             assertEquals(List.of("plain ok"), invoke(s.admin(), "p.plain"), "every time: the class is not cached as refusing");
             assertEquals(2, s.node().plainRuns.get());
+        }
+    }
+
+    /**
+     * An override that refuses WITHOUT declaring is indistinguishable from a cycle that failed while setting up, so it is
+     * treated as one: the caller is refused by name and the command never runs by another route. Under f8deed60 it was
+     * bracketed; that inference is what the #48 review's finding 2 removed (owner decision recorded in spec 3d).
+     */
+    @Test
+    void anUndeclaredOverrideThatRefusesTheCycle_refusesTheCommand_andNeverRunsIt() throws Exception {
+        try (Server s = boot(true)) {
+            List<Object> replies = invoke(s.admin(), "p.plain");
+            assertEquals(0, s.node().plainRuns.get(), "not run by the weaker route");
+            assertEquals(1, replies.size(), replies.toString());
+            assertTrue(replies.get(0).toString().contains("did not run") && replies.get(0).toString().contains("disabled runInEventCycle"),
+                    "refused, naming why: " + replies);
         }
     }
 }
