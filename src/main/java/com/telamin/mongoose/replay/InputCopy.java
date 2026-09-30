@@ -35,7 +35,7 @@ final class InputCopy {
         if (input instanceof NamedFeedEvent<?> named) return RecordedNamedEvent.of(named, of(named.data()));
         if (input instanceof RecordedNamedEvent recorded) {
             return new RecordedNamedEvent(recorded.eventFeedName(), recorded.topic(), recorded.sequenceNumber(),
-                    recorded.delete(), recorded.eventTime(), of(recorded.data()));
+                    recorded.delete(), recorded.eventTime(), recorded.filterId(), of(recorded.data()));
         }
         if (!(input instanceof Serializable)) {
             throw new IllegalArgumentException("an input of " + input.getClass().getName()
