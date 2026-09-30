@@ -238,6 +238,54 @@ class AdminCorrectionRegressionTest {
         aBlockedConsumerNeverHoldsTheCaller("DEMO.errReply", false);
     }
 
+    /**
+     * Review of 8d224fb, nit 1: a delivery already in progress when the caller's wait ends may finish after the caller's
+     * final message (the accepted policy), so that message must not promise otherwise. Latches, no sleeps.
+     */
+    @Test
+    void n3_aDeliveryInProgressAtTheBound_mayFinishAfterward_andTheFinalMessageSaysSo() throws Exception {
+        try (Server s = boot(null)) {
+            List<Object> replies = new CopyOnWriteArrayList<>();
+            CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1), delivered = new CountDownLatch(1);
+            AdminCommandRequest request = new AdminCommandRequest();
+            request.setCommand("DEMO.ok");
+            request.setArguments(List.of());
+            request.setOutput(o -> {                                 // the delivery begins on the agent, and is held
+                entered.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                replies.add(o);
+                delivered.countDown();
+            });
+            request.setErrOutput(o -> replies.add("ERR " + o));
+            System.setProperty(BOUND, "300");
+            Thread caller = new Thread(() -> s.admin().processAdminCommandRequest(request), "DEMO-caller");
+            caller.setDaemon(true);
+            try {
+                caller.start();
+                assertTrue(await(entered), "the delivery has begun, and is held");
+                caller.join(5_000);
+                assertFalse(caller.isAlive(), "the caller's wait ended at the bound");
+                release.countDown();
+                assertTrue(await(delivered), "the in-flight delivery finished");
+                assertEquals(2, replies.size(), replies.toString());
+                assertTrue(replies.get(0).toString().startsWith("ERR ") && replies.get(1).equals("DEMO-ok"),
+                        "the ordering the policy allows: the final message, then the in-flight reply: " + replies);
+                String finalMessage = replies.get(0).toString();
+                assertFalse(finalMessage.contains("nothing more from it will reach"),
+                        "the final message does not promise to retract a delivery already in progress");
+                assertTrue(finalMessage.contains("a delivery already in progress may still finish"),
+                        "it says what does happen");
+            } finally {
+                release.countDown();
+                caller.join(5_000);
+            }
+        }
+    }
+
     @Test
     void n3_aReplySentAfterTheCommandCompleted_isSuppressed() throws Exception {       // an asynchronous reply
         try (Server s = boot(null)) {
