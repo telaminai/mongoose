@@ -142,15 +142,19 @@ Sample code:
   - `Serializable` inputs whose classes declare no `transient` field, by Java serialisation. Their serial form must
     carry everything a handler reads; state it omits (nested objects, custom `writeObject` or `Externalizable` forms) is
     not checked, and cannot be;
-  - `NamedFeedEventImpl` itself, with its feed name, topic, number, delete flag and event time. A subclass or another
-    `NamedFeedEvent` implementation is refused;
-  - a journalled input through the feed's codec. It is recorded by index while the processor receives what the journal
-    holds, and inline when an earlier processor changed it first.
+  - `NamedFeedEventImpl` itself, with its feed name, topic, number, delete flag, event time and both filters, inline or
+    journalled. A subclass or another `NamedFeedEvent` implementation is refused;
+  - a journalled input through the feed's codec only. It is recorded by index while the processor receives what the
+    journal holds, and otherwise as that codec's own bytes, which the replay decodes with the same codec. It is never
+    re-copied by Java serialisation.
 
   Anything else is recorded as a failure naming why, and a replay stops there. Live delivery is never affected.
 - **Custom strategies.** An `EventToInvokeStrategy` that extends `AbstractEventToInvocationStrategy`, or overrides
   `processEventRecording`, records fan-out per processor. One that inherits the interface's default records a single
-  processor, and refuses a fan-out it cannot see into.
+  processor, and refuses a fan-out it cannot see into. One whose `registeredProcessors()` is empty cannot be recorded:
+  the processors it delivers to have their recordings failed, by name.
+- **A processor that refuses the recording clock** has its recording failed at setup, by name, and runs on live,
+  unrecorded. RECORD never stops a processor.
 - **Each entry names its route.** A source that reaches a processor by more than one callback type replays each entry
   through the one that delivered it.
 - **Calls outside Mongoose's paths**, from code holding a processor directly, are not recorded.

@@ -1,6 +1,6 @@
 # Spec: record and replay a processor's inputs in Mongoose
 
-**Status**: r7, 2026-09-30. Implemented and tested on `feat/replay-at-dispatch` (PR #47), reviewed, re-reviewed,
+**Status**: r8, 2026-09-30. Implemented and tested on `feat/replay-at-dispatch` (PR #47), reviewed, re-reviewed,
 independently reviewed and independently re-reviewed; every finding is dispositioned in §3f, each fix with a regression that failed first. Background, and the evidence each
 decision rests on: [`replay-at-dispatch-spike.md`](replay-at-dispatch-spike.md).
 
@@ -28,9 +28,11 @@ not reproduced) and calls made from outside Mongoose's paths (code holding a pro
 - **An entry is an index or an event:**
   - `Indexed{source, route, seq, instant, reads}`: an input from a journalled feed that this processor received as the
     journal holds it (compared through the feed's codec); the event is in the feed's journal.
-  - `Inline{source, route, event, instant, reads}`: an input from a feed with no journal, or a journalled input this
-    processor received changed (fan-out), as a copy taken just before the processor handled it. What can be copied is
-    the contract in §3f ("What a recording can hold"); anything else is recorded `Failed`, never by reference.
+  - `Inline{source, route, event, instant, reads}`: an input from a feed with no journal, as a copy taken just before
+    the processor handled it; or a journalled input held in its feed's own codec (`EncodedInput`, when what this
+    processor received is not what the journal holds), or a journalled named wrapper with its own fields and a
+    `JournalRef` payload. What can be held is the contract in §3f ("What a recording can hold"); anything else is
+    recorded `Failed`, never by reference.
   - `TimerFired{seq, instant, reads}`: a timer the processor scheduled fired.
   - `AdminInvoked{command, args, instant, reads}`: a processor-owned admin command ran.
   - `Failed{source, description}`: a dispatch threw. The stream is not reproducible past it.
@@ -336,11 +338,16 @@ there, and live delivery is never affected):
   serialisation. Its serial form must carry every part of its state a handler reads: nested state, custom
   `writeObject`/`writeReplace`/`Externalizable` forms and anything else the serial form omits are NOT checked, and no
   automatic check could establish equivalence for the handler that reads it;
-- a `NamedFeedEventImpl` (feed name, topic, number, delete flag, event time, and a payload under the rules above); any other
-  `NamedFeedEvent` implementation is refused;
-- a journalled input through the feed's own codec, which the configuration owns and must make faithful for its items;
+- a `NamedFeedEventImpl` (feed name, topic, number, delete flag, event time, both filters, and a payload under these
+  rules), whether its payload is inline or journalled; any other `NamedFeedEvent` implementation is refused;
+- a journalled input through the feed's own codec ONLY, which the configuration owns and must make faithful for its
+  items: by index while the processor receives what the journal holds, otherwise as the codec's own bytes, read back by
+  the same codec. Never re-copied by Java serialisation;
 - through `AbstractEventToInvocationStrategy`, or any strategy that overrides `processEventRecording`, for any number of
-  processors; through the interface's default, for one.
+  processors; through the interface's default, for one. A strategy that names no processor
+  (`registeredProcessors()` empty) cannot be recorded: each processor its queue registered has its recording failed;
+- a processor whose recording clock can be installed. One that refuses it has its recording failed at setup, by name,
+  and goes on running live, unrecorded.
 
 **Owner decisions** raised, not taken: whether to offer a per-type snapshot codec for inline inputs that cannot meet the
 serialisation contract; whether a journalled Java codec should get the transient check the inline path has.
@@ -371,6 +378,32 @@ assertion and 8 by an await running out or an error carrying the mutation's expe
 before; all nine new controls are named-assertion detections). Each file restored with `cat f.orig > f`, SHA-256 checked,
 and the sources recompiled from clean. `mvn -q test`: 291 / 0 / 0 / 9 across 81 reports, no orphans; after the controls,
 `mvn -q clean test`: 291 / 0 / 0 / 9 across 81 reports, no orphans. Evidence: `replay-evidence/rereview-4a18003/`.
+
+**The re-review of cd52628** (review 5911786834) accepted N1's REPLAY fix, N5's inline contract, N6 and N7, and found F1-F4.
+Regressions were committed with predictions before they ran (`5dfd9ab`), then run on cd52628; results in the commit
+messages and `replay-evidence/rereview-cd52628/`. Regressions: `ReplayRound3ReviewTest` (F3 through a real server in a
+child JVM, `RecordSetupFailureChildMain`).
+
+| # | finding | pre-fix result on cd52628 | disposition |
+|---|---|---|---|
+| F1 | N3's fallback swaps the feed codec for Java serialisation | `[codec=0]` for live `[codec=17]` (memory, CSV); a codec-only item refused as not Serializable; fan-out `[0, 0]` for `[0, 1]`; all but the refusal with no stop | fixed (`61e2517`): the fallback records the codec's own bytes (`EncodedInput`), read back by the same codec; journal gaps still stop the replay |
+| F2 | named metadata lost on an indexed wrapper, and the integer filter | a journalled wrapper replayed with another event time (memory, CSV); one with its own fields recorded as `Indexed`; filter 17 replayed as 2147483647 (memory, CSV) | fixed (`0272736`, `61e2517`): a journalled wrapper is recorded with all its fields around a `JournalRef` or the codec's bytes; the integer filter is recorded and set back; the subclass refusal is unchanged |
+| F3 | RECORD's clock install escapes | direct attach threw; the child JVM exited 255 | fixed (`f65c75f`): contained; the recording is failed by name and durably, and the processor runs on live, unrecorded (the stated policy) |
+| F4 | a strategy naming no processor records nothing | entries `[]` for a delivered input; the replay completed empty | fixed (`8c041d9`): the queue knows the processors it registered; each recorded one's recording is failed by name, and a replay stops there |
+| nits | the transient wording; two unbounded test waits; the PR body's spec revision | (text and test code) | fixed (`f3051e9`, `5dfd9ab`, the PR body) |
+
+The OFF dispatch path did not change (the queue's registered set is written at registration and read only in RECORD), so
+the benchmark was not re-run. The two owner decisions under N5 stand.
+
+**Controls.** Six were added (`r3-*`), one per protection F1-F4 added. Three earlier anchors moved with this round's
+code and still remove the same protection: ir-2's replay copy, now inside `materialised`; ir-3's rebuild, now around the
+resolved payload; rr-N3's comparison, now choosing `EncodedInput`. The first run caught 7 of 9. Both misses were the
+controls': `r3-F3`'s mutation did not compile, and `r3-F1`'s record-side mutation was an equivalent mutant (storing the
+decoded object made the entry an index, which replays the unchanged value correctly). Both were corrected, and 2 of 2
+re-run were caught at named assertions. The full gate: **65 of 65 detected, 57 by a named assertion and 8 by an await
+running out or an error carrying the mutation's expected message** (the same eight as before). Requested and detected
+names match (65, no duplicates); each file is restored with `cat f.orig > f`, SHA-256 checked, and recompiled from clean.
+`mvn -q test`: 304 / 0 / 0 / 9 across 82 reports, no orphans; after the controls, `mvn -q clean test`: the same.
 
 ## 4. Decisions
 
