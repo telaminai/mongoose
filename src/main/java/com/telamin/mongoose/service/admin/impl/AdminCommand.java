@@ -192,15 +192,7 @@ public class AdminCommand {
         }
         if (!finished) {
             beforeExpiry.accept(this);
-            String cause = interrupted ? "its caller was interrupted" : "it did not complete within " + bound + " ms";
-            if (phase.compareAndSet(QUEUED, CANCELLED)) {
-                done.countDown();
-                errOutput.accept("admin command '" + commandName() + "' was cancelled before its processor started it ("
-                        + cause + "); it will not run");
-            } else if (phase.compareAndSet(CLAIMED, ABANDONED)) {
-                errOutput.accept("admin command '" + commandName() + "' started on its processor and had not completed ("
-                        + cause + "); it may still complete, and nothing more from it will reach this caller");
-            }
+            expire(interrupted ? "its caller was interrupted" : "it did not complete within " + bound + " ms");
         }
         if (interrupted) {
             Thread.currentThread().interrupt();
@@ -232,6 +224,18 @@ public class AdminCommand {
         if (p != QUEUED && p != CLAIMED) return false;
         to.accept(message);
         return true;
+    }
+
+    /** The caller's wait ended first: cancel unclaimed work, or abandon claimed work; either is said once. No lock. */
+    private void expire(String cause) {
+        if (phase.compareAndSet(QUEUED, CANCELLED)) {
+            done.countDown();
+            errOutput.accept("admin command '" + commandName() + "' was cancelled before its processor started it ("
+                    + cause + "); it will not run");
+        } else if (phase.compareAndSet(CLAIMED, ABANDONED)) {
+            errOutput.accept("admin command '" + commandName() + "' started on its processor and had not completed ("
+                    + cause + "); it may still complete, and nothing more from it will reach this caller");
+        }
     }
 
     /** Completed (or refused after its claim): the channel closes and the caller is released. Idempotent. */
