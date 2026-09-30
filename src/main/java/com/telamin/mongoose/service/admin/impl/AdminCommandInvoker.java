@@ -31,12 +31,37 @@ public class AdminCommandInvoker extends AbstractEventToInvocationStrategy {
         super();
     }
 
+    /**
+     * A live command for a processor muted for a replay is refused, by name, now: the base strategy skips a muted target
+     * silently, which left the caller waiting for a command nothing would ever run (#48 review, finding 3).
+     */
+    @Override
+    public void processEvent(Object event) {
+        AdminCommand adminCommand = (AdminCommand) event;
+        for (int i = 0, n = eventProcessorSinks.size(); i < n; i++) {
+            DataFlow target = eventProcessorSinks.get(i);
+            if (mutedForReplay(target)) {
+                if (adminCommand.claim()) {
+                    adminCommand.refuse("admin command '" + name(adminCommand) + "' was refused: its processor is replaying,"
+                            + " and a replayed processor receives no live input");
+                }
+                continue;
+            }
+            com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(target);
+            try {
+                dispatchEvent(event, target);
+            } finally {
+                com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
+            }
+        }
+    }
+
     @Override
     protected void dispatchEvent(Object event, DataFlow eventProcessor) {
         AdminCommand adminCommand = (AdminCommand) event;
-        if (adminCommand.executed()) {
-            // a retry of a dispatch that already ran this command (its cycle failed afterwards, e.g. an event it
-            // raised threw while draining): the failure is already reported; the command's effects happen once
+        if (!adminCommand.claim()) {
+            // cancelled by its caller before it was claimed (it never runs later: #48 review, finding 3), or a retry of a
+            // dispatch that already claimed it (its cycle failed afterwards): the command's effects happen at most once
             return;
         }
         try {
@@ -122,6 +147,11 @@ public class AdminCommandInvoker extends AbstractEventToInvocationStrategy {
                 return false;
             }
         });
+    }
+
+    private static String name(AdminCommand adminCommand) {
+        List<String> args = adminCommand.getArgs();
+        return args == null || args.isEmpty() ? "" : args.get(0);
     }
 
     private static String cannotRun(AdminCommand adminCommand, RuntimeException why) {

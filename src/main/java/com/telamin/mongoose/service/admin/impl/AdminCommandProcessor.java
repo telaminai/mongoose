@@ -97,19 +97,32 @@ public class AdminCommandProcessor implements AdminCommandRegistry, LifeCycleEve
     public void processAdminCommandRequest(AdminCommandRequest command) {
         String commandName = command.getCommand().trim();
         log.info("processing: " + command + " name: '" + commandName + "'");
+        if (stopped) {
+            // #48 review, finding 3: after stop nothing drains a command's queue, so its caller would wait for nothing
+            answer(command, "admin command '" + commandName + "' was refused: the server is stopped");
+            return;
+        }
         AdminCommand adminCommand = registeredCommandMap.get(commandName);
         if (adminCommand != null) {
-            adminCommand.publishCommand(command);
+            adminCommand.publishCommand(command);       // the command's registered name, not this spelling (finding 4)
         } else {
             log.info("command not found: " + commandName);
         }
+    }
+
+    private volatile boolean stopped;
+
+    private static void answer(AdminCommandRequest command, String message) {
+        if (command.getErrOutput() != null) command.getErrOutput().accept(message);
     }
 
     @Override
     @SuppressWarnings("unchecked")
     public <OUT, ERR> void registerCommand(String name, AdminFunction<OUT, ERR> command) {
         if (com.telamin.mongoose.dispatch.ProcessorContext.currentProcessor() == null) {
-            registeredCommandMap.put(name, new AdminCommand((AdminFunction<Object, Object>) command));
+            AdminCommand direct = new AdminCommand((AdminFunction<Object, Object>) command);
+            direct.setName(name);
+            registeredCommandMap.put(name, direct);
         } else {
             String queueKey = "adminCommand." + name;
             addCommand(
@@ -136,11 +149,13 @@ public class AdminCommandProcessor implements AdminCommandRegistry, LifeCycleEve
 
     @Override
     public void stop() {
+        stopped = true;
         log.info("stop");
     }
 
     @Override
     public void tearDown() {
+        stopped = true;
         log.info("stop");
     }
 
@@ -165,6 +180,7 @@ public class AdminCommandProcessor implements AdminCommandRegistry, LifeCycleEve
     }
 
     private void addCommand(String name, String queueKey, AdminCommand adminCommand) {
+        adminCommand.setName(name);                     // its identity, bound once (#48 review, finding 4)
         DataFlow DataFlow = com.telamin.mongoose.dispatch.ProcessorContext.currentProcessor();
         log.info("registered command:" + name + " queue:" + queueKey + " processor:" + DataFlow);
 

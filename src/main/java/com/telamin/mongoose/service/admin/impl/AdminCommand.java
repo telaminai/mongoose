@@ -39,6 +39,22 @@ public class AdminCommand {
     private boolean signalRouted;
     /** Set when this command starts to execute (one instance per request), so a retried dispatch does not re-run it. */
     private volatile boolean executed;
+    /**
+     * The name the command was REGISTERED under, bound once (#48 review, finding 4): a request's own spelling (" x ") was
+     * trimmed for lookup but carried into the signal's filter, so no handler answered. Null for a command built without
+     * registration, which then keeps the request's name.
+     */
+    private String name;
+
+    // ---- one request's lifetime (#48 review, finding 3): QUEUED until its processor claims it, or its caller cancels ----
+    static final int QUEUED = 0, CLAIMED = 1, CANCELLED = 2;
+    private final java.util.concurrent.atomic.AtomicInteger state = new java.util.concurrent.atomic.AtomicInteger(QUEUED);
+    /** Counted down once, when the command completes or is refused: the caller's wait. */
+    private volatile java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+    /** The reply channel: open until the caller has its answer, then closed once, so a late reply is dropped. */
+    private boolean open = true;
+    /** How long a caller waits for its command to complete; see {@link #completionTimeoutMs()}. */
+    static final long DEFAULT_COMPLETION_TIMEOUT_MS = 10_000;
 
     /** A signal-routed command: no lambda; the processor's own handler does the work, in an event cycle. */
     public AdminCommand(EventToQueuePublisher<AdminCommand> targetQueue, boolean signalRouted) {
@@ -86,7 +102,8 @@ public class AdminCommand {
         this.output = adminCommandRequest.getOutput();
         this.errOutput = adminCommandRequest.getErrOutput();
         this.args = new ArrayList<>(adminCommandRequest.getArguments());
-        this.args.add(0, adminCommandRequest.getCommand());
+        this.name = adminCommand.name;
+        this.args.add(0, adminCommand.name != null ? adminCommand.name : adminCommandRequest.getCommand());
         this.signalRouted = adminCommand.signalRouted;
     }
 
@@ -108,21 +125,103 @@ public class AdminCommand {
     public void publishCommand(List<String> value) {
         if (targetQueue == null) {
             commandWithOutput.processAdminCommand(value, output, errOutput);
-        } else {
-            try {
-                if (semaphore.tryAcquire(1, TimeUnit.SECONDS)) {
-                    executed = false;                   // each publish is a new execution: its retries share the flag
-                    args = value;
-                    targetQueue.publish(this);
-                    semaphore.acquire();
-                    semaphore.release();
-                } else {
-                    output.accept("command is busy try again");
-                }
-            } catch (InterruptedException e) {
-                throw new com.telamin.mongoose.exception.AdminCommandException("Interrupted while publishing admin command", e);
+            return;
+        }
+        boolean admitted;
+        try {
+            admitted = semaphore.tryAcquire(1, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new com.telamin.mongoose.exception.AdminCommandException("Interrupted while publishing admin command", e);
+        }
+        if (!admitted) {
+            output.accept("command is busy try again");
+            return;
+        }
+        try {
+            // each publish is a new execution: its retries share these, and a reused template starts afresh (F6)
+            executed = false;
+            state.set(QUEUED);
+            done = new java.util.concurrent.CountDownLatch(1);
+            synchronized (this) {
+                open = true;
+            }
+            args = value;
+            targetQueue.publish(this);
+            awaitOutcome();
+        } finally {
+            semaphore.release();
+        }
+    }
+
+    /**
+     * Wait for this command's outcome, bounded (#48 review, finding 3: the wait was unbounded, so a caller of a stopped
+     * server, or of a processor muted for a replay, waited forever, and an interrupted caller left its command to run
+     * later and reply to a channel nobody read). On timeout or interrupt, work its processor has NOT claimed is cancelled:
+     * it never runs later, and the caller is told so. Work it has claimed has started: that cannot be cancelled, so the
+     * caller is told it started and may still complete, and its reply channel is closed. Either way, once.
+     */
+    private void awaitOutcome() {
+        long bound = completionTimeoutMs();
+        boolean interrupted = false;
+        boolean finished;
+        try {
+            finished = done.await(bound, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            interrupted = true;
+            finished = done.getCount() == 0;
+        }
+        if (!finished) {
+            String cause = interrupted ? "its caller was interrupted" : "it did not complete within " + bound + " ms";
+            if (state.compareAndSet(QUEUED, CANCELLED)) {
+                closeWith("admin command '" + commandName() + "' was cancelled before its processor started it (" + cause
+                        + "); it will not run");
+                done.countDown();
+            } else if (done.getCount() != 0) {
+                closeWith("admin command '" + commandName() + "' started on its processor and had not completed (" + cause
+                        + "); it may still complete, and nothing more from it will reach this caller");
             }
         }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+            throw new com.telamin.mongoose.exception.AdminCommandException("Interrupted while publishing admin command");
+        }
+    }
+
+    /** How long a caller waits: {@code mongoose.admin.completionTimeoutMs}, else {@value #DEFAULT_COMPLETION_TIMEOUT_MS}. */
+    static long completionTimeoutMs() {
+        return Long.getLong("mongoose.admin.completionTimeoutMs", DEFAULT_COMPLETION_TIMEOUT_MS);
+    }
+
+    /** Claim this command for execution: false when its caller cancelled it, or it was already claimed (a retry). */
+    public boolean claim() {
+        return state.compareAndSet(QUEUED, CLAIMED);
+    }
+
+    private String commandName() {
+        return name != null ? name : args == null || args.isEmpty() ? "" : args.get(0);
+    }
+
+    /** A reply, while the caller still reads the channel; dropped after. */
+    private synchronized boolean reply(Consumer<Object> to, Object message) {
+        if (!open) return false;
+        to.accept(message);
+        return true;
+    }
+
+    /** The caller's last message, and the channel closed with it: nothing after it reaches the caller. */
+    private synchronized void closeWith(String message) {
+        if (!open) return;
+        open = false;
+        errOutput.accept(message);
+    }
+
+    /** Completed: the channel closes and the caller is released. Idempotent. */
+    private void complete() {
+        synchronized (this) {
+            open = false;
+        }
+        done.countDown();
     }
 
     /**
@@ -139,34 +238,28 @@ public class AdminCommand {
         request.setArguments(List.copyOf(args.subList(1, args.size())));
         executed = true;
         boolean[] replied = {false};
-        // once the caller has been answered, a late reply (a handler that ran after a queued signal was released,
-        // or one that replies asynchronously) is dropped rather than sent down a channel the caller has left
-        boolean[] open = {true};
-        request.setOutput(o -> {
-            if (!open[0]) return;
-            replied[0] = true;
-            output.accept(o);
-        });
-        request.setErrOutput(o -> {
-            if (!open[0]) return;
-            replied[0] = true;
-            errOutput.accept(o);
-        });
+        request.setOutput(o -> replied[0] |= reply(output, o));
+        request.setErrOutput(o -> replied[0] |= reply(errOutput, o));
+        RuntimeException failed = null;
         try {
             processor.onEvent(new com.telamin.fluxtion.runtime.event.Signal<>(
                     com.telamin.mongoose.service.admin.AdminCommandRegistry.SIGNAL_PREFIX + command, request));
             if (!replied[0]) {
-                errOutput.accept("admin command '" + command + "' was delivered to its processor, and no handler replied"
+                reply(errOutput, "admin command '" + command + "' was delivered to its processor, and no handler replied"
                         + " during the call (none is registered for it, or the processor is mid-cycle and queued it)");
             }
-        } catch (Exception e) {
+        } catch (RuntimeException e) {
             StringWriter sw = new StringWriter();
             e.printStackTrace(new PrintWriter(sw));
-            errOutput.accept("problem executing command exception:" + e.getMessage() + "\n" + sw);
+            reply(errOutput, "problem executing command exception:" + e.getMessage() + "\n" + sw);
+            failed = e;
         } finally {
-            open[0] = false;
-            semaphore.release();
+            complete();
         }
+        // #48 review, finding 1: the caller is answered and released above, once. The failure is then the DISPATCH's, as
+        // any event's that throws: the agent reports it, the recorder marks the input Failed (D4), and its retry is a
+        // no-op (the command is claimed). Swallowed here, it was recorded as a successful invocation and replayed.
+        if (failed != null) throw failed;
     }
 
     /**
@@ -175,9 +268,9 @@ public class AdminCommand {
      */
     public void refuse(String message) {
         try {
-            errOutput.accept(message);
+            reply(errOutput, message);
         } finally {
-            semaphore.release();
+            complete();
         }
     }
 
@@ -193,13 +286,13 @@ public class AdminCommand {
     public void executeCommand() {
         executed = true;
         try {
-            commandWithOutput.processAdminCommand(args, output, errOutput);
+            commandWithOutput.processAdminCommand(args, o -> reply(output, o), o -> reply(errOutput, o));
         } catch (Exception e) {
             StringWriter sw = new StringWriter();
             e.printStackTrace(new PrintWriter(sw));
-            errOutput.accept("problem executing command exception:" + e.getMessage() + "\n" + sw);
+            reply(errOutput, "problem executing command exception:" + e.getMessage() + "\n" + sw);
         } finally {
-            semaphore.release();
+            complete();
         }
     }
 }

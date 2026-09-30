@@ -73,6 +73,11 @@ public abstract class AbstractEventToInvocationStrategy implements EventToInvoke
         anyMuted = true;
     }
 
+    /** Whether {@code target} is muted for a replay: a subclass that must answer a muted target's caller asks (#48 3). */
+    protected final boolean mutedForReplay(DataFlow target) {
+        return anyMuted && mutedForReplay.contains(target);
+    }
+
     @Override
     public void processEvent(Object event) {
         if (fineLogEnabled) {
