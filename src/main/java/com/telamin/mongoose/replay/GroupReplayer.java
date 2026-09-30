@@ -267,7 +267,7 @@ public final class GroupReplayer {
         if (recorded instanceof JournalRef ref) {
             byte[] bytes = config.journal() == null ? null : config.journal().get(ref.source(), ref.seq());
             if (bytes == null) throw new IllegalStateException("the journal holds no " + ref.source() + "#" + ref.seq());
-            return codecOf(ref.source()).decode(bytes);
+            return codecOf(ref.source()).decode(bytes.clone());    // a decoder that consumes its input cannot change the journal (G1)
         }
         if (recorded instanceof RecordedNamedEvent) return recorded;
         return InputCopy.of(recorded);

@@ -12,4 +12,19 @@ import java.io.Serializable;
  * an item only the codec could carry was refused as not Serializable. Nothing but the feed's codec reads these bytes.
  */
 @Experimental
-public record EncodedInput(String source, byte[] bytes) implements Serializable { }
+public record EncodedInput(String source, byte[] bytes) implements Serializable {
+
+    /**
+     * The bytes are the recording's OWN, copied from the codec's array (review of 8211858, G1: a codec that reuses its
+     * encode buffer rewrote a recorded input with its next item, silently).
+     */
+    public EncodedInput {
+        bytes = bytes.clone();
+    }
+
+    /** A copy, each time: a decoder that consumes its input cannot change what the next replay reads (G1). */
+    @Override
+    public byte[] bytes() {
+        return bytes.clone();
+    }
+}
