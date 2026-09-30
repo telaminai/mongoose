@@ -46,13 +46,21 @@ public class AdminCommand {
      */
     private String name;
 
-    // ---- one request's lifetime (#48 review, finding 3): QUEUED until its processor claims it, or its caller cancels ----
-    static final int QUEUED = 0, CLAIMED = 1, CANCELLED = 2;
-    private final java.util.concurrent.atomic.AtomicInteger state = new java.util.concurrent.atomic.AtomicInteger(QUEUED);
-    /** Counted down once, when the command completes or is refused: the caller's wait. */
+    // ---- ONE invocation's lifetime. Every publish is its own AdminCommand (#48 correction, N2: a template reset and
+    // re-queued itself, so a timed-out command still running completed its NEXT publish, and a cancelled queue slot was
+    // revived). One atomic phase decides everything, and no lock is held while a reply is delivered (N3):
+    //   QUEUED -> CLAIMED (its processor took it) -> COMPLETED (it finished, or was refused after the claim)
+    //   QUEUED -> CANCELLED (its caller's wait ended first: it never runs)
+    //   CLAIMED -> ABANDONED (its caller's wait ended while it ran: it may still complete; nothing more reaches the caller)
+    static final int QUEUED = 0, CLAIMED = 1, CANCELLED = 2, COMPLETED = 3, ABANDONED = 4;
+    private final java.util.concurrent.atomic.AtomicInteger phase = new java.util.concurrent.atomic.AtomicInteger(QUEUED);
+    /** Counted down once, when the command completes, is refused or is cancelled: the caller's wait. Never reset. */
     private volatile java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
-    /** The reply channel: open until the caller has its answer, then closed once, so a late reply is dropped. */
-    private boolean open = true;
+    /**
+     * A test's hold on the moment the caller's wait has ended, before it decides what that means; a no-op in the product.
+     * It lets a test make the command complete exactly then (the race the phase settles).
+     */
+    static volatile java.util.function.Consumer<AdminCommand> beforeExpiry = c -> { };
     /** How long a caller waits for its command to complete; see {@link #completionTimeoutMs()}. */
     static final long DEFAULT_COMPLETION_TIMEOUT_MS = 10_000;
 
@@ -96,6 +104,17 @@ public class AdminCommand {
      * @param adminCommand         the source command to copy function and targetQueue from
      * @param adminCommandRequest  the request providing output consumers and arguments
      */
+    /** One invocation of {@code template} with {@code args} (the command name first), replying to the template's consumers. */
+    AdminCommand(AdminCommand template, List<String> args) {
+        this.commandWithOutput = template.commandWithOutput;
+        this.targetQueue = template.targetQueue;
+        this.output = template.output;
+        this.errOutput = template.errOutput;
+        this.args = new ArrayList<>(args);
+        this.name = template.name;
+        this.signalRouted = template.signalRouted;
+    }
+
     public AdminCommand(AdminCommand adminCommand, AdminCommandRequest adminCommandRequest) {
         this.commandWithOutput = adminCommand.commandWithOutput;
         this.targetQueue = adminCommand.targetQueue;
@@ -113,53 +132,53 @@ public class AdminCommand {
      * @param adminCommandRequest the request containing command name, args and output consumers
      */
     public void publishCommand(AdminCommandRequest adminCommandRequest) {
-        AdminCommand adminCommand = new AdminCommand(this, adminCommandRequest);
-        adminCommand.publishCommand(adminCommand.args);
+        AdminCommand invocation = new AdminCommand(this, adminCommandRequest);
+        send(invocation, invocation.semaphore);                 // a request is its own invocation, admitted alone
     }
 
     /**
-     * Publish the supplied argument list to the target queue or execute directly.
+     * Publish the supplied argument list to the target queue or execute directly. Each call is its own invocation, with
+     * its own arguments, claim, completion and reply lifetime; this template only admits one caller at a time ("busy").
      *
      * @param value the command arguments including the command name as first element
      */
     public void publishCommand(List<String> value) {
+        AdminCommand invocation = new AdminCommand(this, value);
+        send(invocation, semaphore);
+    }
+
+    /** Admit, publish and await {@code invocation}, once; {@code admission} is released when its caller returns. */
+    private void send(AdminCommand invocation, Semaphore admission) {
         if (targetQueue == null) {
-            commandWithOutput.processAdminCommand(value, output, errOutput);
+            commandWithOutput.processAdminCommand(invocation.args, invocation.output, invocation.errOutput);
             return;
         }
         boolean admitted;
         try {
-            admitted = semaphore.tryAcquire(1, TimeUnit.SECONDS);
+            admitted = admission.tryAcquire(1, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new com.telamin.mongoose.exception.AdminCommandException("Interrupted while publishing admin command", e);
         }
         if (!admitted) {
-            output.accept("command is busy try again");
+            invocation.output.accept("command is busy try again");
             return;
         }
         try {
-            // each publish is a new execution: its retries share these, and a reused template starts afresh (F6)
-            executed = false;
-            state.set(QUEUED);
-            done = new java.util.concurrent.CountDownLatch(1);
-            synchronized (this) {
-                open = true;
-            }
-            args = value;
-            targetQueue.publish(this);
-            awaitOutcome();
+            targetQueue.publish(invocation);
+            invocation.awaitOutcome();
         } finally {
-            semaphore.release();
+            admission.release();                                // safe at a timeout: the running invocation is its own
         }
     }
 
     /**
-     * Wait for this command's outcome, bounded (#48 review, finding 3: the wait was unbounded, so a caller of a stopped
-     * server, or of a processor muted for a replay, waited forever, and an interrupted caller left its command to run
-     * later and reply to a channel nobody read). On timeout or interrupt, work its processor has NOT claimed is cancelled:
-     * it never runs later, and the caller is told so. Work it has claimed has started: that cannot be cancelled, so the
-     * caller is told it started and may still complete, and its reply channel is closed. Either way, once.
+     * Wait for this invocation's outcome, bounded (#48 review, finding 3). The bound's end is decided by the phase alone,
+     * never by a reply consumer (#48 correction, N3: a consumer blocked in delivery held the monitor the timeout needed).
+     * Unclaimed work is CANCELLED: it never runs later, and the caller is told. Claimed work is ABANDONED: it has started,
+     * so it is not called cancelled; the caller is told it may still complete, and no reply that has not yet begun reaches
+     * the caller. If it COMPLETED just as the wait ended, that is its outcome and nothing more is said. The caller's final
+     * message is delivered on the caller's own thread, by its own error consumer.
      */
     private void awaitOutcome() {
         long bound = completionTimeoutMs();
@@ -172,14 +191,15 @@ public class AdminCommand {
             finished = done.getCount() == 0;
         }
         if (!finished) {
+            beforeExpiry.accept(this);
             String cause = interrupted ? "its caller was interrupted" : "it did not complete within " + bound + " ms";
-            if (state.compareAndSet(QUEUED, CANCELLED)) {
-                closeWith("admin command '" + commandName() + "' was cancelled before its processor started it (" + cause
-                        + "); it will not run");
+            if (phase.compareAndSet(QUEUED, CANCELLED)) {
                 done.countDown();
-            } else if (done.getCount() != 0) {
-                closeWith("admin command '" + commandName() + "' started on its processor and had not completed (" + cause
-                        + "); it may still complete, and nothing more from it will reach this caller");
+                errOutput.accept("admin command '" + commandName() + "' was cancelled before its processor started it ("
+                        + cause + "); it will not run");
+            } else if (phase.compareAndSet(CLAIMED, ABANDONED)) {
+                errOutput.accept("admin command '" + commandName() + "' started on its processor and had not completed ("
+                        + cause + "); it may still complete, and nothing more from it will reach this caller");
             }
         }
         if (interrupted) {
@@ -195,32 +215,28 @@ public class AdminCommand {
 
     /** Claim this command for execution: false when its caller cancelled it, or it was already claimed (a retry). */
     public boolean claim() {
-        return state.compareAndSet(QUEUED, CLAIMED);
+        return phase.compareAndSet(QUEUED, CLAIMED);
     }
 
     private String commandName() {
         return name != null ? name : args == null || args.isEmpty() ? "" : args.get(0);
     }
 
-    /** A reply, while the caller still reads the channel; dropped after. */
-    private synchronized boolean reply(Consumer<Object> to, Object message) {
-        if (!open) return false;
+    /**
+     * A reply, while the caller still reads the channel (QUEUED or CLAIMED); dropped after. No lock is held while the
+     * consumer runs, so a consumer that blocks cannot hold the caller past its bound (#48 correction, N3). A delivery that
+     * has already begun when the channel closes is not retracted: it may complete after the caller's final message.
+     */
+    private boolean reply(Consumer<Object> to, Object message) {
+        int p = phase.get();
+        if (p != QUEUED && p != CLAIMED) return false;
         to.accept(message);
         return true;
     }
 
-    /** The caller's last message, and the channel closed with it: nothing after it reaches the caller. */
-    private synchronized void closeWith(String message) {
-        if (!open) return;
-        open = false;
-        errOutput.accept(message);
-    }
-
-    /** Completed: the channel closes and the caller is released. Idempotent. */
+    /** Completed (or refused after its claim): the channel closes and the caller is released. Idempotent. */
     private void complete() {
-        synchronized (this) {
-            open = false;
-        }
+        phase.compareAndSet(CLAIMED, COMPLETED);
         done.countDown();
     }
 
