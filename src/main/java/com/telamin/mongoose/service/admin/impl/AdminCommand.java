@@ -234,7 +234,7 @@ public class AdminCommand {
                     + cause + "); it will not run");
         } else if (phase.compareAndSet(CLAIMED, ABANDONED)) {
             errOutput.accept("admin command '" + commandName() + "' started on its processor and had not completed ("
-                    + cause + "); it may still complete, and nothing more from it will reach this caller");
+                    + cause + "); it may still complete: no new reply delivery will begin, and a delivery already in progress may still finish");
         }
     }
 

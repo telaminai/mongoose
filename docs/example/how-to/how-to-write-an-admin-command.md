@@ -262,8 +262,12 @@ request's `getOutput()` or `getErrOutput()`. A command that no handler replied t
 A command runs at most once, and its caller is answered, within a bound:
 
 - **Each call is its own invocation.** Its arguments, its claim, its completion and its reply channel are its own,
-  including repeated calls to one command's `publishCommand(List)`. That template admits one caller at a time: a second
-  caller while one waits is answered `command is busy try again`, and nothing runs for it.
+  including repeated calls to one command's `publishCommand(List)`.
+- **Admission depends on the overload.** `publishCommand(List)` on a registered command admits one caller at a time: a
+  second caller while one waits is answered `command is busy try again`, and nothing runs for it. The
+  `AdminCommandRequest` overload, which `processAdminCommandRequest` uses, admits each request alone, so concurrent
+  requests for one command queue and each is answered. A command with no queue (registered outside a processor) runs
+  synchronously on the caller's thread, and the completion bound below does not apply to it.
 - **The wait is bounded.** A caller waits at most `mongoose.admin.completionTimeoutMs` (a system property; default
   10 s) for its command to complete. The bound covers waiting for the command. It does not cover delivery through the
   caller's own reply consumers.
