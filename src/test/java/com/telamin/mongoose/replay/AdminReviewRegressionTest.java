@@ -48,11 +48,11 @@ class AdminReviewRegressionTest {
     static final String PROCESSOR = "cmds";
 
     /** The events that hold the agent thread, and the downstream event a command's handler raises. */
-    public record Block(String name) { }
+    public record Block(String name) implements java.io.Serializable { }
 
-    public record Downstream(String name) { }
+    public record Downstream(String name) implements java.io.Serializable { }
 
-    public record Marker(String name) { }
+    public record Marker(String name) implements java.io.Serializable { }
 
     /** Installs a clock strategy on the agent thread, after boot (the server sets the processor's clock at boot). */
     public record InstallClock(com.telamin.fluxtion.runtime.time.ClockStrategy strategy) { }
@@ -66,6 +66,12 @@ class AdminReviewRegressionTest {
         /** Held by DEMO.hold's handler, so its command is claimed and running. */
         final CountDownLatch holdStarted = new CountDownLatch(1), releaseHold = new CountDownLatch(1);
         final List<String> markers = new CopyOnWriteArrayList<>();
+        /** DEMO.slow: each invocation's argument, in order; an argument in {@code slowHeld} is held until released. */
+        final List<String> slowRuns = new CopyOnWriteArrayList<>();
+        final Map<String, CountDownLatch> slowStarted = new java.util.concurrent.ConcurrentHashMap<>(),
+                slowHeld = new java.util.concurrent.ConcurrentHashMap<>();
+        /** DEMO.async: the reply sent from another thread, after the command completed, once this is released. */
+        final CountDownLatch releaseAsync = new CountDownLatch(1), asyncReplied = new CountDownLatch(1);
         private MessageSink<String> sink;
 
         @ServiceRegistered
@@ -78,6 +84,16 @@ class AdminReviewRegressionTest {
                 lambdaRuns.incrementAndGet();
                 out.accept("DEMO-lambda-ok");
             });
+            registry.registerCommand("DEMO.slow", (args, out, err) -> {
+                String arg = args.size() > 1 ? args.get(1) : "";
+                slowRuns.add(arg);
+                slowStarted.computeIfAbsent(arg, a -> new CountDownLatch(1)).countDown();
+                CountDownLatch held = slowHeld.get(arg);
+                if (held != null) await(held);
+                out.accept("DEMO-reply-" + arg);
+            });
+            registry.registerSignalCommand("DEMO.errReply");
+            registry.registerSignalCommand("DEMO.async");
         }
 
         @ServiceRegistered
@@ -124,6 +140,16 @@ class AdminReviewRegressionTest {
                         replyThenFailCalls.incrementAndGet();
                         request.getOutput().accept("DEMO-replied");
                         getContext().getParentDataFlow().onEvent(new Downstream("DEMO.replyThenFail"));   // queued: same cycle
+                    }
+                    case "admin:DEMO.errReply" -> request.getErrOutput().accept("DEMO-err");
+                    case "admin:DEMO.async" -> {
+                        Thread later = new Thread(() -> {             // replies after the command has completed
+                            await(releaseAsync);
+                            request.getOutput().accept("DEMO-late");
+                            asyncReplied.countDown();
+                        }, "DEMO-async-reply");
+                        later.setDaemon(true);
+                        later.start();
                     }
                     case "admin:DEMO.hold" -> {
                         holdCalls.incrementAndGet();
