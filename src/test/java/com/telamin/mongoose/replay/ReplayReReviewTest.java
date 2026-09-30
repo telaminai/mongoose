@@ -286,9 +286,18 @@ class ReplayReReviewTest {
     @Test
     void n2_aNamedEventSubclass_isNeverReplayedAsTheBaseClass_csvStore(@TempDir Path dir) throws Exception {
         Path file = dir.resolve("store.csv");
-        try (CsvReplayStore into = new CsvReplayStore(file, new JavaSerializationCodec());
-             CsvReplayStore from = new CsvReplayStore(file, new JavaSerializationCodec())) {
-            aNamedSubclassIsNeverFlattened(into, () -> from);
+        // the replay's store is opened once the recording is written (the first run opened both at once, so the replay
+        // read an empty file: completed, no stop, nothing replayed - the fixture's error, not a result)
+        java.util.List<CsvReplayStore> opened = new ArrayList<>();
+        try (CsvReplayStore into = new CsvReplayStore(file, new JavaSerializationCodec())) {
+            aNamedSubclassIsNeverFlattened(into, () -> {
+                into.close();
+                CsvReplayStore from = new CsvReplayStore(file, new JavaSerializationCodec());
+                opened.add(from);
+                return from;
+            });
+        } finally {
+            for (CsvReplayStore s : opened) s.close();
         }
     }
 
