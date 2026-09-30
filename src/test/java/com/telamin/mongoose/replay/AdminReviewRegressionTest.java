@@ -169,6 +169,17 @@ class AdminReviewRegressionTest {
             assertTrue(node.markers.contains(name), "the agent handled the marker " + name);
         }
 
+        /**
+         * Everything queued on {@code command}'s own queue before this has been dispatched: a second request for the same
+         * command, answered. A marker on another feed is NOT such a barrier: nothing orders two queues (the first version of
+         * two tests used one, and a control that let a cancelled command run survived it).
+         */
+        List<Object> behindOnItsQueue(String command) {
+            List<Object> replies = new CopyOnWriteArrayList<>();
+            admin.processAdminCommandRequest(request(command, replies));
+            return replies;
+        }
+
         @Override
         public void close() {
             node.releaseAgent.countDown();
@@ -380,8 +391,9 @@ class AdminReviewRegressionTest {
             assertTrue(c.finishedWithin(10), "the caller is answered within the bound, not left waiting");
             assertTrue(c.replies().stream().anyMatch(r -> r.toString().contains("cancelled")), "told it was cancelled: " + c.replies());
             s.node().releaseAgent.countDown();
-            s.drained("after-bound");
-            assertEquals(0, s.node().okCalls.get(), "a command cancelled at the bound never runs later");
+            System.clearProperty("mongoose.admin.completionTimeoutMs");
+            assertEquals(List.of("DEMO-ok"), s.behindOnItsQueue("DEMO.ok"), "the barrier: queued behind it, and answered");
+            assertEquals(1, s.node().okCalls.get(), "only the barrier ran: a command cancelled at the bound never runs later");
         }
     }
 
@@ -395,8 +407,8 @@ class AdminReviewRegressionTest {
             c.thread().interrupt();
             assertTrue(c.finishedWithin(10), "the interrupted caller returns");
             s.node().releaseAgent.countDown();
-            s.drained("after-release");                         // the agent has handled everything queued before it
-            assertEquals(0, s.node().okCalls.get(), "a command cancelled before it was claimed never runs later");
+            assertEquals(List.of("DEMO-ok"), s.behindOnItsQueue("DEMO.ok"), "the barrier: queued behind it, and answered");
+            assertEquals(1, s.node().okCalls.get(), "only the barrier ran: a command cancelled before it was claimed never runs later");
             assertFalse(c.replies().contains("DEMO-ok"), "and no late reply reaches the departed caller: " + c.replies());
             assertTrue(c.replies().stream().anyMatch(r -> r.toString().startsWith("ERR ") && r.toString().contains("cancelled")),
                     "the caller was told it was cancelled: " + c.replies());
@@ -444,7 +456,7 @@ class AdminReviewRegressionTest {
             template.setErrOutput(o -> replies.add("ERR " + o));
             template.publishCommand(List.of("DEMO.lambda"));
             template.publishCommand(List.of("DEMO.lambda"));
-            assertEquals(2, s.node().lambdaRuns.get(), "each publish is its own execution: " + replies);
+            assertEquals(2, s.node().lambdaRuns.get(), "each publish is its own execution (" + replies.size() + " replies)");
         }
     }
 }
