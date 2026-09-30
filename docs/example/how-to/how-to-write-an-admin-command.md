@@ -226,9 +226,12 @@ On a processor built with **fluxtion runtime 1.1.0 or later**, the invoker runs 
 - nothing downstream reacts to the command itself. A command that needs the graph to react raises an event, as
   above, or is signal-routed (below).
 
-A processor generated before fluxtion runtime 1.1.0 has no `runInEventCycle` implementation, and one whose override
-refuses (a generated processor may disable the path) does not run it either. There the invoker
-brackets the function with the processor's own audit calls. The command still gets its own audit record, but an event
+A processor generated before fluxtion runtime 1.1.0 has no `runInEventCycle` implementation, and a processor may
+declare `AdminCommandsBracketed` to have its lambda commands bracketed instead. For those, the invoker
+brackets the function with the processor's own audit calls. The route is decided before the command is invoked, from
+what the processor declares. A processor that implements `runInEventCycle` and does not declare it always gets the
+event cycle: if the cycle fails while setting up (its clock, a buffered calculation), the command is refused by name and
+never run by the weaker route. An override that refuses without declaring is treated the same way. The command still gets its own audit record, but an event
 it raises is dispatched at once, inside the command. Regenerating the processor with a current Fluxtion generator
 gives it the event-cycle path.
 
@@ -254,19 +257,41 @@ audited, and the state it changes propagates to downstream nodes as any event's 
 request's `getOutput()` or `getErrOutput()`. A command that no handler replied to is answered with an error
 (`... no handler replied`). Use this form when the command should drive the graph, not just act on one node.
 
-### When a command cannot run
+### When a command cannot run, or fails
 
-A caller is always answered, and a command runs at most once:
+A command runs at most once, and its caller is answered, within a bound:
 
-- If the command cannot run at all - for example its processor was left mid-cycle by a node that threw, and refuses
-  the cycle - the caller is answered with an error (`admin command '...' did not run: ...`) and released, and the
+- **The wait is bounded.** A caller waits at most `mongoose.admin.completionTimeoutMs` (a system property; default
+  10 s) for its command to complete.
+- **Not yet started when the wait ends** (the bound passed, or the caller was interrupted): the command is cancelled.
+  It never runs later, and the caller is told so (`... was cancelled before its processor started it ...; it will not
+  run`).
+- **Already started when the wait ends:** it cannot be cancelled. The caller is told it started and may still
+  complete, and nothing more from it reaches the caller.
+- **A processor replaying:** a live command for a processor muted for a replay is refused at once, by name.
+- **The processor cannot run the command** (for example it was left mid-cycle by a node that threw, or its event cycle
+  failed while setting up): the caller is answered with an error (`admin command '...' did not run: ...`), and the
   command is not run. The failure is also logged and reported (`ErrorReporting`, WARNING), so an operator sees a
   processor that cannot run commands, not only the person who typed one.
-- If the command ran and something failed after it (an event it raised threw while its cycle drained), the caller
-  has already had the command's own reply. The failure is reported as any event's is, and the agent's retry does not
-  run the command again.
+- **The command fails** (a signal handler throws, or a later event in its cycle does, even after the handler replied):
+  the caller is told the failure. It is reported as any event's failure is. A recording marks the input failed, and a
+  replay stops there rather than run it again. The agent's retry does not run the command again.
+- **A command's name is its registered name.** Surrounding whitespace in a request is ignored, and the same handler
+  answers.
 
-Tests that show both:
+Limits, stated rather than hidden:
+
+- **A stopped server is not refused at once.** The server does not stop its admin service, so nothing tells a command
+  the server has stopped. Its caller is answered at the bound, and the command will not run.
+- **An unknown command name is not answered.** A request for a name that is not registered is logged, and its caller
+  hears nothing.
+
+Tests that show them:
+
+- [AdminReviewRegressionTest.java]({{source_root}}/test/java/com/telamin/mongoose/replay/AdminReviewRegressionTest.java):
+  a failing signal command recorded as failed and not replayed; a cycle that fails while setting up refusing its
+  command; the bounded wait, cancellation before and after a command starts, and a replaying processor's refusal; a
+  name with surrounding whitespace
 
 - [RunInEventCycleAdminTest.java]({{source_root}}/test/java/com/telamin/mongoose/replay/RunInEventCycleAdminTest.java):
   a function's raised event runs after it, as its own cycle

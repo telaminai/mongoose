@@ -279,6 +279,56 @@ cost: each lambda command must be rewritten this way to gain the cycle.
 **One detail:** a `Signal` record's `eventTime` is `-1`, because `Signal` is a Fluxtion `Event` with no producer time
 (`logTime` is correct). The analyser's time-order checks read `eventTime`.
 
+### 3d.1 The independent review of #48 at f8deed60 (review 5910486472)
+
+Regressions (`AdminReviewRegressionTest`, real servers) were committed with predictions before they ran (`2d45bde`),
+then run on f8deed60's code; results in the commit messages and `replay-evidence/admin-review-f8deed60/`.
+
+| # | finding | pre-fix result on f8deed60 | disposition |
+|---|---|---|---|
+| 1 | a throwing signal command is recorded and replayed as a success | RECORD stored `AdminInvoked` (a handler that throws, and a cycle that fails after the handler replied); the replay ran the handler again, `complete` with no stop | fixed (`ee6254c`): the caller is answered and released once, then the failure is rethrown to the dispatch: reported, recorded `Failed` (D4), the replay stops before running it again, the retry is a no-op |
+| 2 | an internal cycle failure is taken for a disabled cycle | an unmodified `DefaultEventProcessor` whose clock failed inside `runInEventCycle`'s setup ran the command by the bracket and answered success | fixed (`7d92726`): the route is decided before invoking, from a declaration (`AdminCommandsBracketed`) or an inherited default; anything failing before the command runs refuses it by name |
+| 3 | the caller is not always answered; an interrupted caller's command still runs | caller left waiting (stopped server; replay-muted processor; a command never claimed); an interrupted caller's queued command ran later and replied to it; a started command's late reply reached its departed caller | fixed (`ee6254c`, `e1ae20f`): per request QUEUED / CLAIMED / CANCELLED, a bounded wait (`mongoose.admin.completionTimeoutMs`, 10 s), cancellation only of unclaimed work (never run later), an honest "started" answer otherwise, the reply channel closed once, a muted processor refused at once |
+| 4 | lookup trims the name, the signal does not | `" DEMO.ok "` answered "no handler replied" | fixed (`ee6254c`): a command's registered name is bound once and used for routing and identity |
+| nit | head-specific counts stale | the PR body said 266 tests and 42 controls; f8deed60 ran 270 / 0 / 0 / 9 across 84 reports, and its gate held 44 controls (34 named assertions, 10 expected-message timeout or error) | corrected in the PR body, labelled by revision |
+
+**Owner decisions** raised, not taken:
+- **An override that refuses the cycle without declaring `AdminCommandsBracketed`** was bracketed at f8deed60 and is
+  refused now. Fluxtion 1.1.0 has no capability query, so the existing API cannot tell a deliberate disable from a
+  failure.
+- **An immediate "the server is stopped" refusal** needs `LifecycleManager.stop` to stop `LifeCycleEventSource`
+  services (it skips them). Today a stopped server's command is cancelled at the bound.
+- **The completion bound's default (10 s).** It caps what used to be an unbounded wait, so a legitimately longer
+  command's caller now gets the "started" answer.
+
+Misses, recorded:
+- Finding 2's first fixture set the failing clock in a constructor; the server replaces the clock at boot, so it never
+  failed. Its pre-fix FAILURE (the command ran) was the command running normally. Corrected (`48edb46`) and re-run: the
+  clock fails inside the setup, and the command still ran pre-fix.
+- `ee6254c` claimed a stopped server refuses at once (its message was amended before push, so `e1ae20f`, which corrects it, cites its earlier hash `7e78802`). The flag it relied on is never set on server stop, and tightening
+  the test to require the named reason exposed it. The dead flag was removed (`e1ae20f`).
+- Two finding-3 tests used a marker on another feed as a barrier. Nothing orders two queues, and a control that let a
+  cancelled command run survived. They now use a second request queued behind the first on its own queue (`97a3c22`),
+  and still fail on f8deed60's code.
+- An unknown command name is still not answered (older than #48, stated in the how-to).
+
+**Stack integration with #47.** #48 is stacked on #47 at the merge that f8deed60 carries, NOT on #47's current head
+(`cd52628`), which has moved twice since: entries with route and instant, `ReplayRouting.routeFor(source, route, flow)`,
+the N1-N7 round (`GroupReplayer.attach` order, `InputCopy`, `RecordedNamedEvent`, the default
+`processEventRecording`), and a controls list of 59. Integration must keep both sides' recorder and replayer changes,
+merge the two controls lists by name rather than take either wholesale (anchors move on both sides), and re-run both
+sides' regressions and the gate on the combined tree.
+
+**Controls.** Nine were added (`adm1` x2, `adm2`, `adm3` x4, `adm4`, `F6`), one per protection. Two earlier ones
+moved with the code: B2's retry guard is now the claim; F3 protected the undeclared fallback finding 2 removed and now
+protects the declared route. The first runs caught 9 of 11 (the misses above), then 3 of 3 re-run. The full gate at
+this head: **53 of 53 detected, 43 by a named assertion and 10 by an await running out or an error carrying the
+mutation's expected message** (the ten the review listed; all nine new controls are named-assertion detections).
+Requested and detected names match (53, no duplicates). The harness now restores each file with `cat f.orig > f`,
+checks its SHA-256, and recompiles from clean. `mvn -q test`: 282 / 0 / 0 / 9 across 85 reports, no orphans; after the
+controls, `mvn -q clean test`: the same. The ordinary dispatch path did not change (a new protected accessor on
+`AbstractEventToInvocationStrategy`, and an override in the admin invoker only), so `DispatchPathJmh` was not re-run.
+
 ## 3e. One processor, several in one agent, several agents: what holds, and what is needed
 
 **One processor: supported (R1-R7).** Everything Mongoose delivers to it (feeds, typed service calls, timers, admin

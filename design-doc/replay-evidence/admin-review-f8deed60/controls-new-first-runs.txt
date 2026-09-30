@@ -1,0 +1,16 @@
+B2-a-retried-command-does-not-run-again caught restored | the command ran once, whatever the retry policy does ==> expected: <1> but was: <3>
+F3-a-declared-processor-is-bracketed caught restored | expected: <[plain ok]> but was: <[ERR admin command 'p.plain' did not run: its processor could not run it in an event cycle: java.lang.UnsupportedOperationExcep
+adm1-a-signal-failure-reaches-the-dispatch caught restored | a failed command is a failed input (D4), not an invocation: [AdminInvoked[command=DEMO.throw, args=[], reads=[1790769984104]]] ==> Unexpected type, expected: <c
+adm1-a-failure-after-the-reply-reaches-it-too caught restored | recorded as failed: [AdminInvoked[command=DEMO.replyThenFail, args=[], reads=[1790769988210, 1790769988210]]] ==> Unexpected type, expected: <com.telamin.mongoo
+adm2-a-failing-cycle-never-falls-back caught restored | a command whose cycle failed to start is not run by another route ==> expected: <0> but was: <1>
+adm3-cancelled-work-never-runs survived restored |
+adm3-the-wait-is-bounded caught restored | the caller is answered within the bound, not left waiting ==> expected: <true> but was: <false>
+adm3-a-muted-processor-is-refused caught restored | and the live command did not reach the replayed processor ==> expected: <0> but was: <1>
+adm3-a-late-reply-is-dropped caught restored | its late reply did not reach the departed caller: [ERR admin command 'DEMO.hold' started on its processor and had not completed (its caller was interrupted); it
+adm4-the-registered-name-is-the-identity caught restored | the same handler answers ==> expected: <[DEMO-ok]> but was: <[ERR admin command ' DEMO.ok ' was delivered to its processor, and no handler replied during the ca
+F6-a-reused-template-starts-afresh caught-by-timeout restored | each publish is its own execution: [DEMO-lambda-ok, ERR admin command 'DEMO.lambda' started on its processor and had not completed (it did not complete within 1
+9 of 11 caught by the named assertion; 0 by an await or error carrying the mutation's expected message; 2 NOT detected ['adm3-cancelled-work-never-runs', 'F6-a-reused-template-starts-afresh']
+adm3-cancelled-work-never-runs caught restored | only the barrier ran: a command cancelled before it was claimed never runs later ==> expected: <1> but was: <2>
+adm3-the-wait-is-bounded caught restored | the caller is answered within the bound, not left waiting ==> expected: <true> but was: <false>
+F6-a-reused-template-starts-afresh caught restored | each publish is its own execution (2 replies) ==> expected: <2> but was: <1>
+3 of 3 caught by the named assertion; 0 by an await or error carrying the mutation's expected message; 0 NOT detected []
