@@ -234,7 +234,9 @@ public class EventToQueuePublisher<T> {
         if (journal == null || journalBroken != null) return;
         try {
             // encoded before dispatch, so before a pooled item can return to its pool
-            journal.append(name, seq, journalCodec.encode(mappedItem));
+            // a copy: the journal owns what it holds, so a codec that reuses its buffer cannot rewrite a journalled item
+            // with the feed's next one (the byte-ownership contract of EventCodec; local review of d2c6428)
+            journal.append(name, seq, journalCodec.encode(mappedItem).clone());
         } catch (Throwable failed) {
             // never out of publish: from a feed agent it would reach the default error handler, which exits the process
             // (#47 re-review B). The feed stops journalling; its items still carry their numbers, so a replay of the
