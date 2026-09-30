@@ -39,18 +39,18 @@ public final class GroupReplayer {
         final String name;
         final DataFlow flow;
         final ReplayClock clock;
-        final List<ReplayEntry> entries;
+        /** Empty until the store is read at attach; stays empty when setup failed (the cursor is then stopped). */
+        List<ReplayEntry> entries = List.of();
         int next;
         String stopped;
         /** While the current entry cannot be delivered yet: since when (System.nanoTime) and why. */
         long waitingSince;
         String waitingFor;
 
-        Cursor(String name, DataFlow flow, ReplayClock clock, List<ReplayEntry> entries) {
+        Cursor(String name, DataFlow flow, ReplayClock clock) {
             this.name = name;
             this.flow = flow;
             this.clock = clock;
-            this.entries = entries;
         }
 
         boolean done() {
@@ -68,28 +68,37 @@ public final class GroupReplayer {
         return scheduler;
     }
 
-    /** A processor joins the group: when it is replayed, its clock is pinned by the replay. */
+    /**
+     * A processor joins the group: when it is replayed, its clock is pinned by the replay. Runs on the group's agent
+     * thread, so NOTHING here may throw out: the agent's default error handler ends the process. The cursor is
+     * registered FIRST, so whatever fails after it - installing the replay clock, reading the store - leaves the processor
+     * replayed (its live inputs muted, its sinks captured) and stopped with the reason (re-review N1: a processor that
+     * refused the ReplayClock escaped before its cursor existed, unmuted, and a real server exited 255).
+     */
     public void attach(String name, DataFlow flow) {
         if (!config.covers(name)) return;
         ReplayClock clock = new ReplayClock();
-        flow.setClockStrategy(clock);
-        scheduler.replay(flow);
-        // on the group's agent thread: a store that cannot be read stops this processor's replay, by name, instead of
-        // reaching the agent's error handler (which ends the process). The processor still has its cursor, so it stays
-        // replayed: its live inputs are muted, and it receives nothing (review of 90f0d9b, finding 1)
-        List<ReplayEntry> entries;
-        String unreadable = null;
+        Cursor cursor = new Cursor(name, flow, clock);
+        cursors.add(cursor);
+        scheduler.replay(flow);                          // its timers are the replay's, whatever follows
+        String failed = null;
         try {
-            entries = config.store().entries(name);
+            flow.setClockStrategy(clock);
         } catch (VirtualMachineError e) {
             throw e;
         } catch (Throwable t) {
-            entries = List.of();
-            unreadable = "the replay store could not be read: " + t;
+            failed = "the replay clock could not be installed: " + t;
         }
-        Cursor cursor = new Cursor(name, flow, clock, entries);
-        cursors.add(cursor);
-        if (unreadable != null) stop(cursor, unreadable);
+        if (failed == null) {
+            try {
+                cursor.entries = config.store().entries(name);
+            } catch (VirtualMachineError e) {
+                throw e;
+            } catch (Throwable t) {
+                failed = "the replay store could not be read: " + t;
+            }
+        }
+        if (failed != null) stop(cursor, failed);
     }
 
     /**
