@@ -15,8 +15,11 @@ import java.io.Serializable;
  * part of its state a handler reads. Serialising successfully does not show that. So:
  * <ul>
  *   <li>REFUSED, by name: an input whose own class, or a superclass outside {@code java.*}, declares a non-static
- *       {@code transient} field. Its serial form drops that field by definition, and a replay would give the handler the
- *       field's default (a handler reading 17 live read 0 on replay).</li>
+ *       {@code transient} field. A CONSERVATIVE eligibility rule, not proof that state is lost: default serialisation
+ *       omits such a field (a handler reading 17 live read 0 on replay), and while a custom {@code writeObject} can carry
+ *       it, nothing here can tell which, so such an input is refused rather than guessed at.</li>
+ *   <li>A JOURNALLED input never passes through here: it is recorded through its feed's own codec (by index, or as that
+ *       codec's bytes) and read back through it (review of cd52628, F1).</li>
  *   <li>NOT checked, and the event author's responsibility: state held in nested objects, custom {@code writeObject} /
  *       {@code writeReplace} / {@code Externalizable} forms, and anything else the serial form leaves out. No automatic
  *       check can establish that two objects are equivalent to the handler that reads them.</li>
