@@ -74,6 +74,11 @@ CONTROLS=[
  ('r3-F2-an-integer-filter-is-set-back', R+'RecordedNamedEvent.java', '        if (filterId != event.filterId()) {', '        if (false) {', 'ReplayRound3ReviewTest#f2_anIntegerFilterOnTheExactBaseClass_survives_memory'),
  ('r3-F3-the-recording-clock-install-is-contained', R+'GroupRecorder.java', '        } catch (Throwable t) {\n            String why = "the recording could not start', '        } catch (Error t) {\n            String why = "the recording could not start', 'ReplayRound3ReviewTest#f3_aRecordingClockThatCannotBeInstalled_neverEndsARealServer_andTheRecordingSaysSo'),
  ('r3-F4-a-strategy-naming-no-processor-fails-the-recording', M+'dutycycle/EventQueueToEventProcessorAgent.java', '                if (targets.isEmpty() && !subscribed.isEmpty()) {', '                if (false) {', 'ReplayRound3ReviewTest#f4_aStrategyThatNamesNoProcessor_isNeverRecordedAsAnEmptyRecording'),
+ # the targeted re-review of 8211858 (G1, G2); each detected by a named assertion
+ ('r4-G1-the-recorded-bytes-are-owned', R+'EncodedInput.java', '        bytes = bytes.clone();\n', '', 'ReplayRound4ReviewTest#g1_aReusedEncoderBuffer_neverRewritesARecordedInput'),
+ ('r4-G1-a-recorded-input-is-read-as-a-copy', R+'EncodedInput.java', '        return bytes.clone();', '        return bytes;', 'ReplayRound4ReviewTest#g1_aDecoderThatConsumesItsInput_neverRewritesTheNextReplay'),
+ ('r4-G1-an-indexed-input-is-decoded-from-a-copy', R+'GroupReplayer.java', ".decode(bytes.clone());   // from a copy: G1's contract", '.decode(bytes);', 'ReplayRound4ReviewTest#g1_anIndexedInputsDecoderThatConsumesItsInput_neverRewritesTheJournalForTheNextReplay'),
+ ('r4-G2-only-an-installed-clock-is-pinned', R+'GroupRecorder.java', '        if (r == null || !r.clockInstalled) return false;', '        if (r == null) return false;', 'ReplayRound4ReviewTest#g2_aFailedRecording_leavesALiveReplayRecordsTimeAsItIsOff'),
 ]
 only=set(sys.argv[1:])
 results=[]
