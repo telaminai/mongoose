@@ -36,6 +36,8 @@ public final class GroupRecorder {
         boolean received;
         Object input;
         String uncopyable;
+        /** A journalled input this processor received in a state the journal does not hold: recorded inline (N3). */
+        boolean notAsJournalled;
 
         Recorded(String name, RecordingClock clock) {
             this.name = name;
@@ -68,12 +70,16 @@ public final class GroupRecorder {
         return true;
     }
 
-    /** Whether the current dispatch's input is journalled, so recorded by index and never copied. */
+    /** Whether the current dispatch's input is journalled, so recorded by index while it is what the journal holds. */
     private boolean indexedDispatch;
+    private String dispatchSource;
+    private long dispatchSeq;
 
     /** Just before a queue dispatches an input of {@code source} (numbered {@code seq}, or -1) to {@code targets}. */
     public void beforeDispatch(String source, long seq, Collection<DataFlow> targets) {
         indexedDispatch = seq >= 0 && config.journalled(source);
+        dispatchSource = source;
+        dispatchSeq = seq;
         for (DataFlow t : targets) {
             Recorded r = byFlow.get(t);
             if (r == null) continue;
@@ -81,6 +87,7 @@ public final class GroupRecorder {
             r.received = false;
             r.input = null;
             r.uncopyable = null;
+            r.notAsJournalled = false;
         }
     }
 
@@ -93,14 +100,45 @@ public final class GroupRecorder {
         Recorded r = byFlow.get(target);
         if (r == null || r.broken != null) return;
         r.received = true;
-        if (indexedDispatch || event instanceof AdminCommand) {
-            r.input = event;                            // recorded by index, or by name and arguments: not copied
+        if (event instanceof AdminCommand) {
+            r.input = event;                            // recorded by name and arguments: not copied
+            return;
+        }
+        if (indexedDispatch) {
+            asJournalled(r, event);
             return;
         }
         try {
             r.input = InputCopy.of(event);
         } catch (Throwable t) {
             r.uncopyable = String.valueOf(t);
+        }
+    }
+
+    /**
+     * A journalled input is an index only while this processor receives what the journal holds. With fan-out an earlier
+     * processor can change the published object before a later one is given it; both entries then named the one journal
+     * item, and the later processor replayed the earlier one's input (re-review N3). So the input as THIS processor
+     * receives it is encoded with the feed's own codec and compared with the journal's bytes: equal, it is recorded by
+     * index; different, it is recorded inline, as the codec's copy of what it received. A journal that holds no such item
+     * (its append failed: see EventToQueuePublisher) keeps the index, so a replay stops at the gap as before.
+     */
+    private void asJournalled(Recorded r, Object event) {
+        r.input = event;
+        try {
+            EventCodec codec = config.journalledFeeds().get(dispatchSource);
+            byte[] held = config.journal().get(dispatchSource, dispatchSeq);
+            if (held == null) return;
+            boolean named = event instanceof com.telamin.fluxtion.runtime.event.NamedFeedEvent<?>;
+            Object item = named ? ((com.telamin.fluxtion.runtime.event.NamedFeedEvent<?>) event).data() : event;
+            byte[] now = codec.encode(item);
+            if (java.util.Arrays.equals(now, held)) return;
+            Object copy = codec.decode(now);
+            r.notAsJournalled = true;
+            r.input = named ? RecordedNamedEvent.of((com.telamin.fluxtion.runtime.event.NamedFeedEvent<?>) event, copy) : copy;
+        } catch (Throwable t) {
+            r.notAsJournalled = true;
+            r.uncopyable = "a journalled input could not be compared with the journal: " + t;
         }
     }
 
@@ -122,7 +160,7 @@ public final class GroupRecorder {
             if (event instanceof AdminCommand admin && admin.getArgs() != null && !admin.getArgs().isEmpty()) {
                 List<String> args = admin.getArgs();
                 entry = new ReplayEntry.AdminInvoked(args.get(0), List.copyOf(args.subList(1, args.size())), instant, reads);
-            } else if (seq >= 0 && config.journalled(source)) {
+            } else if (seq >= 0 && config.journalled(source) && !r.notAsJournalled) {
                 entry = new ReplayEntry.Indexed(source, route, seq, instant, reads);
             } else if (r.uncopyable != null) {
                 entry = new ReplayEntry.Failed(source, "the input could not be recorded as received, so it cannot be "
