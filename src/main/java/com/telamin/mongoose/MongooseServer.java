@@ -18,6 +18,11 @@ import com.telamin.mongoose.dutycycle.ComposingServiceAgent;
 import com.telamin.mongoose.dutycycle.NamedEventProcessor;
 import com.telamin.mongoose.dutycycle.ServiceAgent;
 import com.telamin.mongoose.internal.*;
+import com.telamin.mongoose.replay.GroupRecorder;
+import com.telamin.mongoose.replay.GroupReplayer;
+import com.telamin.mongoose.replay.RecordingScheduler;
+import com.telamin.mongoose.replay.ReplayConfig;
+import com.telamin.mongoose.replay.ReplayScheduler;
 import com.telamin.mongoose.service.CallBackType;
 import com.telamin.mongoose.service.EventFlowService;
 import com.telamin.mongoose.service.EventSource;
@@ -160,6 +165,8 @@ public class MongooseServer implements MongooseServerController {
      * @param mongooseServerConfig application configuration used for thread, service, and event-flow setup
      */
     public MongooseServer(MongooseServerConfig mongooseServerConfig) {
+        refuseRecordingOverARecording(mongooseServerConfig == null ? null : mongooseServerConfig.getReplay());
+        flowManager.setReplayConfig(mongooseServerConfig == null ? null : mongooseServerConfig.getReplay());
         this.mongooseServerConfig = mongooseServerConfig;
 
         // Counters service — register FIRST, before any other service or
@@ -709,6 +716,29 @@ public class MongooseServer implements MongooseServerController {
     }
 
     /**
+     * RECORD mode needs an empty journal and store: a run numbers its items from 1 again, so a second recording into
+     * the same files would overwrite the first one's items and append after its entries, and replay one as the other.
+     */
+    private static void refuseRecordingOverARecording(ReplayConfig replay) {
+        if (replay == null || replay.mode() != ReplayConfig.Mode.RECORD) return;
+        if (replay.journal() != null && replay.journal().holdsRecording()) {
+            throw new IllegalStateException("replay RECORD: the journal already holds a recording (or a torn one); record into an empty one");
+        }
+        if (replay.store().holdsRecording()) {
+            throw new IllegalStateException("replay RECORD: the store already holds a recording (or a torn one, or one in an earlier format); record into an empty one");
+        }
+    }
+
+    /** REPLAY mode: each group's replay driver, by group name (for status and tests). */
+    public java.util.Map<String, GroupReplayer> replayers() {
+        java.util.Map<String, GroupReplayer> out = new java.util.HashMap<>();
+        composingEventProcessorAgents.forEach((name, runner) -> {
+            if (runner.group().replayer() != null) out.put(name, runner.group().replayer());
+        });
+        return out;
+    }
+
+    /**
      * Add a named event processor to a processor group, creating the group on demand.
      * <p>
      * Each processor group executes on its own {@code AgentRunner} with a configurable
@@ -737,7 +767,22 @@ public class MongooseServer implements MongooseServerController {
                 groupName,
                 ket -> {
                     //build a subscriber group
-                    ComposingEventProcessorAgent group = new ComposingEventProcessorAgent(groupName, flowManager, this, new DeadWheelScheduler(), registeredServices);
+                    // replay (spec-replay-recording R4): the group's scheduler follows the replay mode
+                    ReplayConfig replayCfg = flowManager.getReplayConfig();
+                    ComposingEventProcessorAgent group;
+                    switch (replayCfg.mode()) {
+                        case RECORD -> {
+                            var recorder = new GroupRecorder(replayCfg, replayCfg.clock());
+                            group = new ComposingEventProcessorAgent(groupName, flowManager, this,
+                                    new RecordingScheduler(recorder), registeredServices, recorder, null);
+                        }
+                        case REPLAY -> {
+                            var scheduler = new ReplayScheduler();
+                            group = new ComposingEventProcessorAgent(groupName, flowManager, this, scheduler, registeredServices,
+                                    null, routing -> new GroupReplayer(replayCfg, routing, scheduler));
+                        }
+                        default -> group = new ComposingEventProcessorAgent(groupName, flowManager, this, new DeadWheelScheduler(), registeredServices);
+                    }
                     //threading to be configured by file
                     AtomicCounter errorCounter = new AtomicCounter(new UnsafeBuffer(new byte[4096]), 0);
                     //run subscriber group
@@ -770,7 +815,9 @@ public class MongooseServer implements MongooseServerController {
             // Hand the capture service the listener this server configured, so it can fan out to it
             // and restore it on stop. Taken here, at attach: logRecordListener is a static that each
             // bootServer call overwrites, so reading it later would restore another server's listener.
-            auditCaptureService.attach(eventProcessor, processorName, logRecordListener);
+            // mongoose#46: the capture service changes this processor's audit sink on the group's own thread
+            auditCaptureService.attach(eventProcessor, processorName, logRecordListener,
+                    composingEventProcessorAgentRunner.group()::runOnAgentThread);
             if (auditCaptureConfig != null && auditCaptureConfig.getAutoStart() != null
                     && auditCaptureConfig.getAutoStart().contains(processorName)) {
                 auditCaptureService.start(processorName);

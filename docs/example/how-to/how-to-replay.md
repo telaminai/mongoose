@@ -3,6 +3,9 @@
 This guide shows how to replay events with an explicit wall-clock time so that your handlers see a deterministic time 
 via `getContext().getClock()` during processing.
 
+To capture what a processor received in a live run and replay that run itself, see
+[Record and replay a processor](how-to-record-and-replay-a-processor.md).
+
 Key points:
 
 - Publish a `ReplayRecord` which contains both the original event payload and a `wallClockTime` value to apply when processing.

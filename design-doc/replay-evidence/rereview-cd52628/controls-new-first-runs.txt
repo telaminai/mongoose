@@ -1,0 +1,15 @@
+ir-2-a-replay-copies-its-input-again caught restored | replay 2 gives what was received ==> expected: <[value=0]> but was: <[value=1]>
+ir-3-a-named-event-is-rebuilt-as-itself caught restored | the application's event, with its type and fields ==> expected: <[named=DEMO-inner/DEMO-topic#123:DEMO-item]> but was: <[bare=DEMO-item]>
+rr-N3-a-journalled-input-is-compared-with-the-journal caught restored | each recipient replays what it, not the journal, received ==> expected: <[value=0, value=1]> but was: <[value=0, value=0]>
+r3-F1-a-codec-input-is-read-back-by-its-codec caught restored | the feed's codec, not Java serialisation, carries the input to the replay ==> expected: <[codec=17]> but was: <[codec=0]>
+r3-F1-the-fallback-records-the-codecs-bytes survived restored |
+r3-F2-a-journalled-wrapper-keeps-its-fields caught restored | the wrapper as received: its event time, name, topic, number, flag and filters ==> expected: <[named class=NamedFeedEventImpl feed=feed topic=null seq=1 time=17
+r3-F2-an-integer-filter-is-set-back caught restored | replayed with its integer filter, which selects its handler ==> expected: <[named class=NamedFeedEventImpl feed=DEMO-inner topic=DEMO-topic seq=5 time=179077431
+r3-F3-the-recording-clock-install-is-contained compile-error restored |
+r3-F4-a-strategy-naming-no-processor-fails-the-recording caught restored | the input it delivered is a named capture failure, not an empty recording: [] ==> expected: <true> but was: <false>
+7 of 9 caught by the named assertion; 0 by an await or error carrying the mutation's expected message; 2 NOT detected ['r3-F1-the-fallback-records-the-codecs-bytes', 'r3-F3-the-recording-clock-install-is-contained']
+recompiled the restored sources from clean: ok
+r3-F1-the-fallback-records-the-codecs-bytes caught restored | a codec-only input is not refused as not Serializable ==> expected: <[]> but was: <[entry 0 could not be replayed: java.lang.IllegalArgumentException: an input
+r3-F3-the-recording-clock-install-is-contained caught restored | the server survived (exit 0): [Sept 30, 2026 2:19:24 PM com.telamin.mongoose.dutycycle.GlobalErrorHandler onError, java.lang.IllegalStateException: DEMO cannot
+2 of 2 caught by the named assertion; 0 by an await or error carrying the mutation's expected message; 0 NOT detected []
+recompiled the restored sources from clean: ok

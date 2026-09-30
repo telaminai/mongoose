@@ -81,6 +81,16 @@ public interface MongooseAuditCaptureService {
     }
 
     /**
+     * As above, with the processor's agent thread (mongoose#46): {@code start}/{@code stop} are called from the admin
+     * transport's thread, and change the processor's audit sink through {@code onAgentThread}, so the processor is only
+     * ever driven from its own thread.
+     */
+    default void attach(DataFlow dataFlow, String processorName, LogRecordListener configuredListener,
+                        java.util.concurrent.Executor onAgentThread) {
+        attach(dataFlow, processorName, configuredListener);
+    }
+
+    /**
      * Begin capturing audit records for the named processor. The
      * processor must already be registered with the mongoose runtime
      * (i.e. live in {@code MongooseServer.registeredProcessors()}) AND

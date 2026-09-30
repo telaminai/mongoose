@@ -98,6 +98,7 @@ nav:
           - Add an admin command: example/how-to/how-to-write-an-admin-command.md
           - Pipe messages between handlers: example/how-to/how-to-handler-pipe.md
           - Event replay and synthetic time: example/how-to/how-to-replay.md
+          - Record and replay a processor: example/how-to/how-to-record-and-replay-a-processor.md
           - Write a custom EventToInvokeStrategy: example/how-to/how-to-writing-a-custom-event-to-invoke-strategy.md
           - Event source read strategy: guide/read-strategy.md
           - Zero‑GC object pooling: example/how-to/how-to-object-pool.md

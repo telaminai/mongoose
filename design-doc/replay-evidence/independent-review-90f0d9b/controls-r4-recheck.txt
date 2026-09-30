@@ -1,0 +1,4 @@
+R4-records-timer-firings caught restored | [Indexed[source=orders, route=onEventCallBack, seq=1, instant=1790714509812, reads=[1790714509812]], Inline[source=controls, route=onEventCallBack, event=arm, s
+R4-replay-never-fires-by-itself caught-by-timeout restored | the replay did not complete with 4 lines: complete=true stopped=entry 2 could not be replayed: java.lang.IllegalStateException: the replay fired timer 1, which
+1 of 2 caught by the named assertion; 1 by an await or error carrying the mutation's expected message; 0 NOT detected []
+recompiled the restored sources from clean: ok
