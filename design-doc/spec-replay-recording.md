@@ -1,7 +1,7 @@
 # Spec: record and replay a processor's inputs in Mongoose
 
-**Status**: r6, 2026-09-29. Implemented and tested on `feat/replay-at-dispatch` (PR #47), reviewed, re-reviewed and
-independently reviewed; every finding is dispositioned in §3f, each fix with a regression that failed first. Background, and the evidence each
+**Status**: r7, 2026-09-30. Implemented and tested on `feat/replay-at-dispatch` (PR #47), reviewed, re-reviewed,
+independently reviewed and independently re-reviewed; every finding is dispositioned in §3f, each fix with a regression that failed first. Background, and the evidence each
 decision rests on: [`replay-at-dispatch-spike.md`](replay-at-dispatch-spike.md).
 
 ## 1. Goal, and the boundary of the claim
@@ -26,10 +26,11 @@ not reproduced) and calls made from outside Mongoose's paths (code holding a pro
   thread, after a queue (the one exception, `audit.start`/`audit.stop`, is fixed by R7). So recording at those points
   gives the processor's input order across all its sources, with no locking.
 - **An entry is an index or an event:**
-  - `Indexed{source, route, seq, instant, reads}`: an input from a journalled feed; the event is in the feed's journal.
-  - `Inline{source, route, event, instant, reads}`: an input from a feed with no journal, as a copy taken just before
-    the processor handled it (Java serialisation; a value that cannot change is kept as it is). An input that cannot
-    be copied is recorded `Failed`, never by reference. A delivered `NamedFeedEvent` is kept field by field and rebuilt.
+  - `Indexed{source, route, seq, instant, reads}`: an input from a journalled feed that this processor received as the
+    journal holds it (compared through the feed's codec); the event is in the feed's journal.
+  - `Inline{source, route, event, instant, reads}`: an input from a feed with no journal, or a journalled input this
+    processor received changed (fan-out), as a copy taken just before the processor handled it. What can be copied is
+    the contract in §3f ("What a recording can hold"); anything else is recorded `Failed`, never by reference.
   - `TimerFired{seq, instant, reads}`: a timer the processor scheduled fired.
   - `AdminInvoked{command, args, instant, reads}`: a processor-owned admin command ran.
   - `Failed{source, description}`: a dispatch threw. The stream is not reproducible past it.
@@ -264,7 +265,7 @@ the commit messages and below. Regressions: `ReplayIndependentReviewTest`, two i
 | 1 | a replay failure ends the server | both child JVMs exited 255 (store `entries` throwing at attach; a decoder's `AssertionError`) | fixed: contained (any `Throwable` but a `VirtualMachineError`) and published as `stopped()`; a processor whose store could not be read keeps its cursor, so its live inputs stay muted |
 | 2 | an inline input is not what was received | replayed `value=1` for `value=0` (memory and CSV); `[51, 52]` for a reused `[10, 50]`; fan-out `[2, 3]` for `[0, 1]`; a non-`Serializable` input held by reference | fixed: each processor's input is copied just before it is given it (`processEventRecording`), committed only after a first-attempt success; an input that cannot be copied is recorded `Failed`; a replay copies again |
 | 3 | an application's `NamedFeedEvent` on a NOWRAP feed is stripped | replayed `bare=DEMO-item` (both stores) | fixed: recorded field by field (`RecordedNamedEvent`) and rebuilt exactly |
-| 4 | the replay route is the first queue for the source | live went by `onEvent`; the replay sent every entry through the typed route, in both subscription orders | fixed: the queue carries its configured route, entries name it, routing matches source and route, an entry naming none is refused when two routes could deliver it |
+| 4 | the replay route is the first queue for the source | live went by `onEvent`; the replay sent every entry through the typed route, in both subscription orders (here; the re-review's tree passed both: see *Corrected evidence* below) | fixed: the queue carries its configured route, entries name it, routing matches source and route, an entry naming none is refused when two routes could deliver it |
 | 5 | an interrupted audit handoff runs after its refusal | the held install ran after the refusal; a running install had its sink closed under it | fixed: an interrupt cancels unclaimed work, and waits (uninterruptibly, keeping the interrupt) for work already running |
 | 6 | the clock-read count is padded | zero reads recorded as one; one recorded read taken zero times accepted | fixed: the instant is kept beside the actual reads; the count must match exactly |
 | 7 | a torn tail corrupts the next append | a store or journal whose only record was torn read as empty; RECORD accepted it | fixed: the torn line is set aside; the file reads, but RECORD refuses it and `append` refuses by name |
@@ -312,6 +313,64 @@ after it: 279 / 0 / 0 / 9 across 80 reports, no orphans. Evidence: `replay-evide
   and −0.29 ns. The earlier "+0.4 ns" is not confirmed, and is no longer stated as a result.
 - **On a named-event feed the PR is 0.33 to 0.48 ns slower in all three rounds.** The earlier short runs called this
   noise; these do not. Where it comes from is not measured.
+
+**The re-review of 4a18003** (review 5909729808) confirmed findings 4-8 resolved and 1-3 partly, and found N1-N7.
+Regressions were committed with predictions before they ran (`770b494`), then run on 4a18003; results are in the commit
+messages and below. Regressions: `ReplayReReviewTest` (N1 through a real server in a child JVM,
+`ReplaySetupFailureChildMain`) and two in `ReplayIndependentReviewTest` (N7).
+
+| # | finding | pre-fix result on 4a18003 | disposition |
+|---|---|---|---|
+| N1 | the replay clock install escapes attach | direct attach threw (not muted, no stop); the child JVM exited 255 | fixed (`538b6f3`): the cursor is registered first, then the clock install and the store read are each contained; a failure stops the processor's replay by name and it stays muted, its sinks captured |
+| N2 | a named event loses its time and its type | `time=17` replayed as the wall clock (memory, CSV); a subclass replayed as `NamedFeedEventImpl`, `extra=17` gone (memory, CSV); all completed with no stop | fixed (`04c13e0`): the event time is recorded and set back; only `NamedFeedEventImpl` itself is captured, anything else is refused by name |
+| N3 | journalled fan-out bypasses the per-recipient copy | `[0, 0]` for live `[0, 1]`, through a real journalled publisher | fixed (`9c1731a`): each recipient's input is compared with the journal through the feed's codec; different, it is recorded inline as that recipient received it |
+| N4 | the custom-strategy default records silently | `[0, 0]` for live `[0, 1]` through a direct SPI implementation, no stop | fixed (`fe0cb89`): the default fails closed with more than one processor (`UncapturedInput`, recorded `Failed` naming the strategy); live dispatch unchanged |
+| N5 | a successful serialisation is not a faithful copy | `transient=0` replayed for live `transient=17`, no stop | fixed as far as it can be detected (`a094e11`): a declared transient field is refused by name; the rest is the stated contract below |
+| N6 | a header-only six-field store is corrupted by an append | append and RECORD succeeded; the reopen threw "line 2 has 8 fields, not 6" | fixed (`3defaad`): an earlier-format store is read, never appended to; RECORD refuses it; the file is left byte for byte |
+| N7 | the reused-payload test's barrier was an output, not dispatch completion | not reproduced (PASS on both trees, as predicted) | fixed in the test: it waits for the handler to be done with the object; `n7_anOutputIsNotTheEndOfTheHandlersUse` shows, with latches, that the old barrier is met while the handler still owns it |
+
+**What a recording can hold** (the contract N2-N5 settle on; each refusal is a `Failed` entry naming why, so a replay stops
+there, and live delivery is never affected):
+- a value that cannot change (strings, boxed primitives, `BigInteger`/`BigDecimal`, enums), kept as it is;
+- a `Serializable` input whose class and superclasses outside `java.*` declare no transient field, copied by Java
+  serialisation. Its serial form must carry every part of its state a handler reads: nested state, custom
+  `writeObject`/`writeReplace`/`Externalizable` forms and anything else the serial form omits are NOT checked, and no
+  automatic check could establish equivalence for the handler that reads it;
+- a `NamedFeedEventImpl` (feed name, topic, number, delete flag, event time, and a payload under the rules above); any other
+  `NamedFeedEvent` implementation is refused;
+- a journalled input through the feed's own codec, which the configuration owns and must make faithful for its items;
+- through `AbstractEventToInvocationStrategy`, or any strategy that overrides `processEventRecording`, for any number of
+  processors; through the interface's default, for one.
+
+**Owner decisions** raised, not taken: whether to offer a per-type snapshot codec for inline inputs that cannot meet the
+serialisation contract; whether a journalled Java codec should get the transient check the inline path has.
+
+**Corrected evidence.** The response to the independent review said every regression failed on the unfixed code. The two
+live-recorded route tests (`f4_twoRoutesFromOneSource_*`) failed here 10 times in 10 at `c32fdf6` (90f0d9b plus the
+tests; JDK 21.0.9) and passed on the re-reviewer's tree (Corretto 21.0.8). Pre-fix, live went through whichever of two
+agents sharing one queue drained first, and the replay took the first matching agent in a hash map, whose order follows
+key hashes; whether the two coincide is not something the test controls (reasoned from the code, not verified across
+JVMs). They are not witnesses for finding 4. The explicit-route tests are: they fail on the unfixed code by construction.
+
+Misses, recorded:
+- `n2_..._csvStore` first opened the replay store before the recording was written, so it replayed an empty file (no stop,
+  nothing replayed): the fixture's error. Corrected (`6cd2199`); re-run, it failed as predicted.
+- N1's direct-attach and N6's reopen regressions first failed by ERROR (an exception), not at an assertion; they now assert
+  `assertDoesNotThrow`, so their controls fail at a named assertion.
+- Found while fixing N1, not fixed (outside this round): `GroupRecorder.attach` installs the `RecordingClock` uncontained,
+  so in RECORD a processor that refuses it would reach the agent's error handler. And a direct SPI that leaves
+  `registeredProcessors()` at its empty default names no processor, so RECORD records nothing for it.
+- The OFF dispatch path is unchanged by this round (every change is RECORD-only or replay setup), so the benchmark was not
+  re-run; the re-reviewer's runs on a shared machine did not reproduce a timing difference, and none is claimed.
+
+**Controls.** Nine were added (`rr-*`), one per protection N1-N6 added, and two earlier anchors moved with this round's
+code (ir-1's store read, now inside the whole setup; ir-7's `holdsRecording`, now with the earlier format) and still
+remove the same protection. N7 is a test's barrier, not product code: its witness is the latch test, not a control. The
+first run of the eleven: 11 of 11 caught at a named assertion. The full gate: **59 of 59 detected, 51 by a named
+assertion and 8 by an await running out or an error carrying the mutation's expected message** (the same eight as
+before; all nine new controls are named-assertion detections). Each file restored with `cat f.orig > f`, SHA-256 checked,
+and the sources recompiled from clean. `mvn -q test`: 291 / 0 / 0 / 9 across 81 reports, no orphans; after the controls,
+`mvn -q clean test`: 291 / 0 / 0 / 9 across 81 reports, no orphans. Evidence: `replay-evidence/rereview-4a18003/`.
 
 ## 4. Decisions
 

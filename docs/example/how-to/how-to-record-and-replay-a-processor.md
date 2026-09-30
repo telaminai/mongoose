@@ -135,9 +135,22 @@ Sample code:
   they change how often the processor reads its clock: the replay completes with no stop reason and a different
   result. Compare `outputs(processor)`, or the audit log, with the recorded run's; `complete()` with a null `stopped()`
   means every entry was delivered, not that the run was reproduced.
-- **An inline input is recorded as received.** It is copied just before the processor handles it, by Java
-  serialisation, so a handler that changes its input, or an application that reuses the object, does not change the
-  recording. An input that cannot be copied (not `Serializable`) is recorded as a failure, and a replay stops there.
+- **An input is recorded as each processor received it, or refused.** It is copied just before the processor handles
+  it, so a handler that changes its input, or an application that reuses the object, does not change the recording.
+  What can be copied:
+  - values that cannot change, kept as they are;
+  - `Serializable` inputs whose classes declare no `transient` field, by Java serialisation. Their serial form must
+    carry everything a handler reads; state it omits (nested objects, custom `writeObject` or `Externalizable` forms) is
+    not checked, and cannot be;
+  - `NamedFeedEventImpl` itself, with its feed name, topic, number, delete flag and event time. A subclass or another
+    `NamedFeedEvent` implementation is refused;
+  - a journalled input through the feed's codec. It is recorded by index while the processor receives what the journal
+    holds, and inline when an earlier processor changed it first.
+
+  Anything else is recorded as a failure naming why, and a replay stops there. Live delivery is never affected.
+- **Custom strategies.** An `EventToInvokeStrategy` that extends `AbstractEventToInvocationStrategy`, or overrides
+  `processEventRecording`, records fan-out per processor. One that inherits the interface's default records a single
+  processor, and refuses a fan-out it cannot see into.
 - **Each entry names its route.** A source that reaches a processor by more than one callback type replays each entry
   through the one that delivered it.
 - **Calls outside Mongoose's paths**, from code holding a processor directly, are not recorded.
@@ -147,7 +160,8 @@ Sample code:
   reads the clock a different number of times from the recorded one. `replayers().get(group).stopped(processor)` gives
   the reason. A replay failure stops that processor's replay; it does not end the server.
 - **A recording is refused over a recording.** `RECORD` needs an empty journal and store: a second run numbers its
-  items from 1 again. A torn last CSV line (a crash mid-write) is set aside with a warning; the file is still read,
+  items from 1 again. A store in the earlier six-field CSV format is read, never appended to. A torn last CSV line (a
+  crash mid-write) is set aside with a warning; the file is still read,
   but `RECORD` refuses it and nothing is appended to it.
 - **Clock reads outside an input's cycle** (in `start()` or `@Initialise`) are not recorded.
 - **Durability.** The CSV journal and store are samples; a production journal (for example Chronicle), with

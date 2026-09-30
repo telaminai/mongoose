@@ -1,0 +1,13 @@
+ir-1-attach-contains-an-unreadable-store caught restored | the server process survived the failed replay (exit 0): [Sept 30, 2026 12:27:39 PM com.telamin.mongoose.dutycycle.GlobalErrorHandler onError, java.lang.IllegalS
+ir-7-a-torn-store-is-refused-by-record caught restored | a file with a torn tail is not recorded into ==> Expected java.lang.Exception to be thrown, but nothing was thrown.
+rr-N1-the-replay-clock-install-is-contained caught restored | the server survived a replay clock it could not install (exit 0): [Sept 30, 2026 12:27:47 PM com.telamin.mongoose.dutycycle.GlobalErrorHandler onError, java.lan
+rr-N1-the-cursor-exists-before-the-setup caught restored | it stays replayed, so its live inputs are muted ==> expected: <true> but was: <false>
+rr-N2-a-named-event-keeps-its-time caught restored | its event time is the recorded one, not the replaying machine's ==> expected: <[named class=NamedFeedEventImpl feed=DEMO-inner topic=DEMO-topic seq=123 time=17
+rr-N2-a-named-subclass-is-refused caught restored | replayed as itself, with its own state ==> expected: <[named class=DemoNamedEvent feed=DEMO-inner topic=DEMO-topic seq=7 time=1790767679296 delete=false data=DE
+rr-N3-a-journalled-input-is-compared-with-the-journal caught restored | each recipient replays what it, not the journal, received ==> expected: <[value=0, value=1]> but was: <[value=0, value=0]>
+rr-N4-the-default-strategy-fails-closed-on-fan-out caught restored | replayed as each received it ==> expected: <[value=0, value=1]> but was: <[value=0, value=0]>
+rr-N5-a-transient-field-is-refused caught restored | replayed as received ==> expected: <[transient=17 kept=5]> but was: <[transient=0 kept=5]>
+rr-N6-an-earlier-format-store-is-never-appended-to caught restored | the file reopens after the append or its refusal ==> Unexpected exception thrown: java.lang.IllegalArgumentException: <tmp>
+rr-N6-record-refuses-an-earlier-format-store caught restored | holding what was recorded ==> expected: <1> but was: <0>
+11 of 11 caught by the named assertion; 0 by an await or error carrying the mutation's expected message; 0 NOT detected []
+recompiled the restored sources from clean: ok
