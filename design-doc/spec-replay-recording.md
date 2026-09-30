@@ -371,7 +371,7 @@ Misses, recorded: the cancelled-slot test as first designed would have passed on
 once with the second publish's arguments, so only the queue position showed the revival. A request in between made it
 visible. The race control was first scored a timeout, because its assertion printed replies carrying the harness's marker.
 
-**Stack integration with #47 (not done here):**
+**Stack integration with #47** (as planned at 8d224fb; done in §3d.3):
 - **The recorder check:** #47's per-target hook (`recorder.received` before `dispatchEvent`) sees a command before its
   claim, so inheriting it does not carry N1. #47's `afterDispatch` needs the same `ran()` check before it builds
   `AdminInvoked`.
@@ -391,6 +391,83 @@ carrying the mutation's expected message** (the ten of b4e80c1). Requested and d
 restored with `cat f.orig > f`, SHA-256 checked, recompiled from clean. `mvn -q test`: 291 / 0 / 0 / 9 across 87
 reports, no orphans; after the controls, `mvn -q clean test`: the same. Ordinary event dispatch is unchanged, so
 `DispatchPathJmh` was not re-run.
+
+### 3d.3 Integration with released main (1.0.31), and the review of 8d224fb
+
+The review of 8d224fb (comment 5919428341) approved N1-N3 on the branch and raised two non-blocking nits. Released main
+(`59b9d8f`, mongoose 1.0.31 with #47) was merged into the branch (`1c18def`), not rebased. Predictions were committed
+first (`1195dd4`, `replay-evidence/integration-main-1.0.31/predictions.md`).
+
+**The nits.**
+- **Nit 1, the timeout wording.** An abandoned command's message promised "nothing more from it will reach this caller",
+  but a delivery already begun may finish after it. The message now says "no new reply delivery will begin, and a
+  delivery already in progress may still finish" (`621045b`). The delivery policy is unchanged. Regression
+  `n3_aDeliveryInProgressAtTheBound_mayFinishAfterward_andTheFinalMessageSaysSo`: it holds an output consumer, lets the caller
+  expire, releases the consumer, and asserts the order (the final message, then `DEMO-ok`) and the wording. On 8d224fb it
+  failed at the wording assertion; the order already held. Control `nit1-the-timeout-message-promises-no-retraction`.
+- **Nit 2, admission.** Documentation only (§3d.2's N2 row, the how-to). Shared template admission and "busy" apply to
+  `publishCommand(List)`. The `AdminCommandRequest` overload admits each request alone. A no-queue command runs
+  synchronously, outside the bound.
+
+**Conflicts, and how each was resolved.**
+- `design-doc/replay_controls.py`: the union of both lists, 99 names (main 72, the branch 59, 32 in the merge base, none
+  dropped by either side). Eight shared names had different definitions. Seven were changed by main to follow its own
+  code, while the branch kept the base: R2-arms-the-processors-clock, R2-graph-raised-events-never-pass-dispatch,
+  R5-pins-the-entry-instant, R5-plays-every-read-of-the-cycle, csv-the-store-reads-back-its-file,
+  review-3-a-named-input-is-recorded-as-its-item and review-5-a-torn-last-line-is-dropped. These take main's definitions.
+  R6-records-an-admin-command-by-its-args was changed by the branch (an `else if` after the `ran()` check) and takes the
+  branch's. Every anchor occurs exactly once in the merged source.
+  Harness: the branch's body is a superset of main's. It has main's `.orig` byte copy, `cat` restore and recompile from
+  clean, plus lookup of a report by simple class name in any package, with ambiguity refused.
+- The spec's status line: combined (r10).
+
+**Merged textually, checked by reading.**
+- `GroupRecorder.afterDispatch`: the `ran()` check sits after the clock capture and `if (!r.received) continue;`, and
+  before `AdminInvoked` is built. Main's `received` hook runs before the invoker's claim, so receipt is not proof that a
+  command ran.
+- `AbstractEventToInvocationStrategy`: it keeps both main's `processEventRecording` and the branch's `mutedForReplay`
+  accessor. `processEventRecording` bypasses the invoker's `processEvent` override, so a muted processor is skipped
+  there rather than refused. A server has one `ReplayConfig.Mode`, so a recorder and a muted processor never coexist, and
+  the difference cannot be observed.
+- `pom.xml`: 1.0.32-SNAPSHOT (main), fluxtion 1.1.0 (the branch; main was on 1.0.15).
+- `ReplayEntry` and routing: main's route, explicit instants and `routeFor(source, route, flow)` stand.
+  - The recorder builds `AdminInvoked` with the instant it captured.
+  - The replayer pins `a.instant()` and routes by `adminCommand.<name>`.
+  - The branch's only use of a compatibility constructor is a test's never-deliverable `TimerFired`.
+
+**Semantic interaction despite a clean merge: an admin command now takes a clock reading.** The branch runs a lambda
+command as its processor's own event cycle. In fluxtion 1.1.0, `DefaultEventProcessor.runInEventCycle` opens the cycle
+with `auditEvent`, and `Clock.eventReceived` reads the clock, so the command's entry records one reading. That is
+faithful, and a replay takes it again. Main's f6 pair in `ReplayIndependentReviewTest` (finding 6 of §3f: zero reads
+recorded as zero, and a read the replay does not take is a divergence) used a lambda command as its "reads no clock"
+vehicle. On the merged tree both failed at their named assertions (`[<a reading>]` for `[]`; no divergence).
+Their meaning is kept on a vehicle that still reads nothing: a timer firing whose action reads no clock. The first test
+also asserts the new fact: an admin command's cycle takes exactly one reading. Main's controls
+ir-6-a-cycle-with-no-reads-records-none and ir-6-the-read-count-must-match-exactly are both caught at their named
+assertions.
+
+**New regression, the refused case through main's capture.** `AdminIntegrationRegressionTest`, a real server:
+- RECORD, where a processor's declared event cycle fails while it sets up;
+- the caller is answered with an error;
+- the next command runs;
+- the store holds exactly one `AdminInvoked`;
+- the replay completes, running one command.
+
+The cancelled case is N1's regression, and it now runs through main's recorder. Control
+`int-refused-work-is-no-invocation` removes the `ran()` check, and the refused command is recorded as a second
+`AdminInvoked`.
+
+**Results on the integrated tree** (JDK 21.0.9, Maven serially):
+- Focused suites (the branch's admin suites and main's replay suites) before the f6 change: 112 / 2 / 0 / 0, the two
+  f6 tests; after it, green.
+- `mvn -q clean test`: 349 / 0 / 0 / 9 across 92 reports, no orphans.
+- Gate: 101 registered (99 merged plus the two new), **101 of 101 detected**: 91 at a named assertion, 6 by an
+  expected-message timeout and 4 by an expected-message error. Requested and detected names match (101 each, no
+  duplicates). Restored with `cat`, SHA-256 checked, recompiled from clean.
+- After the gate, `mvn -q clean test`: 349 / 0 / 0 / 9 across 92 reports, no orphans; `src/` identical to HEAD.
+
+*Historical, by revision:* 8d224fb 291 / 0 / 0 / 9, 87 reports, gate 59 of 59; main 59b9d8f (1.0.31) 312 / 0 / 0 / 9,
+83 reports, gate 72 registered.
 
 ## 3e. One processor, several in one agent, several agents: what holds, and what is needed
 

@@ -281,7 +281,8 @@ A command runs at most once, and its caller is answered, within a bound:
   the caller's final message. The caller's final message (cancelled, or started) is delivered on the caller's own thread,
   by its own error consumer.
 - **A cancelled or refused command is not recorded.** Nothing reached the processor, so a recording holds no input
-  for it, and a replay does not run it.
+  for it, and a replay does not run it. The recording decides this after the dispatch, from the command's outcome:
+  being handed to the processor is not proof that it ran.
 - **A processor replaying:** a live command for a processor muted for a replay is refused at once, by name.
 - **The processor cannot run the command** (for example it was left mid-cycle by a node that threw, or its event cycle
   failed while setting up): the caller is answered with an error (`admin command '...' did not run: ...`), and the
@@ -314,6 +315,8 @@ Tests that show them:
   does not run the command again
 - [SignalAdminCommandTest.java]({{source_root}}/test/java/com/telamin/mongoose/replay/SignalAdminCommandTest.java):
   a signal-routed command, its reply, and the no-reply error
+- [AdminIntegrationRegressionTest.java]({{source_root}}/test/java/com/telamin/mongoose/replay/AdminIntegrationRegressionTest.java):
+  a refused command recorded and replayed through a real server: never recorded, never replayed
 - [GeneratedAdminAuditTest.java]({{source_root}}/test/java/com/telamin/mongoose/replay/generated/GeneratedAdminAuditTest.java)
   with [AlarmNodes.java]({{source_root}}/test/java/com/telamin/mongoose/replay/generated/AlarmNodes.java): on a
   generated processor, each form's own audit record, and propagation for the signal-routed one
