@@ -329,6 +329,55 @@ checks its SHA-256, and recompiles from clean. `mvn -q test`: 282 / 0 / 0 / 9 ac
 controls, `mvn -q clean test`: the same. The ordinary dispatch path did not change (a new protected accessor on
 `AbstractEventToInvocationStrategy`, and an override in the admin invoker only), so `DispatchPathJmh` was not re-run.
 
+### 3d.2 The correction-round review of #48 at b4e80c1 (review 5912663051)
+
+It resolved findings 1, 2 and 4 and the counts nit, found finding 3 partly resolved, and raised N1-N3. Regressions
+(`AdminCorrectionRegressionTest`, real servers, through `AdminReviewRegressionTest`'s fixture) were committed with
+predictions before they ran (`a7f02ec`), then run on b4e80c1's code; results in the commit messages and
+`replay-evidence/admin-correction-b4e80c1/`.
+
+| # | finding | pre-fix result on b4e80c1 | disposition |
+|---|---|---|---|
+| N1 | a cancelled command is recorded as an invocation | 2 `AdminInvoked` entries for 1 command that ran; the replay ran both | fixed (`bdf68d2`): an invocation's outcome, `ran()`, is carried into the recording; a command that did not run records nothing; a command that ran and threw is still `Failed` |
+| N2 | a template reused after a timeout mixes two requests | the second caller returned on the FIRST command's completion; a cancelled slot, revived by the next publish, ran first with its arguments (`[2, X]` for `[X, 2]`) | fixed (`3b6b97c`): every publish is its own invocation (arguments, claim, latch, reply lifetime; never reset); the template keeps only admission ("busy", retained and tested) |
+| N3 | a reply consumer defeats the bound | the caller was BLOCKED behind a blocked output consumer, and a blocked error consumer | fixed (`3b6b97c`, `210b8a4`): one atomic phase (QUEUED, CLAIMED, COMPLETED, CANCELLED, ABANDONED); no lock while a reply is delivered; the caller's final message on its own thread |
+
+**Delivery, stated:** a reply that has not begun when the channel closes is dropped. A delivery already executing is not
+retracted, and can finish after the caller's final message. The bound covers the command's completion, not
+end-to-end transport of its replies.
+
+Written with the fix, for behaviour it added (`AdminCommandLifetimeTest`, a real publisher, queue and invoker):
+- completion winning the race with the expiry, through a seam (`beforeExpiry`, a no-op in the product) that b4e80c1
+  lacks;
+- a reply begun after the caller gave up being suppressed.
+
+Retained, passing on both trees: busy admission; F6's completed reuse; a late asynchronous reply gated.
+
+Misses, recorded: the cancelled-slot test as first designed would have passed on b4e80c1. The revived object ran
+once with the second publish's arguments, so only the queue position showed the revival. A request in between made it
+visible. The race control was first scored a timeout, because its assertion printed replies carrying the harness's marker.
+
+**Stack integration with #47 (not done here):**
+- **The recorder check:** #47's per-target hook (`recorder.received` before `dispatchEvent`) sees a command before its
+  claim, so inheriting it does not carry N1. #47's `afterDispatch` needs the same `ran()` check before it builds
+  `AdminInvoked`.
+- **The controls:** the two branches' lists have 80 distinct names (at the reviewed heads), with seven shared names
+  whose definitions differ. They must be merged by name, with each shared control's anchor re-derived from the
+  combined source, and both harness copies merged.
+- **The recorder and replayer:** the entry signatures (route, instant, `routeFor(source, route, flow)`) must be
+  reconciled.
+- **Gates:** both sides' regressions and the gate must pass on the combined tree before release.
+
+**Controls.** Six were added (`cr-*`). Four anchors moved with this round's code and still remove the same protection:
+adm3-cancelled (the phase claim), adm3-a-late-reply (the phase gate), F6 (now: reuse the template without reset) and R6
+(an else-if after N1's check). The targeted run requested 17 (the six new, plus the affected adm1 x2, adm2, adm3 x4,
+adm4, B2, F6, R6). All 17 were detected at named assertions, after the race control's assertion was changed to stop
+printing replies. The full gate: **59 of 59 detected, 49 by a named assertion and 10 by an await running out or an error
+carrying the mutation's expected message** (the ten of b4e80c1). Requested and detected names match (59, no duplicates);
+restored with `cat f.orig > f`, SHA-256 checked, recompiled from clean. `mvn -q test`: 291 / 0 / 0 / 9 across 87
+reports, no orphans; after the controls, `mvn -q clean test`: the same. Ordinary event dispatch is unchanged, so
+`DispatchPathJmh` was not re-run.
+
 ## 3e. One processor, several in one agent, several agents: what holds, and what is needed
 
 **One processor: supported (R1-R7).** Everything Mongoose delivers to it (feeds, typed service calls, timers, admin

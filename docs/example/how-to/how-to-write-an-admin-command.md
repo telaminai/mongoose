@@ -261,13 +261,23 @@ request's `getOutput()` or `getErrOutput()`. A command that no handler replied t
 
 A command runs at most once, and its caller is answered, within a bound:
 
+- **Each call is its own invocation.** Its arguments, its claim, its completion and its reply channel are its own,
+  including repeated calls to one command's `publishCommand(List)`. That template admits one caller at a time: a second
+  caller while one waits is answered `command is busy try again`, and nothing runs for it.
 - **The wait is bounded.** A caller waits at most `mongoose.admin.completionTimeoutMs` (a system property; default
-  10 s) for its command to complete.
+  10 s) for its command to complete. The bound covers waiting for the command. It does not cover delivery through the
+  caller's own reply consumers.
 - **Not yet started when the wait ends** (the bound passed, or the caller was interrupted): the command is cancelled.
   It never runs later, and the caller is told so (`... was cancelled before its processor started it ...; it will not
   run`).
 - **Already started when the wait ends:** it cannot be cancelled. The caller is told it started and may still
-  complete, and nothing more from it reaches the caller.
+  complete, and no reply that has not yet begun reaches the caller.
+- **Replies are delivered without a lock.** A reply consumer that blocks, on the processor's thread, cannot hold its
+  caller past the bound. A delivery that has already begun when the wait ends is not retracted, and may finish after
+  the caller's final message. The caller's final message (cancelled, or started) is delivered on the caller's own thread,
+  by its own error consumer.
+- **A cancelled or refused command is not recorded.** Nothing reached the processor, so a recording holds no input
+  for it, and a replay does not run it.
 - **A processor replaying:** a live command for a processor muted for a replay is refused at once, by name.
 - **The processor cannot run the command** (for example it was left mid-cycle by a node that threw, or its event cycle
   failed while setting up): the caller is answered with an error (`admin command '...' did not run: ...`), and the

@@ -1,0 +1,7 @@
+AdminCorrectionRegressionTest#n1_aCancelledCommand_isNeverRecordedAsAnInvocation_norReplayed: FAILURE AssertionFailedError: only the command that ran is recorded as an invocation: [Inline[source=events, event=Block[name=DEMO-agent], seq=-1, reads=[1790776786839]], AdminInvoked[command=DEMO.ok, args=[], reads=[179077678
+AdminCorrectionRegressionTest#n2_aTimedOutTemplatesStillRunningCommand_neverCompletesItsNextPublish: FAILURE AssertionFailedError: the second caller waits for its OWN command, not the first's completion ==> expected: <true> but was: <false>
+AdminCorrectionRegressionTest#n2_aCancelledPublish_isNeverRevivedByTheNextOnTheSameTemplate: FAILURE AssertionFailedError: the cancelled slot never runs, not even revived as the second: each runs in its own place ==> expected: <[X, 2]> but was: <[2, X]>
+AdminCorrectionRegressionTest#n2_aTemplateAlreadyInUse_answersBusy_andRunsNothingForTheBusyCaller: PASS
+AdminCorrectionRegressionTest#n3_aBlockedOutputConsumer_neverHoldsTheCallerPastTheBound: FAILURE AssertionFailedError: the bound releases the caller while the reply consumer blocks: BLOCKED ==> expected: <false> but was: <true>
+AdminCorrectionRegressionTest#n3_aBlockedErrorConsumer_neverHoldsTheCallerPastTheBound: FAILURE AssertionFailedError: the bound releases the caller while the reply consumer blocks: BLOCKED ==> expected: <false> but was: <true>
+AdminCorrectionRegressionTest#n3_aReplySentAfterTheCommandCompleted_isSuppressed: PASS
