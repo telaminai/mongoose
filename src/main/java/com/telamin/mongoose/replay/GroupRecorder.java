@@ -54,8 +54,22 @@ public final class GroupRecorder {
     public void attach(String name, DataFlow flow) {
         if (!config.covers(name)) return;
         RecordingClock clock = new RecordingClock(live);
-        byFlow.put(flow, new Recorded(name, clock));
-        flow.setClockStrategy(clock);
+        Recorded r = new Recorded(name, clock);
+        byFlow.put(flow, r);
+        // on the group's agent thread: a processor that refuses the recording's clock must not reach the agent's error
+        // handler, which ends the process (review of cd52628, F3; N1's RECORD counterpart). Its recording is FAILED, by
+        // name and durably (a Failed entry, so a replay stops there), and it goes on running live, unrecorded: RECORD
+        // never stops a processor (D1); what it cannot do is claim to have recorded it.
+        try {
+            flow.setClockStrategy(clock);
+        } catch (VirtualMachineError e) {
+            throw e;
+        } catch (Throwable t) {
+            String why = "the recording could not start: the recording clock could not be installed: " + t;
+            log.severe("replay recording of " + name + " failed: " + why);
+            append(r, new ReplayEntry.Failed("recording", why, live.getAsLong()));
+            r.broken = why;
+        }
     }
 
     public void detach(DataFlow flow) {
