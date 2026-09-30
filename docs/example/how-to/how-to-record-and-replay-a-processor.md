@@ -146,7 +146,8 @@ Sample code:
     journalled. A subclass or another `NamedFeedEvent` implementation is refused;
   - a journalled input through the feed's codec only. It is recorded by index while the processor receives what the
     journal holds, and otherwise as that codec's own bytes, which the replay decodes with the same codec. It is never
-    re-copied by Java serialisation.
+    re-copied by Java serialisation. The recording keeps its own copy of those bytes and decodes from a copy, so a codec
+    may reuse its buffers; it must still be faithful for its items, and thread-safe if more than one agent uses it.
 
   Anything else is recorded as a failure naming why, and a replay stops there. Live delivery is never affected.
 - **Custom strategies.** An `EventToInvokeStrategy` that extends `AbstractEventToInvocationStrategy`, or overrides
@@ -154,7 +155,9 @@ Sample code:
   processor, and refuses a fan-out it cannot see into. One whose `registeredProcessors()` is empty cannot be recorded:
   the processors it delivers to have their recordings failed, by name.
 - **A processor that refuses the recording clock** has its recording failed at setup, by name, and runs on live,
-  unrecorded. RECORD never stops a processor.
+  unrecorded, exactly as with replay off. RECORD never stops a processor.
+- **A strategy that names only some of its processors** is trusted: the ones it does not name are not recorded, and
+  this is not detected.
 - **Each entry names its route.** A source that reaches a processor by more than one callback type replays each entry
   through the one that delivered it.
 - **Calls outside Mongoose's paths**, from code holding a processor directly, are not recorded.

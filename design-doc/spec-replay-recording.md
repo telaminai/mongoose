@@ -1,6 +1,6 @@
 # Spec: record and replay a processor's inputs in Mongoose
 
-**Status**: r8, 2026-09-30. Implemented and tested on `feat/replay-at-dispatch` (PR #47), reviewed, re-reviewed,
+**Status**: r9, 2026-09-30. Implemented and tested on `feat/replay-at-dispatch` (PR #47), reviewed, re-reviewed,
 independently reviewed and independently re-reviewed; every finding is dispositioned in §3f, each fix with a regression that failed first. Background, and the evidence each
 decision rests on: [`replay-at-dispatch-spike.md`](replay-at-dispatch-spike.md).
 
@@ -342,12 +342,14 @@ there, and live delivery is never affected):
   rules), whether its payload is inline or journalled; any other `NamedFeedEvent` implementation is refused;
 - a journalled input through the feed's own codec ONLY, which the configuration owns and must make faithful for its
   items: by index while the processor receives what the journal holds, otherwise as the codec's own bytes, read back by
-  the same codec. Never re-copied by Java serialisation;
+  the same codec. Never re-copied by Java serialisation. The recording owns those bytes (copied at once) and every
+  replay decodes from a copy, so a codec may reuse its buffers and a decoder may consume its input;
 - through `AbstractEventToInvocationStrategy`, or any strategy that overrides `processEventRecording`, for any number of
   processors; through the interface's default, for one. A strategy that names no processor
   (`registeredProcessors()` empty) cannot be recorded: each processor its queue registered has its recording failed;
 - a processor whose recording clock can be installed. One that refuses it has its recording failed at setup, by name,
-  and goes on running live, unrecorded.
+  and goes on running live, unrecorded, with its live time handling exactly as replay OFF (a live `ReplayRecord` still
+  sets its time).
 
 **Owner decisions** raised, not taken: whether to offer a per-type snapshot codec for inline inputs that cannot meet the
 serialisation contract; whether a journalled Java codec should get the transient check the inline path has.
@@ -404,6 +406,27 @@ re-run were caught at named assertions. The full gate: **65 of 65 detected, 57 b
 running out or an error carrying the mutation's expected message** (the same eight as before). Requested and detected
 names match (65, no duplicates); each file is restored with `cat f.orig > f`, SHA-256 checked, and recompiled from clean.
 `mvn -q test`: 304 / 0 / 0 / 9 across 82 reports, no orphans; after the controls, `mvn -q clean test`: the same.
+
+**The targeted re-review of 8211858** (review 5914820616) accepted F2, F4 and the nits, found F1 and F3 partly resolved, and
+raised G1 and G2. Regressions (`ReplayRound4ReviewTest`, adapted from the reviewer's reproductions) were committed with
+predictions before they ran (`5690172`; the Indexed case `4b411d2`), then run on 8211858; evidence in
+`replay-evidence/rereview-8211858/`.
+
+| # | finding | pre-fix result on 8211858 | disposition |
+|---|---|---|---|
+| G1 | the new `EncodedInput` does not own its bytes | a codec reusing its buffer replayed 23 for a recorded 17; a decoder clearing its input made the second replay 0 | fixed (`d09e536`): copied on construction and on every read; `EventCodec` states the ownership contract |
+| G1+ | found while fixing G1: an `Indexed` entry decoded the journal's own array | the second replay 0 for 17 | fixed (`d50c857`): decoded from a copy, as the contract says |
+| G2 | a failed RECORD setup changes a live `ReplayRecord`'s time | 99 for 42 (OFF gives 42) | fixed (`4417de7`): only an installed recording clock is pinned; the recording stays failed by name and durably |
+
+Controls: four added (`r4-*`), each caught at its named assertion on its first run. The `JournalRef` decode also copies
+(defensive; no dedicated test). Stated, not fixed: a strategy that names only some of the processors it delivers to
+still omits the others (the trusted-SPI limit, not detected), and a codec shared by the publisher and recipient agents
+must be thread-safe (the configuration's). The OFF dispatch path did not change; no benchmark.
+
+**Results.** The full gate: **69 of 69 detected, 61 by a named assertion and 8 by an await running out or an error
+carrying the mutation's expected message** (the same eight). Requested and detected names match (69, no duplicates);
+restored with `cat f.orig > f`, SHA-256 checked, recompiled from clean. `mvn -q test`: 310 / 0 / 0 / 9 across 83
+reports, no orphans; after the controls, `mvn -q clean test`: the same.
 
 ## 4. Decisions
 
