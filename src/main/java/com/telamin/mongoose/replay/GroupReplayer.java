@@ -210,7 +210,7 @@ public final class GroupReplayer {
                 if (route == null) return waiting(c, "no route " + routeName(i.route()) + "delivers " + i.source() + " to " + c.name);
                 byte[] bytes = config.journal().get(i.source(), i.seq());
                 if (bytes == null) return stop(c, "the journal holds no " + i.source() + "#" + i.seq());
-                Object item = config.journalledFeeds().get(i.source()).decode(bytes);
+                Object item = config.journalledFeeds().get(i.source()).decode(bytes.clone());   // from a copy: G1's contract
                 EventSource.EventWrapStrategy wrap = routing.wrapOf(i.source());
                 Object event = wrap == EventSource.EventWrapStrategy.SUBSCRIPTION_NAMED_EVENT
                         || wrap == EventSource.EventWrapStrategy.BROADCAST_NAMED_EVENT
