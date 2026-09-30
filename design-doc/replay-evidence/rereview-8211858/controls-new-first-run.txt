@@ -6,3 +6,7 @@ r4-G1-an-indexed-input-is-decoded-from-a-copy caught restored | and so does the 
 r4-G2-only-an-installed-clock-is-pinned caught restored | a recording that failed at setup does not take the processor's time handling ==> expected: <[42]> but was: <[99]>
 6 of 6 caught by the named assertion; 0 by an await or error carrying the mutation's expected message; 0 NOT detected []
 recompiled the restored sources from clean: ok
+r4-G1-the-publishers-journal-owns-its-bytes caught restored | the journalled input is replayed as journalled, not as the next item ==> expected: <17> but was: <23>
+r4-G1-a-journal-ref-is-decoded-from-a-copy caught restored | and so does the second: the journal's bytes are decoded from a copy ==> expected: <17> but was: <0>
+2 of 2 caught by the named assertion; 0 by an await or error carrying the mutation's expected message; 0 NOT detected []
+recompiled the restored sources from clean: ok

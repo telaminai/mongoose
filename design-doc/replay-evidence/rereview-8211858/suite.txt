@@ -1,2 +1,2 @@
 suite exit=0
-total 310 / failures 0 / errors 0 / skips 9 across 83 reports; orphans (txt without xml): []
+total 312 / failures 0 / errors 0 / skips 9 across 83 reports; orphans (txt without xml): []

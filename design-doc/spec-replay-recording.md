@@ -428,9 +428,9 @@ Controls: six added (`r4-*`), each caught at its named assertion on its first ru
 still omits the others (the trusted-SPI limit, not detected), and a codec shared by the publisher and recipient agents
 must be thread-safe (the configuration's). The OFF dispatch path did not change; no benchmark.
 
-**Results.** The full gate: **69 of 69 detected, 61 by a named assertion and 8 by an await running out or an error
-carrying the mutation's expected message** (the same eight). Requested and detected names match (69, no duplicates);
-restored with `cat f.orig > f`, SHA-256 checked, recompiled from clean. `mvn -q test`: 310 / 0 / 0 / 9 across 83
+**Results.** The full gate: **71 of 71 detected, 63 by a named assertion and 8 by an await running out or an error
+carrying the mutation's expected message** (the same eight). Requested and detected names match (71, no duplicates);
+restored with `cat f.orig > f`, SHA-256 checked, recompiled from clean. `mvn -q test`: 312 / 0 / 0 / 9 across 83
 reports, no orphans; after the controls, `mvn -q clean test`: the same.
 
 ## 4. Decisions

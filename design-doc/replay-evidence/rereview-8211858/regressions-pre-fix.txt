@@ -5,3 +5,6 @@ ReplayRound4ReviewTest#g2_aFailedRecording_leavesALiveReplayRecordsTimeAsItIsOff
 ReplayRound4ReviewTest#g2_aWorkingRecording_givesALiveReplayRecordItsTime: PASS
 --- the Indexed case (found while fixing G1), run before its fix at d09e536 + 4417de7
 ReplayRound4ReviewTest#g1_anIndexedInputsDecoderThatConsumesItsInput_neverRewritesTheJournalForTheNextReplay: FAILURE AssertionFailedError: and so does the second: the journal's bytes are decoded from a copy ==> expected: <17> but was: <0>
+--- the local independent review's findings, run on d2c6428 before their fix
+ReplayRound4ReviewTest#g1_thePublishersJournal_ownsItsBytes_whenTheCodecReusesItsBuffer: FAILURE AssertionFailedError: the journalled input is replayed as journalled, not as the next item ==> expected: <17> but was: <23>
+ReplayRound4ReviewTest#g1_aNamedJournalledInputsDecoderThatConsumesItsInput_neverRewritesTheJournal: PASS
