@@ -204,6 +204,21 @@ public final class GroupRecorder {
         }
     }
 
+    /**
+     * An input of {@code source} was delivered to {@code targets} by a strategy that cannot say what each received (it
+     * names no processor): each recorded one's recording is failed, by name and durably, and stops (cd52628 F4). Live
+     * delivery is not affected.
+     */
+    public void cannotRecord(String source, Collection<DataFlow> targets, String why) {
+        for (DataFlow t : targets) {
+            Recorded r = byFlow.get(t);
+            if (r == null || r.broken != null) continue;
+            log.severe("replay recording of " + r.name + " failed: " + why);
+            append(r, new ReplayEntry.Failed(source, why, live.getAsLong()));
+            r.broken = why;
+        }
+    }
+
     /** A dispatch threw: marked, not reproduced (D4). */
     public void failed(String source, Object event, Throwable error, Collection<DataFlow> targets) {
         for (DataFlow t : targets) {

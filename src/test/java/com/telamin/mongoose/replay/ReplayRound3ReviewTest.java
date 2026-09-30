@@ -506,4 +506,18 @@ class ReplayRound3ReviewTest {
                 UnnamedTargetsStrategy::new);
         assertEquals(1, stops.size(), "and a replay stops there: " + stops);
     }
+
+    /** Retained (F4 must not break it): a direct SPI that names its one processor is recorded and replayed as received. */
+    @Test
+    void f4_aDirectStrategyThatNamesItsOneProcessor_isStillRecordedAndReplayed() throws Exception {
+        InMemoryReplayStore store = new InMemoryReplayStore();
+        List<String> live = record(ReplayConfig.record(Set.of("probe"), Map.of(), null, store), one(), false,
+                ReplayReReviewTest.DirectStrategy::new, 1, "DEMO-item");
+        assertEquals(List.of("bare=DEMO-item"), live);
+        List<String> stops = new ArrayList<>();
+        List<String> replayed = replayEach(ReplayConfig.replay(Set.of("probe"), Map.of(), null, store), List.of("probe"), false,
+                stops, ReplayReReviewTest.DirectStrategy::new);
+        assertEquals(List.of(), stops);
+        assertEquals(live, replayed);
+    }
 }

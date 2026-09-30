@@ -36,6 +36,12 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     private final String sourceName;
     /** The configured route (callback type) this queue delivers by: an entry names it (review of 90f0d9b, finding 4). */
     private final String route;
+    /**
+     * The processors this queue registered with its strategy, known here whatever the strategy reports: RECORD uses it
+     * only to fail a recording the strategy cannot name the processors of (cd52628 F4). Registration only, not dispatch.
+     */
+    private final java.util.Set<DataFlow> subscribed =
+            java.util.Collections.synchronizedSet(java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
     /** RECORD mode: set by the group when it subscribes this queue. */
     private GroupRecorder recorder;
     /** RECORD mode: the recorder's per-processor copy of each input, taken just before the processor is given it. */
@@ -105,6 +111,14 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                 }
                 targets = eventToInvokeStrategy.registeredProcessors();
                 if (event instanceof ReplayRecord || event instanceof BroadcastEvent) seq = -1;
+                // a strategy that delivers but names no processor (registeredProcessors() left at its empty default)
+                // cannot be recorded: the processors this queue registered with it are known here, so each recorded one
+                // is marked failed, by name, rather than recording nothing for an input it delivered (cd52628 F4)
+                if (targets.isEmpty() && !subscribed.isEmpty()) {
+                    recorder.cannotRecord(sourceName, java.util.List.copyOf(subscribed), eventToInvokeStrategy.getClass().getName()
+                            + " delivers to processors it does not name (registeredProcessors() is empty), so what each"
+                            + " received cannot be recorded; implement registeredProcessors() to record through it");
+                }
             }
 
             int attempt = 0;
@@ -261,6 +275,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     public int registerProcessor(DataFlow eventProcessor) {
         logger.info("registerProcessor: " + eventProcessor);
         eventToInvokeStrategy.registerProcessor(eventProcessor);
+        subscribed.add(eventProcessor);
         logger.info("listener count:" + listenerCount());
         return listenerCount();
     }
@@ -269,6 +284,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     public int deregisterProcessor(DataFlow eventProcessor) {
         logger.info("deregisterProcessor: " + eventProcessor);
         eventToInvokeStrategy.deregisterProcessor(eventProcessor);
+        subscribed.remove(eventProcessor);
         int listeners = listenerCount();
         if (listeners < 1 && unsubscribeAction != null) {
             try {
