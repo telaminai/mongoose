@@ -68,6 +68,8 @@ class ReplayIndependentReviewTest {
 
     /** Emits what it received, so a replay's outputs show what the recording said it received. */
     public static class ProbeNode extends ObjectEventHandlerNode {
+        /** Re-review N7: run between emitting a MutableValue and changing it, and once the handler is done with it. */
+        static volatile Runnable afterEmit = () -> { }, afterHandled = () -> { };
         private MessageSink<String> sink;
 
         @ServiceRegistered
@@ -85,7 +87,9 @@ class ReplayIndependentReviewTest {
             if (sink == null) return true;
             if (event instanceof MutableValue m) {
                 sink.accept("value=" + m.value);
+                afterEmit.run();
                 m.value++;                                              // the handler changes what it was given
+                afterHandled.run();
             } else if (event instanceof NamedFeedEvent<?> n) {
                 sink.accept("named=" + n.eventFeedName() + "/" + n.topic() + "#" + n.sequenceNumber() + ":" + n.data());
             } else {
@@ -288,15 +292,73 @@ class ReplayIndependentReviewTest {
         InMemoryReplayStore store = new InMemoryReplayStore();
         MutableValue reused = new MutableValue(10);
         List<String> live = new ArrayList<>();
-        List<String> replayed = recordThenReplay(store, () -> store, "probe", one(), one(), s -> {
-            s.feed().offer(reused);
-            long deadline = System.nanoTime() + 5_000_000_000L;
-            while (s.live().isEmpty() && System.nanoTime() < deadline) Thread.onSpinWait();
-            reused.value = 50;                                          // the application reuses the object
-            s.feed().offer(reused);
-        }, 2, live);
+        java.util.concurrent.CountDownLatch handled = new java.util.concurrent.CountDownLatch(1);
+        List<String> replayed;
+        ProbeNode.afterHandled = handled::countDown;
+        try {
+            replayed = recordThenReplay(store, () -> store, "probe", one(), one(), s -> {
+                s.feed().offer(reused);
+                // re-review N7: the reuse waits for the handler to be DONE with the object, not for its output, which
+                // it emits before it changes the object (see n7_anOutputIsNotTheEndOfTheHandlersUse)
+                try {
+                    assertTrue(handled.await(5, java.util.concurrent.TimeUnit.SECONDS), "the first dispatch completed");
+                } catch (InterruptedException e) {
+                    throw new IllegalStateException(e);
+                }
+                reused.value = 50;                                      // the application reuses the object
+                s.feed().offer(reused);
+            }, 2, live);
+        } finally {
+            ProbeNode.afterHandled = () -> { };
+        }
         assertEquals(List.of("value=10", "value=50"), live);
         assertEquals(live, replayed);
+    }
+
+    /**
+     * Re-review N7, the barrier itself: with the handler held after its output and before it changes the object, the old
+     * barrier (an output exists) is already met, so a producer reusing the object then is overwritten by the handler;
+     * the completion barrier is not met until the handler is done. Latches, no sleeps.
+     */
+    @Test
+    void n7_anOutputIsNotTheEndOfTheHandlersUse() throws Exception {
+        java.util.concurrent.CountDownLatch emitted = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch handled = new java.util.concurrent.CountDownLatch(1);
+        ProbeNode.afterEmit = () -> {
+            emitted.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException e) {
+                throw new IllegalStateException(e);
+            }
+        };
+        ProbeNode.afterHandled = handled::countDown;
+        MutableValue reused = new MutableValue(10);
+        try (Server s = boot(ReplayConfig.OFF, false, one())) {
+            s.feed().offer(reused);
+            assertTrue(emitted.await(5, java.util.concurrent.TimeUnit.SECONDS), "the handler emitted and is held");
+            assertEquals(List.of("value=10"), s.live(), "the old barrier, an output exists, is already met");
+            assertEquals(1, handled.getCount(), "but the handler still owns the object: the completion barrier is not met");
+            Thread producer = new Thread(() -> {
+                try {
+                    handled.await();
+                } catch (InterruptedException e) {
+                    throw new IllegalStateException(e);
+                }
+                reused.value = 50;
+            });
+            producer.start();
+            while (producer.getState() != Thread.State.WAITING) Thread.onSpinWait();
+            assertEquals(10, reused.value, "a producer behind the completion barrier has not written");
+            release.countDown();
+            producer.join(5_000);
+            assertEquals(50, reused.value, "it writes once the handler is done, and the handler's change does not overwrite it");
+        } finally {
+            release.countDown();
+            ProbeNode.afterEmit = () -> { };
+            ProbeNode.afterHandled = () -> { };
+        }
     }
 
     @Test
