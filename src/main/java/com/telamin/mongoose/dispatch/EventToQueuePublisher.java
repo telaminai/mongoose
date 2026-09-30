@@ -9,6 +9,9 @@ import com.telamin.fluxtion.runtime.event.NamedFeedEvent;
 import com.telamin.fluxtion.runtime.event.NamedFeedEventImpl;
 import com.telamin.fluxtion.runtime.event.ReplayRecord;
 import com.telamin.mongoose.internal.NoOpCountersService;
+import com.telamin.mongoose.replay.EventCodec;
+import com.telamin.mongoose.replay.EventJournal;
+import com.telamin.mongoose.replay.JournalledItem;
 import com.telamin.mongoose.service.EventSource;
 import com.telamin.mongoose.service.counters.MongooseCounter;
 import com.telamin.mongoose.service.pool.PoolAware;
@@ -65,9 +68,20 @@ public class EventToQueuePublisher<T> {
     @Setter
     private Function<T, ?> dataMapper = Function.identity();
     private int cacheReadPointer = 0;
+    /** Replay R3: when set, each item is journalled once, encoded, and carries its sequence number to the queue. */
+    private EventJournal journal;
+    private EventCodec journalCodec;
+    /** Set when a journal append or encoding failed: the feed stops journalling (a gap a replay stops at). */
+    private volatile String journalBroken;
     private final boolean logWarning = log.isLoggable(Level.WARNING);
     private final boolean logInfo = log.isLoggable(Level.INFO);
     private final boolean logFine = log.isLoggable(Level.FINE);
+
+    /** Journal this feed's items (spec-replay-recording R3). */
+    public void journal(EventJournal journal, EventCodec codec) {
+        this.journal = journal;
+        this.journalCodec = codec;
+    }
 
     public void addTargetQueue(OneToOneConcurrentArrayQueue<Object> targetQueue, String name) {
         NamedQueue namedQueue = new NamedQueue(name, targetQueue);
@@ -93,6 +107,7 @@ public class EventToQueuePublisher<T> {
 
         publishCounter.increment();
         sequenceNumber++;
+        journalItem(mappedItem, sequenceNumber);
 
         if (log.isLoggable(Level.FINE)) {
             log.fine("listenerCount:" + targetQueues.size() + " sequenceNumber:" + sequenceNumber + " publish:" + itemToPublish);
@@ -117,7 +132,7 @@ public class EventToQueuePublisher<T> {
         }
 
         cacheReadPointer++;
-        dispatch(mappedItem);
+        dispatch(mappedItem, sequenceNumber);
     }
 
     public void cache(T itemToCache) {
@@ -135,6 +150,7 @@ public class EventToQueuePublisher<T> {
             log.fine("listenerCount:" + targetQueues.size() + " sequenceNumber:" + sequenceNumber + " publish:" + itemToCache);
         }
         sequenceNumber++;
+        journalItem(mappedItem, sequenceNumber);
         if (cacheEventLog) {
             // For explicit cache without publish, detach from pool and store the original instance
             PoolTracker<?> tracker = trackerOf(mappedItem);
@@ -175,7 +191,9 @@ public class EventToQueuePublisher<T> {
             //send updates
             for (int i = cacheReadPointer, eventLogSize = eventLog.size(); i < eventLogSize; i++) {
                 NamedFeedEvent<?> cachedFeedEvent = eventLog.get(i);
-                dispatch(cachedFeedEvent.data());
+                // each cached item with ITS sequence number: it was the current one, which a late subscriber's
+                // catch-up then carried on every cached item (found by the replay spike, R3)
+                dispatch(cachedFeedEvent.data(), cachedFeedEvent.sequenceNumber());
             }
 
         }
@@ -212,18 +230,43 @@ public class EventToQueuePublisher<T> {
         }
     }
 
-    private void dispatch(Object mappedItem) {
+    private void journalItem(Object mappedItem, long seq) {
+        if (journal == null || journalBroken != null) return;
+        try {
+            // encoded before dispatch, so before a pooled item can return to its pool
+            // a copy: the journal owns what it holds, so a codec that reuses its buffer cannot rewrite a journalled item
+            // with the feed's next one (the byte-ownership contract of EventCodec; local review of d2c6428)
+            journal.append(name, seq, journalCodec.encode(mappedItem).clone());
+        } catch (Throwable failed) {
+            // never out of publish: from a feed agent it would reach the default error handler, which exits the process
+            // (#47 re-review B). The feed stops journalling; its items still carry their numbers, so a replay of the
+            // recording stops at the first missing one ("the journal holds no ..."), naming the gap, never joining across it
+            journalBroken = String.valueOf(failed);
+            String why = "replay journal of feed " + name + " stopped at item #" + seq + " (" + mappedItem + "): " + failed;
+            log.severe(why);
+            com.telamin.mongoose.service.error.ErrorReporting.report("EventToQueuePublisher:" + name, why, failed,
+                    com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
+        }
+    }
+
+    /** Why this feed's journal stopped (an append or its encoding failed), or null while it journals. */
+    public String journalBroken() {
+        return journalBroken;
+    }
+
+    private void dispatch(Object mappedItem, long seq) {
         // no-op here; writeToQueue will handle PoolAware reference acquisition per queue
         for (int i = 0, targetQueuesSize = targetQueues.size(); i < targetQueuesSize; i++) {
             NamedQueue namedQueue = targetQueues.get(i);
             OneToOneConcurrentArrayQueue<Object> targetQueue = namedQueue.targetQueue();
             switch (eventWrapStrategy) {
-                case SUBSCRIPTION_NOWRAP, BROADCAST_NOWRAP -> writeToQueue(namedQueue, mappedItem);
+                case SUBSCRIPTION_NOWRAP, BROADCAST_NOWRAP -> writeToQueue(namedQueue,
+                        journal == null ? mappedItem : new JournalledItem(seq, mappedItem));
                 case SUBSCRIPTION_NAMED_EVENT, BROADCAST_NAMED_EVENT -> {
                     //TODO reduce memory pressure by using copy or a recyclable wrapper if needed
                     NamedFeedEventImpl<Object> namedFeedEvent = new NamedFeedEventImpl<>(name)
                             .data(mappedItem)
-                            .sequenceNumber(sequenceNumber);
+                            .sequenceNumber(seq);
                     writeToQueue(namedQueue, namedFeedEvent);
                 }
             }
@@ -285,6 +328,9 @@ public class EventToQueuePublisher<T> {
     }
 
     private PoolTracker<?> trackerOf(Object item) {
+        if (item instanceof JournalledItem journalled) {
+            item = journalled.item();
+        }
         if (item instanceof PoolAware pa) {
             return pa.getPoolTracker();
         }

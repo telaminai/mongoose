@@ -12,6 +12,10 @@ import com.telamin.fluxtion.runtime.lifecycle.Lifecycle;
 import com.telamin.fluxtion.runtime.service.Service;
 import com.telamin.mongoose.MongooseServer;
 import com.telamin.mongoose.dispatch.EventFlowManager;
+import com.telamin.mongoose.replay.GroupRecorder;
+import com.telamin.mongoose.replay.GroupReplayer;
+import com.telamin.mongoose.replay.ReplayRoute;
+import com.telamin.mongoose.replay.ReplayRouting;
 import com.telamin.mongoose.service.EventSubscriptionKey;
 import com.telamin.mongoose.service.counters.MongooseCounter;
 import com.telamin.mongoose.service.scheduler.DeadWheelScheduler;
@@ -67,13 +71,33 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     // installs before any agent is constructed.
     private final MongooseCounter eventsProcessedCounter;
     private final MongooseCounter idleCyclesCounter;
+    /** Replay (spec-replay-recording): at most one of these is set, by the server's replay mode. */
+    private final GroupRecorder recorder;
+    private final GroupReplayer replayer;
+    /** mongoose#46: work other threads hand to this group's thread, drained in doWork. */
+    private final org.agrona.concurrent.ManyToOneConcurrentArrayQueue<Runnable> onAgentThread =
+            new org.agrona.concurrent.ManyToOneConcurrentArrayQueue<>(256);
+    private volatile Thread agentThread;
 
     public ComposingEventProcessorAgent(String roleName,
                                         EventFlowManager eventFlowManager,
                                         MongooseServer mongooseServer,
                                         DeadWheelScheduler scheduler,
                                         ConcurrentHashMap<String, Service<?>> registeredServices) {
+        this(roleName, eventFlowManager, mongooseServer, scheduler, registeredServices, null, null);
+    }
+
+    public ComposingEventProcessorAgent(String roleName,
+                                        EventFlowManager eventFlowManager,
+                                        MongooseServer mongooseServer,
+                                        DeadWheelScheduler scheduler,
+                                        ConcurrentHashMap<String, Service<?>> registeredServices,
+                                        GroupRecorder recorder,
+                                        java.util.function.Function<ReplayRouting,
+                                                GroupReplayer> replayerFactory) {
         super(roleName, scheduler);
+        this.recorder = recorder;
+        this.replayer = replayerFactory == null ? null : replayerFactory.apply(routing());
         this.eventFlowManager = eventFlowManager;
         this.mongooseServer = mongooseServer;
         this.scheduler = scheduler;
@@ -119,6 +143,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
             }
         }
         log.info("onStart " + roleName());
+        agentThread = Thread.currentThread();
         checkForAdded();
         super.onStart();
     }
@@ -128,7 +153,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         checkForStopped();
         checkForAdded();
         checkForBroadcasts();
+        for (Runnable r; (r = onAgentThread.poll()) != null; ) r.run();
         int work = super.doWork();
+        if (replayer != null) work += replayer.doWork();
         // Counter accounting:
         //   work > 0  → events were dispatched through the composed agents
         //   work == 0 → the duty cycle didn't find anything to do; idle strategy
@@ -145,8 +172,34 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         return work;
     }
 
+    /**
+     * Run {@code work} on this group's thread (mongoose#46): directly when called on it, or when the group is not
+     * running (then nothing else drives its processors); otherwise queued for the start of the next duty cycle. Best
+     * effort: work queued as the group closes may be left unrun, so a caller that needs it applied awaits it with a
+     * timeout ({@link AgentHandoff}), which then cancels it rather than leave it half applied.
+     */
+    public void runOnAgentThread(Runnable work) {
+        Thread agent = agentThread;
+        if (agent == null || agent == Thread.currentThread() || !agent.isAlive()) {
+            work.run();
+            return;
+        }
+        Runnable once = AgentHandoff.once(work);
+        if (!onAgentThread.offer(once)) {
+            throw new IllegalStateException("group " + roleName() + " cannot take more work from other threads");
+        }
+        // best effort, not a delivery guarantee: if the thread stopped between the check above and the offer, run it
+        // here (the claim makes it run once, whichever gets to it). A window remains (a close that drains before this
+        // offer and clears the thread after this re-read), in which the work is left unrun; a caller that awaits it
+        // times out, and AgentHandoff then cancels it, so nothing is half applied
+        Thread after = agentThread;
+        if (after == null || !after.isAlive()) once.run();
+    }
+
     @Override
     public void onClose() {
+        for (Runnable r; (r = onAgentThread.poll()) != null; ) r.run();   // work handed over before the close still runs
+        agentThread = null;
         log.info("onClose " + roleName());
         super.onClose();
     }
@@ -166,12 +219,20 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
 
         if (eventQueueToEventProcessor == null) {
             eventQueueToEventProcessor = eventFlowManager.getMappingAgent(subscriptionKey, this);
+            if (recorder != null && eventQueueToEventProcessor instanceof EventQueueToEventProcessorAgent agent) {
+                agent.recordWith(recorder);
+            }
             queueProcessorMap.put(subscriptionKey, eventQueueToEventProcessor);
             queueReadersToAdd.add(eventQueueToEventProcessor);
             log.info("added new subscribe subscriptionKey:" + subscriptionKey + " subscriber:" + subscriber);
         }
 
         eventQueueToEventProcessor.registerProcessor(subscriber);
+        // REPLAY: a replayed processor receives only the replay; its live inputs are muted, not delivered beside it
+        if (replayer != null && replayer.replays(subscriber)
+                && eventQueueToEventProcessor instanceof EventQueueToEventProcessorAgent agent) {
+            agent.muteLiveInputs(subscriber);
+        }
         eventFlowManager.subscribe(subscriptionKey);
     }
 
@@ -193,6 +254,53 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         queueProcessorMap.values().forEach(q -> q.deregisterProcessor(subscriber));
     }
 
+    /** REPLAY mode's driver for this group, or null. */
+    public GroupReplayer replayer() {
+        return replayer;
+    }
+
+    /** The routes a replay takes: each source's queue agent in this group, as this group's config made it (D2). */
+    private ReplayRouting routing() {
+        return new ReplayRouting() {
+            @Override
+            public ReplayRoute routeFor(String source, String route, DataFlow flow) {
+                // by source AND route: one source can reach a processor by several callback types, and the first match
+                // replayed every entry through whichever route the map listed first (review of 90f0d9b, finding 4)
+                List<String> matched = new ArrayList<>();
+                ReplayRoute found = null;
+                for (var e : queueProcessorMap.entrySet()) {
+                    if (e.getKey().eventSourceKey().sourceName().equals(source)
+                            && e.getValue() instanceof EventQueueToEventProcessorAgent agent
+                            && agent.subscribers().contains(flow)
+                            && (route.isEmpty() || route.equals(agent.route()))) {
+                        matched.add(agent.route());
+                        found = agent;
+                    }
+                }
+                if (matched.size() > 1) {
+                    throw new IllegalStateException("the entry names no route, and " + source + " reaches the processor by "
+                            + matched.size() + " routes " + matched + ": a replay does not choose one");
+                }
+                return found;
+            }
+
+            @Override
+            public com.telamin.mongoose.service.EventSource.EventWrapStrategy wrapOf(String source) {
+                return eventFlowManager.wrapStrategyOf(source);
+            }
+
+            @Override
+            public com.telamin.mongoose.service.admin.impl.AdminCommand adminCommand(String name) {
+                for (Service<?> svc : registeredServices.values()) {
+                    if (svc.instance() instanceof com.telamin.mongoose.service.admin.impl.AdminCommandProcessor admin) {
+                        return admin.registeredCommand(name);
+                    }
+                }
+                return null;
+            }
+        };
+    }
+
     public Collection<NamedEventProcessor> registeredEventProcessors() {
         return registeredEventProcessors.values();
     }
@@ -204,8 +312,13 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
                 DataFlow eventProcessor = namedEventProcessor.eventProcessor();
                 registeredEventProcessors.put(namedEventProcessor.name(), namedEventProcessor);
                 com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(eventProcessor);
+                // replay: a recorded processor gets a live recording clock, a replayed one a pinned replay clock. Before
+                // anything that can subscribe it (services, the feed): a replayed processor's live inputs are muted as
+                // each subscription is made, so the replayer must already know it
+                if (recorder != null) recorder.attach(namedEventProcessor.name(), eventProcessor);
+                if (replayer != null) replayer.attach(namedEventProcessor.name(), eventProcessor);
                 eventProcessor.registerService(schedulerService);
-                registeredServices.values().forEach(eventProcessor::registerService);
+                registeredServices.values().forEach(svc -> eventProcessor.registerService(serviceFor(eventProcessor, svc)));
                 eventProcessor.addEventFeed(this);
                 if (eventProcessor instanceof Lifecycle) {
                     ((Lifecycle) eventProcessor).start();
@@ -237,6 +350,11 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         });
     }
 
+    /** The service a processor is given: REPLAY swaps a replayed processor's sinks for a capture (L2); else itself. */
+    private Service<?> serviceFor(DataFlow eventProcessor, Service<?> service) {
+        return replayer == null ? service : replayer.serviceFor(eventProcessor, service);
+    }
+
     /** Drains pending service-broadcast queues onto every running
      *  processor in this group. Runs on the agent thread so the
      *  per-processor {@code registerService} / {@code deRegisterService}
@@ -249,7 +367,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
                     registeredEventProcessors.values().forEach(np -> {
                         com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(np.eventProcessor());
                         try {
-                            np.eventProcessor().registerService(svc);
+                            np.eventProcessor().registerService(serviceFor(np.eventProcessor(), svc));
                         } finally {
                             com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
                         }
@@ -260,7 +378,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
                     registeredEventProcessors.values().forEach(np -> {
                         com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(np.eventProcessor());
                         try {
-                            np.eventProcessor().deRegisterService(svc);
+                            np.eventProcessor().deRegisterService(serviceFor(np.eventProcessor(), svc));
                         } finally {
                             com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
                         }

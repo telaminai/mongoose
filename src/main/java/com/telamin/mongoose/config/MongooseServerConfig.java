@@ -8,6 +8,7 @@ package com.telamin.mongoose.config;
 import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
 import com.telamin.mongoose.MongooseEventHandler;
+import com.telamin.mongoose.replay.ReplayConfig;
 import com.telamin.mongoose.service.CallBackType;
 import com.telamin.mongoose.service.EventToInvokeStrategy;
 import lombok.Data;
@@ -116,6 +117,9 @@ public class MongooseServerConfig {
      * is installed and call-site overhead is zero after JIT compilation.
      */
     private PerformanceMonitoringConfig performanceMonitoring;
+
+    /** Record or replay processors' inputs (spec-replay-recording R1); off by default. */
+    private ReplayConfig replay;
 
     /**
      * Gets the list of event handler groups, initializing if {@code null} and adding
@@ -469,6 +473,7 @@ public class MongooseServerConfig {
         private final List<ThreadConfig> agentThreads = new ArrayList<>();
         private IdleStrategy idleStrategy;
         private final Map<CallBackType, Supplier<EventToInvokeStrategy>> eventInvokeStrategies = new HashMap<>();
+        private ReplayConfig replay;
 
         private Builder() {
         }
@@ -566,6 +571,12 @@ public class MongooseServerConfig {
             return this;
         }
 
+        /** Record or replay processors' inputs (spec-replay-recording R1). */
+        public Builder replay(ReplayConfig replay) {
+            this.replay = replay;
+            return this;
+        }
+
         /**
          * Convenience for the common ON_EVENT callback type.
          *
@@ -635,6 +646,7 @@ public class MongooseServerConfig {
             if (!agentThreads.isEmpty()) cfg.setAgentThreads(new ArrayList<>(agentThreads));
             if (idleStrategy != null) cfg.setIdleStrategy(idleStrategy);
             if (!eventInvokeStrategies.isEmpty()) cfg.setEventInvokeStrategies(new HashMap<>(eventInvokeStrategies));
+            if (replay != null) cfg.setReplay(replay);
             return cfg;
         }
     }

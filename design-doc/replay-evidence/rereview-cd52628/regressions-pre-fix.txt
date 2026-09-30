@@ -1,0 +1,16 @@
+ReplayRound3ReviewTest#f1_aNondeterministicFaithfulCodec_replaysTheValue_memory: FAILURE AssertionFailedError: the feed's codec, not Java serialisation, carries the input to the replay ==> expected: <[codec=17]> but was: <[codec=0]>
+ReplayRound3ReviewTest#f1_aNondeterministicFaithfulCodec_replaysTheValue_csv: FAILURE AssertionFailedError: the feed's codec, not Java serialisation, carries the input to the replay ==> expected: <[codec=17]> but was: <[codec=0]>
+ReplayRound3ReviewTest#f1_aCodecOnlyInput_neverFallsBackToJavaSerialisation: FAILURE AssertionFailedError: a codec-only input is not refused as not Serializable ==> expected: <[]> but was: <[entry 0 could not be replayed: java.lang.IllegalArgumentException: an input of com.telamin.mongoose.replay.ReplayRound3ReviewTest$CodecOnly
+ReplayRound3ReviewTest#f1_aChangedRecipientInAFanOut_replaysWhatItReceived_throughTheCodec: FAILURE AssertionFailedError: each recipient replays what it received, through the codec ==> expected: <[codec=0, codec=1]> but was: <[codec=0, codec=0]>
+ReplayRound3ReviewTest#f2_aWrappedJournalledInput_replaysTheWrapperItReceived_memory: FAILURE AssertionFailedError: the wrapper as received: its event time, name, topic, number, flag and filters
+ReplayRound3ReviewTest#f2_aWrappedJournalledInput_replaysTheWrapperItReceived_csv: FAILURE AssertionFailedError: the wrapper as received: its event time, name, topic, number, flag and filters
+ReplayRound3ReviewTest#f2_aJournalledWrapperWithItsOwnMetadata_isRecordedWithIt_andReplaysIt: FAILURE AssertionFailedError: the wrapper's own fields are kept: Indexed[source=feed, route=onEventCallBack, seq=7, instant=99, reads=[]] ==> Unexpected type, expected: <com.telamin.mongoose.replay.ReplayEntry.Inline> but was: <com.tela
+ReplayRound3ReviewTest#f2_anIntegerFilterOnTheExactBaseClass_survives_memory: FAILURE AssertionFailedError: replayed with its integer filter, which selects its handler
+ReplayRound3ReviewTest#f2_anIntegerFilterOnTheExactBaseClass_survives_csv: FAILURE AssertionFailedError: replayed with its integer filter, which selects its handler
+ReplayRound3ReviewTest#f3_aRecordingClockThatCannotBeInstalled_isANamedFailedRecording_whenAttachedDirectly: FAILURE AssertionFailedError: nothing escapes the agent's setup ==> Unexpected exception thrown: java.lang.IllegalStateException: DEMO cannot install recording clock
+ReplayRound3ReviewTest#f3_aRecordingClockThatCannotBeInstalled_neverEndsARealServer_andTheRecordingSaysSo: FAILURE AssertionFailedError: the server survived (exit 0): [Sept 30, 2026 2:11:23 PM com.telamin.mongoose.dutycycle.GlobalErrorHandler onError, java.lang.IllegalStateException: DEMO cannot install recording clock] ==> expe
+ReplayRound3ReviewTest#f4_aStrategyThatNamesNoProcessor_isNeverRecordedAsAnEmptyRecording: FAILURE AssertionFailedError: the input it delivered is a named capture failure, not an empty recording: [] ==> expected: <true> but was: <false>
+ReplayIndependentReviewTest#n7_anOutputIsNotTheEndOfTheHandlersUse: PASS
+ReplayIndependentReviewTest#f1_aReplayStoreThatCannotBeRead_isAStoppedReplay_notAnExitedServer: PASS
+ReplayReReviewTest#n1_aClockThatCannotBeInstalled_neverEndsARealServer_norLetsLiveInputsThrough: PASS
+time=1790773907749 filterId=17 time=1790773907749 filterId=2147483647 time=1790773910287 filterId=2147483647 time=1790773910388 filterId=2147483647

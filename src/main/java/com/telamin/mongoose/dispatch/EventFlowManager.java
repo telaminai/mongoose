@@ -8,6 +8,7 @@ package com.telamin.mongoose.dispatch;
 import com.telamin.mongoose.dutycycle.EventQueueToEventProcessor;
 import com.telamin.mongoose.dutycycle.EventQueueToEventProcessorAgent;
 import com.telamin.mongoose.internal.NoOpCountersService;
+import com.telamin.mongoose.replay.ReplayConfig;
 import com.telamin.mongoose.service.*;
 import com.telamin.mongoose.service.counters.MongooseCountersService;
 import org.agrona.concurrent.Agent;
@@ -60,6 +61,23 @@ public class EventFlowManager {
 
     public EventFlowManager() {
         eventToInvokerFactoryMap.put(CallBackType.ON_EVENT_CALL_BACK, EventToOnEventInvokeStrategy::new);
+    }
+
+    private ReplayConfig replayConfig = ReplayConfig.OFF;
+
+    /** Set before any event source registers (spec-replay-recording R1). */
+    public void setReplayConfig(ReplayConfig replayConfig) {
+        this.replayConfig = replayConfig == null ? ReplayConfig.OFF : replayConfig;
+    }
+
+    public ReplayConfig getReplayConfig() {
+        return replayConfig;
+    }
+
+    /** How {@code sourceName}'s publisher wraps its items, or null when no such source is registered. */
+    public EventSource.EventWrapStrategy wrapStrategyOf(String sourceName) {
+        EventSource_QueuePublisher<?> p = eventSourceToQueueMap.get(new EventSourceKey<>(sourceName));
+        return p == null ? null : p.queuePublisher().getEventWrapStrategy();
     }
 
     /**
@@ -159,6 +177,10 @@ public class EventFlowManager {
                         eventSource));
 
         EventToQueuePublisher<T> queuePublisher = (EventToQueuePublisher<T>) eventSourceQueuePublisher.queuePublisher();
+        // R3: a journalled feed's items are journalled once, and carry their sequence number to every queue
+        if (replayConfig.mode() == ReplayConfig.Mode.RECORD && replayConfig.journalled(sourceName)) {
+            queuePublisher.journal(replayConfig.journal(), replayConfig.journalledFeeds().get(sourceName));
+        }
         eventSource.setEventToQueuePublisher(queuePublisher);
         return queuePublisher;
     }
@@ -197,7 +219,8 @@ public class EventFlowManager {
 
         Runnable unsubscribe = createUnsubscribeAction(sourcePublisher, name, keySubscriber);
 
-        return new EventQueueToEventProcessorAgent(eventQueue, eventMapperSupplier.get(), name)
+        return new EventQueueToEventProcessorAgent(eventQueue, eventMapperSupplier.get(), name, eventSourceKey.sourceName(),
+                type.name())
                 .withUnsubscribeAction(unsubscribe);
     }
 
