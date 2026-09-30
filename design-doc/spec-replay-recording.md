@@ -348,8 +348,9 @@ there, and live delivery is never affected):
   processors; through the interface's default, for one. A strategy that names no processor
   (`registeredProcessors()` empty) cannot be recorded: each processor its queue registered has its recording failed;
 - a processor whose recording clock can be installed. One that refuses it has its recording failed at setup, by name,
-  and goes on running live, unrecorded, with its live time handling exactly as replay OFF (a live `ReplayRecord` still
-  sets its time).
+  and goes on running live, unrecorded, with its live time as replay OFF gives it (a live `ReplayRecord` still sets its
+  time). Its timers are still numbered and wrapped by the recording scheduler, which records nothing for it; a clock
+  install that throws AFTER installing is treated as not installed.
 
 **Owner decisions** raised, not taken: whether to offer a per-type snapshot codec for inline inputs that cannot meet the
 serialisation contract; whether a journalled Java codec should get the transient check the inline path has.
@@ -418,8 +419,12 @@ predictions before they ran (`5690172`; the Indexed case `4b411d2`), then run on
 | G1+ | found while fixing G1: an `Indexed` entry decoded the journal's own array | the second replay 0 for 17 | fixed (`d50c857`): decoded from a copy, as the contract says |
 | G2 | a failed RECORD setup changes a live `ReplayRecord`'s time | 99 for 42 (OFF gives 42) | fixed (`4417de7`): only an installed recording clock is pinned; the recording stays failed by name and durably |
 
-Controls: four added (`r4-*`), each caught at its named assertion on its first run. The `JournalRef` decode also copies
-(defensive; no dedicated test). Stated, not fixed: a strategy that names only some of the processors it delivers to
+**The local independent review of d2c6428** (an agent, before release) confirmed G1, G1+ and G2 and found two more: the
+publisher journalled the codec's array as returned, so the contract's "a codec may reuse its buffers" was false on the
+real journal path (23 for 17, through a real `EventToQueuePublisher`; fixed, `99125f6`), and the `JournalRef` copy had no
+test that noticed its removal (a witness added; its control now catches the removal).
+
+Controls: six added (`r4-*`), each caught at its named assertion on its first run. Stated, not fixed: a strategy that names only some of the processors it delivers to
 still omits the others (the trusted-SPI limit, not detected), and a codec shared by the publisher and recipient agents
 must be thread-safe (the configuration's). The OFF dispatch path did not change; no benchmark.
 

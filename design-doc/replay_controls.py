@@ -79,6 +79,8 @@ CONTROLS=[
  ('r4-G1-a-recorded-input-is-read-as-a-copy', R+'EncodedInput.java', '        return bytes.clone();', '        return bytes;', 'ReplayRound4ReviewTest#g1_aDecoderThatConsumesItsInput_neverRewritesTheNextReplay'),
  ('r4-G1-an-indexed-input-is-decoded-from-a-copy', R+'GroupReplayer.java', ".decode(bytes.clone());   // from a copy: G1's contract", '.decode(bytes);', 'ReplayRound4ReviewTest#g1_anIndexedInputsDecoderThatConsumesItsInput_neverRewritesTheJournalForTheNextReplay'),
  ('r4-G2-only-an-installed-clock-is-pinned', R+'GroupRecorder.java', '        if (r == null || !r.clockInstalled) return false;', '        if (r == null) return false;', 'ReplayRound4ReviewTest#g2_aFailedRecording_leavesALiveReplayRecordsTimeAsItIsOff'),
+ ('r4-G1-the-publishers-journal-owns-its-bytes', M+'dispatch/EventToQueuePublisher.java', '            journal.append(name, seq, journalCodec.encode(mappedItem).clone());', '            journal.append(name, seq, journalCodec.encode(mappedItem));', 'ReplayRound4ReviewTest#g1_thePublishersJournal_ownsItsBytes_whenTheCodecReusesItsBuffer'),
+ ('r4-G1-a-journal-ref-is-decoded-from-a-copy', R+'GroupReplayer.java', '.decode(bytes.clone());    // a decoder that consumes its input cannot change the journal (G1)', '.decode(bytes);', 'ReplayRound4ReviewTest#g1_aNamedJournalledInputsDecoderThatConsumesItsInput_neverRewritesTheJournal'),
 ]
 only=set(sys.argv[1:])
 results=[]

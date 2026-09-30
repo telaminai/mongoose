@@ -155,7 +155,7 @@ Sample code:
   processor, and refuses a fan-out it cannot see into. One whose `registeredProcessors()` is empty cannot be recorded:
   the processors it delivers to have their recordings failed, by name.
 - **A processor that refuses the recording clock** has its recording failed at setup, by name, and runs on live,
-  unrecorded, exactly as with replay off. RECORD never stops a processor.
+  unrecorded, with its live time as with replay off. RECORD never stops a processor.
 - **A strategy that names only some of its processors** is trusted: the ones it does not name are not recorded, and
   this is not detected.
 - **Each entry names its route.** A source that reaches a processor by more than one callback type replays each entry
