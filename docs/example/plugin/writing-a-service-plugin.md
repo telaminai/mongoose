@@ -195,6 +195,12 @@ Key points:
 - The `@ServiceRegistered` method can accept the service instance and optionally the service name.
 - Server injects newly registered services into all existing services and vice versa (single-target injection step),
   enabling loose coupling.
+- A processor's callback fires only for a service whose declared class equals the parameter type exactly. A
+  one-argument callback also needs the name to match: `@ServiceRegistered("pricer")` binds a service named
+  `pricer`, and a bare `@ServiceRegistered` binds a service named with the parameter type's canonical class name. A
+  `ServiceConfig` service is named by its `name`, else by its service class name. When a processor joins, the
+  server logs a `WARNING` for each binding that no registered service satisfies, naming the processor, the node, the
+  expected type and name, and the names that are registered. The processor still starts.
 
 ## Registering services with MongooseServerConfig (fluent builder)
 

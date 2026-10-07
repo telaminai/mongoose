@@ -317,8 +317,11 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
                 // each subscription is made, so the replayer must already know it
                 if (recorder != null) recorder.attach(namedEventProcessor.name(), eventProcessor);
                 if (replayer != null) replayer.attach(namedEventProcessor.name(), eventProcessor);
-                eventProcessor.registerService(schedulerService);
-                registeredServices.values().forEach(svc -> eventProcessor.registerService(serviceFor(eventProcessor, svc)));
+                List<Service<?>> given = new ArrayList<>();
+                given.add(schedulerService);
+                registeredServices.values().forEach(svc -> given.add(serviceFor(eventProcessor, svc)));
+                given.forEach(eventProcessor::registerService);
+                warnOnUnboundServices(namedEventProcessor.name(), eventProcessor, given);
                 eventProcessor.addEventFeed(this);
                 if (eventProcessor instanceof Lifecycle) {
                     ((Lifecycle) eventProcessor).start();
@@ -348,6 +351,23 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
                 }
             }
         });
+    }
+
+    /**
+     * WARN once for each service dependency the processor declares that none of the services it was just given satisfies
+     * (fluxtionauditlog-analyser#126). Run here, as the processor joins, because this is the first point at which every
+     * configured service is known: the server registers yml/config services, feeds, sinks and pipes before any processor
+     * is added, and starts processor groups only after every agent-hosted (worker) service group is ACTIVE, which a
+     * worker group reaches only after it has registered its services. A service registered later, at runtime, is
+     * broadcast to the processor and may still satisfy a dependency warned of here; that is a deliberate later change,
+     * not configuration. Diagnostic only: a failure here never stops the processor.
+     */
+    private static void warnOnUnboundServices(String processorName, DataFlow eventProcessor, List<Service<?>> given) {
+        try {
+            UnboundServiceCheck.warnings(processorName, eventProcessor, given).forEach(log::warning);
+        } catch (RuntimeException | LinkageError e) {
+            log.fine("unbound-service check skipped for processor '" + processorName + "': " + e);
+        }
     }
 
     /** The service a processor is given: REPLAY swaps a replayed processor's sinks for a capture (L2); else itself. */
