@@ -89,14 +89,8 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
         final int batchLimit = 64;
         Object event;
         while (processed < batchLimit && (event = inputQueue.poll()) != null) {
-            // Release the per-queue reference as we are now publishing to processors
+            // this queue's reference to a pooled event is held until every processor has been given it (released below)
             PoolTracker<?> tracker = trackerOf(event);
-            if (tracker != null) {
-                try {
-                    tracker.releaseReference();
-                } catch (Throwable ignored) {
-                }
-            }
 
             // RECORD mode only, so replay OFF pays one null check (measured: DispatchPathJmh). A journalled item exists
             // only in RECORD mode; it carries its feed's sequence number, and the processor receives the bare item (R3)
@@ -193,12 +187,18 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                 recorder.afterDispatch(sourceName, route, delivered(event), seq, targets);
             }
 
-            // After dispatching to all processors attempt to return to pool if no more references remain
+            // After dispatching to all processors, drop this queue's reference: released before dispatch, another queue's
+            // last release could recycle the event while a processor here still read it (#54). The last release returns
+            // it to its pool
             if (tracker != null) {
                 try {
-                    tracker.returnToPool();
-                } catch (Throwable ignored) {
-                    logger.warning("unable to return to pool: " + tracker);
+                    tracker.releaseReference();
+                } catch (Throwable t) {
+                    String why = "pooled event reference release failed: agent=" + name + ", event=" + event + ", error=" + t;
+                    logger.severe(why);
+                    com.telamin.mongoose.service.error.ErrorReporting.report(
+                            "EventQueueToEventProcessorAgent:" + name, why, t,
+                            com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
                 }
             }
 

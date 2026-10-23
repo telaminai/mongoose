@@ -15,8 +15,11 @@ import java.util.function.Consumer;
 
 /**
  * Tracks the lifecycle of a {@link PoolAware} instance using reference
- * counting. Only when the reference count drops to zero is the object
- * returned to its originating {@link ObjectPoolManager}.
+ * counting. The object is returned to its originating {@link ObjectPoolManager}
+ * by the release that takes the count to zero, and only by that release: every
+ * holder (the publisher, each queue, each consumer) releases its own reference
+ * once it no longer reads the object, and whoever releases last returns it
+ * (telaminai/mongoose#54).
  */
 @ToString
 public final class PoolTracker<T extends PoolAware> {
@@ -26,6 +29,8 @@ public final class PoolTracker<T extends PoolAware> {
     private final AtomicInteger refCount = new AtomicInteger(0);
     // Guard to ensure returnToPool is performed at most once per cycle.
     private final AtomicBoolean returned = new AtomicBoolean(false);
+    /** Set by {@link #removeFromPool()}: the owner is outside pool management for good, and its references are not counted. */
+    private volatile boolean detached;
 
     /**
      * Optional reset invoked when returning to pool.
@@ -60,6 +65,9 @@ public final class PoolTracker<T extends PoolAware> {
      * Acquire one additional reference to the owner.
      */
     public void acquireReference() {
+        if (detached) {
+            return;
+        }
         // If already returned, acquiring is invalid
         if (returned.get()) {
             throw new IllegalStateException("Cannot acquire reference: object already returned to pool");
@@ -69,22 +77,39 @@ public final class PoolTracker<T extends PoolAware> {
     }
 
     /**
-     * Release a reference; does NOT return to pool even if it drops to zero.
+     * Release a reference. The release that takes the count to zero returns the owner to its pool; no other call
+     * does, so an object is never recycled while a holder that has not yet released still reads it.
+     * <p>
+     * The count never goes below zero: a release with no reference held, while the object is still out of the pool,
+     * is a double release and is refused with an {@link IllegalStateException}. A late release after the object has
+     * gone back to the pool is tolerated as a no-op.
      */
     public void releaseReference() {
-        // Tolerate late releases after return-to-pool: treat as no-op
-        if (returned.get()) {
+        if (detached || returned.get()) {
             return;
         }
         ensureInitialised();
-        int after = refCount.decrementAndGet();
-        if (after < 0) {
-            throw new IllegalStateException("PoolTracker underflow: release called more times than acquired");
+        while (true) {
+            int current = refCount.get();
+            if (current <= 0) {
+                if (returned.get()) {
+                    return; // raced with the release that returned it: a late release
+                }
+                throw new IllegalStateException("PoolTracker underflow: release called more times than acquired: " + owner);
+            }
+            if (refCount.compareAndSet(current, current - 1)) {
+                if (current == 1) {
+                    doReturnOnce();
+                }
+                return;
+            }
         }
     }
 
     /**
-     * Explicitly return to pool now if and only if the reference count is zero.
+     * Return to pool now if and only if the reference count is zero. The last {@link #releaseReference()} already
+     * returns the object, so this is only needed for an object whose count reached zero without a release (none does
+     * through the framework); it is kept for callers that pair it with a release.
      * This method will not modify the reference count.
      * <p>
      * This method is idempotent and safe under concurrent calls:
@@ -121,6 +146,7 @@ public final class PoolTracker<T extends PoolAware> {
     public void removeFromPool() {
         ensureInitialised();
         // Mark returned to prevent any future return attempts
+        detached = true;
         returned.set(true);
         final ObjectPool<T> p = pool;
         final T toDetach = owner;
