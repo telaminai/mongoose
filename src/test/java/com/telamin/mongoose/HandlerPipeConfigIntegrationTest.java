@@ -37,9 +37,10 @@ import static org.junit.jupiter.api.Assertions.*;
  * <ol>
  *   <li><b>Round-trip:</b> a value sent into the sink half is delivered to a
  *       subscribed processor on a different agent group.</li>
- *   <li><b>Cross-thread safety:</b> publisher + subscriber run on independent
- *       agent threads; no in-line dispatch, no concurrent mutation of subscriber
- *       state from the publisher's thread.</li>
+ *   <li><b>Cross-thread delivery:</b> publisher + subscriber run on independent
+ *       agent threads; subscriber state is only touched on the subscriber's thread.
+ *       Several concurrent publishers are covered by
+ *       {@code HandlerPipeTest#concurrentPublishersThroughTheSinkLoseNothing}.</li>
  *   <li><b>{@code @ServiceRegistered}-based sink discovery:</b> the publishing
  *       processor receives the sink via {@code @ServiceRegistered MessageSink}
  *       callback, name-matched against the pipe's name.</li>

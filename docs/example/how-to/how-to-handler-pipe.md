@@ -58,11 +58,16 @@ pipes:
     # sinkName: orders-in   # optional override of the default ".sink" suffix
 ```
 
-Cross-thread safe — the underlying `InMemoryEventSource` extends
-`AbstractAgentHostedEventSourceService`, so the publisher's agent thread
-enqueues, the pipe's agent thread drains, and the subscriber's agent thread
-receives. Producer and consumer can sit on independent agent groups without
-explicit synchronization.
+Cross-thread safe — the sink publishes on the publisher's own thread straight
+into each subscriber's read queue (no extra thread hop), and the pipe's
+publisher serialises those writes, so several processors on different agent
+groups can publish to one pipe without losing events; each subscriber receives
+on its own agent thread. (Before the fix for #51, concurrent publishers could
+overwrite each other's slots in the single-producer subscriber queues.) An item
+dropped because a subscriber queue stayed full for more than 10 ms is logged and
+counted (`EventToQueuePublisher.droppedCount()`). With `agentName` set, the
+pipe's agent drains items handed to `InMemoryEventSource.offer(...)`; values
+sent into the sink are still published in-line.
 
 ### How pipes appear in the admin web
 

@@ -29,10 +29,12 @@ import java.util.function.Function;
  * {@link com.telamin.mongoose.connector.memory.InMemoryEventSource} so values
  * sent into the sink are dispatched out of the feed.
  *
- * <p>Cross-thread safe by construction — {@code InMemoryEventSource} extends
- * {@code AbstractAgentHostedEventSourceService}, so publishers enqueue and a
- * dedicated agent thread drains into subscribers' read queues. Producers and
- * consumers on different agent groups simply work.
+ * <p>Cross-thread safe: the sink publishes on the caller's thread straight into
+ * each subscriber's read queue, and the source's publisher serialises those
+ * writes, so any number of processors on different agent groups can publish to
+ * one pipe without losing events (telaminai/mongoose#51). Subscribers receive on
+ * their own agent threads. Items dropped on a full subscriber queue are counted
+ * ({@code EventToQueuePublisher.droppedCount()}).
  *
  * <p>Typical YAML:
  * <pre>{@code
@@ -103,8 +105,8 @@ public class HandlerPipeConfig<T> {
 
     /**
      * If set, the feed side runs on a dedicated agent thread under this name.
-     * Required when the pipe needs its own duty-cycle independent of the
-     * publishing processor's agent group.
+     * The agent drains items handed to {@code InMemoryEventSource.offer}; values
+     * sent into the sink are still published in-line on the sender's thread.
      */
     private String agentName;
 
