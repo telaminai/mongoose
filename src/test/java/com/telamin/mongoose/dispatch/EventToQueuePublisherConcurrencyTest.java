@@ -8,9 +8,11 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.IntConsumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
  * A publisher called from several threads (telaminai/mongoose#51): every target queue is single-producer, so the
@@ -65,6 +67,44 @@ class EventToQueuePublisherConcurrencyTest {
 
         assertEquals(4, queue.size(), "the queue holds its capacity");
         assertEquals(2, publisher.droppedCount(), "the two items that did not fit are counted");
+    }
+
+    /**
+     * A processor unsubscribing (or being torn down) removes its queue on its own thread while a feed publishes. The
+     * dispatch loop must never see the list shrink under it: an IndexOutOfBounds escaping publish reaches the agent's
+     * error handler, which exits the process (C1 of the review of #51).
+     */
+    @RepeatedTest(3)
+    void queuesAddedAndRemovedWhilePublishingNeverBreakAPublish() throws Exception {
+        EventToQueuePublisher<String> publisher = new EventToQueuePublisher<>("churnFeed");
+        OneToOneConcurrentArrayQueue<Object> stable = new OneToOneConcurrentArrayQueue<>(1 << 17);
+        publisher.addTargetQueue(stable, "stable");
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread churn = new Thread(() -> {
+            OneToOneConcurrentArrayQueue<Object> a = new OneToOneConcurrentArrayQueue<>(1 << 17);
+            OneToOneConcurrentArrayQueue<Object> b = new OneToOneConcurrentArrayQueue<>(1 << 17);
+            while (!Thread.currentThread().isInterrupted()) {
+                publisher.addTargetQueue(a, "a");
+                publisher.addTargetQueue(b, "b");
+                publisher.removeTargetQueueByName("a");
+                publisher.removeTargetQueueByName("b");
+                a.clear();
+                b.clear();
+            }
+        }, "churn");
+        churn.start();
+        try {
+            for (int i = 0; i < TOTAL; i++) {
+                publisher.publish(String.valueOf(i));
+            }
+        } catch (Throwable t) {
+            failure.set(t);
+        } finally {
+            churn.interrupt();
+            churn.join();
+        }
+        assertNull(failure.get(), () -> "publish threw while queues were removed: " + failure.get());
+        assertExactlyOnce(stable);
     }
 
     static void runProducers(IntConsumer publish) throws InterruptedException {

@@ -81,7 +81,8 @@ public class EventToQueuePublisher<T> {
      * queue is a single-producer {@link OneToOneConcurrentArrayQueue}, but a publisher can be called from several
      * threads: a {@code HandlerPipe} sink from every processor that publishes to it, and a source's
      * {@code startComplete} replaying the cache while its own thread publishes. Two unserialised offers can claim the
-     * same slot and lose an event (telaminai/mongoose#51). Uncontended, the lock costs a few nanoseconds per publish.
+     * same slot and lose an event (telaminai/mongoose#51). Adding and removing target queues take it too, so a dispatch
+     * never sees the list change under it. Uncontended, the lock costs a few nanoseconds per publish.
      */
     @Getter(lombok.AccessLevel.NONE)
     private final Object publishLock = new Object();
@@ -100,8 +101,11 @@ public class EventToQueuePublisher<T> {
         if (log.isLoggable(Level.FINE)) {
             log.fine("adding a publisher queue:" + namedQueue);
         }
-        if (!targetQueues.contains(namedQueue)) {
-            targetQueues.add(namedQueue);
+        // under the publish lock: a dispatch loop never sees the list change under it, and contains-then-add is atomic
+        synchronized (publishLock) {
+            if (!targetQueues.contains(namedQueue)) {
+                targetQueues.add(namedQueue);
+            }
         }
     }
 
@@ -389,6 +393,11 @@ public class EventToQueuePublisher<T> {
         if (queueName == null) {
             return;
         }
-        targetQueues.removeIf(q -> queueName.equals(q.name()));
+        // under the publish lock: an unsubscribe on a processor's thread must not shrink the list while a dispatch on
+        // the feed's thread is indexing it (an IndexOutOfBounds out of publish exits the process via the agent's
+        // error handler). The remove waits at most for the publish in flight.
+        synchronized (publishLock) {
+            targetQueues.removeIf(q -> queueName.equals(q.name()));
+        }
     }
 }
