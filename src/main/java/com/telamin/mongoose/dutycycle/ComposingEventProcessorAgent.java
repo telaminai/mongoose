@@ -328,25 +328,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
 
     private void checkForAdded() {
         if (!toStartList.isEmpty()) {
-            toStartList.drain(init -> {
-                NamedEventProcessor namedEventProcessor = init.get();
-                DataFlow eventProcessor = namedEventProcessor.eventProcessor();
-                registeredEventProcessors.put(namedEventProcessor.name(), namedEventProcessor);
-                com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(eventProcessor);
-                // replay: a recorded processor gets a live recording clock, a replayed one a pinned replay clock. Before
-                // anything that can subscribe it (services, the feed): a replayed processor's live inputs are muted as
-                // each subscription is made, so the replayer must already know it
-                if (recorder != null) recorder.attach(namedEventProcessor.name(), eventProcessor);
-                if (replayer != null) replayer.attach(namedEventProcessor.name(), eventProcessor);
-                eventProcessor.registerService(schedulerService);
-                registeredServices.values().forEach(svc -> eventProcessor.registerService(serviceFor(eventProcessor, svc)));
-                eventProcessor.addEventFeed(this);
-                if (eventProcessor instanceof Lifecycle) {
-                    ((Lifecycle) eventProcessor).start();
-                    ((Lifecycle) eventProcessor).startComplete();
-                }
-                com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
-            });
+            toStartList.drain(this::startProcessor);
         }
 
         if (!queueReadersToAdd.isEmpty()) {
@@ -363,19 +345,88 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         }
     }
 
+    /**
+     * Build, wire and start one processor. A failure here is the processor's, not the group's (mongoose#57): it is
+     * reported and the processor dropped, and the other processors in the group run on. Left to escape, it would reach
+     * the agent's error handler, which under bootServer exits the JVM.
+     */
+    private void startProcessor(Supplier<NamedEventProcessor> init) {
+        NamedEventProcessor namedEventProcessor = null;
+        try {
+            namedEventProcessor = init.get();
+            DataFlow eventProcessor = namedEventProcessor.eventProcessor();
+            registeredEventProcessors.put(namedEventProcessor.name(), namedEventProcessor);
+            com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(eventProcessor);
+            // replay: a recorded processor gets a live recording clock, a replayed one a pinned replay clock. Before
+            // anything that can subscribe it (services, the feed): a replayed processor's live inputs are muted as
+            // each subscription is made, so the replayer must already know it
+            if (recorder != null) recorder.attach(namedEventProcessor.name(), eventProcessor);
+            if (replayer != null) replayer.attach(namedEventProcessor.name(), eventProcessor);
+            eventProcessor.registerService(schedulerService);
+            registeredServices.values().forEach(svc -> eventProcessor.registerService(serviceFor(eventProcessor, svc)));
+            eventProcessor.addEventFeed(this);
+            if (eventProcessor instanceof Lifecycle) {
+                ((Lifecycle) eventProcessor).start();
+                ((Lifecycle) eventProcessor).startComplete();
+            }
+        } catch (VirtualMachineError fatal) {
+            throw fatal;
+        } catch (Throwable t) {
+            String name = namedEventProcessor == null ? "<not built>" : namedEventProcessor.name();
+            reportProcessorFailure(name, "failed to start, dropped from the group", t);
+            if (namedEventProcessor != null) {
+                registeredEventProcessors.remove(name, namedEventProcessor);
+                releaseSubscriptions(name, namedEventProcessor.eventProcessor());
+            }
+        } finally {
+            com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
+        }
+    }
+
     private void checkForStopped() {
         if (toStopList.isEmpty()) {
             return;
         }
-        toStopList.drain(name -> {
-            if (registeredEventProcessors.containsKey(name)) {
-                var eventProcessor = registeredEventProcessors.remove(name).eventProcessor();
-                if (eventProcessor instanceof Lifecycle) {
-                    ((Lifecycle) eventProcessor).stop();
-                    ((Lifecycle) eventProcessor).tearDown();
-                }
+        toStopList.drain(this::stopProcessor);
+    }
+
+    /** Stop and tear down one processor; it leaves the group even when either throws (mongoose#57). */
+    private void stopProcessor(String name) {
+        NamedEventProcessor named = registeredEventProcessors.remove(name);
+        if (named == null) {
+            return;
+        }
+        DataFlow eventProcessor = named.eventProcessor();
+        try {
+            if (eventProcessor instanceof Lifecycle) {
+                ((Lifecycle) eventProcessor).stop();
+                ((Lifecycle) eventProcessor).tearDown();
             }
-        });
+        } catch (VirtualMachineError fatal) {
+            throw fatal;
+        } catch (Throwable t) {
+            reportProcessorFailure(name, "failed to stop cleanly, removed from the group", t);
+            releaseSubscriptions(name, eventProcessor);
+        }
+    }
+
+    /** Release what a failed processor subscribed to, so its readers do not outlive it. */
+    private void releaseSubscriptions(String name, DataFlow eventProcessor) {
+        try {
+            removeAllSubscriptions(eventProcessor);
+        } catch (VirtualMachineError fatal) {
+            throw fatal;
+        } catch (Throwable t) {
+            reportProcessorFailure(name, "failed to release its subscriptions", t);
+        }
+    }
+
+    private void reportProcessorFailure(String processorName, String what, Throwable t) {
+        String message = "processor '" + processorName + "' in group '" + roleName() + "' " + what + ": " + t;
+        log.severe(message);
+        com.telamin.mongoose.service.error.ErrorReporting.report(
+                "ComposingEventProcessorAgent:" + roleName(), message, t,
+                com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
     }
 
     /** The service a processor is given: REPLAY swaps a replayed processor's sinks for a capture (L2); else itself. */
@@ -391,26 +442,35 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
      *  threading guarantees as event dispatch. */
     private void checkForBroadcasts() {
         if (!servicesToBroadcastRegister.isEmpty()) {
-            servicesToBroadcastRegister.drain(svc ->
-                    registeredEventProcessors.values().forEach(np -> {
-                        com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(np.eventProcessor());
-                        try {
-                            np.eventProcessor().registerService(serviceFor(np.eventProcessor(), svc));
-                        } finally {
-                            com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
-                        }
-                    }));
+            servicesToBroadcastRegister.drain(svc -> registeredEventProcessors.values().forEach(np ->
+                    deliverService(np, svc, true)));
         }
         if (!servicesToBroadcastDeregister.isEmpty()) {
-            servicesToBroadcastDeregister.drain(svc ->
-                    registeredEventProcessors.values().forEach(np -> {
-                        com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(np.eventProcessor());
-                        try {
-                            np.eventProcessor().deRegisterService(serviceFor(np.eventProcessor(), svc));
-                        } finally {
-                            com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
-                        }
-                    }));
+            servicesToBroadcastDeregister.drain(svc -> registeredEventProcessors.values().forEach(np ->
+                    deliverService(np, svc, false)));
+        }
+    }
+
+    /**
+     * Hand one processor a service (de)registration. A processor that throws is reported and keeps running; the
+     * broadcast still reaches every other processor in the group (mongoose#57).
+     */
+    private void deliverService(NamedEventProcessor np, Service<?> svc, boolean register) {
+        DataFlow eventProcessor = np.eventProcessor();
+        com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(eventProcessor);
+        try {
+            if (register) {
+                eventProcessor.registerService(serviceFor(eventProcessor, svc));
+            } else {
+                eventProcessor.deRegisterService(serviceFor(eventProcessor, svc));
+            }
+        } catch (VirtualMachineError fatal) {
+            throw fatal;
+        } catch (Throwable t) {
+            reportProcessorFailure(np.name(), (register ? "failed to register" : "failed to deregister")
+                    + " service '" + svc.serviceName() + "'", t);
+        } finally {
+            com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
         }
     }
 

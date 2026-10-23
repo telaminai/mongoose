@@ -7,6 +7,8 @@
 package com.telamin.mongoose.service.scheduler;
 
 import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
+import com.telamin.mongoose.service.error.ErrorEvent;
+import com.telamin.mongoose.service.error.ErrorReporting;
 import org.agrona.DeadlineTimerWheel;
 import org.agrona.collections.Long2ObjectHashMap;
 import org.agrona.concurrent.Agent;
@@ -61,7 +63,18 @@ public class DeadWheelScheduler implements SchedulerService, Agent {
     }
 
     private boolean onTimerExpiry(TimeUnit timeUnit, long now, long timerId) {
-        expiryActions.remove(timerId).run();
+        Runnable action = expiryActions.remove(timerId);
+        if (action == null) {
+            return true;
+        }
+        // a callback's failure is its processor's, not the agent's (mongoose#57): reported, and the other timers fire
+        try {
+            action.run();
+        } catch (VirtualMachineError fatal) {
+            throw fatal;
+        } catch (Throwable t) {
+            ErrorReporting.report("DeadWheelScheduler", "timer callback failed: " + t, t, ErrorEvent.Severity.ERROR);
+        }
         return true;
     }
 
