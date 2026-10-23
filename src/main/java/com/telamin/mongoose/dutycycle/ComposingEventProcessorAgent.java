@@ -62,6 +62,8 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     private final OneToOneConcurrentArrayQueue<Service<?>> servicesToBroadcastRegister = new OneToOneConcurrentArrayQueue<>(128);
     private final OneToOneConcurrentArrayQueue<Service<?>> servicesToBroadcastDeregister = new OneToOneConcurrentArrayQueue<>(128);
     private final List<EventQueueToEventProcessor> queueReadersToAdd = new ArrayList<>();
+    /** mongoose#55: readers whose last listener left, waiting for the composite to take them out. Agent thread only. */
+    private final List<EventQueueToEventProcessor> queueReadersToRemove = new ArrayList<>();
     private final MongooseServer mongooseServer;
     private final DeadWheelScheduler scheduler;
     private final Service<SchedulerService> schedulerService;
@@ -238,20 +240,39 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
 
     @Override
     public void unSubscribe(DataFlow subscriber, EventSubscriptionKey<?> subscriptionKey) {
-        if (queueProcessorMap.containsKey(subscriptionKey)) {
-            EventQueueToEventProcessor eventQueueToEventProcessor = queueProcessorMap.get(subscriptionKey);
-            if (eventQueueToEventProcessor.deregisterProcessor(subscriber) == 0) {
-                log.info("EventQueueToEventProcessor listener count = 0, removing subscription:" + subscriptionKey);
-                queueProcessorMap.remove(subscriptionKey);
-                eventFlowManager.unSubscribe(subscriptionKey);
-            }
+        EventQueueToEventProcessor eventQueueToEventProcessor = queueProcessorMap.get(subscriptionKey);
+        if (eventQueueToEventProcessor != null) {
+            deregister(subscriber, subscriptionKey, eventQueueToEventProcessor);
         }
     }
 
     @Override
     public void removeAllSubscriptions(DataFlow subscriber) {
         log.info("removing all subscriptions for:" + subscriber + " " + roleName());
-        queueProcessorMap.values().forEach(q -> q.deregisterProcessor(subscriber));
+        for (var entry : queueProcessorMap.entrySet()) {
+            deregister(subscriber, entry.getKey(), entry.getValue());
+        }
+    }
+
+    /**
+     * Deregister {@code subscriber} from one reader. When that leaves the reader with no listeners it is dead: its
+     * queue is no longer a target of the feed (the reader's unsubscribe action removed it), so it is released here
+     * (mongoose#55) - the map entry goes, so a later subscribe builds a fresh reader rather than reuse this one; the
+     * source subscription is released; and the reader leaves the composite rather than poll a queue nobody fills.
+     */
+    private void deregister(DataFlow subscriber, EventSubscriptionKey<?> subscriptionKey, EventQueueToEventProcessor reader) {
+        if (reader.deregisterProcessor(subscriber) > 0) {
+            return;
+        }
+        if (!queueProcessorMap.remove(subscriptionKey, reader)) {
+            return; // already released
+        }
+        log.info("EventQueueToEventProcessor listener count = 0, removing subscription:" + subscriptionKey);
+        eventFlowManager.unSubscribe(subscriptionKey);
+        // a reader not yet added to the composite is simply never added; one already in it is taken out
+        if (!queueReadersToAdd.remove(reader)) {
+            queueReadersToRemove.add(reader);
+        }
     }
 
     /** REPLAY mode's driver for this group, or null. */
@@ -331,6 +352,13 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         if (!queueReadersToAdd.isEmpty()) {
             if (status() == Status.ACTIVE && tryAdd(queueReadersToAdd.get(0))) {
                 queueReadersToAdd.remove(0);
+            }
+        }
+
+        // one at a time, as the composite takes one pending removal per duty cycle; it closes the reader once removed
+        if (!queueReadersToRemove.isEmpty()) {
+            if (status() == Status.ACTIVE && tryRemove(queueReadersToRemove.get(0))) {
+                queueReadersToRemove.remove(0);
             }
         }
     }
