@@ -130,6 +130,8 @@ public class MongooseServer implements MongooseServerController {
     /** Audit capture config — read for autoStart at processor registration. */
     private com.telamin.mongoose.config.AuditCaptureConfig auditCaptureConfig;
     private final Set<Service<?>> registeredAgentServices = ConcurrentHashMap.newKeySet();
+    /** mongoose#56: service agent groups hosting an event source, closed first by the ordered shutdown. */
+    private final Set<String> eventSourceAgentGroups = ConcurrentHashMap.newKeySet();
     /** Configured pipes — tracked separately from registeredServices because
      *  a pipe is one logical config entry but two service registrations.
      *  Order-preserving so the admin surface lists pipes in declaration order. */
@@ -712,6 +714,9 @@ public class MongooseServer implements MongooseServerController {
                     return new ComposingWorkerServiceAgentRunner(group, groupRunner, idleStrategy);
                 });
 
+        if (service.exportedService().instance() instanceof EventSource) {
+            eventSourceAgentGroups.add(agentGroup);
+        }
         composingAgentRunner.group().registerServer(service);
     }
 
@@ -1072,12 +1077,18 @@ public class MongooseServer implements MongooseServerController {
     }
 
     /**
-     * Stops the server and all its components.
-     * This method stops all event processor agents, agent hosted services, the flowManager, and all registered services.
-     * It should be called when the server is no longer needed to free up resources.
+     * Stops the server and all its components, in order (mongoose#56): the feeds stop (their agent groups close, then
+     * every event source is stopped and torn down); events already queued to processors drain, bounded by
+     * {@link MongooseServerConfig#getShutdownDrainTimeoutMillis()}; each processor group stops and tears down its
+     * processors on its own thread; then the remaining agent hosted services and registered services stop.
+     * Calling it again is a no-op.
      */
     public void stop() {
-        lifecycleManager.stop(started, toGroupRunnerMap(composingEventProcessorAgents), toGroupRunnerMap(composingServiceAgents), registeredServices);
+        long drainTimeoutMillis = mongooseServerConfig == null
+                ? MongooseServerConfig.DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS
+                : mongooseServerConfig.getShutdownDrainTimeoutMillis();
+        lifecycleManager.stop(started, toGroupRunnerMap(composingEventProcessorAgents), toGroupRunnerMap(composingServiceAgents),
+                registeredServices, flowManager, drainTimeoutMillis);
         started = false;
     }
 
@@ -1111,6 +1122,11 @@ public class MongooseServer implements MongooseServerController {
                     @Override
                     public void startCompleteIfSupported() {
                         cws.group().startComplete();
+                    }
+
+                    @Override
+                    public boolean hostsEventSource() {
+                        return eventSourceAgentGroups.contains(k);
                     }
                 });
             }

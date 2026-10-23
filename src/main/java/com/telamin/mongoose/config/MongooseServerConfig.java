@@ -121,6 +121,16 @@ public class MongooseServerConfig {
     /** Record or replay processors' inputs (spec-replay-recording R1); off by default. */
     private ReplayConfig replay;
 
+    /** Default bound on the shutdown drain, see {@link #shutdownDrainTimeoutMillis}. */
+    public static final long DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS = 2_000;
+
+    /**
+     * mongoose#56: how long {@code MongooseServer.stop()} waits, after the feeds stop, for events already queued to
+     * processors to be delivered before the processors stop. Events still queued when it runs out are dropped (and
+     * logged). Zero or less does not wait.
+     */
+    private long shutdownDrainTimeoutMillis = DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS;
+
     /**
      * Gets the list of event handler groups, initializing if {@code null} and adding
      * {@link #defaultHandlerGroupConfig} if present and not already included.

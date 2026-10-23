@@ -24,6 +24,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class LifecycleManager {
 
     private final MongooseServer server;
+    private final java.util.concurrent.atomic.AtomicBoolean stopped = new java.util.concurrent.atomic.AtomicBoolean();
 
     public LifecycleManager(MongooseServer server) {
         this.server = server;
@@ -137,36 +138,79 @@ public final class LifecycleManager {
         composingServiceAgents.values().forEach(GroupRunner::startCompleteIfSupported);
     }
 
+    /**
+     * The ordered shutdown (mongoose#56), run once: a second call, or one racing the first, is a no-op.
+     * <ol>
+     *   <li>stop the feeds: close the agent groups that host event sources, so they publish no more, then stop and tear
+     *   down every event source;</li>
+     *   <li>drain: wait, at most {@code drainTimeoutMillis}, for the events already queued to processors to be
+     *   delivered (processor groups still run);</li>
+     *   <li>close each processor group: on its own thread the group stops and tears down its processors;</li>
+     *   <li>close the remaining service agent groups and stop the registered services.</li>
+     * </ol>
+     */
     public void stop(boolean started,
                      ConcurrentHashMap<String, ? extends GroupRunner> composingEventProcessorAgents,
                      ConcurrentHashMap<String, ? extends GroupRunner> composingServiceAgents,
-                     Map<String, Service<?>> registeredServices) {
+                     Map<String, Service<?>> registeredServices,
+                     EventFlowManager flowManager,
+                     long drainTimeoutMillis) {
         log.info("stopping server");
         if (!started) {
             log.info("server not started, nothing to stop");
             return;
         }
-        log.info("stopping event processor agents");
-        composingEventProcessorAgents.forEach((k, v) -> {
-            log.info("stopping composing event processor agent " + k);
-            AgentRunner groupRunner = v.getGroupRunner();
-            if (groupRunner.thread() != null) {
-                groupRunner.close();
+        if (!stopped.compareAndSet(false, true)) {
+            log.info("server already stopped");
+            return;
+        }
+        log.info("stopping feeds");
+        composingServiceAgents.forEach((k, v) -> {
+            if (v.hostsEventSource()) {
+                closeGroup("event source agent", k, v);
             }
         });
+        flowManager.stop();
+
+        log.info("draining queued events, at most " + drainTimeoutMillis + "ms");
+        try {
+            if (!flowManager.awaitQueuesDrained(drainTimeoutMillis)) {
+                log.warning("shutdown drain timed out after " + drainTimeoutMillis + "ms, dropping "
+                        + flowManager.pendingQueuedEvents() + " queued events");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warning("shutdown drain interrupted, dropping " + flowManager.pendingQueuedEvents() + " queued events");
+        }
+
+        log.info("stopping event processor agents");
+        composingEventProcessorAgents.forEach((k, v) -> closeGroup("event processor agent", k, v));
+
         log.info("stopping agent hosted services");
         composingServiceAgents.forEach((k, v) -> {
-            log.info("stopping composing service agent " + k);
-            AgentRunner groupRunner = v.getGroupRunner();
-            if (groupRunner.thread() != null) {
-                groupRunner.close();
+            if (!v.hostsEventSource()) {
+                closeGroup("service agent", k, v);
             }
         });
         log.info("stopping registered services");
         for (Service<?> service : registeredServices.values()) {
             if (!(service.instance() instanceof LifeCycleEventSource)) {
-                service.stop();
+                try {
+                    service.stop();
+                } catch (Throwable t) {
+                    log.log(java.util.logging.Level.WARNING, "service " + service.serviceName() + " failed to stop", t);
+                }
             }
+        }
+    }
+
+    /** Close a group's runner, which waits for its thread to run onClose; an unstarted group closes on this thread. */
+    private static void closeGroup(String kind, String name, GroupRunner group) {
+        log.info("stopping composing " + kind + " " + name);
+        try {
+            group.getGroupRunner().close();
+        } catch (Throwable t) {
+            log.log(java.util.logging.Level.WARNING, "composing " + kind + " " + name + " failed to close", t);
         }
     }
 
@@ -179,5 +223,8 @@ public final class LifecycleManager {
         DynamicCompositeAgent getGroup();
 
         default void startCompleteIfSupported() { /* no-op by default */ }
+
+        /** True for a service agent group hosting an event source: the ordered shutdown closes it first. */
+        default boolean hostsEventSource() { return false; }
     }
 }
