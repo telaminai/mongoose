@@ -60,16 +60,26 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     static final long CONTROL_QUEUE_FULL_TIMEOUT_NANOS = java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
     private final ManyToOneConcurrentArrayQueue<Supplier<NamedEventProcessor>> toStartList = new ManyToOneConcurrentArrayQueue<>(CONTROL_QUEUE_CAPACITY);
     private final ManyToOneConcurrentArrayQueue<String> toStopList = new ManyToOneConcurrentArrayQueue<>(CONTROL_QUEUE_CAPACITY);
-    // Dynamic-service broadcast queues. MongooseServer.registerService /
-    // removeService publish onto these so the agent thread (and only the
+    // Dynamic-service broadcast queue. MongooseServer.registerService /
+    // removeService publish onto it so the agent thread (and only the
     // agent thread) calls eventProcessor.registerService /
     // deRegisterService on every running DataFlow in this group — that's
     // what fires @ServiceRegistered / @ServiceDeregistered on processor-
     // internal nodes (SubscriptionManagerNode for feeds, SinkPublisher
     // for sinks, plus any operator-defined node carrying the annotation).
-    private final ManyToOneConcurrentArrayQueue<Service<?>> servicesToBroadcastRegister = new ManyToOneConcurrentArrayQueue<>(CONTROL_QUEUE_CAPACITY);
-    private final ManyToOneConcurrentArrayQueue<Service<?>> servicesToBroadcastDeregister = new ManyToOneConcurrentArrayQueue<>(CONTROL_QUEUE_CAPACITY);
+    // One queue for both, so a service's deregistration is never handled
+    // before the registration queued ahead of it (mongoose#60 item 1).
+    private final ManyToOneConcurrentArrayQueue<ServiceBroadcast> servicesToBroadcast = new ManyToOneConcurrentArrayQueue<>(CONTROL_QUEUE_CAPACITY);
+
+    private record ServiceBroadcast(Service<?> service, boolean register) {
+    }
     private final List<EventQueueToEventProcessor> queueReadersToAdd = new ArrayList<>();
+    /**
+     * mongoose#60 (item 1): the services each processor has been handed, by identity, so each is handed over once. A
+     * service registered while the group starts is both in {@code registeredServices} (read when a processor joins)
+     * and queued for broadcast; without this the processor got it from both. Agent thread only.
+     */
+    private final java.util.Map<DataFlow, java.util.Set<Service<?>>> servicesDelivered = new java.util.IdentityHashMap<>();
     /** mongoose#55: readers whose last listener left, waiting for the composite to take them out. Agent thread only. */
     private final List<EventQueueToEventProcessor> queueReadersToRemove = new ArrayList<>();
     private final MongooseServer mongooseServer;
@@ -157,7 +167,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
      *  agent thread via {@link #checkForBroadcasts()} so processor-
      *  internal state stays single-threaded. */
     public void broadcastServiceRegistered(Service<?> service) {
-        enqueue(servicesToBroadcastRegister, service, "service-register broadcast");
+        enqueue(servicesToBroadcast, new ServiceBroadcast(service, true), "service broadcast");
     }
 
     /** Symmetric to {@link #broadcastServiceRegistered}. Fires
@@ -165,7 +175,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
      *  group — that's how SubscriptionManagerNode unbinds a feed and how
      *  SinkPublisher nulls its consumer reference. */
     public void broadcastServiceDeregistered(Service<?> service) {
-        enqueue(servicesToBroadcastDeregister, service, "service-deregister broadcast");
+        enqueue(servicesToBroadcast, new ServiceBroadcast(service, false), "service broadcast");
     }
 
     @Override
@@ -396,7 +406,11 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
             if (recorder != null) recorder.attach(namedEventProcessor.name(), eventProcessor);
             if (replayer != null) replayer.attach(namedEventProcessor.name(), eventProcessor);
             eventProcessor.registerService(schedulerService);
-            registeredServices.values().forEach(svc -> eventProcessor.registerService(serviceFor(eventProcessor, svc)));
+            for (Service<?> svc : registeredServices.values()) {
+                if (servicesDeliveredTo(eventProcessor).add(svc)) {
+                    eventProcessor.registerService(serviceFor(eventProcessor, svc));
+                }
+            }
             eventProcessor.addEventFeed(this);
             if (eventProcessor instanceof Lifecycle) {
                 ((Lifecycle) eventProcessor).start();
@@ -409,6 +423,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
             reportProcessorFailure(name, "failed to start, dropped from the group", t);
             if (namedEventProcessor != null) {
                 registeredEventProcessors.remove(name, namedEventProcessor);
+                servicesDelivered.remove(namedEventProcessor.eventProcessor());
                 releaseSubscriptions(name, namedEventProcessor.eventProcessor());
             }
         } finally {
@@ -429,6 +444,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         if (named == null) {
             return;
         }
+        servicesDelivered.remove(named.eventProcessor());
         DataFlow eventProcessor = named.eventProcessor();
         try {
             if (eventProcessor instanceof Lifecycle) {
@@ -474,13 +490,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
      *  {@code ServiceRegistryNode} bookkeeping) inherits the same
      *  threading guarantees as event dispatch. */
     private void checkForBroadcasts() {
-        if (!servicesToBroadcastRegister.isEmpty()) {
-            servicesToBroadcastRegister.drain(svc -> registeredEventProcessors.values().forEach(np ->
-                    deliverService(np, svc, true)));
-        }
-        if (!servicesToBroadcastDeregister.isEmpty()) {
-            servicesToBroadcastDeregister.drain(svc -> registeredEventProcessors.values().forEach(np ->
-                    deliverService(np, svc, false)));
+        if (!servicesToBroadcast.isEmpty()) {
+            servicesToBroadcast.drain(b -> registeredEventProcessors.values().forEach(np ->
+                    deliverService(np, b.service(), b.register())));
         }
     }
 
@@ -490,6 +502,11 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
      */
     private void deliverService(NamedEventProcessor np, Service<?> svc, boolean register) {
         DataFlow eventProcessor = np.eventProcessor();
+        // each service once (mongoose#60 item 1): a register the processor already has - it joined after the service
+        // was in the registry - is skipped, and a deregister reaches only a processor that was handed the service
+        if (register ? !servicesDeliveredTo(eventProcessor).add(svc) : !servicesDeliveredTo(eventProcessor).remove(svc)) {
+            return;
+        }
         com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(eventProcessor);
         try {
             if (register) {
@@ -505,6 +522,11 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         } finally {
             com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
         }
+    }
+
+    private java.util.Set<Service<?>> servicesDeliveredTo(DataFlow eventProcessor) {
+        return servicesDelivered.computeIfAbsent(eventProcessor,
+                k -> java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
     }
 
     public boolean isProcessorRegistered(String processorName) {
