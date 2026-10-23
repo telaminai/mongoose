@@ -84,7 +84,6 @@ class StoppedProcessorResubscribeTest {
             server.stopProcessor("g", "A");
             await(() -> a.tornDown, "A torn down");
             await(() -> feed.targetQueues() == 0, "the feed's queue for the group released");
-            int unSubscribesAfterStop = feed.unSubscribes.get();
 
             SubscribingProcessor b = new SubscribingProcessor();
             server.addEventProcessor("B", "g", null, () -> b);
@@ -96,7 +95,7 @@ class StoppedProcessorResubscribeTest {
             await(() -> b.received.get() >= 2, "B received both events");
             assertEquals(2, b.received.get(), "B receives every event published after it subscribed");
             assertEquals(1, a.received.get(), "A receives nothing after it is stopped");
-            assertEquals(1, unSubscribesAfterStop, "the source is unsubscribed once A's subscription is gone");
+            assertEquals(1, feed.unSubscribes.get(), "the source is unsubscribed once A's subscription is gone");
             assertEquals(1, feed.targetQueues(), "the feed publishes to B's queue, and only to it");
         } finally {
             server.stop();
