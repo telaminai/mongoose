@@ -131,6 +131,15 @@ public class MongooseServerConfig {
      */
     private long shutdownDrainTimeoutMillis = DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS;
 
+    /** Default bound on the startup wait, see {@link #startupTimeoutMillis}. */
+    public static final long DEFAULT_STARTUP_TIMEOUT_MILLIS = 60_000;
+
+    /**
+     * mongoose#60: how long {@code MongooseServer.start()} waits for every agent group to become active before it fails,
+     * naming the groups that did not. A group that closes while starting (its onStart threw) fails start at once.
+     */
+    private long startupTimeoutMillis = DEFAULT_STARTUP_TIMEOUT_MILLIS;
+
     /**
      * Gets the list of event handler groups, initializing if {@code null} and adding
      * {@link #defaultHandlerGroupConfig} if present and not already included.

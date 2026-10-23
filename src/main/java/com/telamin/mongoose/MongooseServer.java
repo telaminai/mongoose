@@ -130,6 +130,15 @@ public class MongooseServer implements MongooseServerController {
     /** Audit capture config — read for autoStart at processor registration. */
     private com.telamin.mongoose.config.AuditCaptureConfig auditCaptureConfig;
     private final Set<Service<?>> registeredAgentServices = ConcurrentHashMap.newKeySet();
+    /**
+     * mongoose#60: processor names taken, per group, reserved atomically when {@link #addEventProcessor} is called (the
+     * group's own map only fills later, on its thread). Released by {@link #stopProcessor} or when building it fails.
+     */
+    private final Set<ProcessorName> reservedProcessorNames = ConcurrentHashMap.newKeySet();
+
+    private record ProcessorName(String group, String name) {
+    }
+
     /** mongoose#56: service agent groups hosting an event source, closed first by the ordered shutdown. */
     private final Set<String> eventSourceAgentGroups = ConcurrentHashMap.newKeySet();
     /** Configured pipes — tracked separately from registeredServices because
@@ -559,10 +568,10 @@ public class MongooseServer implements MongooseServerController {
         for (Service<?> service : services) {
             String serviceName = service.serviceName();
             log.info("registerService:" + service);
-            if (registeredServices.containsKey(serviceName)) {
+            // mongoose#60: reserve the name atomically, so of two concurrent registrations exactly one wins
+            if (registeredServices.putIfAbsent(serviceName, service) != null) {
                 throw new com.telamin.mongoose.exception.ServiceRegistrationException("cannot register service name is already assigned:" + serviceName);
             }
-            registeredServices.put(serviceName, service);
             Object instance = service.instance();
             //TODO set service name if not an EventFlow service
             if (instance instanceof EventFlowService) {
@@ -799,12 +808,22 @@ public class MongooseServer implements MongooseServerController {
                     return new ComposingEventProcessorAgentRunner(group, groupRunner, idleStrategyOverride);
                 });
 
-        if (composingEventProcessorAgentRunner.group().isProcessorRegistered(processorName)) {
-            throw new IllegalArgumentException("cannot add event processor name is already assigned:" + processorName);
+        ProcessorName reservation = new ProcessorName(groupName, processorName);
+        if (!reservedProcessorNames.add(reservation)) {
+            log.warning("refusing to add event processor '" + processorName + "' to group '" + groupName
+                    + "': the name is already assigned in that group");
+            throw new IllegalArgumentException("cannot add event processor name is already assigned:" + processorName
+                    + " in group:" + groupName);
         }
 
         composingEventProcessorAgentRunner.group().addNamedEventProcessor(() -> {
-            DataFlow eventProcessor = feedConsumer.get();
+            DataFlow eventProcessor;
+            try {
+                eventProcessor = feedConsumer.get();
+            } catch (RuntimeException | Error e) {
+                reservedProcessorNames.remove(reservation);   // never built: the name is free again
+                throw e;
+            }
             eventProcessor.setAuditLogProcessor(logRecordListener);
             // Auto-bind the PerformanceMonitorAudit (if present) to the YAML
             // processor name. Without this the audit's counter labels use
@@ -906,6 +925,11 @@ public class MongooseServer implements MongooseServerController {
         var processorAgent = composingEventProcessorAgents.get(groupName);
         if (processorAgent != null) {
             processorAgent.group().removeEventProcessorByName(processorName);
+            // free the name on the group's thread, after the cycle that took the stop: an add made once the name is free
+            // is then taken in a later cycle, which handles the stop first, so the new processor never replaces the old
+            // one in the group's map only to be removed by the stop meant for the old one
+            ProcessorName reservation = new ProcessorName(groupName, processorName);
+            processorAgent.group().runOnAgentThread(() -> reservedProcessorNames.remove(reservation));
         }
     }
 
@@ -1029,7 +1053,11 @@ public class MongooseServer implements MongooseServerController {
                 return v.group();
             }
         }));
-        lifecycleManager.start(registeredServices, serviceGroups, processorGroups, flowManager, registeredAgentServices);
+        long startupTimeoutMillis = mongooseServerConfig == null
+                ? MongooseServerConfig.DEFAULT_STARTUP_TIMEOUT_MILLIS
+                : mongooseServerConfig.getStartupTimeoutMillis();
+        lifecycleManager.start(registeredServices, serviceGroups, processorGroups, flowManager, registeredAgentServices,
+                startupTimeoutMillis);
         // Flip the per-service "up" gauge to 1 for every service that's been
         // started via the lifecycle manager. The startService() entry point
         // handles per-call flips; this covers the global start() path that
