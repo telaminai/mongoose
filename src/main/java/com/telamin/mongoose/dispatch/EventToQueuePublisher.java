@@ -76,6 +76,18 @@ public class EventToQueuePublisher<T> {
     private final boolean logWarning = log.isLoggable(Level.WARNING);
     private final boolean logInfo = log.isLoggable(Level.INFO);
     private final boolean logFine = log.isLoggable(Level.FINE);
+    /**
+     * Serialises every write into the target queues, and the sequence number and event log with them. Each target
+     * queue is a single-producer {@link OneToOneConcurrentArrayQueue}, but a publisher can be called from several
+     * threads: a {@code HandlerPipe} sink from every processor that publishes to it, and a source's
+     * {@code startComplete} replaying the cache while its own thread publishes. Two unserialised offers can claim the
+     * same slot and lose an event (telaminai/mongoose#51). Uncontended, the lock costs a few nanoseconds per publish.
+     */
+    @Getter(lombok.AccessLevel.NONE)
+    private final Object publishLock = new Object();
+    /** Items dropped because a target queue stayed full past the spin bound, over all target queues. */
+    @Getter(lombok.AccessLevel.NONE)
+    private volatile long droppedCount;
 
     /** Journal this feed's items (spec-replay-recording R3). */
     public void journal(EventJournal journal, EventCodec codec) {
@@ -98,6 +110,12 @@ public class EventToQueuePublisher<T> {
             log.info("itemToPublish is null");
             return;
         }
+        synchronized (publishLock) {
+            publishSerialised(itemToPublish);
+        }
+    }
+
+    private void publishSerialised(T itemToPublish) {
 
         Object mappedItem = mapItemSafely(itemToPublish, "publish");
         if (mappedItem == null) {
@@ -140,6 +158,12 @@ public class EventToQueuePublisher<T> {
             log.fine("itemToCache is null");
             return;
         }
+        synchronized (publishLock) {
+            cacheSerialised(itemToCache);
+        }
+    }
+
+    private void cacheSerialised(T itemToCache) {
 
         Object mappedItem = mapItemSafely(itemToCache, "cache");
         if (mappedItem == null) {
@@ -173,17 +197,25 @@ public class EventToQueuePublisher<T> {
             log.fine("listenerCount:" + targetQueues.size() + " publish:" + record);
         }
 
-        for (int i = 0, targetQueuesSize = targetQueues.size(); i < targetQueuesSize; i++) {
-            NamedQueue namedQueue = targetQueues.get(i);
-            OneToOneConcurrentArrayQueue<Object> targetQueue = namedQueue.targetQueue();
-            targetQueue.offer(record);
-            if (log.isLoggable(Level.FINE)) {
-                log.fine("queue:" + namedQueue.name() + " size:" + targetQueue.size());
+        synchronized (publishLock) {
+            for (int i = 0, targetQueuesSize = targetQueues.size(); i < targetQueuesSize; i++) {
+                NamedQueue namedQueue = targetQueues.get(i);
+                OneToOneConcurrentArrayQueue<Object> targetQueue = namedQueue.targetQueue();
+                targetQueue.offer(record);
+                if (log.isLoggable(Level.FINE)) {
+                    log.fine("queue:" + namedQueue.name() + " size:" + targetQueue.size());
+                }
             }
         }
     }
 
     public void dispatchCachedEventLog() {
+        synchronized (publishLock) {
+            dispatchCachedEventLogSerialised();
+        }
+    }
+
+    private void dispatchCachedEventLogSerialised() {
         if (cacheReadPointer < eventLog.size()) {
             if (log.isLoggable(Level.FINE)) {
                 log.fine("publishing cached items cacheReadPointer:" + cacheReadPointer + " eventLog.size():" + eventLog.size());
@@ -204,9 +236,10 @@ public class EventToQueuePublisher<T> {
         if (!cacheEventLog) {
             return Collections.emptyList();
         }
-        // Return a thread-safe snapshot for concurrent readers while maintaining
-        // single-writer performance characteristics for the underlying eventLog.
-        return Collections.unmodifiableList(new ArrayList<>(eventLog));
+        // a snapshot taken under the publish lock: the log is appended to by whichever thread publishes
+        synchronized (publishLock) {
+            return Collections.unmodifiableList(new ArrayList<>(eventLog));
+        }
     }
 
     private Object mapItemSafely(T item, String context) {
@@ -247,6 +280,11 @@ public class EventToQueuePublisher<T> {
             com.telamin.mongoose.service.error.ErrorReporting.report("EventToQueuePublisher:" + name, why, failed,
                     com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
         }
+    }
+
+    /** Items dropped because a target queue stayed full for longer than the 10 ms spin bound, over all target queues. */
+    public long droppedCount() {
+        return droppedCount;
     }
 
     /** Why this feed's journal stopped (an append or its encoding failed), or null while it journals. */
@@ -298,6 +336,7 @@ public class EventToQueuePublisher<T> {
                     if (startNs < 0) {
                         startNs = System.nanoTime();
                     } else if (System.nanoTime() - startNs > maxSpinNs) {
+                        droppedCount++; // written under publishLock only
                         if (logWarning) {
                             log.warning("dropping publish to slow/contended queue: " + namedQueue.name() +
                                     " after ~" + ((System.nanoTime() - startNs) / 1_000_000) + "ms seq:" + sequenceNumber +
