@@ -165,7 +165,7 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
         }
         startComplete.set(true);
         publishToQueue = true;
-        output.dispatchCachedEventLog();
+        output.startComplete();
     }
 
     @Override

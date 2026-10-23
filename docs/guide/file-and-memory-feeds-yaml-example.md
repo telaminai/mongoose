@@ -117,7 +117,7 @@ stimulates both sources, and asserts the sink content.
 ## Tips
 
 - `FileEventSource` and `InMemoryEventSource` support pre-start caching via `cacheEventLog: true` so that data produced
-  before `startComplete` is not lost.
+  before `startComplete` is not lost. The cache stops growing at `startComplete`.
 - You can declare additional services using `services:` in YAML if your handler needs more dependencies.
 - If you want to run a sink or source on its own agent thread, ensure the instance implements
 - `org.agrona.concurrent.Agent` and add `agentName` and `idleStrategy` to the respective config section.

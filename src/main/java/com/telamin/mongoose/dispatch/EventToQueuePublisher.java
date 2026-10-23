@@ -60,8 +60,23 @@ public class EventToQueuePublisher<T> {
     public EventToQueuePublisher(String name) {
         this(name, NoOpCountersService.INSTANCE.feedPublishCounter(name));
     }
+    /**
+     * Cache published items in the event log so they can be replayed to subscribers at {@link #startComplete()}.
+     * Publishes stop adding to the log once {@link #startComplete()} has run (#59): the log holds the pre-start
+     * history, not the feed's traffic.
+     */
     @Setter
     private boolean cacheEventLog;
+    /**
+     * Keep logging published items after {@link #startComplete()}. Off by default: the log then grows with every
+     * publish for the life of the feed, without bound, so only turn it on for a bounded feed or a test that reads the
+     * whole history back through {@link #getEventLog()}.
+     */
+    @Setter
+    private boolean retainEventLogAfterStart;
+    /** Set by {@link #startComplete()}, under the publish lock: publishes no longer add to the event log. */
+    @Getter(lombok.AccessLevel.NONE)
+    private boolean startComplete;
     private long sequenceNumber = 0;
     @Setter
     private EventSource.EventWrapStrategy eventWrapStrategy = EventSource.EventWrapStrategy.SUBSCRIPTION_NOWRAP;
@@ -141,18 +156,22 @@ public class EventToQueuePublisher<T> {
         PoolTracker<?> publisherRef = trackerOf(mappedItem);
         try {
             if (cacheEventLog) {
-                dispatchCachedEventLog();
-                // Store a detached snapshot in the cache to avoid retaining pooled instances: the cache holds no reference
-                Object cachedData = (mappedItem instanceof PoolAware)
-                        ? String.valueOf(mappedItem)
-                        : mappedItem;
-                NamedFeedEventImpl<Object> namedFeedEvent = new NamedFeedEventImpl<>(name)
-                        .data(cachedData)
-                        .sequenceNumber(sequenceNumber);
-                eventLog.add(namedFeedEvent);
+                dispatchCachedEventLogSerialised();
+                if (!startComplete || retainEventLogAfterStart) {
+                    // Store a detached snapshot in the cache to avoid retaining pooled instances: the cache holds no
+                    // reference
+                    Object cachedData = (mappedItem instanceof PoolAware)
+                            ? String.valueOf(mappedItem)
+                            : mappedItem;
+                    NamedFeedEventImpl<Object> namedFeedEvent = new NamedFeedEventImpl<>(name)
+                            .data(cachedData)
+                            .sequenceNumber(sequenceNumber);
+                    eventLog.add(namedFeedEvent);
+                    // dispatched below, so never replayed from the log
+                    cacheReadPointer = eventLog.size();
+                }
             }
 
-            cacheReadPointer++;
             dispatch(mappedItem, sequenceNumber);
         } finally {
             if (publisherRef != null) {
@@ -217,6 +236,18 @@ public class EventToQueuePublisher<T> {
         }
     }
 
+    /**
+     * The owning source's start is complete: replay what was cached before it to the target queues, and stop adding
+     * published items to the event log (unless {@link #setRetainEventLogAfterStart(boolean) retained}). Items given to
+     * {@link #cache(Object)} afterwards are still logged and replayed on the next publish or dispatch.
+     */
+    public void startComplete() {
+        synchronized (publishLock) {
+            dispatchCachedEventLogSerialised();
+            startComplete = true;
+        }
+    }
+
     public void dispatchCachedEventLog() {
         synchronized (publishLock) {
             dispatchCachedEventLogSerialised();
@@ -240,6 +271,10 @@ public class EventToQueuePublisher<T> {
         cacheReadPointer = eventLog.size();
     }
 
+    /**
+     * A snapshot of the event log: what was published before {@link #startComplete()}, and what was given to
+     * {@link #cache(Object)}. Empty unless {@code cacheEventLog} is set.
+     */
     public List<NamedFeedEvent<?>> getEventLog() {
         if (!cacheEventLog) {
             return Collections.emptyList();

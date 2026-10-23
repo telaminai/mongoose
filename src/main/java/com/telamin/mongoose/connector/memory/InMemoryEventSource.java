@@ -31,6 +31,14 @@ public class InMemoryEventSource<T> extends AbstractAgentHostedEventSourceServic
     @Getter
     @Setter
     private boolean cacheEventLog = false;
+    /**
+     * Keep logging published events after startComplete. Off by default, when the log holds only what was cached
+     * before start; on, it grows with every publish for the life of the source (see
+     * {@link EventToQueuePublisher#setRetainEventLogAfterStart(boolean)}).
+     */
+    @Getter
+    @Setter
+    private boolean retainEventLogAfterStart = false;
 
     private boolean publishToQueue = false;
 
@@ -42,6 +50,7 @@ public class InMemoryEventSource<T> extends AbstractAgentHostedEventSourceServic
     public void start() {
         // configure caching behavior on publisher
         output.setCacheEventLog(cacheEventLog);
+        output.setRetainEventLogAfterStart(retainEventLogAfterStart);
         if (cacheEventLog) {
             // Pre-start: accept items but cache them without publishing
             publishToQueue = false;
@@ -55,7 +64,7 @@ public class InMemoryEventSource<T> extends AbstractAgentHostedEventSourceServic
         startComplete.set(true);
         publishToQueue = true;
         // Replay anything cached in the publisher
-        output.dispatchCachedEventLog();
+        output.startComplete();
     }
 
     /**

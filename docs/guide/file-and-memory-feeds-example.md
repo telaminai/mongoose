@@ -126,7 +126,7 @@ events from both sources:
 ## Tips
 
 - FileEventSource supports caching and replay across startComplete. Using setCacheEventLog(true) helps capture pre-start
-  data.
+  data. The cache holds only what arrived before startComplete; it stops growing once the source starts publishing.
 - InMemoryEventSource supports offer(item) and respects caching similarly.
 - You can register sinks either via EventSinkConfig (when your sink type matches its generic bound) or simply as a
   Service using ServiceConfig.

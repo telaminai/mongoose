@@ -70,7 +70,10 @@ Publishing APIs available via this.output:
 - output.publish(item): map (via dataMapper) and dispatch immediately to subscribed queues
 - output.cache(item): record in the event log cache but do not dispatch yet
 - output.setCacheEventLog(boolean): enable/disable event log caching
-- output.dispatchCachedEventLog(): dispatch any cached events to queues (useful at startComplete)
+- output.startComplete(): call from your source's startComplete(): dispatch the cached events to queues, and stop adding
+  published items to the event log, which otherwise grows with every publish
+- output.dispatchCachedEventLog(): dispatch any cached events to queues, without ending the pre-start log
+- output.setRetainEventLogAfterStart(boolean): keep logging publishes after startComplete (unbounded; off by default)
 - output.getEventLog(): snapshot of NamedFeedEvent entries when caching is enabled
 
 Wrapping and mapping are applied at dispatch time by EventToQueuePublisher.
@@ -108,8 +111,8 @@ public class MyAgentSource
     @Override
     public void startComplete() {
         publishToQueue = true;
-        // Replay cached data once the system is ready
-        output.dispatchCachedEventLog();
+        // Replay cached data once the system is ready; publishes are no longer logged
+        output.startComplete();
     }
 
     @Override
@@ -174,7 +177,7 @@ public class MyCallbackSource extends AbstractEventSourceService<String> {
     @Override
     public void startComplete() {
         publishToQueue = true;
-        output.dispatchCachedEventLog();
+        output.startComplete();
     }
 
     // Example external callback
@@ -247,7 +250,9 @@ If you need to read an initial backlog before serving live (or avoid dropping ev
 
 - Call output.setCacheEventLog(true) in start()
 - Cache(events) until startComplete()
-- On startComplete(), set a flag to publish and call output.dispatchCachedEventLog()
+- On startComplete(), set a flag to publish and call output.startComplete(). The event log then stops growing: it holds
+  the pre-start backlog, not the feed's traffic. A source that still calls output.dispatchCachedEventLog() here replays
+  the backlog but keeps logging every publish for good.
 
 This pattern is used by FileEventSource and InMemoryEventSource in this repo.
 

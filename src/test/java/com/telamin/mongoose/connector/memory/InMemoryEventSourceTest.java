@@ -59,9 +59,9 @@ class InMemoryEventSourceTest {
         targetQueue.drainTo(drained, 100);
         Assertions.assertIterableEquals(List.of("item 3", "item 4"), drained.stream().map(Object::toString).collect(Collectors.toList()));
 
-        // Verify event log contains all items when cache was enabled
+        // The event log holds what was cached before startComplete, and stops growing after it (#59)
         List<String> eventLogData = eventToQueue.getEventLog()
                 .stream().map(NamedFeedEvent::data).map(Object::toString).collect(Collectors.toList());
-        Assertions.assertIterableEquals(List.of("item 1", "item 2", "item 3", "item 4"), eventLogData);
+        Assertions.assertIterableEquals(List.of("item 1", "item 2"), eventLogData);
     }
 }
