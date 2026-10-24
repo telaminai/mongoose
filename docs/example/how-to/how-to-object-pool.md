@@ -24,7 +24,7 @@ public static class PooledMessage extends BasePoolAware {
 ```
 
 2) Create a PooledEventSource that receives an injected ObjectPoolsRegistry. Use the ObjectPoolsRegistry to create an
-   ObjectPool and publish the event. The framework will manage references and return-to-pool at the end of the cycle:
+   ObjectPool and publish the event. The framework manages the references from then on, and the last holder to release the object returns it to the pool:
 
 
 ```java
@@ -45,7 +45,7 @@ public static class PooledEventSource extends AbstractEventSourceService<PooledM
     /**
      * Publish a message value. The framework acquires and releases references as the
      * message passes through queues and consumers; the object is returned to the pool
-     * automatically at end-of-cycle once all references are released.
+     * by the last release, once every queue's consumer has dispatched it.
      */
     public void publish(String value) {
         PooledMessage msg = pool.acquire();

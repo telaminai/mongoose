@@ -111,31 +111,28 @@ sequenceDiagram
     note over Src: Manual: mutate and publish
     Src->>Pub: publish Msg
 
-    note over Pub,Q: Automatic framework: acquire refs for handoff
-    Pub->>Q: offer Msg to each queue/cache
-    activate Q
-    Q->>Msg: tracker.acquireReference
-    deactivate Q
-
-    note over Src: After publish, the framework manages references<br> no explicit release is required by the sender
-    Src-->>Msg: no-op for sender
-    Msg->>Msg: framework continues ref-counting internally
-
-    note over C: Automatic: consumer drops its ref when done
-    Q-->>C: deliver Msg
-    C->>Msg: tracker.releaseReference()
-
-    rect rgba(200, 200, 255, 0.2)
-    note over publish Queues Consumers: Automatic end-of-cycle
-    Pub->>Msg: returnToPool invoked by pipeline end
+    note over Pub,Q: Automatic: the publisher holds the reference acquire handed over
+    loop each target queue
+        Pub->>Msg: tracker.acquireReference (the queue's reference)
+        Pub->>Q: offer Msg
+        alt offer dropped (queue full past the spin bound)
+            Pub->>Msg: tracker.releaseReference (the queue's reference)
+        end
     end
+    Pub->>Msg: tracker.releaseReference (the publisher's own, in a finally)
 
-    alt refCount == 0
-        Msg->>Pool: release to pool, resetHook
+    note over Src: After publish the sender holds no reference<br> and must not touch the object again
+
+    note over C: Automatic: each queue's agent releases after dispatch to every processor
+    Q-->>C: deliver Msg
+    C->>Msg: tracker.releaseReference (in a finally)
+
+    alt this release took refCount to 0 (the last holder)
+        Msg->>Pool: release to pool, resetHook (exactly once)
         Pool-->>Pool: resetHook.apply  [optional]
-        Pool-->>Pool: offer to free list 
-    else refCount > 0
-        note over Msg: returnToPool is safe no-op waits until last release
+        Pool-->>Pool: offer to free list
+    else refCount still > 0
+        note over Msg: other holders still read it, it stays out of the pool
     end
 ```
 
@@ -146,7 +143,7 @@ sequenceDiagram
     - Set fields on the pooled object
     - Publish to the framework (publisher.publish(msg))
     - The publisher MAY NOT continue to use the object after it has been published within its method scope; the framework manages references from the point of publish onward.
-    - No explicit release is required from the origin after publish; the framework manages references and returns the object at end-of-cycle once all holders have released.
+    - No explicit release is required from the origin after publish: the reference acquire handed over passes to the publisher, which releases it once every queue holds its own (or at once, if nothing took the object). There is no end-of-cycle return: the object goes back to the pool on the release that takes the count to zero, whichever holder makes it. A publish whose data mapper throws, or maps the input to something else, releases the input's reference.
     - Do not retain the object beyond the event cycle; copy data if needed.
 
 - Manual (any out-of-band holder):
@@ -162,12 +159,11 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    A[After publish
-    - framework manages references and attempts returnToPool at end-of-cycle] --> B{refCount == 0?}
-    B -- No --> C[No-op; object remains in use
-    Other holders will release later]
-    C --> D[Pipeline end invokes returnToPool again]
-    D --> B
+    A[A holder calls releaseReference
+    publisher after the last offer, a dropped offer, a consumer after dispatch] --> B{Did this release take refCount to 0?}
+    B -- No --> C[Object stays out of the pool
+    the remaining holders release later]
+    C --> A
     B -- Yes --> E[Execute resetHook if provided]
     E --> F[Offer object to pool free list partitioned MPMC]
     F --> G[Object available for reuse]
