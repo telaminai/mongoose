@@ -53,6 +53,12 @@ public class EventFlowManager {
     private final ConcurrentHashMap<EventSinkKey<?>, ManyToOneConcurrentArrayQueue<?>> eventSinkToQueueMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<CallBackType, Supplier<EventToInvokeStrategy>> eventToInvokerFactoryMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<EventSourceKey_Subscriber<?>, OneToOneConcurrentArrayQueue<Object>> subscriberKeyToQueueMap = new ConcurrentHashMap<>();
+    /**
+     * mongoose#55 review: how many group readers each subscription key has, across all groups. A source is told to
+     * unsubscribe a key only when the last of them is released, not when one group's last listener leaves. The count
+     * object is also the lock that orders a release against a new reader for the same key.
+     */
+    private final ConcurrentHashMap<EventSubscriptionKey<?>, ReaderCount> readersByKey = new ConcurrentHashMap<>();
     // Counters service — default no-op, swapped to the Agrona impl by MongooseServer
     // during construction before any source registration happens. The reference
     // settles to the chosen impl before any publisher / agent loop reads it, so
@@ -166,6 +172,40 @@ public class EventFlowManager {
         eventSourceQueuePublisher.eventSource().unSubscribe((EventSubscriptionKey) subscriptionKey);
     }
 
+    /**
+     * A group released its reader for {@code subscriptionKey} (its last listener left). The source is unsubscribed,
+     * through {@link #unSubscribe(EventSubscriptionKey)}, only when no group has a reader for the key any more, so one
+     * group leaving a feed does not cut off another group still subscribed to it. A release with no reader counted (a
+     * reader not made by {@link #getMappingAgent}) is treated as the last one.
+     * <p>
+     * The decrement and the source call are atomic with respect to a new reader for the same key: a group subscribing
+     * the key concurrently either keeps the count above zero, or makes its reader, and so its source subscribe, after
+     * this unsubscribe has completed. An exception from the source propagates, with the release already counted.
+     */
+    public void releaseReader(EventSubscriptionKey<?> subscriptionKey) {
+        Objects.requireNonNull(subscriptionKey, "subscriptionKey must be non-null");
+        ReaderCount count = readersByKey.computeIfAbsent(subscriptionKey, k -> new ReaderCount());
+        synchronized (count) {
+            if (count.readers > 0) {
+                count.readers--;
+            }
+            if (count.readers == 0) {
+                unSubscribe(subscriptionKey);
+            }
+        }
+    }
+
+    /** How many group readers currently exist for {@code subscriptionKey}, across all groups. */
+    public int readerCount(EventSubscriptionKey<?> subscriptionKey) {
+        ReaderCount count = readersByKey.get(subscriptionKey);
+        if (count == null) {
+            return 0;
+        }
+        synchronized (count) {
+            return count.readers;
+        }
+    }
+
     @SuppressWarnings("unchecked")
     public <T> EventToQueuePublisher<T> registerEventSource(String sourceName, EventSource<T> eventSource) {
         Objects.requireNonNull(eventSource, "eventSource must be non-null");
@@ -218,6 +258,11 @@ public class EventFlowManager {
         sourcePublisher.queuePublisher().addTargetQueue(eventQueue, name);
 
         Runnable unsubscribe = createUnsubscribeAction(sourcePublisher, name, keySubscriber);
+
+        ReaderCount count = readersByKey.computeIfAbsent(new EventSubscriptionKey<>(eventSourceKey, type), k -> new ReaderCount());
+        synchronized (count) {
+            count.readers++;
+        }
 
         return new EventQueueToEventProcessorAgent(eventQueue, eventMapperSupplier.get(), name, eventSourceKey.sourceName(),
                 type.name())
@@ -298,6 +343,10 @@ public class EventFlowManager {
         } catch (IOException ex) {
             System.err.println("problem logging event queues, exception:" + ex);
         }
+    }
+
+    private static final class ReaderCount {
+        private int readers;
     }
 
     private record EventSource_QueuePublisher<T>(EventToQueuePublisher<T> queuePublisher, EventSource<T> eventSource) {
