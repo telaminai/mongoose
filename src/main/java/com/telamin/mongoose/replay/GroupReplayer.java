@@ -101,7 +101,7 @@ public final class GroupReplayer {
         if (failed != null) stop(cursor, failed);
     }
 
-    /** A processor that left its group (a failed start, review of #66): its replay cursor and captures are dropped. */
+    /** A processor that left its group (stopped, mongoose#71, or a failed start, review of #66): its replay cursor and captures are dropped. */
     public void detach(DataFlow flow) {
         cursors.removeIf(c -> c.flow == flow);
         captured.remove(flow);
