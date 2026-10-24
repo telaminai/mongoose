@@ -138,8 +138,9 @@ class ProcessorFailureIsolationTest {
     }
 
     @Test
-    void processorWhoseStartThrowsAtGroupStartIsDroppedAndTheOthersStart() {
+    void processorWhoseStartThrowsAtGroupStartIsDroppedAndTheOthersStartWhenBootIsolationIsOn() {
         ComposingEventProcessorAgent group = newGroup(new FakeFlowManager());
+        group.setIsolateStartFailuresAtBoot(true);
         Proc bad = new Proc().failStart();
         Proc good = new Proc();
         group.addNamedEventProcessor(() -> new NamedEventProcessor("bad", bad));
@@ -159,6 +160,7 @@ class ProcessorFailureIsolationTest {
     void failedStartReleasesTheSubscriptionsItMade() throws Exception {
         FakeFlowManager flowManager = new FakeFlowManager();
         ComposingEventProcessorAgent group = newGroup(flowManager);
+        group.setIsolateStartFailuresAtBoot(true);
         group.addNamedEventProcessor(() -> new NamedEventProcessor("bad", new Proc().failStart()));
         group.onStart();
         assertEquals(1, flowManager.subscribed.get());
