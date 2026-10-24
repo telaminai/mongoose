@@ -22,7 +22,7 @@ import com.telamin.mongoose.service.scheduler.DeadWheelScheduler;
 import com.telamin.mongoose.service.scheduler.SchedulerService;
 import lombok.extern.java.Log;
 import org.agrona.concurrent.DynamicCompositeAgent;
-import org.agrona.concurrent.OneToOneConcurrentArrayQueue;
+import org.agrona.concurrent.ManyToOneConcurrentArrayQueue;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -67,8 +67,17 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     private final ConcurrentHashMap<String, Service<?>> registeredServices;
     private final ConcurrentHashMap<String, NamedEventProcessor> registeredEventProcessors = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<EventSubscriptionKey<?>, EventQueueToEventProcessor> queueProcessorMap = new ConcurrentHashMap<>();
-    private final OneToOneConcurrentArrayQueue<Supplier<NamedEventProcessor>> toStartList = new OneToOneConcurrentArrayQueue<>(128);
-    private final OneToOneConcurrentArrayQueue<String> toStopList = new OneToOneConcurrentArrayQueue<>(128);
+    /**
+     * Control queues (mongoose#58): fed from several threads at once - admin, loaders, and every service-agent thread
+     * registering its service at boot - and drained by this group's thread alone, so many-to-one. A full queue is
+     * waited on (see {@link #enqueue}), never dropped.
+     */
+    static final int CONTROL_QUEUE_CAPACITY = 4096;
+    /** Default for how long a producer waits for this group's thread to make room in a full control queue. */
+    static final long CONTROL_QUEUE_FULL_TIMEOUT_NANOS = java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+    private volatile long controlQueueFullTimeoutNanos = CONTROL_QUEUE_FULL_TIMEOUT_NANOS;
+    private final ManyToOneConcurrentArrayQueue<Supplier<NamedEventProcessor>> toStartList = new ManyToOneConcurrentArrayQueue<>(CONTROL_QUEUE_CAPACITY);
+    private final ManyToOneConcurrentArrayQueue<String> toStopList = new ManyToOneConcurrentArrayQueue<>(CONTROL_QUEUE_CAPACITY);
     // Dynamic-service broadcast queues. MongooseServer.registerService /
     // removeService publish onto these so the agent thread (and only the
     // agent thread) calls eventProcessor.registerService /
@@ -76,8 +85,8 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     // what fires @ServiceRegistered / @ServiceDeregistered on processor-
     // internal nodes (SubscriptionManagerNode for feeds, SinkPublisher
     // for sinks, plus any operator-defined node carrying the annotation).
-    private final OneToOneConcurrentArrayQueue<Service<?>> servicesToBroadcastRegister = new OneToOneConcurrentArrayQueue<>(128);
-    private final OneToOneConcurrentArrayQueue<Service<?>> servicesToBroadcastDeregister = new OneToOneConcurrentArrayQueue<>(128);
+    private final ManyToOneConcurrentArrayQueue<Service<?>> servicesToBroadcastRegister = new ManyToOneConcurrentArrayQueue<>(CONTROL_QUEUE_CAPACITY);
+    private final ManyToOneConcurrentArrayQueue<Service<?>> servicesToBroadcastDeregister = new ManyToOneConcurrentArrayQueue<>(CONTROL_QUEUE_CAPACITY);
     private final List<EventQueueToEventProcessor> queueReadersToAdd = new ArrayList<>();
     /** mongoose#55: readers whose last listener left, waiting for the composite to take them out. Agent thread only. */
     private final List<EventQueueToEventProcessor> queueReadersToRemove = new ArrayList<>();
@@ -130,11 +139,47 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     }
 
     public void addNamedEventProcessor(Supplier<NamedEventProcessor> initFunction) {
-        toStartList.add(initFunction);
+        enqueue(toStartList, initFunction, "processor-start");
     }
 
     public void removeEventProcessorByName(String name) {
-        toStopList.add(name);
+        enqueue(toStopList, name, "processor-stop");
+    }
+
+    /**
+     * Queue {@code item} for this group's thread. Safe from any number of threads at once (mongoose#58). When the queue
+     * is full the caller backs off until the group's thread drains it; it fails with a clear error, rather than drop
+     * the item, only when that cannot happen: it is the group's own thread (immediately), or the queue stays full for
+     * the control-queue timeout, 10 s by default ({@link #setControlQueueFullTimeout}): the group is not running.
+     *
+     * @throws IllegalStateException naming the group and the queue when the item cannot be queued
+     */
+    private <T> void enqueue(ManyToOneConcurrentArrayQueue<T> queue, T item, String what) {
+        if (queue.offer(item)) {
+            return;
+        }
+        long timeoutNanos = controlQueueFullTimeoutNanos;
+        long deadline = System.nanoTime() + timeoutNanos;
+        while (!queue.offer(item)) {
+            if (Thread.currentThread() == agentThread) {
+                throw new IllegalStateException("group " + roleName() + ": " + what + " queue is full ("
+                        + queue.capacity() + ") and cannot drain while its own thread waits on it");
+            }
+            if (System.nanoTime() - deadline > 0) {
+                throw new IllegalStateException("group " + roleName() + ": " + what + " queue stayed full ("
+                        + queue.capacity() + ") for " + java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(timeoutNanos)
+                        + " ms; is the group's thread running?");
+            }
+            java.util.concurrent.locks.LockSupport.parkNanos(50_000);
+        }
+    }
+
+    /**
+     * How long a producer waits on a full control queue for this group's thread to drain it before failing; 10 s by
+     * default.
+     */
+    public void setControlQueueFullTimeout(java.time.Duration timeout) {
+        this.controlQueueFullTimeoutNanos = Objects.requireNonNull(timeout, "timeout is null").toNanos();
     }
 
     /** Queue a service for broadcast {@code @ServiceRegistered} dispatch
@@ -144,7 +189,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
      *  agent thread via {@link #checkForBroadcasts()} so processor-
      *  internal state stays single-threaded. */
     public void broadcastServiceRegistered(Service<?> service) {
-        servicesToBroadcastRegister.add(service);
+        enqueue(servicesToBroadcastRegister, service, "service-register broadcast");
     }
 
     /** Symmetric to {@link #broadcastServiceRegistered}. Fires
@@ -152,7 +197,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
      *  group — that's how SubscriptionManagerNode unbinds a feed and how
      *  SinkPublisher nulls its consumer reference. */
     public void broadcastServiceDeregistered(Service<?> service) {
-        servicesToBroadcastDeregister.add(service);
+        enqueue(servicesToBroadcastDeregister, service, "service-deregister broadcast");
     }
 
     @Override
