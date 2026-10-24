@@ -93,17 +93,25 @@ public class EventToQueuePublisher<T> {
      * <ul>
      *     <li>every publish on this publisher, from any thread, takes up to ~10 ms per full queue, so one slow
      *     subscriber throttles all publishers of this feed (and delays delivery to its other subscribers);</li>
-     *     <li>a caller waiting for the lock ({@link #publish}, {@link #cache}, {@link #addTargetQueue},
-     *     {@link #removeTargetQueueByName}, {@link #getEventLog()}) can wait behind each publisher queued ahead of
-     *     it: up to N x 10 ms with N callers ahead, per full queue.</li>
+     *     <li>a publish or {@link #getEventLog()} waiting for the lock can wait behind each publisher queued ahead of
+     *     it: up to N x 10 ms with N callers ahead, per full queue;</li>
+     *     <li>{@link #addTargetQueue} and {@link #removeTargetQueueByName} wait only for the dispatch in flight:
+     *     publishers hold back while one is waiting ({@link #subscriberChangesWaiting}). A Java monitor is not fair,
+     *     so without that a thread publishing in a loop takes the lock back every time and a remove never gets in.</li>
      * </ul>
-     * The wait is always bounded; it is never indefinite.
      * <p>
      * With a journal ({@link #journal}), each item is encoded and appended to the journal under this lock too (see
      * {@code journalItem}), so the journal's append cost, including any I/O it does, adds to every caller's wait.
      */
     @Getter(lombok.AccessLevel.NONE)
     private final Object publishLock = new Object();
+    /**
+     * Adds and removes of target queues waiting for {@link #publishLock}. While it is non-zero, a publish holds back
+     * before taking the lock, so the change gets it next (one volatile read per publish when it is zero).
+     */
+    @Getter(lombok.AccessLevel.NONE)
+    private final java.util.concurrent.atomic.AtomicInteger subscriberChangesWaiting =
+            new java.util.concurrent.atomic.AtomicInteger();
     /** Items dropped because a target queue stayed full past the spin bound, over all target queues. */
     @Getter(lombok.AccessLevel.NONE)
     private volatile long droppedCount;
@@ -120,10 +128,26 @@ public class EventToQueuePublisher<T> {
             log.fine("adding a publisher queue:" + namedQueue);
         }
         // under the publish lock: a dispatch loop never sees the list change under it, and contains-then-add is atomic
-        synchronized (publishLock) {
-            if (!targetQueues.contains(namedQueue)) {
-                targetQueues.add(namedQueue);
+        subscriberChangesWaiting.incrementAndGet();
+        try {
+            synchronized (publishLock) {
+                if (!targetQueues.contains(namedQueue)) {
+                    targetQueues.add(namedQueue);
+                }
             }
+        } finally {
+            subscriberChangesWaiting.decrementAndGet();
+        }
+    }
+
+    /**
+     * Hold back while an add or remove of a target queue is waiting for the lock, so it is not starved by publishers
+     * that take the lock back-to-back. Not when this thread already holds the lock (a nested publish), which would
+     * deadlock.
+     */
+    private void yieldToSubscriberChanges() {
+        while (subscriberChangesWaiting.get() != 0 && !Thread.holdsLock(publishLock)) {
+            Thread.yield();
         }
     }
 
@@ -132,6 +156,7 @@ public class EventToQueuePublisher<T> {
             log.info("itemToPublish is null");
             return;
         }
+        yieldToSubscriberChanges();
         synchronized (publishLock) {
             publishSerialised(itemToPublish);
         }
@@ -180,6 +205,7 @@ public class EventToQueuePublisher<T> {
             log.fine("itemToCache is null");
             return;
         }
+        yieldToSubscriberChanges();
         synchronized (publishLock) {
             cacheSerialised(itemToCache);
         }
@@ -219,6 +245,7 @@ public class EventToQueuePublisher<T> {
             log.fine("listenerCount:" + targetQueues.size() + " publish:" + record);
         }
 
+        yieldToSubscriberChanges();
         synchronized (publishLock) {
             for (int i = 0, targetQueuesSize = targetQueues.size(); i < targetQueuesSize; i++) {
                 NamedQueue namedQueue = targetQueues.get(i);
@@ -232,6 +259,7 @@ public class EventToQueuePublisher<T> {
     }
 
     public void dispatchCachedEventLog() {
+        yieldToSubscriberChanges();
         synchronized (publishLock) {
             dispatchCachedEventLogSerialised();
         }
@@ -421,11 +449,15 @@ public class EventToQueuePublisher<T> {
         }
         // under the publish lock: an unsubscribe on a processor's thread must not shrink the list while a dispatch on
         // the feed's thread is indexing it (an IndexOutOfBounds out of publish exits the process via the agent's
-        // error handler). The remove waits for the publish in flight AND any caller queued ahead of it on the lock. Each
-        // of those can spin ~10 ms per full target queue before dropping, so with a slow subscriber the remove can
-        // take N x 10 ms (N = callers ahead): bounded, but not "one publish". See the publishLock javadoc.
-        synchronized (publishLock) {
-            targetQueues.removeIf(q -> queueName.equals(q.name()));
+        // error handler). The remove waits for the dispatch in flight (up to ~10 ms per full target queue): publishers
+        // hold back while it waits, so one publishing in a loop cannot starve it. See the publishLock javadoc.
+        subscriberChangesWaiting.incrementAndGet();
+        try {
+            synchronized (publishLock) {
+                targetQueues.removeIf(q -> queueName.equals(q.name()));
+            }
+        } finally {
+            subscriberChangesWaiting.decrementAndGet();
         }
     }
 }

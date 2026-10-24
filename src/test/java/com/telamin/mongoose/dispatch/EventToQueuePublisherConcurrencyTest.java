@@ -161,6 +161,54 @@ class EventToQueuePublisherConcurrencyTest {
         assertEquals(2, full.size(), "nothing written past capacity");
     }
 
+    /**
+     * Publishers that publish back-to-back into a full queue cannot starve an add or remove of a target queue: a Java
+     * monitor is not fair, so each publisher used to take the lock straight back and the remove waited until they
+     * stopped (on a 2-core CI runner, every time).
+     */
+    @Test
+    void publishersInALoopDoNotStarveARemoveOrAnAdd() throws Exception {
+        EventToQueuePublisher<String> publisher = new EventToQueuePublisher<>("busyFeed");
+        OneToOneConcurrentArrayQueue<Object> full = new OneToOneConcurrentArrayQueue<>(2);
+        publisher.addTargetQueue(full, "full");
+        publisher.publish("fill-1");
+        publisher.publish("fill-2");
+        java.util.concurrent.atomic.AtomicBoolean running = new java.util.concurrent.atomic.AtomicBoolean(true);
+        List<Thread> busy = new ArrayList<>();
+        for (int p = 0; p < 4; p++) {
+            Thread t = new Thread(() -> {
+                while (running.get()) {
+                    publisher.publish("drop"); // spins ~10 ms under the lock, drops, and goes straight back for it
+                }
+            }, "busy-publisher-" + p);
+            busy.add(t);
+            t.start();
+        }
+        try {
+            long deadline = System.nanoTime() + 5_000_000_000L;
+            while (publisher.droppedCount() < 4 && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertTrue(publisher.droppedCount() >= 4, "the publishers are dropping");
+
+            long start = System.nanoTime();
+            publisher.addTargetQueue(new OneToOneConcurrentArrayQueue<>(1024), "late");
+            long addMs = (System.nanoTime() - start) / 1_000_000;
+            start = System.nanoTime();
+            publisher.removeTargetQueueByName("full");
+            long removeMs = (System.nanoTime() - start) / 1_000_000;
+
+            assertTrue(addMs < 500, "the add waits for the dispatch in flight only, took " + addMs + " ms");
+            assertTrue(removeMs < 500, "the remove waits for the dispatch in flight only, took " + removeMs + " ms");
+        } finally {
+            running.set(false);
+            for (Thread t : busy) {
+                t.join(5_000);
+            }
+        }
+        assertEquals(2, full.size(), "nothing written past capacity");
+    }
+
     static void runProducers(IntConsumer publish) throws InterruptedException {
         CountDownLatch go = new CountDownLatch(1);
         List<Thread> producers = new ArrayList<>();
