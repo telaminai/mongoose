@@ -62,12 +62,14 @@ public class EventToQueuePublisher<T> {
     }
     @Setter
     private boolean cacheEventLog;
-    private long sequenceNumber = 0;
+    /** Written under the publish lock only; volatile so {@link #getSequenceNumber()} can read it without the lock. */
+    private volatile long sequenceNumber = 0;
     @Setter
     private EventSource.EventWrapStrategy eventWrapStrategy = EventSource.EventWrapStrategy.SUBSCRIPTION_NOWRAP;
     @Setter
     private Function<T, ?> dataMapper = Function.identity();
-    private int cacheReadPointer = 0;
+    /** Written under the publish lock only; volatile so {@link #getCacheReadPointer()} can read it without the lock. */
+    private volatile int cacheReadPointer = 0;
     /** Replay R3: when set, each item is journalled once, encoded, and carries its sequence number to the queue. */
     private EventJournal journal;
     private EventCodec journalCodec;
@@ -83,6 +85,22 @@ public class EventToQueuePublisher<T> {
      * {@code startComplete} replaying the cache while its own thread publishes. Two unserialised offers can claim the
      * same slot and lose an event (telaminai/mongoose#51). Adding and removing target queues take it too, so a dispatch
      * never sees the list change under it. Uncontended, the lock costs a few nanoseconds per publish.
+     * <p>
+     * <b>Cost under a slow subscriber.</b> The lock is held for the whole dispatch, including the bounded spin in
+     * {@code writeToQueue} when a target queue is full (up to about 10 ms per full queue, after which the item is
+     * dropped for that queue and counted in {@link #droppedCount()}). The lock is what keeps one producer per
+     * single-producer queue, so it cannot be released during that spin. While one subscriber stays full, therefore:
+     * <ul>
+     *     <li>every publish on this publisher, from any thread, takes up to ~10 ms per full queue, so one slow
+     *     subscriber throttles all publishers of this feed (and delays delivery to its other subscribers);</li>
+     *     <li>a caller waiting for the lock ({@link #publish}, {@link #cache}, {@link #addTargetQueue},
+     *     {@link #removeTargetQueueByName}, {@link #getEventLog()}) can wait behind each publisher queued ahead of
+     *     it: up to N x 10 ms with N callers ahead, per full queue.</li>
+     * </ul>
+     * The wait is always bounded; it is never indefinite.
+     * <p>
+     * With a journal ({@link #journal}), each item is encoded and appended to the journal under this lock too (see
+     * {@code journalItem}), so the journal's append cost, including any I/O it does, adds to every caller's wait.
      */
     @Getter(lombok.AccessLevel.NONE)
     private final Object publishLock = new Object();
@@ -267,6 +285,14 @@ public class EventToQueuePublisher<T> {
         }
     }
 
+    /**
+     * Encodes and appends one item to the journal. Called under the publish lock, deliberately: the append must follow
+     * sequence-number order (a replay reads the journal in append order and stops at the first gap), and it must happen
+     * before dispatch, because once a pooled item is on a queue its consumer can return it to the pool and it can be
+     * rewritten. Moving the append outside the lock would let two publishers append out of order. The cost is that the
+     * codec's encode and the journal's append (which may do I/O) are paid while the lock is held, so a slow journal
+     * slows every publisher of this feed.
+     */
     private void journalItem(Object mappedItem, long seq) {
         if (journal == null || journalBroken != null) return;
         try {
@@ -395,7 +421,9 @@ public class EventToQueuePublisher<T> {
         }
         // under the publish lock: an unsubscribe on a processor's thread must not shrink the list while a dispatch on
         // the feed's thread is indexing it (an IndexOutOfBounds out of publish exits the process via the agent's
-        // error handler). The remove waits at most for the publish in flight.
+        // error handler). The remove waits for the publish in flight AND any caller queued ahead of it on the lock. Each
+        // of those can spin ~10 ms per full target queue before dropping, so with a slow subscriber the remove can
+        // take N x 10 ms (N = callers ahead): bounded, but not "one publish". See the publishLock javadoc.
         synchronized (publishLock) {
             targetQueues.removeIf(q -> queueName.equals(q.name()));
         }
