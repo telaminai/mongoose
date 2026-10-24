@@ -1,6 +1,6 @@
 # Mongoose control plane as events — design
 
-Status: proposal, revision 3, 2026-10-24. Responds to three reviews and three follow-ups on PR #75 (see [Review responses](#review-responses)). Targets the release after 1.0.33. Mongoose code references are to `integration/next-release` at `74ad868` unless stated; review citations at `ad07abc` were re-checked there. Analyser references are to `telaminai/fluxtionauditlog-analyser` at `985ea71`.
+Status: proposal, revision 4, 2026-10-24. Responds to four reviews and three follow-ups on PR #75 (see [Review responses](#review-responses)). Targets the release after 1.0.33. Mongoose code references are to `integration/next-release` at `74ad868` unless stated; review citations at `ad07abc` were re-checked there. Analyser references are to `telaminai/fluxtionauditlog-analyser` at `985ea71`.
 
 ## Summary
 
@@ -60,7 +60,14 @@ The analyser already runs a generated Fluxtion state machine for its own session
 - `OperationGate` sits upstream of every state node and refuses stale results: a newer request of the same kind supersedes an outstanding asynchronous open, whose late result is then recorded with `stale=true` and changes nothing (`AsyncOpenReplayTest`: `aSupersededLoadIsRefused`, `aCloseOfTheLogSupersedesAPendingOpen`).
 - `SessionAuditSink` is attached before `init()` (measured: attaching after leaks records to stdout), keeps bounded rings that count what they drop, counts sink failures instead of throwing, reports `isComplete() == false` when anything was lost, and exports a snapshot the analyser reopens one record per dispatch (`SessionAuditRecordTest`).
 
-**Verified execution semantics.** In the Fluxtion code generator's Java template (`fluxtion-generator-core/.../javaTemplate.vsl`, develop branch), `batchEnd()` is `auditEvent(BatchEnd); processing = true; <@OnBatchEnd methods>; afterEvent(); callbackDispatcher.dispatchQueuedCallbacks(); processing = false;`, with no `try`/`finally`. In fluxtion-runtime, `CallbackDispatcherImpl.processAsNewEventCycle` is `eventProcessor.onEvent(event)`. Mongoose is on fluxtion-runtime 1.1.0; the analyser pins runtime 1.0.16 with builder 1.0.71. **PR 1 pins the builder version that pairs with runtime 1.1.0 and adds a test that asserts the emitted `batchEnd()` shape and the queue-when-processing behaviour**, as the analyser measured its own audit wiring, before relying on either.
+**Verified execution semantics.** In the Fluxtion code generator (`fluxtion-generator-core`, develop branch, 1.0.80-SNAPSHOT):
+
+- The Java template's `batchEnd()` is `auditEvent(BatchEnd); processing = true; <@OnBatchEnd methods>; afterEvent(); callbackDispatcher.dispatchQueuedCallbacks(); processing = false;`, with no `try`/`finally`.
+- The generated `onEvent` queues an event that arrives while `processing` is set **only when the generator option `supportReentrancy` is on** (`JavaSourceGenerator.buildProcessEventBody`). With it off, such an event throws. The generated `onEvent` has no `try`/`finally` either (as `DefaultEventProcessor.onEvent` at v1.1.0), so any throw during dispatch leaves `processing` set and the processor wedged.
+- `runInEventCycle(auditEvent, action)` does have `try`/`finally` (`DefaultEventProcessor`, v1.1.0).
+- In fluxtion-runtime, `CallbackDispatcherImpl.processAsNewEventCycle` is `eventProcessor.onEvent(event)`.
+
+**Version pairing.** Compiler tags `v1.0.72`–`v1.0.75` pair with runtime 1.0.16, `v1.0.76` with 1.1.0, and `v1.0.77`–`v1.0.79` and develop with 1.1.1. Mongoose is on runtime 1.1.0; the analyser pins runtime 1.0.16 with builder 1.0.71. The semantics above were checked on develop, so they hold for the 1.1.1 line, not necessarily for 1.0.76. This is decision [D6](#decisions-needed), and it must be settled before PR 1. Whatever is chosen, PR 1 adds tests asserting the emitted `batchEnd()` and `onEvent` shapes and that `supportReentrancy` is on for the control processor.
 
 **What transfers, and what differs:**
 
@@ -69,13 +76,14 @@ The analyser already runs a generated Fluxtion state machine for its own session
 | Designated thread | The Swing event thread, for the life of the app | The group's agent thread; work from other threads arrives only through the mailbox, never by calling the processor |
 | Single operation in flight | Enforced by `submit` re-entry guard | The drain applies one command at a time to completion, so the property holds per group; a nested submit from an effect is a protocol violation, as in the analyser |
 | Effects at `batchEnd()`, outcomes via `processAsNewEventCycle` | Yes | Same. Effects include user code (`start()`, `stop()`), which may block or throw anything |
-| No throw out of `batchEnd()` | Catches `Exception`; stashes violations | Also catches `Throwable` short of `VirtualMachineError`; a `VirtualMachineError` is stashed, and the group then goes Dead after `batchEnd()` returns, because a wedged `processing` flag would be worse |
+| No throw out of `batchEnd()` or `onEvent` | Catches `Exception` around each effect; the re-dispatch call itself (`processAsNewEventCycle`) is outside that `try` | Catches `Throwable` short of `VirtualMachineError` around each effect **and** around the re-dispatch; a `VirtualMachineError` is stashed and the group goes Dead after `batchEnd()` returns. A throw from a rule during `onEvent` cannot be caught without leaving `processing` set, so it also makes the group Dead |
 | Bounded settlement | 64 rounds, then `ProtocolViolation` | Same bound; the command completes `Failed` and an `Anomaly` is recorded |
 | Stale results | Latest request of a kind supersedes; one asynchronous boundary | Many registrations and several asynchronous effects at once, so staleness is judged by **registration generation and operation id**, not "latest request" |
 | Stale resource | A superseded load is discarded | A superseded open holds a file: it must be **compensated** by a `CloseCapture` effect, and its closure recorded |
 | Pending | Recorded as `success=true`, `reason=pending` | A distinct outcome kind `pending`, never counted as final |
 | Marshalling late results | `post()` on the designated thread | An unbounded completion queue drained with the mailbox, so a full mailbox can never refuse a completion |
 | Lifetime | The driver lives as long as the app | Groups close and can die: terminal admission, sweeps and server cleanup |
+| Generator options | Re-entrancy on (the analyser relies on it) | Must be asserted on for the control processor; with it off, the re-dispatch throws |
 | Audit sink | Bounded ring, counted drops and failures, export to analyser YAML | Same, plus `seq` numbers so a gap is detectable per group |
 
 ## Field evidence: the authoring and investigation experiment
@@ -99,7 +107,7 @@ A hands-on experiment, [reported on PR #75](https://github.com/telaminai/mongoos
 
 - **Explicit, authored structure.** A Spring XML graph gave the LLM something concrete to edit; generation made it executable without hand-editing generated source.
 - **Decisions connected to actual outcomes.** The audit recorded what the policy decided and what the effects actually did, as separate records.
-- **Investigation another person can follow.** Through MCP the reviewer ran queries, located and inspected records, checked accounting expressions, and preserved the result as flags, a chart, a report, a four-step walkthrough and an evidence bundle.
+- **Investigation another person can follow.** Through MCP the reviewer ran queries, located and inspected records, checked accounting expressions, and preserved the result as flags, a chart, a report, a four-step walkthrough and an evidence bundle. In the experiment the follower was a second LLM agent, not a person; this design adds human sign-off to the acceptance criterion.
 - **Assertions against resource state, not narration.** Tests checked independent ledgers (allocations, closes, ownership, invocation counts). The audit was used to explain, and the ledgers to judge.
 
 **Friction it found**, now addressed in this design: a domain event named `LifecycleEvent` collided in generated Java with the runtime's `Lifecycle.LifecycleEvent` (see [Risks](#risks) for naming rules); and a report used a series-section shape that the PDF marked "NOT RENDERED", caught only by visual review (the [workflow](#development-workflow) now includes rendering checks).
@@ -192,11 +200,12 @@ flowchart LR
 | Server run | Server start | `runId` (UUID) | Audit header, replay streams |
 | Group | Group creation | `group` name, plus `groupIncarnation` if a name is ever recreated | Every record |
 | Command | Send | `requestId`: group-local monotonic long, plus sender (thread, admin user or API) | Input, every decision, effect and reply in its chain |
-| Registration | Admission | `generation`: group-local monotonic long; one registration per accepted add | Commands, decisions, effects, outcomes, stops, handles |
+| Registration | Admission | `generation`: group-local monotonic long; one registration per accepted add. Live identity only: concurrent adds of different names race for it | Commands, decisions, effects, outcomes, stops, handles |
+| Incarnation | Admission | `incarnation`: per-name count of accepted adds in this group (1, 2, …); deterministic given the order of adds of that name | Replay stream keys, decisions |
 | Effect operation | Effect request | `opId` = `requestId.n` (n-th effect of that request's chain) | `EffectRequested`, every `EffectOutcome` (pending and final) |
-| Completion | Arrival on the completion queue | `completionId`, with the `opId` it answers | `Input` of the completion cycle |
+| Completion | Assigned by the helper that produces it, exactly once per asynchronous effect | `completionId`, with the `opId` it answers. Used to tell a duplicate delivery from a new one | `Input` of the completion cycle |
 | Resource | Effect that creates it | `resourceId` (for example capture `Q#41`) | Open, install, close effects and outcomes |
-| Causal chain | Derived | `rootId` (originating `requestId`), `causeId` (the record that triggered this one) | Every record |
+| Causal chain | Derived | `rootId` (originating `requestId`); `causeSeq` (the `seq` of the record that triggered this one); `causeOp` (the `opId`, when the trigger was an effect outcome or completion) | Every record |
 
 ### Registrations and admission
 
@@ -230,45 +239,68 @@ Bootstrapping: the group builds the processor and attaches the control audit sin
 
 Per drained command or completion (the analyser's `SessionDriver.submit`, adapted):
 
-1. Claim the command in the outstanding registry.
+1. Claim the command in the outstanding registry (see [two-phase claim](#terminal-admission-and-death)).
 2. `onEvent(input)`: one decision cycle. Rules fire; internal follow-ons may run inside it via `queueReentrantEvent` (back) or `processReentrantEvent` (front). Effects are only requested (appended to `EffectQueue`). The cycle's `afterEvent()` publishes the decision records **before any effect happens**.
-3. While `EffectQueue` has requests: `batchEnd()`. `EffectQueue.performRequestedEffects` snapshots and clears the batch, performs each effect through the adapter, and re-dispatches each result with `processAsNewEventCycle`; those results dispatch after the batch record, each as its own audited cycle. Results may request more effects, which land in the next batch. At most 64 rounds.
-4. Synchronous effects (start, stop, release, install, uninstall, release name, deliver service) return a final outcome. Asynchronous effects (open capture, close capture) return a `pending` outcome at once, and their final result arrives later on the completion queue as a new input.
-5. A command's reply is requested only once every effect it depends on has a final outcome. A command whose effects are pending stays outstanding, so its reply waits for the completion.
-6. An exception from an effect becomes a failed outcome inside `batchEnd()`. A protocol violation or `VirtualMachineError` is stashed and handled once `batchEnd()` has returned and `processing` is clear: the command completes `Failed`, an `Anomaly` is written, and for a `VirtualMachineError` the group goes Dead.
+3. While `EffectQueue` has requests: `batchEnd()`. `EffectQueue.performRequestedEffects` snapshots and clears the batch, performs each effect through the adapter, and re-dispatches each result with `processAsNewEventCycle`; with re-entrancy on, those results are queued and dispatched after the batch record, each as its own audited cycle. Results may request more effects, which land in the next batch. At most 64 rounds.
+4. Synchronous effects (start, stop, release, install, uninstall, release name, deliver service) return a final outcome. Asynchronous effects (open capture, close capture) return a `pending` outcome at once; their final result arrives later on the completion queue as a new input.
+5. A command's reply is requested only once every effect it depends on has a final outcome.
 
-So the drain never starts a new command while a synchronous outcome is outstanding, and asynchronous effects are visible as explicit intermediate states.
+**Nothing may throw out of the generated methods.** Neither `onEvent` nor `batchEnd()` has `try`/`finally`, so a throw leaves `processing` set and wedges the processor.
+
+- `EffectQueue` catches `Throwable` short of `VirtualMachineError` around each effect **and around the re-dispatch call**. An effect failure becomes a `failed` outcome. A protocol violation, a failed re-dispatch or a `VirtualMachineError` is stashed, and the rest of that batch is abandoned.
+- After `batchEnd()` returns and `processing` is clear, the group handles a stashed problem. For a protocol violation or a failed re-dispatch: every abandoned request is given an `EffectOutcome(failed, "abandoned")`, the command completes `Failed`, and an `Anomaly` is written. For a `VirtualMachineError`: the abandoned outcomes and the `Anomaly` go to the fallback stream, and the group goes Dead.
+- A throw from a rule node during `onEvent` cannot be caught without leaving `processing` set. The group writes a fallback `Anomaly` and goes Dead. Rules are generated from Spring-authored policy and perform no I/O, so such a throw is a defect; the property suite asserts that no rule throws on any generated input.
+- Decision D7 proposes adding `try`/`finally` to the generated `onEvent` and `batchEnd()` in Fluxtion, which would let the group recover instead of going Dead.
+
+So the drain never starts a new command while a synchronous outcome is outstanding, every requested effect gets a final outcome or an `abandoned` record, and asynchronous effects are visible as explicit intermediate states.
 
 ### Terminal admission and death
 
-A command must never be orphaned when a group closes or dies, even if a sender is paused between reserving a mailbox slot and publishing into it.
+A command must never be orphaned or completed twice when a group closes or dies, even if a sender is paused between reserving a mailbox slot and publishing into it.
 
-**Group state** is one volatile word: `New`, `Starting`, `Running`, `Closing`, `Closed`, `Dead`. Transitions to `Closing` or `Dead` are compare-and-sets, made by whoever ends the group: the server before closing the runner; the group's `onClose` when Agrona calls it after `onStart` throws a non-`Error`; the group's fatal-error wrapper around `onStart` and `doWork` when an `Error` escapes (Agrona then exits without `onClose`); or a sender that finds the agent thread terminated.
+**Group state** is one volatile word: `New`, `Starting`, `Running`, `Closing`, `Closed`, `Dead`. Transitions to `Closing` or `Dead` are compare-and-sets, made by whoever ends the group: the server before closing the runner; the group's `onClose` when Agrona calls it after `onStart` throws a non-`Error`; the group's fatal-error wrapper around `onStart` and `doWork` when an `Error` escapes (Agrona then exits without `onClose`); or anyone who finds the agent thread terminated.
 
-**Outstanding registry**, a concurrent set of every command sent and not finally replied:
+**Liveness** is judged from the thread the group captures in `onStart`, never from `runner.thread()`, which Agrona replaces with a tombstone during `close()` (and whose `isAlive()` is false). The server always moves a group to `Closing` before calling `close()`, so a graceful close is never mistaken for death.
 
-- **Sender:** (1) add the command; (2) if state ≥ `Closing`, claim and complete `NotRunning`; (3) offer, with bounded backoff off agent threads and none on them, re-checking state on each attempt; (4) after a successful offer, re-check state ≥ `Closing` or a dead thread, and if so claim and complete `NotRunning`.
-- **Agent:** claims each command before applying it; removes it when its final reply is complete.
-- **Terminator:** moves state to `Closing` or `Dead`, then sweeps the registry, claiming and completing every unclaimed command `NotRunning`, and every command waiting on a pending effect `Failed("group ended")`.
+**Two-phase claim.** Each command carries a small state, changed only by compare-and-set: `Sent` → `Claimed` → `Replied`, or `Sent` → `Replied`.
 
-The sender's add-then-read and the terminator's write-then-sweep are sequentially consistent, so one sees the other. The final drain is best effort. A command published after the sweep sits unread, already completed.
+- **Sender:** (1) add the command to the outstanding registry; (2) if the group state is ≥ `Closing`, CAS `Sent → Replied` and complete `NotRunning`; (3) offer, with bounded backoff off agent threads and none on them, re-checking state on each attempt; (4) after a successful offer, re-check state ≥ `Closing` or a dead captured thread, and if so CAS `Sent → Replied` and complete `NotRunning`.
+- **Agent:** CAS `Sent → Claimed` before applying a command (skip it if that fails); complete its reply with `Claimed → Replied`; then remove it from the registry.
+- **Pre-join sweep** (by the server or a sender, while the agent may still be running): completes only `Sent` commands, with `Sent → Replied`. It never completes a `Claimed` command, so it cannot race the agent's own reply.
+- **Claimed commands at the end** are completed by the agent in `onClose`, or, if the thread died, by the server's post-join cleanup. Either way the `Claimed → Replied` CAS makes the completion happen once, and the reply is `Failed("group ended")` for a command still waiting on a pending effect.
 
-**Cleanup after death.** When the server closes a Dead group, it joins the terminated thread (a happens-before edge), then releases every processor record itself, as Agrona already does for a group that never started, and hands any capture resources to the closer. A release that throws leaves the registration `Abandoned`: its name stays admitted and the server reports it. Under `bootServer`'s JVM-exit error handler Dead is not reachable in practice; it matters for embedded servers and tests.
+The sender's add-then-read and the terminator's write-then-sweep are sequentially consistent, so one sees the other. The sweep is idempotent and runs again after the join, in case the fatal wrapper's sweep failed part-way (for example under `OutOfMemoryError`). The final drain is best effort.
+
+**Cleanup after death.** When the server closes a Dead group, it joins the captured thread (a happens-before edge), runs the sweep again, completes every `Claimed` command, releases every processor record itself (as Agrona does for a group that never started), and hands capture resources to the closer. A release that throws leaves the registration `Abandoned`: its name stays admitted and the server reports it.
+
+**Death nobody saw.** If Agrona's error handler itself throws, the thread exits with neither `onClose` nor the wrapper running. The next sender notices the dead captured thread. As a backstop, the server checks every group's captured thread once a second and during `stop()`, then runs the death path. Under `bootServer`'s JVM-exit error handler Dead is not reachable in practice; it matters for embedded servers and tests.
 
 ### Bounded shutdown
 
-**Admission against shutdown.** A server admission lock (read-write). `addEventProcessor`, service registration and removal, and service start and stop take the read lock and check the server is not stopping. `stop()` takes the write lock to move to `Stopping` and snapshot groups and services. No group is created after the snapshot. Stop in `New` closes every existing group, completing queued commands `NotRunning` without running suppliers.
+**Admission against shutdown.** A server admission lock (`ReentrantReadWriteLock`).
+
+- `addEventProcessor`, service registration and removal, and service start and stop take the read lock and check the server is not stopping. **Agent threads use `tryLock()` on the read lock and never wait**: if it is unavailable, the request completes `Refused("server stopping")`.
+- `stop()` takes the write lock only to move the server to `Stopping` and take a snapshot of groups and services, then **releases it** before any close or join. Afterwards the `Stopping` check refuses new admissions, so no group is created after the snapshot, and no agent can block behind a stop that is joining it.
+- Stop in `New` closes every existing group, completing queued commands `NotRunning` without running suppliers. This is a behaviour change (today it returns at once) and is release-noted.
 
 **One deadline**, `shutdownTimeout` (default 30 s), across all phases, each getting the remaining budget:
 
-1. Cancel any in-progress startup step; wait for the startup lock with `tryLock(remaining)`; a step that does not return is reported as blocked.
+1. Cancel any in-progress startup step and wait for the startup lock with `tryLock(remaining)`. `startupLock` becomes a `ReentrantLock` instead of a monitor. A step that does not return is reported as blocked.
 2. Remove feeds (5 s bound, capped).
 3. Drain queued events (drain timeout, capped).
-4. Close processor groups in parallel, each from a helper thread, joining with the remaining budget. This enforces the bound, because `AgentRunner.close()` retries until the runner closes. Closing a group stops its registrations through the normal rules, including pending capture cleanup.
+4. Close processor groups in parallel, each from a registered helper thread, joining each with the remaining budget. This enforces the bound, because `AgentRunner.close()` retries until the runner closes.
 5. Close service groups the same way.
-6. Stop registered services, each on a helper thread with a bounded join.
+6. Stop registered services, each on a helper thread with a bounded join. Service waits and backoffs never run under the service lock.
 
-**Truthful result.** `stop()` returns a `StopResult`: complete, or incomplete with the blocked startup step, groups still running, pending resource cleanups and services left running. If a processor group did not close, the services and service groups it may use are not stopped; the server stays `Stopping`, and calling `stop()` again resumes from the first incomplete phase (decision D2).
+**Helpers are tracked.** Each close helper is recorded in the server's stop progress. A helper that misses the deadline keeps running inside `AgentRunner.close()`. A resumed `stop()` re-joins the existing helpers, never starts a second close, and the helpers are reported in the result until they finish.
+
+**Truthful result.** `stop()` returns a `StopResult`: complete, or incomplete with the blocked startup step, groups still running, their helpers, pending resource cleanups and services left running.
+
+- If any processor group did not close, **no services or service groups are stopped**. Broadcasts reach every group, so any running processor may hold any service.
+- The server stays `Stopping`; `LifecycleManager`'s one-shot `stopped` flag becomes per-phase progress, so a second `stop()` resumes from the first incomplete phase.
+- The `stopCompleted` latch is released, and `awaitStopped` returns true, only when the result is complete. `runOrderedStop` no longer sets `Stopped` unconditionally.
+
+This is decision D2.
 
 ### Agent threads and replies
 
@@ -284,16 +316,30 @@ The sender's add-then-read and the terminator's write-then-sweep are sequentiall
 
 Opening a Chronicle queue is file I/O, so it is an asynchronous effect performed on a helper thread, exactly the analyser's asynchronous open, plus compensation for the resource.
 
-Each registration has a capture sub-state: `Off`, `Opening(opId)`, `Recording(resourceId)`, `Closing(resourceId)`.
+**Capture sub-state** per registration: `Off`, `Opening(opId)`, `Recording(resourceId)`, `Closing(resourceId)`.
 
-1. `AuditStart(registration)` while Started and `Off`: rule `auditStartOnStarted`, capture → `Opening(opId)`; effect `OpenCapture(opId)` returns `pending`.
-2. The helper opens the queue and posts `CaptureOpened(opId, resourceId)` or `CaptureOpenFailed(opId, reason)` to the completion queue.
-3. `OperationGate` accepts the completion only if the registration is still Started **and** its capture is `Opening` with the same `opId`. Then rule `captureOpened`: `InstallCapture(resourceId)`, capture → `Recording`; reply `Applied`.
-4. Otherwise the completion is **stale** (the registration was released or replaced, or a later `AuditStop` cancelled the open): rule `captureOpenedStale` records it with `stale=true`, requests the compensating `CloseCapture(resourceId)`, and replies to the original `AuditStart` with `Refused`.
-5. `AuditStop`, `Stop` or group close while `Recording`: `UninstallCapture` (synchronous), capture → `Closing`, then `CloseCapture` (asynchronous, through the closer), whose `CaptureClosed(ok | failed)` returns capture to `Off` and is recorded. While `Opening`, they cancel the open: capture → `Off`, and the later completion arrives stale and is compensated.
-6. The closer owns a resource after hand-off and closes it exactly once. A failed physical close is recorded and counted, and never blocks a release. If the group has ended, the closer writes the completion to the fallback stream.
+**Resource table** per group, written only by the control processor: `resourceId` → owner (generation, or none), state (`Open`, `Installed`, `Closing`, `Closed`) and the `opId` that created it. Every resource has exactly one owner at a time. `CloseCapture` is requested only for a resource in the table that is not `Closing` or `Closed`. A request for an unknown or closed resource is refused as `unknown resource`, has no effect, and does not count toward I4. Entries are removed once `Closed` is recorded and the root's reply is complete, so the table stays bounded.
 
-A `Stop` does not wait for an outstanding open. The processor is released and its name freed at once; the open's eventual compensation is recorded as `PendingCleanup` until `CaptureClosed` arrives.
+**Classifying a completion.** `OperationGate` checks each `CaptureOpened(opId, completionId, resourceId)` against the registration's capture state and the resource table, and labels it one of:
+
+- **current:** the registration is Started and its capture is `Opening(opId)`;
+- **stale:** the `opId` was cancelled, or its registration was released or replaced;
+- **duplicate:** a completion for this `opId` (same `completionId` or same `resourceId`) has already been accepted or compensated;
+- **unknown:** the root has been pruned. This can only happen when an adapter delivers a completion more than once; Mongoose's own helpers post exactly once. It is recorded as an `Anomaly`; a resource it carries that is not in the table is closed, and the closer's close is guarded against closing twice.
+
+The steps:
+
+1. `AuditStart(registration)` while Started and `Off`: rule `auditStartOnStarted`, capture → `Opening(opId)`; effect `OpenCapture(opId)` returns `pending`. The open has a timeout (default 30 s).
+2. The helper opens the queue and posts `CaptureOpened` or `CaptureOpenFailed` to the completion queue, once. If an open fails part-way, the helper closes whatever it created before posting the failure and reports that close in the failure.
+3. **Current:** rule `captureOpened`; the resource enters the table owned by that generation; `InstallCapture(resourceId)`, capture → `Recording`; reply `Applied`.
+4. **Stale:** rule `captureOpenedStale` (`stale=true`); the resource enters the table with no owner; compensating `CloseCapture(resourceId)`.
+5. **Duplicate:** rule `captureDuplicate`, recorded with `duplicate=true`; no effect. A duplicate of an accepted open never closes the live capture.
+6. `AuditStop`, `Stop` or group close while `Recording`: `UninstallCapture` (synchronous), capture → `Closing`, then `CloseCapture` (asynchronous, through the closer). While `Opening`, they cancel the open: capture → `Off`, and the original `AuditStart` is replied `Refused("cancelled")` **at once**, not when the late completion arrives. The late completion is then stale and compensated, with `PendingCleanup` recorded until its close completes.
+7. **Timeout:** an open that has not completed by its deadline is marked timed out. The `AuditStart` is replied `Failed("open timed out")`, capture → `Off`, and a later completion is stale and compensated.
+8. `CaptureClosed(resourceId, ok | failed)` marks the resource `Closed`, returns the capture to `Off` if it was `Closing(resourceId)`, and clears the matching `PendingCleanup`. A stale `CaptureOpenFailed` also clears its `PendingCleanup`.
+9. The closer owns a resource after hand-off and closes it exactly once. A failed physical close is recorded and counted, and never blocks a release. If the group has ended, the closer writes the completion to the fallback stream.
+
+A `Stop` does not wait for an outstanding open or close: the processor is released and its name freed at once, and any outstanding resource work is recorded as `PendingCleanup` until it completes.
 
 ### Service lifecycle
 
@@ -323,14 +369,15 @@ Lifecycle states: `Admitted` (add queued), `Starting`, `Started`, `Releasing`, `
 | `Stop` | `stopBeforeAdd` → Cancelled; `ReleaseName`; `Applied` | waits behind the start's outcome, then as Started | `stopStarted` → Releasing; capture cleanup (see below); `Release(stopped)` | `stopWhileReleasing`: joins the release | `stopReleased`: `Applied(alreadyStopped)` | `Failed("cleanup incomplete")` |
 | `Released` outcome | n/a | n/a | n/a | → Released; `ReleaseName`; replies `Applied` | n/a | n/a |
 | `ReleaseFailed` outcome | n/a | n/a | n/a | → Abandoned; name stays admitted; `Anomaly` | n/a | n/a |
-| `AuditStart` | `Refused` | `Refused` | Off: `auditStartOnStarted`, capture → Opening, `OpenCapture` (pending). Opening or Recording: `Applied(noChange)` | `Refused` | `Refused("generation released")` | `Refused` |
+| `AuditStart` | `Refused` | `Refused` | Off: `auditStartOnStarted`, capture → Opening, `OpenCapture` (pending). Opening or Recording: `Applied(noChange)`. Closing: `Refused("capture closing")` | `Refused` | `Refused("generation released")` | `Refused` |
 | `CaptureOpened(opId, Q)` | stale | stale | Opening(opId): `captureOpened`, `InstallCapture(Q)`, → Recording, reply `Applied`. Otherwise stale | stale | stale | stale |
-| any stale `CaptureOpened` | `captureOpenedStale`: `CloseCapture(Q)`, `PendingCleanup`, original `AuditStart` replied `Refused` | same | same | same | same | same |
+| any stale `CaptureOpened` | `captureOpenedStale`: `CloseCapture(Q)`, `PendingCleanup`; the original `AuditStart` replied `Refused` unless already replied (cancelled or timed out) | same | same | same | same | same |
+| duplicate `CaptureOpened` | `captureDuplicate`: recorded, no effect | same | same | same | same | same |
 | `CaptureOpenFailed(opId)` | stale: recorded | stale | Opening(opId): capture → Off; reply `Failed` | stale | stale | stale |
-| `AuditStop` | `Refused` | `Refused` | Opening: cancel, capture → Off. Recording: `UninstallCapture`, → Closing, `CloseCapture`. Off: `Applied(noChange)` | `Applied` | `Applied(alreadyStopped)` | `Failed` |
+| `AuditStop` | `Refused` | `Refused` | Opening: cancel, capture → Off, original `AuditStart` replied `Refused("cancelled")`. Recording: `UninstallCapture`, → Closing, `CloseCapture`. Closing: `Applied(noChange)`. Off: `Applied(noChange)` | `Applied` | `Applied(alreadyStopped)` | `Failed` |
 | `CaptureClosed(Q)` | records outcome; capture → Off if it was Closing(Q); clears `PendingCleanup` | same | same | same | same | same |
 
-Capture cleanup on `stopStarted`: Recording → `UninstallCapture`, `CloseCapture`; Opening → cancel (the late completion will be stale and compensated). A `Stop` from a processor's own `stop()` arrives as `stopWhileReleasing` or `stopReleased`, and never touches a replacement because it carries the registration.
+Capture cleanup on `stopStarted`: Recording → `UninstallCapture`, `CloseCapture`; Opening → cancel (the original `AuditStart` is refused at once, and the late completion is stale and compensated); Closing → the close continues, recorded as `PendingCleanup`. A `Stop` from a processor's own `stop()` arrives as `stopWhileReleasing` or `stopReleased`, and never touches a replacement because it carries the registration.
 
 ### Group states
 
@@ -365,7 +412,16 @@ Each row is a named test and an invariant check over its audit.
 | Effect re-requests itself through its outcome | 64 `batchEnd` rounds, then `Failed` with an `Anomaly` naming the effect |
 | Full mailbox on an agent thread | `Refused("mailbox full")` |
 | Replay ends a processor during cursor traversal | Cursor marked done; removed after traversal |
-| Server stop while a group's close exceeds the deadline | `StopResult` incomplete; its services left running; state stays Stopping |
+| Server stop while a group's close exceeds the deadline | `StopResult` incomplete; no services stopped; state stays Stopping; its helper re-joined on resume |
+| Server moves a group to Closing while the agent replies to a claimed command | One reply: the pre-join sweep completes only `Sent` commands |
+| Duplicate `CaptureOpened` after acceptance | `captureDuplicate`; no effect; the live capture stays installed |
+| Late `CaptureOpened` after its root was replied and compensated | `duplicate` or `unknown`; no second close of the same resource |
+| A rule node throws during `onEvent` | Fallback `Anomaly`; group Dead |
+| A fatal error is stashed mid-batch | Remaining requests get `failed("abandoned")`; command `Failed` |
+| `AuditStart` while `Closing(Q)` | `Refused("capture closing")`; `CaptureClosed(Q)` cannot affect a later open, because it is matched by `resourceId` |
+| An open never completes | Timed out; `AuditStart` `Failed`; a later completion is stale and compensated |
+| Agrona's error handler throws, so the thread exits without the wrapper or `onClose` | Server's liveness check or the next sender finds the dead captured thread; death path runs |
+| A handler adds a processor while stop is in progress | `tryLock` on the read lock fails or the `Stopping` check refuses: `Refused("server stopping")`; no blocking |
 
 ## Rules
 
@@ -404,7 +460,7 @@ Intended behaviour. Each has a named test and, where observable, an invariant.
 
 ### Record schema
 
-Records are written by control-processor nodes through Fluxtion's audit (`EventLogSource`), so each input is one frame and each record names its node. Vocabulary follows the analyser's (`fact`, `opId`, `effect`, `success`, `stale`, `reason`), extended with identities. Every record carries `runId`, `group`, `seq` (group-local, gap-free while the sink works), `requestId`, `rootId`, `causeId` and control-clock time.
+Records are written by control-processor nodes through Fluxtion's audit (`EventLogSource`), so each input is one frame and each record names its node. Vocabulary follows the analyser's (`fact`, `opId`, `effect`, `success`, `stale`, `reason`), extended with identities. Every record carries `runId`, `group`, `seq` (group-local, gap-free while the sink works), `requestId`, `rootId`, `causeSeq`, `causeOp` (when caused by an effect) and control-clock time.
 
 | Record | Node | Key fields |
 | --- | --- | --- |
@@ -424,9 +480,9 @@ Data processors keep their own audit. Their start and stop are already framed by
 ### Causal links
 
 - A command's records share its `requestId`; `rootId = requestId`.
-- Internal follow-ons keep `requestId` and `rootId` and set `causeId`.
-- Effects are `opId = requestId.n`; synchronous outcomes, re-dispatched with `processAsNewEventCycle`, keep `rootId` and set `causeId` to the `EffectRequested`.
-- Asynchronous completions arrive later as inputs carrying their `opId`, so `rootId` links back to the originating command even after its registration is gone. Compensating effects requested by a stale completion are numbered within the same root.
+- Internal follow-ons keep `requestId` and `rootId` and set `causeSeq` to the record that triggered them.
+- Effects are `opId = requestId.n`; synchronous outcomes, re-dispatched with `processAsNewEventCycle`, keep `rootId`, set `causeOp` to the `opId` and `causeSeq` to the `EffectRequested`.
+- Asynchronous completions arrive later as inputs carrying their `opId` (as `causeOp`) and `completionId`, so `rootId` links back to the originating command even after its registration is gone. Compensating effects requested by a stale completion are numbered within the same root.
 - Replies cite `requestId`; a reply deferred by a pending effect is linked to the completion that released it.
 
 One `rootId` gives the whole story: input, decisions, effects, pending and final outcomes, compensation, late completions and the reply.
@@ -457,6 +513,7 @@ Every lifecycle change and every lifecycle regression is accepted only with an i
 5. **Investigation with existing verbs:** queries (`read`, `aggregate`) locate the records; record inspection shows identities, decisions and outcomes; accounting checks (`series` or `aggregate` expressions such as opened − closed − live = 0) agree with the ledger; `topology` and `source` name the deciding rule.
 6. **Preserved explanation.** A `report` and a `walk`, with flags on the key records, separate expected behaviour (rules and invariants), observed behaviour (records) and evidence gaps. The report is rendered and checked for unrendered sections before it is committed with the test and the evidence bundle.
 7. **Independent judgement.** The test's verdict comes from invariants and ledger assertions, never from the audit narration alone.
+8. **Human sign-off.** A person other than the author follows the report and walk, checks them against the evidence, and approves before merge. An LLM may prepare the investigation; it does not sign it off.
 
 ### When things fail
 
@@ -487,8 +544,8 @@ Invariants are written from this document's rules, ideally by someone other than
 | --- | --- |
 | I1. No `InstallCapture` for a generation after a `Decision` moving it to Releasing | 12 |
 | I2. Every command `Input` has exactly one `Reply`, or a fallback `NotRunning` / `Failed("group ended")` | 3 |
-| I3. Every `EffectRequested` has exactly one final `EffectOutcome` (`succeeded` or `failed`), or a fallback record; `pending` does not count | 3, 8 |
-| I4. Every `resourceId` opened is closed exactly once: one `CaptureOpened` matched by one `CaptureClosed` | 13 |
+| I3. Every `EffectRequested` has exactly one final `EffectOutcome` (`succeeded`, `failed`, or `failed("abandoned")`), or a fallback record; `pending` does not count | 3, 8 |
+| I4. Every `resourceId` opened is closed exactly once: one accepted or compensated `CaptureOpened` matched by one `CaptureClosed`; duplicate and unknown completions and refused closes do not count | 13 |
 | I5. At most one admitted, non-terminal generation per name at any `seq` | 7 |
 | I6. Every effect in a request's causal chain targets only the generation that request was bound to | 7 |
 | I7. No `BuildAndStart`, `OpenCapture` or `InstallCapture` after the group records Closing | 9, 12 |
@@ -498,6 +555,8 @@ Invariants are written from this document's rules, ideally by someone other than
 
 | I11. Resource accounting: at every `EffectOutcome`, opened − closed − live = 0 | 13 |
 | I12. Ownership: live handles = handles owned by a Started registration's capture | 12, 13 |
+| I13. No command is replied twice: one `Reply` per `requestId`, and the reply future completes once | 3 |
+| I14. A duplicate completion has no effect | 13 |
 
 **Resource-state assertions.** I11 and I12 are checked twice: from the audit, by the invariant module and by the analyser (`series` or `aggregate`), and from the fake adapter's own ledgers of handle existence, ownership, close counts and effect invocation counts. Tests judge by the ledgers; the audit explains. Non-execution is asserted from unchanged invocation counters, not inferred from a missing record. A disagreement between ledger and audit is a finding in itself, about the audit.
 
@@ -556,12 +615,12 @@ Group `G`; processor `pricer`, generation 7, Started.
 - {seq: 312, type: Reply,           requestId: 1002, outcome: Applied}
 - {seq: 313, type: Input,           requestId: 1003, rootId: 1003, fact: Add, name: pricer, generation: 8}
 - {seq: 318, type: Reply,           requestId: 1003, outcome: Applied}
-- {seq: 319, type: Input,           completionId: c-88, rootId: 1001, causeId: 1001.1, fact: CaptureOpened, opId: 1001.1, resourceId: Q#41}
+- {seq: 319, type: Input,           completionId: c-88, rootId: 1001, causeOp: 1001.1, fact: CaptureOpened, opId: 1001.1, resourceId: Q#41}
 - {seq: 320, type: EffectOutcome,   opId: 1001.1, effect: OpenCapture, outcome: succeeded, stale: true}
 - {seq: 321, type: Decision,        rule: captureOpenedStale, generation: 7, refused: "generation 7 released"}
 - {seq: 322, type: EffectRequested, opId: 1001.2, effect: CloseCapture, resourceId: Q#41}
 - {seq: 324, type: Reply,           requestId: 1001, outcome: Refused, reason: "generation 7 released before the capture opened"}
-- {seq: 331, type: Input,           completionId: c-91, rootId: 1001, causeId: 1001.2, fact: CaptureClosed, resourceId: Q#41}
+- {seq: 331, type: Input,           completionId: c-91, rootId: 1001, causeOp: 1001.2, fact: CaptureClosed, resourceId: Q#41}
 - {seq: 332, type: EffectOutcome,   opId: 1001.2, effect: CloseCapture, outcome: succeeded}
 ```
 
@@ -587,7 +646,7 @@ Group `G`; processor `pricer`, generation 7, Started.
 Replay is separate from, and stronger than, audit.
 
 - **Control replay.** The control journal records every input to the control processor: normalised command intents and every effect outcome, pending and final, in dispatch order. Replaying it through the same generated processor, with the effect adapter replaced by one that answers from the journal, reproduces its decisions. It does not reproduce effects: suppliers, services, resources and futures are not journal inputs.
-- **Data-processor replay.** Streams are keyed by run, group, name and generation; a `Stop` ends a stream; the next incarnation attaches to the next stream; initialisation provenance (factory key, configuration hash) is recorded per stream.
+- **Data-processor replay.** Streams are keyed by run, group, name and per-name `incarnation` (not `generation`, which concurrent adds of different names race for and so differs between runs); a `Stop` ends a stream; the next incarnation attaches to the next stream; initialisation provenance (factory key, configuration hash) is recorded per stream.
 - **Service changes** are recorded per stream with versions; during replay, live service delivery to replayed processors is suppressed and recorded deliveries are replayed in position.
 - **Control requests from replayed processors** are intercepted: not executed live; the recorded outcome is fed back.
 - `GroupReplayer` ends a processor by sending `Stop` (rule 1) and marks its cursor done, removing it after traversal.
@@ -596,14 +655,24 @@ Scope is decision D3.
 
 ## Migration plan
 
-Six stacked PRs after 1.0.33. Each is releasable alone and states its semantics.
+Seven stacked PRs after 1.0.33. Each is releasable alone and states its semantics.
 
-1. **Control processor, mailbox and terminal admission.** The generated control processor (gate, state, rules, `EffectQueue` at `@OnBatchEnd`, `EffectOutcomes`) for add and stop; the pinned builder version and a test asserting the emitted `batchEnd()` shape and queueing; one mailbox and the completion queue; per-group admission table (send-time compare-and-set, as 1.0.33); `Registration` with generation and states; outstanding registry and sweep; group states including Dead, fatal wrappers, server cleanup after death; stop in New; the control audit, identities and causal links; the analyser-YAML export; the invariant module and the scenario harness. Acceptance includes the [analyser compatibility criterion](#acceptance-criterion-analyser-compatibility). Semantics as 1.0.33 (duplicate throws at once; stop before add cancels), plus no orphaned commands; `void` methods stay fire-and-forget.
-2. **Bounded shutdown.** Admission lock, deadline, helper-thread joins, `StopResult`, dependency preservation, resumable Stopping.
+0. **Fluxtion version.** Settle D6: move Mongoose to fluxtion-runtime 1.1.1 with builder 1.0.77 or later (recommended), or pin builder 1.0.76 for runtime 1.1.0 and re-verify its template. Add the tests that assert the emitted `batchEnd()` and `onEvent` shapes and `supportReentrancy`. If D7 is accepted, the Fluxtion change lands here too.
+1. **Control processor, mailbox and terminal admission.** This is the largest PR, and is reviewed as such:
+    - the Spring-authored control processor (gate, state, rules, `EffectQueue` at `@OnBatchEnd` with the guarded re-dispatch, `EffectOutcomes`) for add and stop;
+    - one mailbox and the completion queue;
+    - the per-group admission table (send-time compare-and-set, as 1.0.33) and `Registration` with generation, incarnation and states;
+    - the outstanding registry with the two-phase claim and sweep;
+    - group states including Dead, fatal wrappers, captured-thread liveness, the server liveness check and cleanup after death;
+    - stop in New closes groups (release note);
+    - the control audit with identities and causal links, the analyser-YAML export, the invariant module and the scenario harness.
+
+    The existing `AgentHandoff` path used by audit capture becomes a `Run` command until PR 5. Acceptance includes the [analyser compatibility criterion](#acceptance-criterion-analyser-compatibility). Semantics are as 1.0.33 (duplicate throws at once; stop before add cancels), plus no orphaned or double replies; `void` methods stay fire-and-forget.
+2. **Bounded shutdown.** Admission lock (with `tryLock` on agents, released after the snapshot), `startupLock` as a `ReentrantLock`, the deadline, tracked helper threads, `StopResult`, no services stopped while a group runs, resumable Stopping.
 3. **Agent threads and replies.** Thread-local identity, non-blocking agent sends, reply executor, reply API and handles, waiting `void` wrappers with single deadlines.
-4. **Audit capture as effects.** Capture sub-states, asynchronous open with gate matching and compensation, closer. `stopAll()` and `attach(..., Executor)` deprecated.
-5. **Service lifecycle and service groups.**
-6. **Data-processor framing and replay identity.**
+4. **Service lifecycle and service groups.** Waits and backoffs never under the service lock.
+5. **Audit capture as effects.** Capture sub-states, resource table, completion classification (current, stale, duplicate, unknown), open timeout, compensation, closer. `stopAll()` and `attach(..., Executor)` deprecated.
+6. **Data-processor framing and replay identity** (per-name incarnation keys).
 
 ## Test plan
 
@@ -637,7 +706,8 @@ Six stacked PRs after 1.0.33. Each is releasable alone and states its semantics.
 | D3 | Deterministic replay across service changes and reincarnations, or restricted? | Support it (PR 6); earlier recordings flagged partial |
 | D4 | Make `registeredServices()` unmodifiable? | Yes, with a release note |
 | D5 | Generated control-processor source checked in, or generated each build? | Generated each build, published with the build for review |
-| D6 | Builder version paired with runtime 1.1.0 | To be pinned in PR 1, with the `batchEnd()` shape test |
+| D6 | Fluxtion version: runtime 1.1.1 with builder 1.0.77 or later, or pin builder 1.0.76 for runtime 1.1.0? **Blocks PR 1** | Move to 1.1.1 / 1.0.77+, whose template was verified (PR 0) |
+| D7 | Add `try`/`finally` to the generated `onEvent` and `batchEnd()` in Fluxtion, so a throw no longer wedges a processor? | Yes; until then a rule throw makes the group Dead |
 
 ## Review responses
 
@@ -660,6 +730,25 @@ Six stacked PRs after 1.0.33. Each is releasable alone and states its semantics.
 | 11 | Minor: 64 commands is not a latency bound | **Accepted** | Time budget added; loaded tail latency measured; slow single effects listed as a risk. [One mailbox](#one-mailbox), [Risks](#risks) |
 
 All six state-machine gaps from this review are rows in [Interleavings](#interleavings).
+
+### Review 4: Fable review of revision 3
+
+[Review](https://github.com/telaminai/mongoose/pull/75#issuecomment-6387076550) of design `04779f0` against `74ad868`, analyser `985ea71`, Fluxtion runtime v1.1.0 and compiler develop, Agrona 2.3.0. Each finding was re-checked before responding.
+
+| # | Finding | Response | Evidence and change |
+| --- | --- | --- | --- |
+| 1 | Major: D6 is a blocker in disguise | **Accepted** | Confirmed from compiler tags: `v1.0.76` pairs with runtime 1.1.0, `v1.0.77`–`79` and develop with 1.1.1; the template was verified on develop. D6 now blocks PR 1, with a new PR 0. [Reference](#reference-the-analysers-session-controller), [Migration plan](#migration-plan) |
+| 2 | Major: second completer on a claimed command | **Accepted** | Two-phase claim (`Sent → Claimed → Replied`); the pre-join sweep completes only `Sent`; claimed commands are completed by `onClose` or post-join cleanup; sweep idempotent and re-run after join; new I13. [Terminal admission and death](#terminal-admission-and-death) |
+| 3 | Major: duplicate or post-release completion closes the wrong resource | **Accepted** | Resource table with one owner; completions classified current, stale, duplicate or unknown; closes of unknown or closed resources refused; bounded retention; new I14. [Audit capture](#audit-capture) |
+| 4 | Major: re-entrancy is a generator option; the re-dispatch is unguarded; `onEvent` has no `try`/`finally` | **Accepted** | Confirmed in `JavaSourceGenerator.buildProcessEventBody` (`supportReentrancy`), `EffectQueue.performRequestedEffects` (re-dispatch outside the `try`) and `DefaultEventProcessor.onEvent`. `runInEventCycle` has `try`/`finally`, but it runs an action, not graph dispatch, so it cannot replace `onEvent` here. Re-dispatch now guarded; a rule throw makes the group Dead; PR 0 asserts re-entrancy on; D7 proposes fixing the generator. [Effects and outcomes](#effects-and-outcomes) |
+| 5 | Major: bounded shutdown underdefined | **Accepted** | Write lock released after the snapshot and `tryLock` on agents; tracked helpers re-joined on resume; no services stopped while any group runs; per-phase progress replaces the one-shot `stopped`; latch only on completion; `startupLock` becomes a `ReentrantLock`. [Bounded shutdown](#bounded-shutdown) |
+| 6 | Major: replay stream identity non-deterministic | **Accepted** | Streams keyed by per-name `incarnation`; `generation` is live identity only. [Identities](#identities), [Deterministic replay](#deterministic-replay) |
+| 7 | Minor: capture table gaps; abandoned batch breaks I3 | **Accepted** | `Closing` rows defined; stale failure clears `PendingCleanup`; partial opens closed by the helper; cancelled `AuditStart` replied at once; open timeout; abandoned requests get `failed("abandoned")`. [Audit capture](#audit-capture), [Effects and outcomes](#effects-and-outcomes) |
+| 8 | Minor: Dead detection | **Accepted** | Liveness from the thread captured in `onStart`; Closing always CAS-ed before `close()`; server liveness check once a second for deaths nobody saw. [Terminal admission and death](#terminal-admission-and-death) |
+| 9 | Minor: PR 1 scope; waits under the service lock | **Accepted** | PR 1 contents listed as the largest PR; stop in New release-noted; `AgentHandoff` path becomes `Run` until PR 5; no waits or backoffs under the service lock. [Migration plan](#migration-plan) |
+| 10 | Minor: identity namespaces | **Accepted** | `causeId` split into `causeSeq` and `causeOp`; `completionId` used to detect duplicate deliveries. [Identities](#identities) |
+
+The review's one stretch on field evidence (the follower was an LLM) is addressed by human sign-off in the [acceptance criterion](#acceptance-criterion-analyser-compatibility). All eight interleaving gaps are rows in [Interleavings](#interleavings).
 
 ### Follow-up 1: the audit as a primary goal
 
