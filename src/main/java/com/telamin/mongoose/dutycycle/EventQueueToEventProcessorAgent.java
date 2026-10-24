@@ -124,15 +124,28 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                     }
                 }
 
-                int attempt = 0;
+                // mongoose#53: the unit of retry is ONE processor. A strategy that names the processor whose handler threw
+                // (failedPosition() >= 0) is resumed at it: that processor is retried, then the processors after it are
+                // given the event; those before it handled it and never see it again. Each failing processor has its own
+                // attempts under the RetryPolicy, and one whose retries are exhausted is skipped, not the rest of the queue.
+                // A strategy that cannot name it (-1) is retried whole, as before #53. No allocation here: ints and flags.
+                int from = 0;                   // the dispatch position the next attempt starts at
+                int failingAt = -1;             // the position of the processor being retried, -1 when none is
+                int attempt = 0;                // attempts of the processor being retried (of the whole dispatch: legacy)
+                boolean wholeFailed = false;    // a failure the strategy could not place: legacy, whole-dispatch semantics
                 boolean done = false;
-                Throwable lastError = null;
+                if (recorder != null) recorder.beforeDispatch(sourceName, seq, targets);
                 while (!done) {
                     try {
-                        if (recorder != null) recorder.beforeDispatch(sourceName, seq, targets);
+                        if (recorder != null && wholeFailed) recorder.beforeDispatch(sourceName, seq, targets);
                         if (event instanceof ReplayRecord replayRecord) {
                             if (recorder == null) {
-                                eventToInvokeStrategy.processEvent(replayRecord.getEvent(), replayRecord.getWallClockTime());
+                                if (from == 0) {
+                                    eventToInvokeStrategy.processEvent(replayRecord.getEvent(), replayRecord.getWallClockTime());
+                                } else {
+                                    // the synthetic clocks were set by the attempt that failed: resume with them
+                                    eventToInvokeStrategy.processEventFrom(replayRecord.getEvent(), from);
+                                }
                             } else {
                                 // a recorded processor keeps its recording clock, pinned to the record's instant as the
                                 // strategy's synthetic clock would be, so its reads are still recorded; the rest as before
@@ -140,26 +153,56 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                                 for (DataFlow target : targets) {
                                     if (!recorder.pinSyntheticTime(target, time)) eventToInvokeStrategy.setSyntheticTime(target, time);
                                 }
-                                eventToInvokeStrategy.processEventRecording(replayRecord.getEvent(), received);
+                                if (from == 0) {
+                                    eventToInvokeStrategy.processEventRecording(replayRecord.getEvent(), received);
+                                } else {
+                                    eventToInvokeStrategy.processEventRecordingFrom(replayRecord.getEvent(), received, from);
+                                }
                             }
                         } else if (recorder != null) {
                             // RECORD: each recorded processor's input is copied just before it is given it (review of
-                            // 90f0d9b, finding 2). Only a first-attempt success commits the copy, below: one guard, D4
-                            eventToInvokeStrategy.processEventRecording(delivered(event), received);
+                            // 90f0d9b, finding 2), once: a failed processor's retries are not recorded (D4, #53)
+                            if (from == 0) {
+                                eventToInvokeStrategy.processEventRecording(delivered(event), received);
+                            } else {
+                                eventToInvokeStrategy.processEventRecordingFrom(delivered(event), received, from);
+                            }
+                        } else if (from != 0) {
+                            eventToInvokeStrategy.processEventFrom(delivered(event), from);
                         } else if (event instanceof BroadcastEvent broadcastEvent) {
                             eventToInvokeStrategy.processEvent(broadcastEvent.getEvent());
                         } else {
                             eventToInvokeStrategy.processEvent(event);
                         }
                         done = true;
+                    } catch (VirtualMachineError fatal) {
+                        throw fatal;        // OutOfMemoryError, StackOverflowError, ...: never retried or swallowed (as #57)
                     } catch (Throwable t) {
-                        // D4: a retry is a failure; the recording is marked, not continued as if nothing happened. The
-                        // recorder never throws (its own failures are its own), so this path stays the dispatch's
-                        if (recorder != null && attempt == 0) recorder.failed(sourceName, delivered(event), t, targets);
-                        lastError = t;
+                        int at = wholeFailed ? -1 : eventToInvokeStrategy.failedPosition();
+                        DataFlow failed = at < 0 ? null : eventToInvokeStrategy.failedProcessor();
+                        if (at < 0) {
+                            // legacy: the whole dispatch is the unit of retry. D4: a retry is a failure; the recording is
+                            // marked for every target, not continued as if nothing happened (the recorder never throws)
+                            if (recorder != null && !wholeFailed) recorder.failed(sourceName, delivered(event), t, targets);
+                            if (!wholeFailed) {
+                                wholeFailed = true;
+                                attempt = 0;        // a resumed processor's attempts were its own; the whole dispatch starts its count
+                            }
+                            from = 0;
+                        } else {
+                            if (at != failingAt) {
+                                // a processor failing for the first time on this event: its own attempts, and its input alone
+                                // is marked failed (D4); the processors before it are recorded as they handled it
+                                failingAt = at;
+                                attempt = 0;
+                                if (recorder != null) recorder.failed(sourceName, delivered(event), t, failed);
+                            }
+                            from = at;
+                        }
                         attempt++;
                         String warnMsg = "event processing failed: agent=" + name +
                                 ", attempt=" + attempt +
+                                (failed == null ? "" : ", processor=" + failed) +
                                 ", eventClass=" + (event == null ? "null" : event.getClass().getName()) +
                                 ", event=" + event +
                                 ", error=" + t;
@@ -172,6 +215,8 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                         if (!retryPolicy.shouldRetry(t, attempt)) {
                             String errMsg = "dropping event after retries: agent=" + name +
                                     ", attempts=" + attempt +
+                                    (failed == null ? "" : ", processor=" + failed
+                                            + " (the processors after it are still given the event)") +
                                     ", eventClass=" + (event == null ? "null" : event.getClass().getName()) +
                                     ", event=" + event +
                                     ", lastError=" + t;
@@ -181,7 +226,12 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                                     errMsg,
                                     t,
                                     com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
-                            break;
+                            if (at < 0) break;
+                            // #53: this processor's retries are exhausted; it is skipped, the processors after it are not
+                            from = at + 1;
+                            failingAt = -1;
+                            attempt = 0;
+                            continue;
                         }
                         retryPolicy.backoff(attempt);
                     }
@@ -189,10 +239,12 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
 
                 // recorded after the dispatch, outside it: a recording failure is not a dispatch failure, so it is never
                 // retried as one (the processor would handle the input again) and never marks the processor as failing.
-                // Only a dispatch that succeeded FIRST TIME is recorded: one that a retry recovered is already marked
-                // Failed (D4, a retry is a failure: marked, not reproduced), and recording it too would make a replay re-run
-                // it, with the retry's clock reads rather than those of the attempt that happened
-                if (done && recorder != null && attempt == 0) {
+                // A processor whose handler threw is already marked Failed (D4, a retry is a failure: marked, not
+                // reproduced) and is skipped here; recording it too would make a replay re-run it, with the retry's clock
+                // reads rather than those of the attempt that happened. With a failure resumed at its processor (#53), every
+                // other processor handled the input exactly once, first time, and is recorded as usual. A failure the
+                // strategy could not place marked every target, so nothing more is recorded (as before #53).
+                if (done && recorder != null && !wholeFailed) {
                     recorder.afterDispatch(sourceName, route, delivered(event), seq, targets);
                 }
 
