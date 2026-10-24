@@ -112,6 +112,17 @@ public class MongooseServerConfig {
     private Map<CallBackType, Supplier<EventToInvokeStrategy>> eventInvokeStrategies;
 
     /**
+     * What happens when a processor's {@code start()} throws while the server boots (review of mongoose#57). False, the
+     * default: the boot fails. The processor is dropped and the group's start fails with a
+     * {@link com.telamin.mongoose.dutycycle.ProcessorStartException} naming the group and the processor, which reaches
+     * the agent error handler (under {@code bootServer}, {@code GlobalErrorHandler}, which exits the process). True: the
+     * failure is isolated, reported through {@code ErrorReporting} and the processor dropped, and the server boots
+     * without it. A processor added after the server has started is always isolated, whatever this says.
+     * YAML: {@code isolateProcessorStartFailuresAtBoot: true}.
+     */
+    private boolean isolateProcessorStartFailuresAtBoot;
+
+    /**
      * Optional performance-monitoring configuration. When absent or
      * {@code enabled = false} (the default), the no-op counters service
      * is installed and call-site overhead is zero after JIT compilation.
@@ -474,8 +485,18 @@ public class MongooseServerConfig {
         private IdleStrategy idleStrategy;
         private final Map<CallBackType, Supplier<EventToInvokeStrategy>> eventInvokeStrategies = new HashMap<>();
         private ReplayConfig replay;
+        private boolean isolateProcessorStartFailuresAtBoot;
 
         private Builder() {
+        }
+
+        /**
+         * Isolate a processor whose start fails during boot (report and drop it, boot on) instead of failing the boot.
+         * Off by default; see {@link MongooseServerConfig#isIsolateProcessorStartFailuresAtBoot()}.
+         */
+        public Builder isolateProcessorStartFailuresAtBoot(boolean isolate) {
+            this.isolateProcessorStartFailuresAtBoot = isolate;
+            return this;
         }
 
         /**
@@ -645,6 +666,7 @@ public class MongooseServerConfig {
             if (!services.isEmpty()) cfg.setServices(new ArrayList<>(services));
             if (!agentThreads.isEmpty()) cfg.setAgentThreads(new ArrayList<>(agentThreads));
             if (idleStrategy != null) cfg.setIdleStrategy(idleStrategy);
+            cfg.setIsolateProcessorStartFailuresAtBoot(isolateProcessorStartFailuresAtBoot);
             if (!eventInvokeStrategies.isEmpty()) cfg.setEventInvokeStrategies(new HashMap<>(eventInvokeStrategies));
             if (replay != null) cfg.setReplay(replay);
             return cfg;

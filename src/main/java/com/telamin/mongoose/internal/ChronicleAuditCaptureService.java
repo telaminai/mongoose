@@ -163,6 +163,19 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
     }
 
     @Override
+    public synchronized void detach(String processorName, DataFlow dataFlow) {
+        ProcessorSink sink = sinks.get(processorName);
+        if (sink == null || sink.dataFlow != dataFlow) {
+            return;
+        }
+        if (sink.isRecording()) {
+            sink.stopRecording();
+        }
+        sinks.remove(processorName, sink);
+        liveSinkMutation.run();
+    }
+
+    @Override
     public boolean isRecording(String processorName) {
         ProcessorSink sink = sinks.get(processorName);
         return sink != null && sink.isRecording();
