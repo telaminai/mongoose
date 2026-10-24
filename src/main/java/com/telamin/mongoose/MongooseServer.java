@@ -911,7 +911,9 @@ public class MongooseServer implements MongooseServerController {
                 });
 
         ProcessorName reservation = new ProcessorName(groupName, processorName);
-        ProcessorRegistration registration = new ProcessorRegistration();
+        ProcessorRegistration registration = new ProcessorRegistration(processorName);
+        // the control processor's ReleaseName effect frees the reservation, once its stop or failed start is complete
+        registration.nameReleaser(() -> reservedProcessorNames.remove(new ProcessorName(groupName, processorName), registration));
         if (reservedProcessorNames.putIfAbsent(reservation, registration) != null) {
             log.warning("refusing to add event processor '" + processorName + "' to group '" + groupName
                     + "': the name is already assigned in that group");

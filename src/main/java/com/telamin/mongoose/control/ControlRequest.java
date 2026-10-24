@@ -1,0 +1,129 @@
+/*
+ * SPDX-FileCopyrightText: © 2025 Gregory Higgins <greg.higgins@v12technology.com>
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+package com.telamin.mongoose.control;
+
+import com.telamin.mongoose.control.event.ControlInput;
+
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.LongFunction;
+
+/**
+ * One control request on its way through a group's mailbox. It carries its {@code requestId}, the side payload the
+ * group needs to perform its effects (a supplier, a task, a service, a registration, never seen by the control
+ * processor), the factory that turns it into a normalised intent on the agent thread, and its reply.
+ *
+ * <h2>Two-phase claim</h2>
+ * Its state moves only by compare-and-set: {@code SENT → CLAIMED → REPLIED}, or {@code SENT → REPLIED}. The agent
+ * claims a request before applying it. A sweep made while the agent may still be running completes only {@code SENT}
+ * requests, so it can never race the agent's own reply; a {@code CLAIMED} request is completed by the agent, or by the
+ * server once the agent's thread has been joined. Either way the {@code → REPLIED} transition makes the reply happen
+ * once.
+ */
+public final class ControlRequest {
+
+    public enum Kind { ADD, STOP, BROADCAST, RUN, CLOSE }
+
+    static final int SENT = 0;
+    static final int CLAIMED = 1;
+    static final int REPLIED = 2;
+
+    private final Kind kind;
+    private final String description;
+    private final LongFunction<ControlInput> intentOnAgent;
+    private final Object payload;
+    private final AtomicInteger state = new AtomicInteger(SENT);
+    private final CompletableFuture<ControlReply> reply = new CompletableFuture<>();
+    private volatile long requestId = -1;
+    private volatile Runnable onReply;
+
+    /**
+     * @param intentOnAgent builds the intent from the request id; called on the agent thread when the request is
+     *                      applied, so it may read agent-only facts (whether an add was already taken)
+     * @param payload       what the group needs to perform the request's effects
+     */
+    public ControlRequest(Kind kind, String description, LongFunction<ControlInput> intentOnAgent, Object payload) {
+        this.kind = kind;
+        this.description = description;
+        this.intentOnAgent = intentOnAgent;
+        this.payload = payload;
+    }
+
+    public Kind kind() {
+        return kind;
+    }
+
+    public String description() {
+        return description;
+    }
+
+    public long requestId() {
+        return requestId;
+    }
+
+    void assignId(long id) {
+        this.requestId = id;
+    }
+
+    ControlInput intent() {
+        return intentOnAgent.apply(requestId);
+    }
+
+    @SuppressWarnings("unchecked")
+    public <T> T payload() {
+        return (T) payload;
+    }
+
+    /** Run once, on whichever thread completes the reply (legacy stop callbacks). */
+    public ControlRequest onReply(Runnable action) {
+        this.onReply = action;
+        return this;
+    }
+
+    /** The reply, completed exactly once. Callers must not run blocking or re-entrant work on the completing thread. */
+    public CompletableFuture<ControlReply> reply() {
+        return reply;
+    }
+
+    boolean claim() {
+        return state.compareAndSet(SENT, CLAIMED);
+    }
+
+    boolean isClaimed() {
+        return state.get() == CLAIMED;
+    }
+
+    boolean isReplied() {
+        return state.get() == REPLIED;
+    }
+
+    /** Complete an unclaimed request: the only completion a pre-join sweep or a sender may make. */
+    boolean completeUnclaimed(ControlReply answer) {
+        if (!state.compareAndSet(SENT, REPLIED)) return false;
+        finish(answer);
+        return true;
+    }
+
+    /** Complete a claimed request: the agent's reply, or the post-join cleanup. */
+    boolean completeClaimed(ControlReply answer) {
+        if (!state.compareAndSet(CLAIMED, REPLIED)) return false;
+        finish(answer);
+        return true;
+    }
+
+    private void finish(ControlReply answer) {
+        Runnable action = onReply;
+        try {
+            if (action != null) action.run();
+        } finally {
+            reply.complete(answer);
+        }
+    }
+
+    @Override
+    public String toString() {
+        return "ControlRequest{" + requestId + " " + kind + " " + description + " state=" + state.get() + "}";
+    }
+}
