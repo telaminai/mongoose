@@ -41,6 +41,23 @@ import java.util.function.Supplier;
  *   <li>Registers shared services and a SchedulerService into each processor</li>
  *   <li>Adds/removes queue reader agents dynamically as subscriptions change</li>
  * </ul>
+ * <h2>Failure isolation (mongoose#57)</h2>
+ * One processor's failure is kept from the group's agent error handler (under bootServer, {@code GlobalErrorHandler},
+ * which exits the JVM), reported once through {@code ErrorReporting} at {@code ERROR}, and the rest of the group runs on:
+ * <ul>
+ *   <li>a failed {@code start()} of a processor added at runtime: the processor is dropped and everything the group
+ *       holds for it released (its tearDown, subscriptions, timers, replay bindings, the server's bindings);</li>
+ *   <li>a failed {@code start()} at boot, among the processors queued before the group starts: <b>fails the boot by
+ *       default</b>. The processor is dropped as above and a {@link ProcessorStartException} naming the group and the
+ *       processor is thrown out of {@code onStart}, so it reaches the agent's error handler and the group does not
+ *       become active. {@code MongooseServerConfig.isolateProcessorStartFailuresAtBoot} opts into isolating it
+ *       instead, so the server boots without it;</li>
+ *   <li>a failed {@code stop()}/{@code tearDown()}: the processor is still removed and its subscriptions released;</li>
+ *   <li>a failed {@code @ServiceRegistered}/{@code @ServiceDeregistered} handler: reported; the processor keeps running;</li>
+ *   <li>a failed timer callback: reported by the scheduler, naming the processor; the other timers fire.</li>
+ * </ul>
+ * Every {@code Throwable} is caught on these paths except {@link VirtualMachineError} ({@code OutOfMemoryError},
+ * {@code StackOverflowError}, ...), which propagates to the agent's error handler as before.
  */
 @Experimental
 @Log
@@ -80,6 +97,8 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     private final org.agrona.concurrent.ManyToOneConcurrentArrayQueue<Runnable> onAgentThread =
             new org.agrona.concurrent.ManyToOneConcurrentArrayQueue<>(256);
     private volatile Thread agentThread;
+    /** Without a server: isolate a start failure in onStart instead of failing the group's start (review of #66). */
+    private volatile boolean isolateStartFailuresAtBoot;
 
     public ComposingEventProcessorAgent(String roleName,
                                         EventFlowManager eventFlowManager,
@@ -105,6 +124,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         this.scheduler = scheduler;
         this.registeredServices = registeredServices;
         this.schedulerService = new Service<>(scheduler, SchedulerService.class);
+        scheduler.setProcessorNames(this::nameOf);
         this.eventsProcessedCounter = eventFlowManager.getCountersService().agentEventsCounter(roleName);
         this.idleCyclesCounter = eventFlowManager.getCountersService().agentIdleCyclesCounter(roleName);
     }
@@ -146,6 +166,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         }
         log.info("onStart " + roleName());
         agentThread = Thread.currentThread();
+        // the processors queued before the group starts are its boot processors: by default a failed start among them
+        // fails the group's start, so the server's boot fails, rather than boot on without it (review of #66)
+        startQueued(failsBootOnStartFailure());
         checkForAdded();
         super.onStart();
     }
@@ -338,10 +361,33 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         return registeredEventProcessors.values();
     }
 
-    private void checkForAdded() {
+    /**
+     * Whether a processor start that fails in this group's {@code onStart} fails the group's start (and so the server's
+     * boot) instead of being isolated. True while the server is booting unless
+     * {@link com.telamin.mongoose.config.MongooseServerConfig#isIsolateProcessorStartFailuresAtBoot()} is set; false once
+     * the server has started (a group started for a processor added at runtime isolates). Without a server (unit use)
+     * it follows {@link #setIsolateStartFailuresAtBoot(boolean)}.
+     */
+    private boolean failsBootOnStartFailure() {
+        return mongooseServer == null ? !isolateStartFailuresAtBoot : mongooseServer.failsBootOnProcessorStartFailure();
+    }
+
+    /**
+     * Isolate, rather than fail on, a processor start failure in this group's {@code onStart}. Consulted only when the
+     * group has no server; with one, {@code MongooseServerConfig.isolateProcessorStartFailuresAtBoot} decides.
+     */
+    public void setIsolateStartFailuresAtBoot(boolean isolateStartFailuresAtBoot) {
+        this.isolateStartFailuresAtBoot = isolateStartFailuresAtBoot;
+    }
+
+    private void startQueued(boolean failFast) {
         if (!toStartList.isEmpty()) {
-            toStartList.drain(this::startProcessor);
+            toStartList.drain(init -> startProcessor(init, failFast));
         }
+    }
+
+    private void checkForAdded() {
+        startQueued(false);
 
         if (!queueReadersToAdd.isEmpty()) {
             if (status() == Status.ACTIVE && tryAdd(queueReadersToAdd.get(0))) {
@@ -358,11 +404,19 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     }
 
     /**
-     * Build, wire and start one processor. A failure here is the processor's, not the group's (mongoose#57): it is
-     * reported and the processor dropped, and the other processors in the group run on. Left to escape, it would reach
-     * the agent's error handler, which under bootServer exits the JVM.
+     * Build, wire and start one processor.
+     * <p>
+     * A failure here is the processor's, not the group's (mongoose#57): the processor is dropped
+     * ({@link #processorDropped}) and the other processors in the group run on. With {@code failFast} (a boot processor,
+     * by default) the failure is then rethrown as a {@link ProcessorStartException} naming the group and the processor,
+     * so the group's {@code onStart} fails and the server's boot with it; otherwise it is reported through
+     * {@code ErrorReporting} and the group carries on.
+     * <p>
+     * Caught: every {@code Throwable} except {@link VirtualMachineError} ({@code OutOfMemoryError},
+     * {@code StackOverflowError}, ...), which propagates to the agent's error handler as before, and under bootServer
+     * still exits the JVM.
      */
-    private void startProcessor(Supplier<NamedEventProcessor> init) {
+    private void startProcessor(Supplier<NamedEventProcessor> init, boolean failFast) {
         NamedEventProcessor namedEventProcessor = null;
         try {
             namedEventProcessor = init.get();
@@ -385,11 +439,13 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
             throw fatal;
         } catch (Throwable t) {
             String name = namedEventProcessor == null ? "<not built>" : namedEventProcessor.name();
-            reportProcessorFailure(name, "failed to start, dropped from the group", t);
             if (namedEventProcessor != null) {
-                registeredEventProcessors.remove(name, namedEventProcessor);
-                releaseSubscriptions(name, namedEventProcessor.eventProcessor());
+                processorDropped(namedEventProcessor);
             }
+            if (failFast) {
+                throw new ProcessorStartException(roleName(), name, t);   // reported once, by the agent's error handler
+            }
+            reportProcessorFailure(name, "failed to start, dropped from the group", t);
         } finally {
             com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
         }
@@ -422,6 +478,56 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         }
     }
 
+    /**
+     * The one path a processor that failed to start leaves the group by (review of #66). Releases everything the group
+     * holds for it, each step guarded so one failure does not stop the rest:
+     * <ul>
+     *   <li>it leaves the registry;</li>
+     *   <li>its {@code tearDown()} runs, as {@code stopProcessor} would have run it;</li>
+     *   <li>its subscriptions are released;</li>
+     *   <li>its timers are cancelled, so none fires into it ({@link DeadWheelScheduler#cancelTimersOf});</li>
+     *   <li>the replay recorder and replayer forget it;</li>
+     *   <li>the server is told ({@link MongooseServer#processorDropped}), which releases what the server bound to it
+     *       by name: its audit-capture binding. That hook is where anything else the server holds by processor name
+     *       is to be released.</li>
+     * </ul>
+     */
+    private void processorDropped(NamedEventProcessor named) {
+        String name = named.name();
+        DataFlow eventProcessor = named.eventProcessor();
+        registeredEventProcessors.remove(name, named);
+        if (eventProcessor instanceof Lifecycle lifecycle) {
+            guarded(name, "failed to tear down after its failed start", lifecycle::tearDown);
+        }
+        releaseSubscriptions(name, eventProcessor);
+        guarded(name, "failed to cancel its timers", () -> scheduler.cancelTimersOf(eventProcessor));
+        if (recorder != null) guarded(name, "failed to leave the replay recording", () -> recorder.detach(eventProcessor));
+        if (replayer != null) guarded(name, "failed to leave the replay", () -> replayer.detach(eventProcessor));
+        if (mongooseServer != null) {
+            guarded(name, "failed to release its server bindings",
+                    () -> mongooseServer.processorDropped(roleName(), name, eventProcessor));
+        }
+    }
+
+    private void guarded(String name, String what, Runnable step) {
+        try {
+            step.run();
+        } catch (VirtualMachineError fatal) {
+            throw fatal;
+        } catch (Throwable t) {
+            reportProcessorFailure(name, what, t);
+        }
+    }
+
+    /** The name {@code flow} has in this group, or null: names a timer's processor in a failure report. */
+    private String nameOf(DataFlow flow) {
+        if (flow == null) return null;
+        for (NamedEventProcessor np : registeredEventProcessors.values()) {
+            if (np.eventProcessor() == flow) return np.name();
+        }
+        return null;
+    }
+
     /** Release what a failed processor subscribed to, so its readers do not outlive it. */
     private void releaseSubscriptions(String name, DataFlow eventProcessor) {
         try {
@@ -434,8 +540,8 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     }
 
     private void reportProcessorFailure(String processorName, String what, Throwable t) {
+        // reported once: the default reporter logs it, so it is not also logged here
         String message = "processor '" + processorName + "' in group '" + roleName() + "' " + what + ": " + t;
-        log.severe(message);
         com.telamin.mongoose.service.error.ErrorReporting.report(
                 "ComposingEventProcessorAgent:" + roleName(), message, t,
                 com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
