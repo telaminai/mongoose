@@ -54,6 +54,7 @@ The skipped tests are skipped on `main` as well.
    - Lifecycle: #61 → #65.
    - Processor agent: #62 → #66 → #67 → #68.
    - The integration-fix PR last (it needs both the lifecycle and the agent stacks).
+
    After each stack, `main.yml` CI must be green.
 3. **Release Mongoose 1.0.33**: push `main` to the `release` branch. `release.yml` runs
    `mvn -P release release:prepare release:perform` (tag `v1.0.33`, publish to Maven Central, next version
