@@ -18,6 +18,7 @@ Status: draft, 2026-10-24. Covers the thread-safety, lifecycle and admin-REST fi
 | Docs | #70 | #50 | The deployment guide presented clustering, state replication, failover and tracing as supported. |
 
 Integration commits (on `integration/next-release`; to land as one follow-up PR once everything above is on main):
+
 - **#65 × #66**: a processor dropped after a failed start releases its reserved name, and the boot fail-fast check
   reads #65's lifecycle state instead of #66's `started` flag, which #65 replaced. Without it the two stacks merge
   but **do not compile together**. Textual conflict: one line pair in `MongooseServerConfig.Builder`.
@@ -42,8 +43,8 @@ All open issues found by the reviews are fixed. Not covered: the HandlerPipe-bas
 ## 2. Review and test status
 
 Every PR was reviewed independently (verdicts: approve with nits, no blockers); every review finding has been
-fixed on its branch with a test that fails without the fix. The dispatch stack merges cleanly with either of the others; the lifecycle
-and agent stacks need the integration commit above. Results:
+fixed on its branch with a test that fails without the fix. The dispatch stack merges cleanly with either of the others; the other
+combinations need the integration commits above. Results:
 
 | Where | Tests | Result |
 |---|---|---|
