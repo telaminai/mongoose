@@ -131,6 +131,15 @@ public class MongooseServerConfig {
      */
     private long shutdownDrainTimeoutMillis = DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS;
 
+    /** Default bound on the startup wait, see {@link #startupTimeoutMillis}. */
+    public static final long DEFAULT_STARTUP_TIMEOUT_MILLIS = 60_000;
+
+    /**
+     * mongoose#60: how long {@code MongooseServer.start()} waits for every agent group to become active before it fails,
+     * naming the groups that did not. A group that closes while starting (its onStart threw) fails start at once.
+     */
+    private long startupTimeoutMillis = DEFAULT_STARTUP_TIMEOUT_MILLIS;
+
     /**
      * Gets the list of event handler groups, initializing if {@code null} and adding
      * {@link #defaultHandlerGroupConfig} if present and not already included.
@@ -485,6 +494,7 @@ public class MongooseServerConfig {
         private final Map<CallBackType, Supplier<EventToInvokeStrategy>> eventInvokeStrategies = new HashMap<>();
         private ReplayConfig replay;
         private long shutdownDrainTimeoutMillis = DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS;
+        private long startupTimeoutMillis = DEFAULT_STARTUP_TIMEOUT_MILLIS;
 
         private Builder() {
         }
@@ -599,6 +609,16 @@ public class MongooseServerConfig {
         }
 
         /**
+         * How long {@code MongooseServer.start()} waits for every agent group to become active before it fails, naming
+         * the groups that did not (default {@value MongooseServerConfig#DEFAULT_STARTUP_TIMEOUT_MILLIS} ms). See
+         * {@link MongooseServerConfig#getStartupTimeoutMillis()}.
+         */
+        public Builder startupTimeoutMillis(long startupTimeoutMillis) {
+            this.startupTimeoutMillis = startupTimeoutMillis;
+            return this;
+        }
+
+        /**
          * Convenience for the common ON_EVENT callback type.
          *
          * @param factory supplier that produces the strategy instance
@@ -669,6 +689,7 @@ public class MongooseServerConfig {
             if (!eventInvokeStrategies.isEmpty()) cfg.setEventInvokeStrategies(new HashMap<>(eventInvokeStrategies));
             if (replay != null) cfg.setReplay(replay);
             cfg.setShutdownDrainTimeoutMillis(shutdownDrainTimeoutMillis);
+            cfg.setStartupTimeoutMillis(startupTimeoutMillis);
             return cfg;
         }
     }

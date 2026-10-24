@@ -183,9 +183,10 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
     }
 
     /**
-     * Stop every live capture. Called at server tearDown so files are
+     * Stop every live capture. Called at the end of server stop so files are
      * flushed and queues closed cleanly.
      */
+    @Override
     public synchronized void stopAll() {
         for (ProcessorSink s : sinks.values()) {
             if (s.isRecording()) {

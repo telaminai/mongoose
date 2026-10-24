@@ -113,6 +113,13 @@ public interface MongooseAuditCaptureService {
     void stop(String processorName);
 
     /**
+     * Halt every live capture, flushing and closing each sink. The server calls it once its processors have stopped,
+     * at the end of {@code stop()}. Default: nothing to stop.
+     */
+    default void stopAll() {
+    }
+
+    /**
      * True iff capture is currently active for the named processor.
      * Constant-time lookup; safe to call from any thread.
      */
