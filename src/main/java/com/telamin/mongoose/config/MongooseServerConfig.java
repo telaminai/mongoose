@@ -484,6 +484,7 @@ public class MongooseServerConfig {
         private IdleStrategy idleStrategy;
         private final Map<CallBackType, Supplier<EventToInvokeStrategy>> eventInvokeStrategies = new HashMap<>();
         private ReplayConfig replay;
+        private long shutdownDrainTimeoutMillis = DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS;
 
         private Builder() {
         }
@@ -588,6 +589,16 @@ public class MongooseServerConfig {
         }
 
         /**
+         * How long {@code MongooseServer.stop()} waits for events already queued to processors to be delivered, after
+         * the feeds stop (default {@value MongooseServerConfig#DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS} ms; zero or less
+         * does not wait). See {@link MongooseServerConfig#getShutdownDrainTimeoutMillis()}.
+         */
+        public Builder shutdownDrainTimeoutMillis(long shutdownDrainTimeoutMillis) {
+            this.shutdownDrainTimeoutMillis = shutdownDrainTimeoutMillis;
+            return this;
+        }
+
+        /**
          * Convenience for the common ON_EVENT callback type.
          *
          * @param factory supplier that produces the strategy instance
@@ -657,6 +668,7 @@ public class MongooseServerConfig {
             if (idleStrategy != null) cfg.setIdleStrategy(idleStrategy);
             if (!eventInvokeStrategies.isEmpty()) cfg.setEventInvokeStrategies(new HashMap<>(eventInvokeStrategies));
             if (replay != null) cfg.setReplay(replay);
+            cfg.setShutdownDrainTimeoutMillis(shutdownDrainTimeoutMillis);
             return cfg;
         }
     }

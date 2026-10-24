@@ -207,7 +207,8 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
 
     /**
      * mongoose#56: a closing group stops and tears down each processor it still hosts, once (it is removed first). A
-     * processor that throws is logged and the others are still stopped.
+     * processor that throws is reported at ERROR through {@link com.telamin.mongoose.service.error.ErrorReporting}
+     * and the others are still stopped; a {@link VirtualMachineError} is rethrown (the mongoose#57 policy).
      */
     private void stopAndTearDownProcessors() {
         for (String name : new ArrayList<>(registeredEventProcessors.keySet())) {
@@ -217,15 +218,26 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
             }
             try {
                 lifecycle.stop();
+            } catch (VirtualMachineError fatal) {
+                throw fatal;
             } catch (Throwable t) {
-                log.log(java.util.logging.Level.WARNING, "processor " + name + " in group " + roleName() + " failed to stop", t);
+                reportCloseFailure(name, "failed to stop", t);
             }
             try {
                 lifecycle.tearDown();
+            } catch (VirtualMachineError fatal) {
+                throw fatal;
             } catch (Throwable t) {
-                log.log(java.util.logging.Level.WARNING, "processor " + name + " in group " + roleName() + " failed to tear down", t);
+                reportCloseFailure(name, "failed to tear down", t);
             }
         }
+    }
+
+    private void reportCloseFailure(String processorName, String what, Throwable t) {
+        com.telamin.mongoose.service.error.ErrorReporting.report(
+                "ComposingEventProcessorAgent:" + roleName(),
+                "processor '" + processorName + "' in group '" + roleName() + "' " + what + " on close: " + t, t,
+                com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
     }
 
     @Override
