@@ -166,6 +166,23 @@ Implications:
 - Name agent groups meaningfully for easier ops (logs, metrics, core pinning).
 - For periodic work in a processor, prefer scheduler-driven triggers over sleeping.
 
+### When one processor fails
+
+A processor group keeps one processor's failure away from the other processors in the group and from the group's
+agent error handler (under `bootServer`, `GlobalErrorHandler`, which exits the process). Each failure is reported once
+through `ErrorReporting` at `ERROR`:
+
+| Failure | What happens |
+|---|---|
+| `start()` throws, processor added after the server started | Reported. The processor is dropped: its `tearDown()` runs, and its subscriptions, timers, replay bindings and audit-capture binding are released. The group runs on. |
+| `start()` throws while the server boots | **The boot fails** (default). The processor is dropped as above, and the group's start fails with a `ProcessorStartException` naming the group and the processor, which goes to the agent error handler. Set `isolateProcessorStartFailuresAtBoot: true` (YAML, `MongooseServerConfig` or its builder) to isolate it instead: reported, dropped, and the server boots without it. |
+| `stop()` / `tearDown()` throws | Reported. The processor is still removed and its subscriptions released. |
+| `@ServiceRegistered` / `@ServiceDeregistered` handler throws | Reported. The processor keeps running; the broadcast still reaches the other processors. |
+| A timer callback throws | Reported, naming the processor. The other timers fire. |
+
+Every `Throwable` is caught on these paths except `VirtualMachineError` (`OutOfMemoryError`, `StackOverflowError`, ...),
+which still reaches the agent error handler and, under `bootServer`, exits the process.
+
 ## 7) FAQ
 
 - Do all event handlers run on agents?
