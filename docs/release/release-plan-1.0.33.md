@@ -5,21 +5,31 @@ Status: draft, 2026-10-24. Covers the thread-safety, lifecycle and admin-REST fi
 
 ## 1. What is in the release
 
-### Mongoose (telaminai/mongoose) — 9 PRs in three stacks
+### Mongoose (telaminai/mongoose) — 13 PRs: three stacks, three PRs on the agent stack, one docs PR
 
 | Stack | PRs (merge order) | Issues | What it fixes |
 |---|---|---|---|
 | Dispatch | #52 → #63 → #64 | #51, #54, #59 | Concurrent publishers lost 54–60 % of events (HandlerPipe); a queue removed during dispatch threw out of `publish()` and exited the process; pooled events were returned to the pool while in use and the pool ran dry; the event-log cache grew for ever after start. |
 | Lifecycle | #61 → #65 | #56, #60 (items 2–4) | Server stop never stopped or tore down processors or feeds; duplicate-name races; startup waited for ever; feeds spun on dead queues at shutdown. |
 | Processor agent | #62 → #66 → #67 → #68 | #55, #57, #58, #60 (item 1) | A processor stopped and re-added got no events; one processor's failure exited the JVM; single-producer control queues fed from several threads; services delivered twice. |
+| On #68 (independent of each other) | #73 | #53 | A retry after one processor threw re-delivered the event to every processor on the queue (a repeated side effect, e.g. an order sent twice) and leaked the processor context; a `VirtualMachineError` from a handler was retried and swallowed. |
+| | #72 | #71 | A normal `stopProcessor` left the processor's timers (they fired into it), replay and audit bindings; a `stop()` that threw skipped `tearDown()`; a stop made while the processor's add was still queued did nothing. |
+| | #74 | #46 | Audit start/stop: the agent thread could wait 5 s on its own caller (lock held across the hand-off); a stopped processor or a closed group was reported as recording; refusals were thrown to the transport instead of replied. |
+| Docs | #70 | #50 | The deployment guide presented clustering, state replication, failover and tracing as supported. |
 
-Integration commit (on `integration/next-release`; to land as a follow-up PR once both the lifecycle and the agent
-stacks are on main): a processor dropped after a failed start releases its reserved name (#65 × #66), and the boot
-fail-fast check reads #65's lifecycle state instead of #66's `started` flag, which #65 replaced. Without that second
-change the two stacks merge without a textual conflict but **do not compile together**. The only textual conflict is
-one line pair in `MongooseServerConfig.Builder` (both stacks add a field there).
+Integration commits (on `integration/next-release`; to land as one follow-up PR once everything above is on main):
+- **#65 × #66**: a processor dropped after a failed start releases its reserved name, and the boot fail-fast check
+  reads #65's lifecycle state instead of #66's `started` flag, which #65 replaced. Without it the two stacks merge
+  but **do not compile together**. Textual conflict: one line pair in `MongooseServerConfig.Builder`.
+- **#72 × #74**: both add `MongooseServer.processorStopped`, and the merged agent called it twice. One hook: the audit
+  capture forgets the stopped instance (#74), then a capture still recording is ended and closed (#72).
+- **#63 × #73**: both rewrote the queue agent's dispatch loop. #73's per-processor retry sits inside #63's frame (the
+  pooled reference released in a `finally`).
+- **#65 × #74**: at server stop `stopAll` forgets each instance before ending its capture, since #74's stop refuses a
+  closed group.
 
-Not in this release: #53 (a retry re-delivers to every processor on the queue) — fix next.
+All open issues found by the reviews are fixed. Not covered: the HandlerPipe-based rate-solver `EventPipe` replacement
+(maker-fxoc side, §6).
 
 ### mongoose-plugins (telaminai/mongoose-plugins)
 
@@ -37,11 +47,13 @@ and agent stacks need the integration commit above. Results:
 
 | Where | Tests | Result |
 |---|---|---|
-| `integration/next-release` (all nine PRs + integration commit), `mvn test`, 3 runs | 448 (9 skipped) | 0 failures, 0 errors in each run (~1 m 32 s) |
+| `integration/next-release` (all thirteen PRs + integration commits), `mvn test`, 3 runs | 473 (9 skipped) | 0 failures, 0 errors in each run (~1 m 42 s) |
 | GitHub CI (`main.yml`, 2-core runner) on every PR branch and on the integration branch | | green |
 | Processor-agent stack top (#68), 3 runs | 384 (9 skipped) | 0 failures |
 | #62 / #66 / #67, one run each | 355 / 370 / 377 | 0 failures |
 | Integration test `processorDroppedAfterAFailedRuntimeStartReleasesItsName` | 1 | fails without the integration commit, passes with it |
+| #73 (#53), #72 (#71), #74 (#46): new tests | 10 / 6 / 7 | each fix's tests fail on the code before it (except where noted in the PR: #74's load test passes since #47 already fixed the main path) |
+| #65 additions: `ServerStopEndsAuditCaptureTest`, `stopWithAFeedThatOutrunsASlowProcessorCompletes` | 2 | the first fails without the change; the second pins that stop completes with a full processor queue |
 | `publishersInALoopDoNotStarveARemoveOrAnAdd` (#52, after CI) | 1 | without the fix an add waited 39.9 s behind 4 looping publishers |
 
 The skipped tests are skipped on `main` as well.
@@ -49,13 +61,14 @@ The skipped tests are skipped on `main` as well.
 ## 3. Release steps
 
 1. **Test the integration branch** `integration/next-release` (CI runs `mvn package` with tests on every push).
-   It is the exact combination of all nine PRs plus the integration fix.
+   It is the exact combination of all thirteen PRs plus the integration commits.
 2. **Merge to main in stack order**, retargeting each PR to `main` once the one below it has merged
    (GitHub retargets automatically when a base branch is deleted after merge):
    - Dispatch: #52 → #63 → #64.
    - Lifecycle: #61 → #65.
-   - Processor agent: #62 → #66 → #67 → #68.
-   - The integration-fix PR last (it needs both the lifecycle and the agent stacks).
+   - Processor agent: #62 → #66 → #67 → #68, then #73, #72 and #74 (each based on #68, in any order).
+   - Docs: #70 (any time).
+   - The integration-fix PR last (it needs all of the above).
 
    After each stack, `main.yml` CI must be green.
 3. **Release Mongoose 1.0.33**: push `main` to the `release` branch. `release.yml` runs
@@ -100,6 +113,17 @@ The skipped tests are skipped on `main` as well.
   with `stopProcessor` still keeps its timers and recorder/audit bindings, as before; not changed in this release.)
 - **Services across groups**: `registerService`/`removeService` try every group; a stalled group is reported
   instead of throwing, and the service stays registered.
+- **Retries (#53)**: a retry re-delivers only to the processor that threw, then the ones after it; each failing
+  processor has its own `RetryPolicy` attempts, and one whose retries run out is skipped instead of the rest of the
+  queue. A `VirtualMachineError` from a handler reaches the agent's error handler and is not retried. Recording marks
+  only the failing processor's input as Failed. A custom `EventToInvokeStrategy` keeps whole-dispatch retry unless
+  it implements the new `failedPosition()`/`processEventFrom(...)`.
+- **Stopping a processor (#72)**: releases everything (timers cancelled, replay and audit bindings released, a capture
+  still recording is ended); `tearDown()` runs even if `stop()` throws; a stop made just after the add is honoured.
+  The name is free again once the group has processed the stop: an immediate re-add may be refused for an instant.
+- **Audit start/stop (#74)**: applied on the processor's agent thread with no lock held while waiting (bounded 5 s);
+  refused, as an `err` reply, for a stopped processor, a closed group or a full hand-off queue. Server stop closes
+  every capture still recording.
 - **Processor failures**: a processor that fails at runtime (added at runtime, stop/tearDown, a service
   (de)registration, a timer) is reported and isolated instead of exiting the JVM; a start failure **at boot still
   fails boot** by default (opt-in isolation: `isolateProcessorStartFailuresAtBoot`). `VirtualMachineError` still
