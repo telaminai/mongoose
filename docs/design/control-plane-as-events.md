@@ -204,13 +204,15 @@ Control is audited and replayed per processor, matching the runtime's determinis
 
 ## Option: the control plane as a Fluxtion processor
 
-Recommended, after PR 1. Each group's control logic becomes a generated Fluxtion processor. Mongoose then runs its own control plane on the same machinery it offers users, and its decisions appear in an audit log the analyser can read.
+Recommended, and built in PR 3 rather than as a later replacement, so the state machine is written once. Each group's control logic becomes a generated Fluxtion processor. Mongoose then runs its own control plane on the same machinery it offers users, and its decisions appear in an audit log the analyser can read.
 
 **Shape.** The control processor makes decisions; the group applies the effects. Splitting them keeps file and processor I/O out of the processor and keeps its handlers deterministic.
 
 1. The mailbox drain feeds each `ControlCommand` into the group's control processor as an event.
 2. Its nodes hold the name registry, generations, each processor's lifecycle state and each capture's state. They decide the transition and emit effects: build and start, release, install or remove a capture, reply.
 3. The group applies the effects, then feeds the outcome back as an event (`Started`, `StartFailed`, `Released`), and the processor decides the reply.
+
+**Re-entrancy.** Follow-on decisions inside the control processor, such as stopping the dependants of a processor that stopped, use Fluxtion's own re-entrancy through the injected context: queued for the next cycle, which suits loops, or run as a new event cycle. Requests from outside the group, including a processor's own `start()` adding a processor while an effect is applied, still go through the mailbox, so they keep their order against other callers.
 
 **What it buys.**
 
@@ -227,17 +229,16 @@ Recommended, after PR 1. Each group's control logic becomes a generated Fluxtion
 
 ## Migration plan
 
-Seven stacked PRs, starting after 1.0.33 ships. Each one is releasable alone and keeps the public API source compatible. The F4 race found in review of #69 is fixed in 1.0.33 itself and is not part of this plan.
+Six stacked PRs, starting after 1.0.33 ships. Each one is releasable alone and keeps the public API source compatible. The F4 race found in review of #69 is fixed in 1.0.33 itself and is not part of this plan.
 
 1. **One mailbox and the close policy.** Replace the four queues with one `ControlCommand` mailbox and internal futures. `onClose` drains until empty and completes queued commands `NotRunning`, without building queued adds. Add the `closing` flag, the dead-group drain, and the re-check of `closing` in the full-mailbox backoff. Behaviour changes, for the release notes: commands apply strictly in order, and a stop sent before its add now loses.
 2. **Reply API.** Add `addProcessor` and `stopProcessor(handle)`. The existing `void` methods wait off agent threads, and a timeout detaches. Admin commands wait at most 1 s. The server refuses adds once stopping.
-3. **Names move into the group.** Processor records with generations, the read snapshot, and the duplicate-name checks at config load. Delete `reservedProcessorNames` and the stop-time release task. This comes after PR 2 so a duplicate add can still throw, which four `LifecycleRacesTest` cases and the boot failure on duplicate config names rely on.
-4. **Control logic as a Fluxtion processor** (the option above). Replaces the hand-written apply step with the generated control processor and its effects.
-5. **Audit capture as commands.** Capture state moves into the processor record. Chronicle queues open and close on a helper thread, and the agent completes the future once the helper hands back. `stopAll()` and `attach(..., Executor)` are deprecated, not removed.
-6. **Service groups.** `ComposingServiceAgent`'s three one-to-one queues, written by many producers today, move to the same mailbox model.
-7. **Framed audit of control and `Stop` markers in replay.**
+3. **The control processor owns names and lifecycle.** The generated Fluxtion control processor (the option above) holds processor records, generations, the name registry and the state machine; the group applies its effects and publishes the read snapshot. Add the duplicate-name checks at config load. Delete `reservedProcessorNames` and the stop-time release task. The rule tests are written against the control processor by firing command events at it. This comes after PR 2 so a duplicate add can still throw, which four `LifecycleRacesTest` cases and the boot failure on duplicate config names rely on.
+4. **Audit capture as commands.** Capture state moves into the control processor's records. Chronicle queues open and close on a helper thread, and the agent completes the future once the helper hands back. `stopAll()` and `attach(..., Executor)` are deprecated, not removed.
+5. **Service groups.** `ComposingServiceAgent`'s three one-to-one queues, written by many producers today, move to the same mailbox model.
+6. **Framed audit of control and `Stop` markers in replay**, plus recording the control processor's inputs as the group's control journal.
 
-PRs 1 to 3 carry most of the risk reduction. PR 4 can be dropped without affecting the others.
+PRs 1 to 3 carry most of the risk reduction.
 
 ## Test plan
 
@@ -257,7 +258,7 @@ Each rule gets one test named after it, written before the PR that makes it pass
 | 9 Truthful shutdown | A group that will not close in time is reported as running, and stop does not report stopped | 1 |
 | 10 No waiting on an agent thread | A handler calls the `void` add and stop on another group; nothing blocks. Admin stop replies within 1 s on a busy group | 2 |
 | 11 Timeouts detach | A `void` stop times out on a busy group; the processor is still stopped afterwards | 2 |
-| 12 Capture lifetime | Capture recording when its processor stops, is dropped, or the server stops; queue closed each time | 5 |
+| 12 Capture lifetime | Capture recording when its processor stops, is dropped, or the server stops; queue closed each time | 4 |
 
 **Regression tests to keep:** `ProcessorStopReleaseTest`, `ProcessorStartFailureTest`, `RetryOnlyTheFailedProcessorTest`, `ServerStopEndsAuditCaptureTest`, `LifecycleRacesTest`, `AuditControlOnAgentThreadTest`, `IntegrationReleaseRegressionTest`, and `EventToQueuePublisher` `publishersInALoopDoNotStarveARemoveOrAnAdd`.
 
