@@ -45,7 +45,9 @@ class LifecycleRacesTest {
         boolean subscribeToFeed;   // only where a feed named FEED is registered
         volatile boolean started;
 
-        Probe() { this(null, false); }
+        final CountDownLatch enteredStart = new CountDownLatch(1);
+
+        public Probe() { this(null, false); }
 
         Probe(CountDownLatch blockStart, boolean failStart) {
             this.blockStart = blockStart;
@@ -56,7 +58,10 @@ class LifecycleRacesTest {
 
         @Override
         public void start() {
-            if (failStart) throw new IllegalStateException("probe start fails");
+            enteredStart.countDown();
+            // a VirtualMachineError escapes onStart without onClose, so the group's thread ends while not ACTIVE; an
+            // ordinary exception would be caught by the group's failure isolation (mongoose#57)
+            if (failStart) throw new InternalError("probe start fails");
             if (blockStart != null) {
                 try {
                     blockStart.await();
@@ -255,9 +260,9 @@ class LifecycleRacesTest {
     }
 
     @Test
-    void startFailsFastWhenAGroupClosesDuringStart() throws Exception {
+    void startFailsFastWhenAGroupThreadDiesDuringStart() throws Exception {
         MongooseServerConfig cfg = new MongooseServerConfig();
-        cfg.setStartupTimeoutMillis(30_000);   // a closed group fails start straight away, not at the timeout
+        cfg.setStartupTimeoutMillis(30_000);   // a dead group fails start straight away, not at the timeout
         AtomicReference<Throwable> errors = new AtomicReference<>();
         MongooseServer server = serverWithoutExit(cfg, errors);
         server.addEventProcessor("A", "failing-group", null, () -> new Probe(null, true));
@@ -272,6 +277,215 @@ class LifecycleRacesTest {
         } finally {
             server.stop();
         }
+    }
+
+    @Test
+    void startTimeoutNamesEveryGroupNotActive() throws Exception {
+        MongooseServerConfig cfg = new MongooseServerConfig();
+        cfg.setStartupTimeoutMillis(300);
+        MongooseServer server = serverWithoutExit(cfg, new AtomicReference<>());
+        CountDownLatch release = new CountDownLatch(1);
+        server.addEventProcessor("A", "stuck-1", null, () -> new Probe(release, false));
+        server.addEventProcessor("B", "stuck-2", null, () -> new Probe(release, false));
+        server.addEventProcessor("C", "fine-group", null, Probe::new);
+        server.init();
+        try {
+            Throwable failure = startWithin(server, 5_000);
+            assertNotNull(failure, "start fails at the timeout");
+            String message = failure.getMessage();
+            assertTrue(message.contains("stuck-1") && message.contains("stuck-2"), "every inactive group is named: " + message);
+            assertFalse(message.contains("fine-group"), "an active group is not named: " + message);
+            assertTrue(message.contains("startupTimeoutMillis"), "the message names the setting: " + message);
+        } finally {
+            release.countDown();
+            server.stop();
+        }
+    }
+
+    /** A feed whose stop runs a hook: stop() reaches it in its first step, before any group a start waits on closes. */
+    public static class HookedFeed extends AbstractAgentHostedEventSourceService<String> {
+        final Runnable onStop;
+
+        HookedFeed(Runnable onStop) {
+            super("hookedFeed");
+            this.onStop = onStop;
+        }
+
+        @Override public void start() {}
+
+        @Override public void stop() { onStop.run(); }
+
+        @Override public int doWork() { return 0; }
+    }
+
+    /**
+     * A stop that lands while start waits for a group to become active fails start with "stopped during start", not
+     * the misleading "closed before becoming active (did onStart throw?)".
+     */
+    @Test
+    void stopWhileStartWaitsForAGroupReportsStoppedDuringStart() throws Exception {
+        CountDownLatch release = new CountDownLatch(1);
+        Probe blocked = new Probe(release, false);
+        MongooseServerConfig cfg = new MongooseServerConfig();
+        cfg.addEventSourceWorker(new HookedFeed(release::countDown), FEED, true, "feed-agent", new SleepingMillisIdleStrategy(1));
+        AtomicReference<Throwable> errors = new AtomicReference<>();
+        MongooseServer server = serverWithoutExit(cfg, errors);
+        cfg.getEventFeeds().forEach(f -> server.registerEventFeedWorker(f.toServiceAgent(), f.getValueMapper()));
+        server.addEventProcessor("A", "g", null, () -> blocked);
+        server.init();
+        MongooseServer s = server;
+        AtomicReference<Throwable> thrown = new AtomicReference<>();
+        Thread starter = new Thread(() -> {
+            try {
+                s.start();
+            } catch (Throwable t) {
+                thrown.set(t);
+            }
+        }, "starter");
+        starter.start();
+        assertTrue(blocked.enteredStart.await(5, TimeUnit.SECONDS), "the processor group is starting");
+
+        server.stop();   // the feed's stop releases the processor, after the stop has begun
+        starter.join(5_000);
+
+        assertFalse(starter.isAlive(), "start returned");
+        assertNotNull(thrown.get(), "start fails when the server is stopped during it");
+        assertTrue(thrown.get().getMessage().contains("stopped during start"),
+                "start reports the stop: " + thrown.get().getMessage());
+        assertFalse(thrown.get().getMessage().contains("did onStart throw"), "not the onStart message: " + thrown.get().getMessage());
+    }
+
+    /** A service whose startComplete blocks until its stop runs. */
+    public static class GateService implements com.telamin.fluxtion.runtime.lifecycle.Lifecycle {
+        final CountDownLatch inStartComplete = new CountDownLatch(1);
+        final CountDownLatch release = new CountDownLatch(1);
+
+        @Override public void init() {}
+
+        @Override public void start() {}
+
+        @Override
+        public void startComplete() {
+            inStartComplete.countDown();
+            try {
+                release.await(10, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        @Override public void stop() { release.countDown(); }
+
+        @Override public void tearDown() {}
+    }
+
+    /**
+     * A stop that lands after every group is active but before start has marked the server started: start fails, and
+     * the server is not left marked started though it has stopped.
+     */
+    @Test
+    void stopAfterGroupsAreActiveButBeforeStartFinishesLeavesTheServerStopped() throws Exception {
+        GateService gate = new GateService();
+        MongooseServer server = serverWithoutExit(new MongooseServerConfig(), new AtomicReference<>());
+        server.registerService(new Service<>(gate, GateService.class, "gate"));
+        server.addEventProcessor("A", "g", null, Probe::new);
+        server.init();
+        AtomicReference<Throwable> thrown = new AtomicReference<>();
+        Thread starter = new Thread(() -> {
+            try {
+                server.start();
+            } catch (Throwable t) {
+                thrown.set(t);
+            }
+        }, "starter");
+        starter.start();
+        assertTrue(gate.inStartComplete.await(5, TimeUnit.SECONDS), "start reached startComplete: every group is active");
+
+        server.stop();   // the gate service's stop lets startComplete, and so start, return
+        starter.join(5_000);
+
+        assertFalse(starter.isAlive(), "start returned");
+        assertNotNull(thrown.get(), "start fails when the server is stopped before it finishes");
+        assertTrue(thrown.get().getMessage().contains("stopped during start"), "start reports the stop: " + thrown.get().getMessage());
+        assertFalse(server.isStarted(), "a server stopped during start is not marked started");
+    }
+
+    /** A processor whose wiring (after the supplier returns it) fails. */
+    public static class FailingWiring extends Probe {
+        @Override
+        public void setAuditLogProcessor(com.telamin.fluxtion.runtime.audit.LogRecordListener listener) {
+            throw new IllegalStateException("wiring fails");
+        }
+    }
+
+    @Test
+    void nameIsReleasedWhenWiringAfterTheSupplierFails() throws Exception {
+        AtomicReference<Throwable> errors = new AtomicReference<>();
+        MongooseServer server = serverWithoutExit(new MongooseServerConfig(), errors);
+        Probe seed = new Probe();
+        server.addEventProcessor("seed", "g", null, () -> seed);
+        server.init();
+        server.start();
+        try {
+            await(() -> seed.started, "the group runs");
+            server.addEventProcessor("A", "g", null, FailingWiring::new);
+            Probe replacement = new Probe();
+            long end = System.nanoTime() + 5_000_000_000L;
+            boolean added = false;
+            while (!added && System.nanoTime() < end) {
+                try {
+                    server.addEventProcessor("A", "g", null, () -> replacement);
+                    added = true;
+                } catch (IllegalArgumentException stillTaken) {
+                    Thread.sleep(5);
+                }
+            }
+            assertTrue(added, "a name whose processor failed to wire is freed");
+            await(() -> replacement.started, "the processor re-added under the freed name starts");
+        } finally {
+            server.stop();
+        }
+    }
+
+    @Test
+    void duplicateProcessorNamesInConfigFailBoot() {
+        String yaml = """
+                eventHandlers:
+                  - agentName: dup-group
+                    eventHandlers:
+                      twin:
+                        eventHandler: !!com.telamin.mongoose.internal.LifecycleRacesTest$Probe { }
+                  - agentName: dup-group
+                    eventHandlers:
+                      twin:
+                        eventHandler: !!com.telamin.mongoose.internal.LifecycleRacesTest$Probe { }
+                """;
+        Throwable failure = assertThrows(Throwable.class,
+                () -> MongooseServer.bootServer(new java.io.StringReader(yaml), r -> {}),
+                "a processor name configured twice in one group fails boot");
+        assertTrue(failure.getMessage().contains("twin") && failure.getMessage().contains("dup-group"),
+                "the failure names the processor and the group: " + failure.getMessage());
+    }
+
+    @Test
+    void startAfterStopIsRefused() throws Exception {
+        MongooseServer server = serverWithoutExit(new MongooseServerConfig(), new AtomicReference<>());
+        server.addEventProcessor("A", "g", null, Probe::new);
+        server.init();
+        server.start();
+        server.stop();
+        assertThrows(IllegalStateException.class, server::start, "a stopped server does not start again");
+    }
+
+    @Test
+    void startupTimeoutIsConfigurableFromYamlAndTheBuilder() {
+        MongooseServerConfig fromYaml = new org.yaml.snakeyaml.Yaml(new org.yaml.snakeyaml.LoaderOptions())
+                .loadAs("startupTimeoutMillis: 4321\n", MongooseServerConfig.class);
+        assertEquals(4321, fromYaml.getStartupTimeoutMillis(), "YAML key startupTimeoutMillis");
+        assertEquals(MongooseServerConfig.DEFAULT_STARTUP_TIMEOUT_MILLIS,
+                MongooseServerConfig.builder().build().getStartupTimeoutMillis(), "builder default");
+        assertEquals(250, MongooseServerConfig.builder().startupTimeoutMillis(250).build().getStartupTimeoutMillis(),
+                "builder setter");
     }
 
     /** Runs start on another thread; returns what it threw, failing the test if it is still running after the bound. */

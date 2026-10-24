@@ -25,17 +25,11 @@ public final class LifecycleManager {
 
     private final MongooseServer server;
     private final java.util.concurrent.atomic.AtomicBoolean stopped = new java.util.concurrent.atomic.AtomicBoolean();
-    private volatile boolean startAttempted;
     /** Bound on taking the feeds off a service agent group shared with other services, during stop. */
     static final long EVENT_SOURCE_REMOVAL_TIMEOUT_MILLIS = 5_000;
 
     public LifecycleManager(MongooseServer server) {
         this.server = server;
-    }
-
-    /** True once start has been called, even if it failed: stop() must still close the threads it started. */
-    public boolean isStartAttempted() {
-        return startAttempted;
     }
 
     public void init(Map<String, Service<?>> registeredServices,
@@ -96,7 +90,6 @@ public final class LifecycleManager {
                       Set<Service<?>> registeredAgentServices,
                       long startupTimeoutMillis) throws InterruptedException {
         log.info("start");
-        startAttempted = true;   // a failed start leaves threads running: stop() must still close them
         // Start non-LifeCycleEventSource services
         registeredServices.values().forEach(svc -> {
             if (!(svc.instance() instanceof LifeCycleEventSource)) {
@@ -137,22 +130,33 @@ public final class LifecycleManager {
     }
 
     /**
-     * mongoose#60: wait, at most {@code timeoutMillis}, for every group to become ACTIVE. Fails at once, naming them, if
-     * any group closed (its thread ended, typically because onStart threw), and at the timeout naming every group not
-     * yet active.
+     * mongoose#60: wait, at most {@code timeoutMillis}, for every group to become ACTIVE. Fails:
+     * <ul>
+     *   <li>at once with "stopped during start" when a stop has begun (a stop closes the groups this waits on);</li>
+     *   <li>at once, naming them, when a group ended without becoming active: its status is CLOSED (onStart threw and
+     *   onClose ran) or its agent thread is over (a VirtualMachineError escaped onStart, which skips onClose);</li>
+     *   <li>at the timeout, naming every group not yet active.</li>
+     * </ul>
      */
-    private static void awaitActive(String kind, Map<String, ? extends GroupRunner> groups, long timeoutMillis)
+    private void awaitActive(String kind, Map<String, ? extends GroupRunner> groups, long timeoutMillis)
             throws InterruptedException {
         long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(Math.max(0, timeoutMillis));
         while (true) {
-            java.util.List<String> notActive = groupsWithStatus(groups, s -> s != DynamicCompositeAgent.Status.ACTIVE);
+            java.util.List<String> notActive = groupsMatching(groups, g -> g.getGroup().status() != DynamicCompositeAgent.Status.ACTIVE);
             if (notActive.isEmpty()) {
                 return;
             }
-            java.util.List<String> closed = groupsWithStatus(groups, s -> s == DynamicCompositeAgent.Status.CLOSED);
-            if (!closed.isEmpty()) {
-                throw new IllegalStateException("server start failed: " + kind + " group(s) " + closed
-                        + " closed before becoming active (did onStart throw? see the error handler)");
+            java.util.List<String> ended = groupsMatching(groups, g -> g.getGroup().status() != DynamicCompositeAgent.Status.ACTIVE
+                    && (g.getGroup().status() == DynamicCompositeAgent.Status.CLOSED || g.getGroupRunner().isClosed()));
+            // read after the statuses: a stop sets the flag before it closes any group, so a group closed by a stop is
+            // always reported as the stop
+            if (stopped.get()) {
+                throw new IllegalStateException(STOPPED_DURING_START + ": " + kind + " group(s) " + notActive
+                        + " were not yet active");
+            }
+            if (!ended.isEmpty()) {
+                throw new IllegalStateException("server start failed: " + kind + " group(s) " + ended
+                        + " ended before becoming active (onStart failed? see the error handler)");
             }
             if (System.nanoTime() - deadline >= 0) {
                 throw new IllegalStateException("server start failed: " + kind + " group(s) " + notActive
@@ -162,10 +166,13 @@ public final class LifecycleManager {
         }
     }
 
-    private static java.util.List<String> groupsWithStatus(Map<String, ? extends GroupRunner> groups,
-                                                           java.util.function.Predicate<DynamicCompositeAgent.Status> test) {
+    /** The message prefix of a start that failed because the server was stopped while starting. */
+    public static final String STOPPED_DURING_START = "server start failed: the server was stopped during start";
+
+    private static java.util.List<String> groupsMatching(Map<String, ? extends GroupRunner> groups,
+                                                         java.util.function.Predicate<GroupRunner> test) {
         return groups.entrySet().stream()
-                .filter(e -> test.test(e.getValue().getGroup().status()))
+                .filter(e -> test.test(e.getValue()))
                 .map(Map.Entry::getKey)
                 .sorted()
                 .toList();
@@ -190,7 +197,7 @@ public final class LifecycleManager {
                      EventFlowManager flowManager,
                      long drainTimeoutMillis) {
         log.info("stopping server");
-        if (!started && !startAttempted) {
+        if (!started) {
             log.info("server not started, nothing to stop");
             return;
         }
