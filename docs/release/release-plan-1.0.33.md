@@ -37,10 +37,12 @@ and agent stacks need the integration commit above. Results:
 
 | Where | Tests | Result |
 |---|---|---|
-| `integration/next-release` (all nine PRs + integration commit), `mvn test`, 3 runs | 447 (9 skipped) | 0 failures, 0 errors in each run (~1 m 32 s) |
+| `integration/next-release` (all nine PRs + integration commit), `mvn test`, 3 runs | 448 (9 skipped) | 0 failures, 0 errors in each run (~1 m 32 s) |
+| GitHub CI (`main.yml`, 2-core runner) on every PR branch and on the integration branch | | green |
 | Processor-agent stack top (#68), 3 runs | 384 (9 skipped) | 0 failures |
 | #62 / #66 / #67, one run each | 355 / 370 / 377 | 0 failures |
 | Integration test `processorDroppedAfterAFailedRuntimeStartReleasesItsName` | 1 | fails without the integration commit, passes with it |
+| `publishersInALoopDoNotStarveARemoveOrAnAdd` (#52, after CI) | 1 | without the fix an add waited 39.9 s behind 4 looping publishers |
 
 The skipped tests are skipped on `main` as well.
 
@@ -76,8 +78,9 @@ The skipped tests are skipped on `main` as well.
 
 ### Mongoose 1.0.33
 - **Publishing**: publishes are serialised per publisher. A subscriber whose queue is full now stalls every
-  publisher on that publisher for up to ~10 ms per event (the existing spin), and adding/removing a subscriber
-  waits behind it. Items dropped on a full queue are counted (`droppedCount()`).
+  publisher on that publisher for up to ~10 ms per event (the existing spin). Adding/removing a subscriber waits
+  only for the dispatch in flight: publishers hold back while one is waiting, so a busy publisher cannot starve
+  it (CI caught this: Java monitors are not fair). Items dropped on a full queue are counted (`droppedCount()`).
 - **Pooling**: the last `releaseReference()` returns the object to the pool; a release below zero throws without
   decrementing; `removeFromPool()`/`cache()` detach an object for good.
 - **Event-log cache**: with `cacheEventLog`, publishes after `startComplete` are no longer logged
