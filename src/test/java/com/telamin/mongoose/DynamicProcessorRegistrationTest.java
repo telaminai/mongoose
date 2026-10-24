@@ -94,6 +94,9 @@ public class DynamicProcessorRegistrationTest {
             assertEquals(3, staticProc.received.get(),
                     "static processor should see all 3 events");
 
+            // the dynamic processor may run on another agent thread: wait for it too before asserting its count
+            awaitTrue(() -> registrar.dynamicProc.received.get() >= 3);
+
             // Sanity-check: the dynamic processor's lifecycle DID run.
             assertTrue(registrar.dynamicProc.initCalled, "dynamic processor init() should fire");
             assertTrue(registrar.dynamicProc.startCalled, "dynamic processor start() should fire");
