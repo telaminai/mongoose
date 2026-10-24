@@ -93,4 +93,96 @@ class HandlerPipeTest {
         Assertions.assertEquals(producers * perProducer, drained.size(), "events lost with concurrent publishers");
         Assertions.assertEquals(producers * perProducer, new HashSet<>(drained).size(), "events overwritten");
     }
+
+    /**
+     * #59 through a real source: a cached pipe's event log holds what the sink cached before startComplete and stops
+     * growing afterwards. Fails when InMemoryEventSource.startComplete calls output.dispatchCachedEventLog() (the
+     * pre-#59 code), because the publisher never learns that start is complete.
+     */
+    @Test
+    void cachedPipeLogStopsGrowingAfterStartComplete() throws Exception {
+        HandlerPipe<String> pipe = HandlerPipe.<String>of("boundedPipe").cacheEventLog(true);
+        EventToQueuePublisher<String> eventToQueue = new EventToQueuePublisher<>("boundedPipe");
+        OneToOneConcurrentArrayQueue<Object> targetQueue = new OneToOneConcurrentArrayQueue<>(4096);
+        eventToQueue.addTargetQueue(targetQueue, "subscriberQueue");
+        pipe.getSource().setOutput(eventToQueue);
+
+        pipe.getSource().start();
+        pipe.sink().accept("pre-1");
+        pipe.sink().accept("pre-2");
+        pipe.getSource().startComplete();
+        for (int i = 0; i < 1_000; i++) {
+            pipe.sink().accept("post-" + i);
+        }
+
+        List<Object> drained = new ArrayList<>();
+        targetQueue.drainTo(drained, Integer.MAX_VALUE);
+        Assertions.assertEquals(1_002, drained.size(), "every event delivered once");
+        Assertions.assertEquals(List.of("pre-1", "pre-2"), drained.subList(0, 2));
+        Assertions.assertEquals(List.of("pre-1", "pre-2"), logData(pipe), "the log does not grow after startComplete");
+    }
+
+    /** The opt-in through the pipe's fluent API keeps the whole history (unbounded, by request). */
+    @Test
+    void pipeRetainingTheLogAfterStartKeepsTheHistory() throws Exception {
+        HandlerPipe<String> pipe = HandlerPipe.<String>of("retainedPipe")
+                .cacheEventLog(true)
+                .retainEventLogAfterStart(true);
+        Assertions.assertTrue(pipe.getSource().isRetainEventLogAfterStart());
+        EventToQueuePublisher<String> eventToQueue = new EventToQueuePublisher<>("retainedPipe");
+        OneToOneConcurrentArrayQueue<Object> targetQueue = new OneToOneConcurrentArrayQueue<>(256);
+        eventToQueue.addTargetQueue(targetQueue, "subscriberQueue");
+        pipe.getSource().setOutput(eventToQueue);
+
+        pipe.getSource().start();
+        pipe.sink().accept("pre");
+        pipe.getSource().startComplete();
+        pipe.sink().accept("post-1");
+        pipe.sink().accept("post-2");
+
+        List<Object> drained = new ArrayList<>();
+        targetQueue.drainTo(drained, Integer.MAX_VALUE);
+        Assertions.assertEquals(List.of("pre", "post-1", "post-2"), drained, "each delivered once, in order");
+        Assertions.assertEquals(List.of("pre", "post-1", "post-2"), logData(pipe), "the history is retained");
+    }
+
+    /**
+     * The source goes live only after its publisher has completed start, and an item published by another thread in
+     * between (the source not yet live, the publisher already started) is delivered at once and not logged: it is not
+     * cached to wait for the next publish. Simulated by publishing from inside the publisher's startComplete, after the
+     * replay, which is exactly that window.
+     */
+    @Test
+    void anItemPublishedWhileTheSourceGoesLiveIsDeliveredAtOnceAndNotLogged() throws Exception {
+        InMemoryEventSource<String> src = new InMemoryEventSource<>();
+        src.setCacheEventLog(true);
+        OneToOneConcurrentArrayQueue<Object> targetQueue = new OneToOneConcurrentArrayQueue<>(256);
+        EventToQueuePublisher<String> eventToQueue = new EventToQueuePublisher<>("windowFeed") {
+            @Override
+            public void startComplete() {
+                super.startComplete();
+                src.publishNow("in-window");
+            }
+        };
+        eventToQueue.addTargetQueue(targetQueue, "subscriberQueue");
+        src.setOutput(eventToQueue);
+
+        src.start();
+        src.publishNow("pre");
+        src.startComplete();
+
+        List<Object> drained = new ArrayList<>();
+        targetQueue.drainTo(drained, Integer.MAX_VALUE);
+        Assertions.assertEquals(List.of("pre", "in-window"), drained, "delivered at once, after the replay");
+        Assertions.assertEquals(List.of("pre"), eventToQueue.getEventLog().stream()
+                .map(e -> (Object) e.data()).toList(), "an item published after the publisher started is not logged");
+    }
+
+    private static List<Object> logData(HandlerPipe<String> pipe) {
+        List<Object> data = new ArrayList<>();
+        for (var e : pipe.getSource().eventLog()) {
+            data.add(e.data());
+        }
+        return data;
+    }
 }

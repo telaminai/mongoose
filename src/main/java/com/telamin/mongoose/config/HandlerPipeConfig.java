@@ -116,6 +116,24 @@ public class HandlerPipeConfig<T> {
     private IdleStrategy idleStrategy;
 
     /**
+     * With {@link #cacheEventLog}, keep logging values after {@code startComplete}. Off by default: the event log then
+     * holds only what was cached before start and stops growing (telaminai/mongoose#59). On, it grows with every value
+     * for the life of the pipe, without bound. YAML: {@code retainEventLogAfterStart: true}.
+     */
+    private boolean retainEventLogAfterStart = false;
+
+    /**
+     * The all-arguments constructor as it was before {@link #retainEventLogAfterStart} was added, kept for source and
+     * binary compatibility; the new field defaults to false.
+     */
+    public HandlerPipeConfig(String name, String sinkName, boolean broadcast, boolean wrapWithNamedEvent,
+                             boolean cacheEventLog, EventSource.SlowConsumerStrategy slowConsumerStrategy,
+                             Function<T, ?> valueMapper, String agentName, IdleStrategy idleStrategy) {
+        this(name, sinkName, broadcast, wrapWithNamedEvent, cacheEventLog, slowConsumerStrategy, valueMapper,
+                agentName, idleStrategy, false);
+    }
+
+    /**
      * Whether the feed half should be registered as an agent-hosted worker.
      */
     public boolean isAgent() {
@@ -136,6 +154,7 @@ public class HandlerPipeConfig<T> {
         }
         HandlerPipe<T> pipe = HandlerPipe.of(name);
         pipe.cacheEventLog(cacheEventLog);
+        pipe.retainEventLogAfterStart(retainEventLogAfterStart);
         if (valueMapper != null) {
             pipe.dataMapper(valueMapper);
         }
@@ -214,6 +233,7 @@ public class HandlerPipeConfig<T> {
         private Function<T, ?> valueMapper;
         private String agentName;
         private IdleStrategy idleStrategy;
+        private boolean retainEventLogAfterStart;
 
         public Builder<T> name(String n)                                   { this.name = n; return this; }
         public Builder<T> sinkName(String n)                               { this.sinkName = n; return this; }
@@ -223,6 +243,8 @@ public class HandlerPipeConfig<T> {
         public Builder<T> slowConsumerStrategy(EventSource.SlowConsumerStrategy s) { this.slowConsumerStrategy = s; return this; }
         public Builder<T> valueMapper(Function<T, ?> m)                    { this.valueMapper = m; return this; }
         public Builder<T> agent(String agentName, IdleStrategy idle)       { this.agentName = agentName; this.idleStrategy = idle; return this; }
+        /** Opt in to an unbounded event log after start; see {@link HandlerPipeConfig#retainEventLogAfterStart}. */
+        public Builder<T> retainEventLogAfterStart(boolean r)              { this.retainEventLogAfterStart = r; return this; }
 
         public HandlerPipeConfig<T> build() {
             HandlerPipeConfig<T> cfg = new HandlerPipeConfig<>();
@@ -235,6 +257,7 @@ public class HandlerPipeConfig<T> {
             if (valueMapper != null) cfg.setValueMapper(valueMapper);
             cfg.setAgentName(agentName);
             cfg.setIdleStrategy(idleStrategy);
+            cfg.setRetainEventLogAfterStart(retainEventLogAfterStart);
             return cfg;
         }
     }

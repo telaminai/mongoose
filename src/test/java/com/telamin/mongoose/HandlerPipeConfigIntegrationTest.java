@@ -163,6 +163,36 @@ public class HandlerPipeConfigIntegrationTest {
     }
 
     @Test
+    void retainEventLogAfterStart_is_settable_by_builder_and_applied_to_the_source() {
+        HandlerPipeConfig<String> cfg = HandlerPipeConfig.<String>builder()
+                .name("retained").cacheEventLog(true).retainEventLogAfterStart(true).build();
+        assertTrue(cfg.isRetainEventLogAfterStart());
+        assertTrue(cfg.build().pipe.getSource().isRetainEventLogAfterStart(), "applied to the pipe's source");
+
+        HandlerPipeConfig<String> defaults = HandlerPipeConfig.<String>builder().name("bounded").build();
+        assertFalse(defaults.isRetainEventLogAfterStart(), "off by default: the log stops growing after start");
+        assertFalse(defaults.build().pipe.getSource().isRetainEventLogAfterStart());
+    }
+
+    @Test
+    void retainEventLogAfterStart_is_settable_from_yaml() {
+        String yaml = """
+                pipes:
+                  - name: retained
+                    cacheEventLog: true
+                    retainEventLogAfterStart: true
+                  - name: bounded
+                    cacheEventLog: true
+                """;
+        org.yaml.snakeyaml.LoaderOptions options = new org.yaml.snakeyaml.LoaderOptions();
+        options.setTagInspector(tag -> true);
+        MongooseServerConfig cfg = new org.yaml.snakeyaml.Yaml(options).loadAs(yaml, MongooseServerConfig.class);
+        assertTrue(cfg.getPipes().get(0).isRetainEventLogAfterStart());
+        assertTrue(cfg.getPipes().get(0).build().pipe.getSource().isRetainEventLogAfterStart());
+        assertFalse(cfg.getPipes().get(1).isRetainEventLogAfterStart());
+    }
+
+    @Test
     void pipe_build_rejects_blank_name() {
         HandlerPipeConfig<String> cfg = new HandlerPipeConfig<>();
         assertThrows(IllegalArgumentException.class, cfg::build,

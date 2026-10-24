@@ -31,8 +31,23 @@ public class InMemoryEventSource<T> extends AbstractAgentHostedEventSourceServic
     @Getter
     @Setter
     private boolean cacheEventLog = false;
+    /**
+     * Keep logging published events after startComplete. Off by default, when the log holds only what was cached
+     * before start; on, it grows with every publish for the life of the source (see
+     * {@link EventToQueuePublisher#setRetainEventLogAfterStart(boolean)}).
+     */
+    @Getter
+    @Setter
+    private boolean retainEventLogAfterStart = false;
 
-    private boolean publishToQueue = false;
+    /**
+     * True once the source is live: items are published, not cached. Set only AFTER the publisher's startComplete, so
+     * there is no moment when the source is live but the publisher still logs publishes as pre-start (review of #64).
+     * Until it is set, items go through {@link EventToQueuePublisher#publishOrCache}, which decides atomically with
+     * the publisher's startComplete, so an item arriving while the source goes live is published at once, never cached
+     * to wait for the next publish.
+     */
+    private volatile boolean publishToQueue = false;
 
     public InMemoryEventSource() {
         super("inMemoryEventFeed");
@@ -42,6 +57,7 @@ public class InMemoryEventSource<T> extends AbstractAgentHostedEventSourceServic
     public void start() {
         // configure caching behavior on publisher
         output.setCacheEventLog(cacheEventLog);
+        output.setRetainEventLogAfterStart(retainEventLogAfterStart);
         if (cacheEventLog) {
             // Pre-start: accept items but cache them without publishing
             publishToQueue = false;
@@ -53,9 +69,9 @@ public class InMemoryEventSource<T> extends AbstractAgentHostedEventSourceServic
     @Override
     public void startComplete() {
         startComplete.set(true);
+        // Replay anything cached in the publisher and stop logging publishes; only then go live (see publishToQueue)
+        output.startComplete();
         publishToQueue = true;
-        // Replay anything cached in the publisher
-        output.dispatchCachedEventLog();
     }
 
     /**
@@ -78,7 +94,7 @@ public class InMemoryEventSource<T> extends AbstractAgentHostedEventSourceServic
         if (publishToQueue) {
             output.publish(item);
         } else {
-            output.cache(item);
+            output.publishOrCache(item);
         }
     }
 
@@ -90,7 +106,7 @@ public class InMemoryEventSource<T> extends AbstractAgentHostedEventSourceServic
             if (publishToQueue) {
                 output.publish(item);
             } else {
-                output.cache(item);
+                output.publishOrCache(item);
             }
             count++;
         }
