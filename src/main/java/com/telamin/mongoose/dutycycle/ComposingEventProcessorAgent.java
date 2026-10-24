@@ -518,6 +518,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         if (toStopList.isEmpty()) {
             return;
         }
+        // start what was queued before the stop first: a stop made just after an add, while the add is still queued,
+        // then finds its processor instead of missing it and leaving it to start and run on
+        startQueued(false);
         toStopList.drain(this::stopProcessor);
     }
 
