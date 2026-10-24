@@ -117,6 +117,8 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     private final org.agrona.concurrent.ManyToOneConcurrentArrayQueue<Runnable> onAgentThread =
             new org.agrona.concurrent.ManyToOneConcurrentArrayQueue<>(256);
     private volatile Thread agentThread;
+    /** mongoose#46: set as the group closes; hand-offs are refused after it. */
+    private volatile boolean closed;
     /** Without a server: isolate a start failure in onStart instead of failing the group's start (review of #66). */
     private volatile boolean isolateStartFailuresAtBoot;
 
@@ -254,21 +256,24 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     }
 
     /**
-     * Run {@code work} on this group's thread (mongoose#46): directly when called on it, or when the group is not
-     * running (then nothing else drives its processors); otherwise queued for the start of the next duty cycle. Best
+     * Run {@code work} on this group's thread (mongoose#46): directly when called on it, or when the group has not
+     * started yet (then nothing else drives its processors); otherwise queued for the start of the next duty cycle. A
+     * full queue backs off as {@link #enqueue} does, bounded by the control-queue timeout. Refused with an
+     * {@link IllegalStateException} once the group has closed: its processors are gone, so nothing is applied. Best
      * effort: work queued as the group closes may be left unrun, so a caller that needs it applied awaits it with a
      * timeout ({@link AgentHandoff}), which then cancels it rather than leave it half applied.
      */
     public void runOnAgentThread(Runnable work) {
+        if (closed) {
+            throw new IllegalStateException("group " + roleName() + " is not running: it has closed");
+        }
         Thread agent = agentThread;
         if (agent == null || agent == Thread.currentThread() || !agent.isAlive()) {
             work.run();
             return;
         }
         Runnable once = AgentHandoff.once(work);
-        if (!onAgentThread.offer(once)) {
-            throw new IllegalStateException("group " + roleName() + " cannot take more work from other threads");
-        }
+        enqueue(onAgentThread, once, "agent hand-off");        // a full queue backs off, bounded (mongoose#58)
         // best effort, not a delivery guarantee: if the thread stopped between the check above and the offer, run it
         // here (the claim makes it run once, whichever gets to it). A window remains (a close that drains before this
         // offer and clears the thread after this re-read), in which the work is left unrun; a caller that awaits it
@@ -279,6 +284,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
 
     @Override
     public void onClose() {
+        closed = true;                                                    // no work is taken after this
         for (Runnable r; (r = onAgentThread.poll()) != null; ) r.run();   // work handed over before the close still runs
         agentThread = null;
         log.info("onClose " + roleName());
@@ -536,6 +542,10 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         } catch (Throwable t) {
             reportProcessorFailure(name, "failed to stop cleanly, removed from the group", t);
             releaseSubscriptions(name, eventProcessor);
+        }
+        if (mongooseServer != null) {
+            guarded(name, "failed to release its server bindings",
+                    () -> mongooseServer.processorStopped(roleName(), name, eventProcessor));
         }
     }
 
