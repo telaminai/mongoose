@@ -215,7 +215,7 @@ class ProcessorStopReleaseTest {
 
             // the same name again: a fresh binding, recording the new processor
             Proc second = new Proc(-1).noSubscription();
-            server.addEventProcessor("p", "g", null, () -> second);
+            addWhenTheNameIsFree(server, second);
             await(() -> second.started, "p added again");
             assertTrue(audit.isRecording("p"), "auto-start binds and records the processor added again");
         } finally {
@@ -268,19 +268,7 @@ class ProcessorStopReleaseTest {
                     "p left the group");
 
             Proc second = new Proc(50);
-            // the name may be freed a moment after the processor leaves the group: with a name reservation (#65) it is
-            // freed on the group's thread after the stop, so an add made in between is refused; retry until it is free
-            java.util.concurrent.atomic.AtomicBoolean added = new java.util.concurrent.atomic.AtomicBoolean();
-            await(() -> {
-                if (added.get()) return true;
-                try {
-                    server.addEventProcessor("p", "g", null, () -> second);
-                    added.set(true);
-                    return true;
-                } catch (IllegalArgumentException nameNotFreeYet) {
-                    return false;
-                }
-            }, "p can be added again");
+            addWhenTheNameIsFree(server, second);
             await(() -> second.started, "p added again");
             Thread.sleep(200);                              // let a duplicate delivery, if any, arrive
             feed.offer("y");
@@ -297,6 +285,24 @@ class ProcessorStopReleaseTest {
         } finally {
             server.stop();
         }
+    }
+
+    /**
+     * Add {@code proc} as "p" in group "g" again. With a name reservation (#65) the name is freed on the group's thread
+     * just after the stop, so an add made in the instant between is refused: retry until the name is free.
+     */
+    private static void addWhenTheNameIsFree(MongooseServer server, Proc proc) throws Exception {
+        java.util.concurrent.atomic.AtomicBoolean added = new java.util.concurrent.atomic.AtomicBoolean();
+        await(() -> {
+            if (added.get()) return true;
+            try {
+                server.addEventProcessor("p", "g", null, () -> proc);
+                added.set(true);
+                return true;
+            } catch (IllegalArgumentException nameNotFreeYet) {
+                return false;
+            }
+        }, "p can be added again");
     }
 
     private static ComposingEventProcessorAgent newGroup() {
