@@ -36,7 +36,9 @@ import java.util.function.Supplier;
  * <p>
  * Responsibilities:
  * <ul>
- *   <li>Accepts registrations/removals of named event processors</li>
+ *   <li>Accepts registrations/removals of named event processors; a removed (stopped) processor and one dropped after
+ *       a failed start leave by the same path, which releases its subscriptions, timers, replay bindings and the
+ *       server's bindings (mongoose#71)</li>
  *   <li>Wires processors to event queues via the EventFlowManager on first subscription</li>
  *   <li>Registers shared services and a SchedulerService into each processor</li>
  *   <li>Adds/removes queue reader agents dynamically as subscriptions change</li>
@@ -52,7 +54,8 @@ import java.util.function.Supplier;
  *       processor is thrown out of {@code onStart}, so it reaches the agent's error handler and the group does not
  *       become active. {@code MongooseServerConfig.isolateProcessorStartFailuresAtBoot} opts into isolating it
  *       instead, so the server boots without it;</li>
- *   <li>a failed {@code stop()}/{@code tearDown()}: the processor is still removed and its subscriptions released;</li>
+ *   <li>a failed {@code stop()}/{@code tearDown()}: the processor is still removed and everything the group holds for
+ *       it released, as for a stop that succeeds (mongoose#71);</li>
  *   <li>a failed {@code @ServiceRegistered}/{@code @ServiceDeregistered} handler: reported; the processor keeps running;</li>
  *   <li>a failed timer callback: reported by the scheduler, naming the processor; the other timers fire.</li>
  * </ul>
@@ -554,56 +557,59 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         toStopList.drain(this::stopProcessor);
     }
 
-    /** Stop and tear down one processor; it leaves the group even when either throws (mongoose#57). */
+    /**
+     * Stop one processor (mongoose#71): it leaves the group by {@link #release}, the same path a processor dropped after
+     * a failed start takes, so its timers, replay bindings and server bindings go with it. It leaves the group even when
+     * its {@code stop()} or {@code tearDown()} throws (mongoose#57).
+     */
     private void stopProcessor(String name) {
-        NamedEventProcessor named = registeredEventProcessors.remove(name);
-        if (named == null) {
-            return;
-        }
-        servicesDelivered.remove(named.eventProcessor());
-        DataFlow eventProcessor = named.eventProcessor();
-        try {
-            if (eventProcessor instanceof Lifecycle) {
-                ((Lifecycle) eventProcessor).stop();
-                ((Lifecycle) eventProcessor).tearDown();
-            }
-        } catch (VirtualMachineError fatal) {
-            throw fatal;
-        } catch (Throwable t) {
-            reportProcessorFailure(name, "failed to stop cleanly, removed from the group", t);
-            releaseSubscriptions(name, eventProcessor);
+        NamedEventProcessor named = registeredEventProcessors.get(name);
+        if (named != null) {
+            release(named, true);
         }
     }
 
+    /** A processor whose start failed leaves the group (review of #66): {@link #release}, without a {@code stop()}. */
+    private void processorDropped(NamedEventProcessor named) {
+        release(named, false);
+    }
+
     /**
-     * The one path a processor that failed to start leaves the group by (review of #66). Releases everything the group
-     * holds for it, each step guarded so one failure does not stop the rest:
+     * The one path a processor leaves the group by, whether stopped ({@code stopping}) or dropped after a failed start
+     * (mongoose#71, review of #66). Releases everything the group holds for it, each step guarded so one failure does
+     * not stop the rest:
      * <ul>
-     *   <li>it leaves the registry, and the record of the services it was given;</li>
-     *   <li>its {@code tearDown()} runs, as {@code stopProcessor} would have run it;</li>
-     *   <li>its subscriptions are released;</li>
+     *   <li>it leaves the registry, and the record of the services it was given, so a processor added again under its
+     *       name is delivered every service once (mongoose#60);</li>
+     *   <li>its {@code stop()} runs (a stop only: a processor whose start failed never ran), then its
+     *       {@code tearDown()};</li>
+     *   <li>its subscriptions are released (a no-op for those its own tearDown already released);</li>
      *   <li>its timers are cancelled, so none fires into it ({@link DeadWheelScheduler#cancelTimersOf});</li>
      *   <li>the replay recorder and replayer forget it;</li>
-     *   <li>the server is told ({@link MongooseServer#processorDropped}), which releases what the server bound to it
-     *       by name: its audit-capture binding. That hook is where anything else the server holds by processor name
-     *       is to be released.</li>
+     *   <li>the server is told ({@link MongooseServer#processorStopped} / {@link MongooseServer#processorDropped}),
+     *       which releases what the server bound to it by name: its audit-capture binding.</li>
      * </ul>
      */
-    private void processorDropped(NamedEventProcessor named) {
+    private void release(NamedEventProcessor named, boolean stopping) {
         String name = named.name();
         DataFlow eventProcessor = named.eventProcessor();
         registeredEventProcessors.remove(name, named);
-        servicesDelivered.remove(eventProcessor);   // #60: a processor added again is delivered every service again
+        servicesDelivered.remove(eventProcessor);
         if (eventProcessor instanceof Lifecycle lifecycle) {
-            guarded(name, "failed to tear down after its failed start", lifecycle::tearDown);
+            if (stopping) {
+                guarded(name, "failed to stop cleanly, removed from the group", lifecycle::stop);
+            }
+            guarded(name, stopping ? "failed to tear down, removed from the group"
+                    : "failed to tear down after its failed start", lifecycle::tearDown);
         }
         releaseSubscriptions(name, eventProcessor);
         guarded(name, "failed to cancel its timers", () -> scheduler.cancelTimersOf(eventProcessor));
         if (recorder != null) guarded(name, "failed to leave the replay recording", () -> recorder.detach(eventProcessor));
         if (replayer != null) guarded(name, "failed to leave the replay", () -> replayer.detach(eventProcessor));
         if (mongooseServer != null) {
-            guarded(name, "failed to release its server bindings",
-                    () -> mongooseServer.processorDropped(roleName(), name, eventProcessor));
+            guarded(name, "failed to release its server bindings", stopping
+                    ? () -> mongooseServer.processorStopped(roleName(), name, eventProcessor)
+                    : () -> mongooseServer.processorDropped(roleName(), name, eventProcessor));
         }
     }
 

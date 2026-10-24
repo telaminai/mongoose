@@ -422,15 +422,38 @@ public class MongooseServer implements MongooseServerController {
     /**
      * A processor group dropped {@code processorName} after its {@code start()} failed (mongoose#57). Called on the
      * group's thread, once the group has released what it holds for the processor; this releases what the server bound
-     * to it by name: its audit-capture binding and its name reservation (mongoose#60), so the name can be added again.
+     * to it by name ({@link #releaseProcessorBindings}) and its name reservation (mongoose#60), so the name can be
+     * added again.
      */
     public void processorDropped(String groupName, String processorName, DataFlow eventProcessor) {
         log.info("processor '" + processorName + "' dropped from group '" + groupName + "' after a failed start");
         try {
-            auditCaptureService.detach(processorName, eventProcessor);
+            releaseProcessorBindings(processorName, eventProcessor);
         } finally {
             reservedProcessorNames.remove(new ProcessorName(groupName, processorName));
         }
+    }
+
+    /**
+     * A processor group stopped {@code processorName} ({@link #stopProcessor}, mongoose#71). Called on the group's
+     * thread, once the group has stopped the processor and released what it holds for it; this releases what the server
+     * bound to it by name ({@link #releaseProcessorBindings}), as for a dropped processor.
+     * <p>
+     * It does not free a processor-name reservation (mongoose#60): {@link #stopProcessor} frees that itself, ordered
+     * after the stop on the group's thread, so an add of the same name made once the name is free can never be removed
+     * by the stop meant for the old processor. Freeing it here as well could free the reservation of that new add.
+     */
+    public void processorStopped(String groupName, String processorName, DataFlow eventProcessor) {
+        log.info("processor '" + processorName + "' stopped in group '" + groupName + "'");
+        releaseProcessorBindings(processorName, eventProcessor);
+    }
+
+    /**
+     * Release what the server bound to a processor that left its group, stopped or dropped: its audit-capture binding.
+     * Anything else the server binds per processor is to be released here too, so both paths release it.
+     */
+    private void releaseProcessorBindings(String processorName, DataFlow eventProcessor) {
+        auditCaptureService.detach(processorName, eventProcessor);
     }
 
     /**
