@@ -457,6 +457,15 @@ public class MongooseServer implements MongooseServerController {
     }
 
     /**
+     * A processor group stopped and tore down {@code processorName} (mongoose#46). Called on the group's thread; the
+     * audit-capture service forgets the instance, so nothing is installed on it again and an {@code audit.start} for
+     * it is refused rather than reported as recording a processor that is gone.
+     */
+    public void processorStopped(String groupName, String processorName, DataFlow eventProcessor) {
+        auditCaptureService.processorStopped(processorName, eventProcessor);
+    }
+
+    /**
      * Register a factory to produce event-to-callback mapping strategies for a given callback type.
      * <p>
      * This allows customization of how events are mapped to processor invocation strategies,

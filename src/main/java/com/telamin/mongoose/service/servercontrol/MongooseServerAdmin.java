@@ -186,10 +186,12 @@ public class MongooseServerAdmin implements Lifecycle {
             return;
         }
         String processor = args.get(1);
+        // mongoose#46: returns once the capture listener is installed on the processor's own thread; refused, not hung,
+        // when it cannot be (processor gone, group not running, its thread not reaching it in time)
         try {
             auditCapture.start(processor);
             out.accept("audit: RECORDING " + processor);
-        } catch (IllegalArgumentException e) {
+        } catch (IllegalArgumentException | IllegalStateException e) {
             err.accept("audit: " + e.getMessage());
         }
     }
@@ -201,8 +203,12 @@ public class MongooseServerAdmin implements Lifecycle {
             return;
         }
         String processor = args.get(1);
-        auditCapture.stop(processor);
-        out.accept("audit: STOPPED " + processor);
+        try {
+            auditCapture.stop(processor);
+            out.accept("audit: STOPPED " + processor);
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            err.accept("audit: " + e.getMessage());
+        }
     }
 
     private void auditStatus(List<String> args, Consumer<String> out, Consumer<String> err) {
