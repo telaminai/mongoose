@@ -121,6 +121,25 @@ public class MongooseServerConfig {
     /** Record or replay processors' inputs (spec-replay-recording R1); off by default. */
     private ReplayConfig replay;
 
+    /** Default bound on the shutdown drain, see {@link #shutdownDrainTimeoutMillis}. */
+    public static final long DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS = 2_000;
+
+    /**
+     * mongoose#56: how long {@code MongooseServer.stop()} waits, after the feeds stop, for events already queued to
+     * processors to be delivered before the processors stop. Events still queued when it runs out are dropped (and
+     * logged). Zero or less does not wait.
+     */
+    private long shutdownDrainTimeoutMillis = DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS;
+
+    /** Default bound on the startup wait, see {@link #startupTimeoutMillis}. */
+    public static final long DEFAULT_STARTUP_TIMEOUT_MILLIS = 60_000;
+
+    /**
+     * mongoose#60: how long {@code MongooseServer.start()} waits for every agent group to become active before it fails,
+     * naming the groups that did not. A group that closes while starting (its onStart threw) fails start at once.
+     */
+    private long startupTimeoutMillis = DEFAULT_STARTUP_TIMEOUT_MILLIS;
+
     /**
      * Gets the list of event handler groups, initializing if {@code null} and adding
      * {@link #defaultHandlerGroupConfig} if present and not already included.
@@ -474,6 +493,8 @@ public class MongooseServerConfig {
         private IdleStrategy idleStrategy;
         private final Map<CallBackType, Supplier<EventToInvokeStrategy>> eventInvokeStrategies = new HashMap<>();
         private ReplayConfig replay;
+        private long shutdownDrainTimeoutMillis = DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS;
+        private long startupTimeoutMillis = DEFAULT_STARTUP_TIMEOUT_MILLIS;
 
         private Builder() {
         }
@@ -578,6 +599,26 @@ public class MongooseServerConfig {
         }
 
         /**
+         * How long {@code MongooseServer.stop()} waits for events already queued to processors to be delivered, after
+         * the feeds stop (default {@value MongooseServerConfig#DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS} ms; zero or less
+         * does not wait). See {@link MongooseServerConfig#getShutdownDrainTimeoutMillis()}.
+         */
+        public Builder shutdownDrainTimeoutMillis(long shutdownDrainTimeoutMillis) {
+            this.shutdownDrainTimeoutMillis = shutdownDrainTimeoutMillis;
+            return this;
+        }
+
+        /**
+         * How long {@code MongooseServer.start()} waits for every agent group to become active before it fails, naming
+         * the groups that did not (default {@value MongooseServerConfig#DEFAULT_STARTUP_TIMEOUT_MILLIS} ms). See
+         * {@link MongooseServerConfig#getStartupTimeoutMillis()}.
+         */
+        public Builder startupTimeoutMillis(long startupTimeoutMillis) {
+            this.startupTimeoutMillis = startupTimeoutMillis;
+            return this;
+        }
+
+        /**
          * Convenience for the common ON_EVENT callback type.
          *
          * @param factory supplier that produces the strategy instance
@@ -647,6 +688,8 @@ public class MongooseServerConfig {
             if (idleStrategy != null) cfg.setIdleStrategy(idleStrategy);
             if (!eventInvokeStrategies.isEmpty()) cfg.setEventInvokeStrategies(new HashMap<>(eventInvokeStrategies));
             if (replay != null) cfg.setReplay(replay);
+            cfg.setShutdownDrainTimeoutMillis(shutdownDrainTimeoutMillis);
+            cfg.setStartupTimeoutMillis(startupTimeoutMillis);
             return cfg;
         }
     }

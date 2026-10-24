@@ -199,9 +199,45 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     @Override
     public void onClose() {
         for (Runnable r; (r = onAgentThread.poll()) != null; ) r.run();   // work handed over before the close still runs
+        stopAndTearDownProcessors();   // mongoose#56: on the group's thread, as every other processor callback
         agentThread = null;
         log.info("onClose " + roleName());
         super.onClose();
+    }
+
+    /**
+     * mongoose#56: a closing group stops and tears down each processor it still hosts, once (it is removed first). A
+     * processor that throws is reported at ERROR through {@link com.telamin.mongoose.service.error.ErrorReporting}
+     * and the others are still stopped; a {@link VirtualMachineError} is rethrown (the mongoose#57 policy).
+     */
+    private void stopAndTearDownProcessors() {
+        for (String name : new ArrayList<>(registeredEventProcessors.keySet())) {
+            NamedEventProcessor named = registeredEventProcessors.remove(name);
+            if (named == null || !(named.eventProcessor() instanceof Lifecycle lifecycle)) {
+                continue;
+            }
+            try {
+                lifecycle.stop();
+            } catch (VirtualMachineError fatal) {
+                throw fatal;
+            } catch (Throwable t) {
+                reportCloseFailure(name, "failed to stop", t);
+            }
+            try {
+                lifecycle.tearDown();
+            } catch (VirtualMachineError fatal) {
+                throw fatal;
+            } catch (Throwable t) {
+                reportCloseFailure(name, "failed to tear down", t);
+            }
+        }
+    }
+
+    private void reportCloseFailure(String processorName, String what, Throwable t) {
+        com.telamin.mongoose.service.error.ErrorReporting.report(
+                "ComposingEventProcessorAgent:" + roleName(),
+                "processor '" + processorName + "' in group '" + roleName() + "' " + what + " on close: " + t, t,
+                com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
     }
 
     @Override

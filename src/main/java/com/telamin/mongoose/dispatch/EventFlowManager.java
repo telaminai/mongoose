@@ -18,6 +18,9 @@ import org.agrona.concurrent.OneToOneConcurrentArrayQueue;
 import java.io.IOException;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import java.util.function.Supplier;
 
 
@@ -58,6 +61,8 @@ public class EventFlowManager {
     // settles to the chosen impl before any publisher / agent loop reads it, so
     // hot-path call sites stay monomorphic and the no-op JIT-inlines away.
     private MongooseCountersService countersService = NoOpCountersService.INSTANCE;
+    private static final Logger LOG = Logger.getLogger(EventFlowManager.class.getName());
+    private final AtomicBoolean stopped = new AtomicBoolean();
 
     public EventFlowManager() {
         eventToInvokerFactoryMap.put(CallBackType.ON_EVENT_CALL_BACK, EventToOnEventInvokeStrategy::new);
@@ -137,6 +142,55 @@ public class EventFlowManager {
 
     public void start() {
         forEachLifeCycleEventSource(LifeCycleEventSource::start);
+    }
+
+    /**
+     * Stop and tear down every registered {@link LifeCycleEventSource} (mongoose#56), once: a second call is a no-op. A
+     * source that throws is logged and the others still stop. Called by the server's ordered shutdown after the agent
+     * threads hosting feeds have closed, so an agent-hosted source is not stopped under its own running duty cycle.
+     */
+    public void stop() {
+        if (!stopped.compareAndSet(false, true)) {
+            return;
+        }
+        forEachLifeCycleEventSource(source -> {
+            try {
+                source.stop();
+            } catch (Throwable t) {
+                LOG.log(Level.WARNING, "event source " + source + " failed to stop", t);
+            }
+            try {
+                source.tearDown();
+            } catch (Throwable t) {
+                LOG.log(Level.WARNING, "event source " + source + " failed to tear down", t);
+            }
+        });
+    }
+
+    /**
+     * Wait, at most {@code timeoutMillis}, for every per-subscriber dispatch queue to empty (mongoose#56): the drain step
+     * of the ordered shutdown, run once feeds have stopped and while processors still consume.
+     *
+     * @return true when every queue emptied in time, false when the bound was reached first
+     */
+    public boolean awaitQueuesDrained(long timeoutMillis) throws InterruptedException {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(Math.max(0, timeoutMillis));
+        while (pendingQueuedEvents() > 0) {
+            if (System.nanoTime() - deadline >= 0) {
+                return false;
+            }
+            Thread.sleep(1);
+        }
+        return true;
+    }
+
+    /** Events still waiting in the per-subscriber dispatch queues, summed over all queues. */
+    public long pendingQueuedEvents() {
+        long pending = 0;
+        for (OneToOneConcurrentArrayQueue<Object> queue : subscriberKeyToQueueMap.values()) {
+            pending += queue.size();
+        }
+        return pending;
     }
 
     @SuppressWarnings("unchecked")

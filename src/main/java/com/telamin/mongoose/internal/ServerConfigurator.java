@@ -130,8 +130,11 @@ public final class ServerConfigurator {
                                     eventProcessor.consumeServiceIfExported(com.telamin.mongoose.config.ConfigListener.class, l -> l.initialConfig(configMap));
                                     return eventProcessor;
                                 });
-                    } catch (Exception e) {
-                        // keep behavior consistent with previous implementation (log handled by MongooseServer)
+                    } catch (IllegalArgumentException e) {
+                        // mongoose#60: a processor name configured twice in one group used to be dropped with only a
+                        // warning; it is a misconfiguration, so boot fails naming the group and the processor
+                        throw new IllegalStateException("cannot boot server: event processor '" + name
+                                + "' is configured more than once in group '" + groupName + "'", e);
                     }
                 });
             });
