@@ -327,6 +327,15 @@ public final class LifecycleManager {
         } catch (Throwable t) {
             log.log(java.util.logging.Level.WARNING, "composing " + kind + " " + name + " failed to close", t);
         }
+        // a group whose thread died never ran onClose (Agrona's close() returns at once for it): release what it held
+        // here, now that its thread has ended, so its processors are stopped and its requests answered
+        if (group.getGroup() instanceof com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent processors) {
+            try {
+                processors.cleanupAfterDeath();
+            } catch (Throwable t) {
+                log.log(java.util.logging.Level.WARNING, "composing " + kind + " " + name + " failed its post-death cleanup", t);
+            }
+        }
     }
 
     /**

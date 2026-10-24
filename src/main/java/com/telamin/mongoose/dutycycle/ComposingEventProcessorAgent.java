@@ -388,6 +388,30 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     }
 
     /**
+     * Release what a dead group still holds: its thread ended without {@code onClose} (an {@code Error} escaped), so
+     * nothing else will. Runs only once that thread has terminated (joined first, which gives this thread a
+     * happens-before edge with everything the agent wrote); a no-op for a group that closed normally or never died.
+     * Claimed requests are answered {@code FAILED}, unclaimed ones swept, and every processor stopped and torn down.
+     */
+    public void cleanupAfterDeath() throws InterruptedException {
+        if (control.state() != ControlDriver.GroupState.DEAD || closed) {
+            return;
+        }
+        Thread agent = control.agentThread();
+        if (agent != null) {
+            agent.join(5_000);
+            if (agent.isAlive()) {
+                return;   // still running (a wedged control processor): its own onClose releases what it holds
+            }
+        }
+        closed = true;
+        control.markDead("cleanup after the agent thread ended");
+        control.failClaimed("group died");
+        stopAndTearDownProcessors();
+        control.audit().fallback("CleanedUp", "group", roleName(), "processorsLeft", registeredEventProcessors.size());
+    }
+
+    /**
      * mongoose#56: what a closing group still hosts after its control processor has stopped everything it could: only
      * possible when the control processor is dead or wedged. Each processor is stopped and torn down once, here; one
      * that throws is reported and the others are still stopped; a {@link VirtualMachineError} is rethrown.

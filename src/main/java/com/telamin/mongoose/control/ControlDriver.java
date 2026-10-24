@@ -378,6 +378,15 @@ public final class ControlDriver {
         claimed.clear();
     }
 
+    /**
+     * Test seam for terminal admission: register a request as a sender does before publishing it, without publishing
+     * it, as if the sender were paused between reserving a mailbox slot and writing it.
+     */
+    void registerUnpublished(ControlRequest request) {
+        if (request.requestId() < 0) request.assignId(requestIds.incrementAndGet());
+        outstanding.add(request);
+    }
+
     /** Sent and not yet finally answered: for tests and the shutdown result. */
     public int outstanding() {
         return outstanding.size();
