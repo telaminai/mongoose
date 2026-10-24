@@ -268,7 +268,19 @@ class ProcessorStopReleaseTest {
                     "p left the group");
 
             Proc second = new Proc(50);
-            server.addEventProcessor("p", "g", null, () -> second);
+            // the name may be freed a moment after the processor leaves the group: with a name reservation (#65) it is
+            // freed on the group's thread after the stop, so an add made in between is refused; retry until it is free
+            java.util.concurrent.atomic.AtomicBoolean added = new java.util.concurrent.atomic.AtomicBoolean();
+            await(() -> {
+                if (added.get()) return true;
+                try {
+                    server.addEventProcessor("p", "g", null, () -> second);
+                    added.set(true);
+                    return true;
+                } catch (IllegalArgumentException nameNotFreeYet) {
+                    return false;
+                }
+            }, "p can be added again");
             await(() -> second.started, "p added again");
             Thread.sleep(200);                              // let a duplicate delivery, if any, arrive
             feed.offer("y");
