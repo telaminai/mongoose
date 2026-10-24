@@ -172,6 +172,8 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                         eventToInvokeStrategy.processEvent(event);
                     }
                     done = true;
+                } catch (VirtualMachineError fatal) {
+                    throw fatal;        // OutOfMemoryError, StackOverflowError, ...: never retried or swallowed (as #57)
                 } catch (Throwable t) {
                     int at = wholeFailed ? -1 : eventToInvokeStrategy.failedPosition();
                     DataFlow failed = at < 0 ? null : eventToInvokeStrategy.failedProcessor();

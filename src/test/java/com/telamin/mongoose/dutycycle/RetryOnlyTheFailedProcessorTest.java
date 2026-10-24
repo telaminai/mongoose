@@ -166,6 +166,28 @@ class RetryOnlyTheFailedProcessorTest {
         assertContextCleared("after the first processor's retries are exhausted");
     }
 
+    /** A VirtualMachineError is not a processor failure: it is neither retried nor swallowed, as on the group's paths. */
+    @Test
+    void aVirtualMachineErrorFromAHandlerIsNeitherRetriedNorSwallowed() {
+        OneToOneConcurrentArrayQueue<Object> queue = new OneToOneConcurrentArrayQueue<>(16);
+        List<Object> received = new CopyOnWriteArrayList<>();
+        DataFlow fatal = new DataFlow() {
+            @Override public void onEvent(Object event) {
+                received.add(event);
+                throw new StackOverflowError("DEMO fatal");
+            }
+            @Override public void setClockStrategy(ClockStrategy clockStrategy) {}
+        };
+        EventQueueToEventProcessorAgent agent = new EventQueueToEventProcessorAgent(queue, new EventToOnEventInvokeStrategy(),
+                "retry53", "feed").withRetryPolicy(new RetryPolicy(3, 0, 0, 1.0, Set.of(Throwable.class)));
+        agent.registerProcessor(fatal);
+
+        queue.offer("E1");
+        assertThrows(StackOverflowError.class, agent::doWork, "it reaches the agent's error handler");
+        assertEquals(List.of("E1"), received, "and is not retried");
+        assertContextCleared("after a fatal error");
+    }
+
     @Test
     void aHandlerThatThrows_neverLeavesItsProcessorAsTheCurrentProcessor() {
         OneToOneConcurrentArrayQueue<Object> queue = new OneToOneConcurrentArrayQueue<>(16);
