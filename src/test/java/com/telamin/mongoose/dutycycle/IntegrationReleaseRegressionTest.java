@@ -248,7 +248,7 @@ class IntegrationReleaseRegressionTest {
     void aStopConsumedBeforeItsStartCancelsTheRegistration() throws Exception {
         ComposingEventProcessorAgent group = new ComposingEventProcessorAgent("DEMO", new EventFlowManager(), null,
                 new DeadWheelScheduler(), new ConcurrentHashMap<>());
-        group.onStart(); Object registration = new Object(); AtomicInteger built = new AtomicInteger();
+        group.onStart(); ProcessorRegistration registration = new ProcessorRegistration(); AtomicInteger built = new AtomicInteger();
         AtomicInteger acknowledged = new AtomicInteger();
         try {
             group.removeEventProcessorByName("DEMO", registration, acknowledged::incrementAndGet);
@@ -260,7 +260,7 @@ class IntegrationReleaseRegressionTest {
             group.doWork();
             assertEquals(0, built.get(), "a consumed stop must cancel a start queued afterwards for that registration");
             assertFalse(group.isProcessorRegistered("DEMO"), "cancelled registration cannot run without a reservation");
-            Proc replacement = new Proc(); Object next = new Object();
+            Proc replacement = new Proc(); ProcessorRegistration next = new ProcessorRegistration();
             group.addNamedEventProcessor(() -> new NamedEventProcessor("DEMO", replacement), next);
             group.doWork();
             assertTrue(replacement.started, "the name is free for a later registration");
@@ -302,7 +302,7 @@ class IntegrationReleaseRegressionTest {
     void aDropCannotFreeANewerReservationUnderTheSameName() {
         MongooseServer s = server();
         s.addEventProcessor("DEMO", "DEMO", null, Proc::new);
-        s.processorDropped("DEMO", "DEMO", new Proc(), new Object());
+        s.processorDropped("DEMO", "DEMO", new Proc(), new ProcessorRegistration());
         assertThrows(IllegalArgumentException.class, () -> s.addEventProcessor("DEMO", "DEMO", null, Proc::new),
                 "a stale drop must not free a newer registration's reservation");
         s.init(); s.start(); s.stop();
@@ -312,7 +312,7 @@ class IntegrationReleaseRegressionTest {
     void aStopForAFailedRegistrationCannotStopItsReplacement() throws Exception {
         ComposingEventProcessorAgent group = new ComposingEventProcessorAgent("DEMO", new EventFlowManager(), null,
                 new DeadWheelScheduler(), new ConcurrentHashMap<>());
-        group.onStart(); Object old = new Object(), replacement = new Object(); Proc second = new Proc();
+        group.onStart(); ProcessorRegistration old = new ProcessorRegistration(), replacement = new ProcessorRegistration(); Proc second = new Proc();
         group.addNamedEventProcessor(() -> new NamedEventProcessor("DEMO", new Proc() {
             @Override public void start() {
                 group.addNamedEventProcessor(() -> new NamedEventProcessor("DEMO", second), replacement);
@@ -326,6 +326,59 @@ class IntegrationReleaseRegressionTest {
             assertTrue(second.started);
             assertFalse(second.stopped, "a delayed old stop cannot address a newer registration by name");
             assertEquals(1, completed.get(), "old stop still acknowledges completion");
+            assertEquals(0, group.pendingCancellations(), "a stop for a start already taken is not remembered");
+        } finally { group.onClose(); }
+    }
+
+    @Test
+    void aStopThatFindsNothingIsRememberedOnlyWhileItsStartCanStillArrive() throws Exception {
+        ComposingEventProcessorAgent group = new ComposingEventProcessorAgent("DEMO", new EventFlowManager(), null,
+                new DeadWheelScheduler(), new ConcurrentHashMap<>());
+        group.onStart();
+        try {
+            // a repeated stop: the first released the processor, the second finds nothing
+            ProcessorRegistration released = new ProcessorRegistration();
+            group.addNamedEventProcessor(() -> new NamedEventProcessor("DEMO-a", new Proc()), released);
+            group.doWork();
+            group.removeEventProcessorByName("DEMO-a", released, null);
+            group.removeEventProcessorByName("DEMO-a", released, null);
+            group.doWork();
+            assertEquals(0, group.pendingCancellations(), "a repeated stop is not remembered");
+
+            // a stop after a failed start: the processor was dropped, its start will not come again
+            ProcessorRegistration failed = new ProcessorRegistration();
+            group.addNamedEventProcessor(() -> new NamedEventProcessor("DEMO-b", new Proc() {
+                @Override public void start() { throw new IllegalStateException("DEMO start refused"); }
+            }), failed);
+            group.doWork();
+            group.removeEventProcessorByName("DEMO-b", failed, null);
+            group.doWork();
+            assertEquals(0, group.pendingCancellations(), "a stop after a failed start is not remembered");
+
+            // a stale stop: the name now belongs to a replacement
+            ProcessorRegistration old = new ProcessorRegistration(), current = new ProcessorRegistration();
+            group.addNamedEventProcessor(() -> new NamedEventProcessor("DEMO-c", new Proc()), old);
+            group.doWork();
+            group.removeEventProcessorByName("DEMO-c", old, null);
+            group.doWork();
+            Proc replacement = new Proc();
+            group.addNamedEventProcessor(() -> new NamedEventProcessor("DEMO-c", replacement), current);
+            group.doWork();
+            group.removeEventProcessorByName("DEMO-c", old, null);
+            group.doWork();
+            assertFalse(replacement.stopped, "the stale stop does not reach the replacement");
+            assertEquals(0, group.pendingCancellations(), "a stale stop is not remembered");
+
+            // the race it exists for: the stop overtakes a start not yet queued, and is forgotten once that start comes
+            ProcessorRegistration overtaken = new ProcessorRegistration(); AtomicInteger built = new AtomicInteger();
+            group.removeEventProcessorByName("DEMO-d", overtaken, null);
+            group.doWork();
+            assertEquals(1, group.pendingCancellations(), "a stop overtaking its start is remembered");
+            group.addNamedEventProcessor(() -> { built.incrementAndGet(); return new NamedEventProcessor("DEMO-d", new Proc()); },
+                    overtaken);
+            group.doWork();
+            assertEquals(0, built.get(), "the overtaken start is skipped");
+            assertEquals(0, group.pendingCancellations(), "and the cancellation is forgotten once its start is taken");
         } finally { group.onClose(); }
     }
 }

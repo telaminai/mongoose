@@ -16,6 +16,7 @@ import com.telamin.mongoose.dispatch.EventFlowManager;
 import com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent;
 import com.telamin.mongoose.dutycycle.ComposingServiceAgent;
 import com.telamin.mongoose.dutycycle.NamedEventProcessor;
+import com.telamin.mongoose.dutycycle.ProcessorRegistration;
 import com.telamin.mongoose.dutycycle.ServiceAgent;
 import com.telamin.mongoose.internal.*;
 import com.telamin.mongoose.replay.GroupRecorder;
@@ -135,7 +136,7 @@ public class MongooseServer implements MongooseServerController {
      * group's own map only fills later, on its thread). Released by {@link #stopProcessor}, when building it fails, or when the group drops it after a failed
      * start ({@link #processorDropped}).
      */
-    private final ConcurrentHashMap<ProcessorName, Object> reservedProcessorNames = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<ProcessorName, ProcessorRegistration> reservedProcessorNames = new ConcurrentHashMap<>();
 
     private record ProcessorName(String group, String name) {
     }
@@ -428,7 +429,7 @@ public class MongooseServer implements MongooseServerController {
      * to it by name ({@link #releaseProcessorBindings}) and its name reservation (mongoose#60), so the name can be
      * added again.
      */
-    public void processorDropped(String groupName, String processorName, DataFlow eventProcessor, Object registration) {
+    public void processorDropped(String groupName, String processorName, DataFlow eventProcessor, ProcessorRegistration registration) {
         log.info("processor '" + processorName + "' dropped from group '" + groupName + "' after a failed start");
         try {
             releaseProcessorBindings(processorName, eventProcessor);
@@ -910,7 +911,7 @@ public class MongooseServer implements MongooseServerController {
                 });
 
         ProcessorName reservation = new ProcessorName(groupName, processorName);
-        Object registration = new Object();
+        ProcessorRegistration registration = new ProcessorRegistration();
         if (reservedProcessorNames.putIfAbsent(reservation, registration) != null) {
             log.warning("refusing to add event processor '" + processorName + "' to group '" + groupName
                     + "': the name is already assigned in that group");
@@ -1038,7 +1039,7 @@ public class MongooseServer implements MongooseServerController {
         var processorAgent = composingEventProcessorAgents.get(groupName);
         if (processorAgent != null) {
             ProcessorName reservation = new ProcessorName(groupName, processorName);
-            Object registration = reservedProcessorNames.get(reservation);
+            ProcessorRegistration registration = reservedProcessorNames.get(reservation);
             if (registration != null) {
                 // A stop belongs to this accepted add, including before its supplier runs. Release the name only when
                 // that stop is consumed, and never remove a newer reservation or stop a replacement under that name.

@@ -237,7 +237,7 @@ class ProcessorStartFailureTest {
         List<String> dropped = new CopyOnWriteArrayList<>();
         MongooseServer server = new MongooseServer(new MongooseServerConfig()) {
             @Override
-            public void processorDropped(String groupName, String processorName, DataFlow eventProcessor, Object registration) {
+            public void processorDropped(String groupName, String processorName, DataFlow eventProcessor, ProcessorRegistration registration) {
                 assertNotNull(registration, "the drop carries the accepted start's registration identity");
                 dropped.add(groupName + "/" + processorName);
                 super.processorDropped(groupName, processorName, eventProcessor, registration);

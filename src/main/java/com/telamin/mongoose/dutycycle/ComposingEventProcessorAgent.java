@@ -79,14 +79,14 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     /** Default for how long a producer waits for this group's thread to make room in a full control queue. */
     static final long CONTROL_QUEUE_FULL_TIMEOUT_NANOS = java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
     private volatile long controlQueueFullTimeoutNanos = CONTROL_QUEUE_FULL_TIMEOUT_NANOS;
-    private record ProcessorStart(Supplier<NamedEventProcessor> init, Object registration) { }
-    private record ProcessorStop(String name, Object registration, Runnable completed) { }
+    private record ProcessorStart(Supplier<NamedEventProcessor> init, ProcessorRegistration registration) { }
+    private record ProcessorStop(String name, ProcessorRegistration registration, Runnable completed) { }
     private final ManyToOneConcurrentArrayQueue<ProcessorStart> toStartList = new ManyToOneConcurrentArrayQueue<>(CONTROL_QUEUE_CAPACITY);
     private final ManyToOneConcurrentArrayQueue<ProcessorStop> toStopList = new ManyToOneConcurrentArrayQueue<>(CONTROL_QUEUE_CAPACITY);
     /** Registration identity is used only for lifecycle operations, never for event delivery. */
-    private final java.util.Map<NamedEventProcessor, Object> registrations = new java.util.IdentityHashMap<>();
+    private final java.util.Map<NamedEventProcessor, ProcessorRegistration> registrations = new java.util.IdentityHashMap<>();
     /** Stops consumed before their starts arrive; agent-thread-only, with registration identity rather than names. */
-    private final java.util.Set<Object> cancelledRegistrations =
+    private final java.util.Set<ProcessorRegistration> cancelledRegistrations =
             java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
     // Dynamic-service broadcast queue. MongooseServer.registerService /
     // removeService publish onto it so the agent thread (and only the
@@ -166,7 +166,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     }
 
     /** Server-owned registration identity, so a delayed stop cannot address a replacement by name alone. */
-    public void addNamedEventProcessor(Supplier<NamedEventProcessor> initFunction, Object registration) {
+    public void addNamedEventProcessor(Supplier<NamedEventProcessor> initFunction, ProcessorRegistration registration) {
         enqueue(toStartList, new ProcessorStart(initFunction, registration), "processor-start");
     }
 
@@ -175,7 +175,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     }
 
     /** Complete on this group's thread after consuming the stop, including a stop of an add still queued. */
-    public void removeEventProcessorByName(String name, Object registration, Runnable completed) {
+    public void removeEventProcessorByName(String name, ProcessorRegistration registration, Runnable completed) {
         enqueue(toStopList, new ProcessorStop(name, registration, completed), "processor-stop");
     }
 
@@ -540,8 +540,11 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
      * still exits the JVM.
      */
     private void startProcessor(ProcessorStart start, boolean failFast) {
-        if (start.registration() != null && cancelledRegistrations.remove(start.registration())) {
-            return; // its stop won before the start was queued: do not even run the supplier
+        if (start.registration() != null) {
+            start.registration().startTaken = true;
+            if (cancelledRegistrations.remove(start.registration())) {
+                return; // its stop won before the start was queued: do not even run the supplier
+            }
         }
         NamedEventProcessor namedEventProcessor = null;
         try {
@@ -602,7 +605,8 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
             NamedEventProcessor named = registeredEventProcessors.get(stop.name());
             if (named != null && (stop.registration() == null || registrations.get(named) == stop.registration())) {
                 release(named, true);     // tells the server (processorStopped), once
-            } else if (stop.registration() != null) {
+            } else if (stop.registration() != null && !stop.registration().startTaken) {
+                // only a start not yet taken can still arrive; a repeated, stale or post-failure stop is not remembered
                 cancelledRegistrations.add(stop.registration());
             }
         } finally {
@@ -635,7 +639,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         String name = named.name();
         DataFlow eventProcessor = named.eventProcessor();
         registeredEventProcessors.remove(name, named);
-        Object registration = registrations.remove(named);
+        ProcessorRegistration registration = registrations.remove(named);
         servicesDelivered.remove(eventProcessor);
         if (eventProcessor instanceof Lifecycle lifecycle) {
             if (stopping) {
@@ -748,6 +752,11 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     private java.util.Set<Service<?>> servicesDeliveredTo(DataFlow eventProcessor) {
         return servicesDelivered.computeIfAbsent(eventProcessor,
                 k -> java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
+    }
+
+    /** Cancellations waiting for their start, for tests: each is removed when that start is taken. */
+    int pendingCancellations() {
+        return cancelledRegistrations.size();
     }
 
     public boolean isProcessorRegistered(String processorName) {
