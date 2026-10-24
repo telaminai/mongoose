@@ -1,6 +1,81 @@
 # Mongoose control plane as events — design
 
-Status: proposal, revised 2026-10-24 after an independent review (see the last section). Targets the release after 1.0.33. Code references are to the integration branch at `f54a768` (PR #69).
+Status: proposal, revision 3, 2026-10-24. Responds to three reviews and two follow-ups on PR #75 (see [Review responses](#review-responses)). Targets the release after 1.0.33. Mongoose code references are to `integration/next-release` at `74ad868` unless stated; review citations at `ad07abc` were re-checked there. Analyser references are to `telaminai/fluxtionauditlog-analyser` at `985ea71`.
+
+## Summary
+
+Each processor group gets one ordered control mailbox and a **generated Fluxtion control processor** that decides every lifecycle transition. Effects run at Fluxtion's own transaction boundary, `batchEnd()`, after the decision's audit record has been written, and their outcomes come back as audited events of their own. This is the model the analyser's session controller already uses in production, and this design adopts it, adapting what Agrona concurrency and shutdown require.
+
+The control audit is a primary goal. It supports an LLM-assisted validation loop: agree intended behaviour, generate and execute scenarios with project tools, inspect the evidence through the analyser's existing MCP verbs, identify violations against independently written invariants, and produce regression tests and reviewable explanations.
+
+What revision 3 changes:
+
+- The control processor is generated from the first PR; effects use `@OnBatchEnd` and `processAsNewEventCycle`, as in the analyser, not a hand-rolled loop.
+- Every command, group, registration generation and effect operation has an identity carried through the audit; pending and final outcomes are distinct.
+- Name admission stays a send-time compare-and-set, so duplicates still throw at once; every transition is decided on the agent thread.
+- Terminal admission no longer relies on the final drain: an outstanding-command registry is swept when a group closes or dies.
+- Shutdown has one end-to-end deadline, is serialised against admission, and reports what is still running.
+- Audit capture opens asynchronously with explicit `Opening` and `Closing` capture states; a stale open is detected by identity and compensated by closing it.
+- Matching graph, source and audit evidence, investigable through existing MCP verbs, is an acceptance criterion.
+- Diagnostic audit, invariant validation and deterministic replay are separate capabilities with separate promises, and the audit's coverage limits are stated.
+
+## Design objective: an inspectable control plane
+
+The control plane should be something you can interrogate, not just trust. The loop:
+
+**Agree intended behaviour → generate and execute scenarios → inspect audit evidence → identify violations → write regression tests and explanations → revise → repeat.**
+
+Fluxtion fits deliberately. An early customised Fluxtion was a state-machine generator: an event arrives, the current state determines permitted transitions, and the transition requests effects. A generated control processor means every decision is made by a named node in a generated graph, the graph *is* the transition specification, and its audit uses the format the analyser already reads.
+
+**Two kinds of tool, kept separate** (as the analyser's authoring guide does, `docs/site/spring-authoring.md`, "One conversation, two workspaces"):
+
+| Workspace | Tools | Does |
+| --- | --- | --- |
+| Project | The LLM's own filesystem, shell and build tools; Maven; the scenario harness | Edits the control processor's builder graph, generates it, runs scenarios and tests, exports audit logs |
+| Analyser | MCP verbs derived from `VerbSchemas` (`McpTools`) | Presents and interrogates evidence: `context`, `open`, `read`, `aggregate`, `series`, `topology`, `source`, `coverage`, `graph`, `flag`, `spotlight`, `report`, `walk` |
+
+The MCP verbs do not compile, run scenarios or deploy. The harness does not interpret evidence.
+
+**Three capabilities, three promises:**
+
+| Capability | Question | Promise | Not promised |
+| --- | --- | --- | --- |
+| Diagnostic audit | What happened, in what order, why? | Every control input, decision, effect request, pending and final outcome, and reply is recorded with identities and causal links, or the record says it is incomplete | That the behaviour was correct |
+| Invariant validation | Was what happened allowed? | Evidence is checked against invariants written independently of the implementation | Completeness of the invariants; correctness for scenarios not run |
+| Deterministic replay | Do the same inputs give the same decisions? | Replaying recorded control inputs and recorded effect outcomes reproduces the control processor's decisions | That effects are reproduced; that recording graph inputs captures every effect |
+
+Intended behaviour lives in this document's rules and invariants. Observed behaviour lives in the audit. Tests assert the former against the latter; the audit is never its own oracle.
+
+## Reference: the analyser's session controller
+
+The analyser already runs a generated Fluxtion state machine for its own session lifecycle, with a decision → audit → effect → audited-outcome model. This design reuses its patterns where they hold and says where Mongoose must differ.
+
+**What the analyser does** (verified in source at `985ea71`):
+
+- `SessionDriver` confines dispatch to one designated thread, throws a `ProtocolViolation` on wrong-thread or nested submission, stamps each request with an `opId`, and runs one operation to completion: `onEvent(fact)`, then `batchEnd()` repeatedly while effects are pending, bounded at 64 rounds, after which a runaway is a `ProtocolViolation` naming the effect.
+- `EffectQueue` collects effect requests during dispatch and performs them in an `@OnBatchEnd` method. Each result is re-dispatched with `processAsNewEventCycle`, which, because `batchEnd()` has set `processing = true`, queues it to the back of the callback stack. Each result is then dispatched after the batch's own `afterEvent()`, with a complete record of its own.
+- The generated `batchEnd()` sets `processing = true` with no `try`/`finally`, so `EffectQueue` catches every exception from an effect, turns it into `EffectFailed`, and stashes protocol violations for the driver to rethrow after `batchEnd()` returns.
+- `EffectOutcomes` writes every outcome under one shape (`effect`, `success`, `opId`, `stale`, `reason`), including outcomes the gate refused as stale, and a `Pending` answer.
+- `OperationGate` sits upstream of every state node and refuses stale results: a newer request of the same kind supersedes an outstanding asynchronous open, whose late result is then recorded with `stale=true` and changes nothing (`AsyncOpenReplayTest`: `aSupersededLoadIsRefused`, `aCloseOfTheLogSupersedesAPendingOpen`).
+- `SessionAuditSink` is attached before `init()` (measured: attaching after leaks records to stdout), keeps bounded rings that count what they drop, counts sink failures instead of throwing, reports `isComplete() == false` when anything was lost, and exports a snapshot the analyser reopens one record per dispatch (`SessionAuditRecordTest`).
+
+**Verified execution semantics.** In the Fluxtion code generator's Java template (`fluxtion-generator-core/.../javaTemplate.vsl`, develop branch), `batchEnd()` is `auditEvent(BatchEnd); processing = true; <@OnBatchEnd methods>; afterEvent(); callbackDispatcher.dispatchQueuedCallbacks(); processing = false;`, with no `try`/`finally`. In fluxtion-runtime, `CallbackDispatcherImpl.processAsNewEventCycle` is `eventProcessor.onEvent(event)`. Mongoose is on fluxtion-runtime 1.1.0; the analyser pins runtime 1.0.16 with builder 1.0.71. **PR 1 pins the builder version that pairs with runtime 1.1.0 and adds a test that asserts the emitted `batchEnd()` shape and the queue-when-processing behaviour**, as the analyser measured its own audit wiring, before relying on either.
+
+**What transfers, and what differs:**
+
+| Pattern | Analyser | Mongoose |
+| --- | --- | --- |
+| Designated thread | The Swing event thread, for the life of the app | The group's agent thread; work from other threads arrives only through the mailbox, never by calling the processor |
+| Single operation in flight | Enforced by `submit` re-entry guard | The drain applies one command at a time to completion, so the property holds per group; a nested submit from an effect is a protocol violation, as in the analyser |
+| Effects at `batchEnd()`, outcomes via `processAsNewEventCycle` | Yes | Same. Effects include user code (`start()`, `stop()`), which may block or throw anything |
+| No throw out of `batchEnd()` | Catches `Exception`; stashes violations | Also catches `Throwable` short of `VirtualMachineError`; a `VirtualMachineError` is stashed, and the group then goes Dead after `batchEnd()` returns, because a wedged `processing` flag would be worse |
+| Bounded settlement | 64 rounds, then `ProtocolViolation` | Same bound; the command completes `Failed` and an `Anomaly` is recorded |
+| Stale results | Latest request of a kind supersedes; one asynchronous boundary | Many registrations and several asynchronous effects at once, so staleness is judged by **registration generation and operation id**, not "latest request" |
+| Stale resource | A superseded load is discarded | A superseded open holds a file: it must be **compensated** by a `CloseCapture` effect, and its closure recorded |
+| Pending | Recorded as `success=true`, `reason=pending` | A distinct outcome kind `pending`, never counted as final |
+| Marshalling late results | `post()` on the designated thread | An unbounded completion queue drained with the mailbox, so a full mailbox can never refuse a completion |
+| Lifetime | The driver lives as long as the app | Groups close and can die: terminal admission, sweeps and server cleanup |
+| Audit sink | Bounded ring, counted drops and failures, export to analyser YAML | Same, plus `seq` numbers so a gap is detectable per group |
 
 ## Problem
 
@@ -11,296 +86,558 @@ Most of the defects fixed for 1.0.33 share one root cause: a processor's lifecyc
 | A stop sent while the add was still queued did nothing | #72 | The stop was checked before the queued add had run |
 | The stop hook ran twice | integration commit, #72 with #74 | Two components each owned "stopped" |
 | Audit captures stayed open after server stop | #65 | Audit lifetime was tracked apart from processor lifetime |
-| Server stop refused to close audit captures on groups that had already stopped | integration commit, #65 with #74 | Shutdown asked closed groups to do work |
-| A processor's name was released twice in a rare window | known, not fixed | The server's name reservations and the agent's drop path each release the name |
+| A stop consumed before its add was queued let the add run unreserved | `ad07abc`, `a92e864` | Admission and the start were two steps on two threads |
+| Two first adds to a new group both started its thread | `74ad868` | Thread start had two owners; Agrona's losing `run()` marks the runner closed |
 | Timers kept firing into a stopped processor | #72 (#71) | Scheduler bindings outlived the processor |
 | A retry re-sent the event to every processor on the queue | #73 (#53) | Delivery was tracked per queue, not per processor |
-| An add or remove of a subscriber waited up to 39.9 s | #52 | `publishLock` is an unfair Java monitor shared by the fast path and control calls |
-| `runOnAgentThread` race | documented, not fixed | Hand-off to the agent thread plus reads of shared state from the caller |
+| An add or remove of a subscriber waited up to 39.9 s | #52 | `publishLock` is an unfair monitor shared by the fast path and control calls |
 
-Four of the 13 PRs needed extra commits on the integration branch just to work together, though none of them had merge conflicts. That coupling is the cost this design aims to remove.
+Several of the later #69 fixes were found only by reasoning about interleavings by hand. Interleavings should instead be generated, executed and checked against evidence.
 
 ## Goals and non-goals
 
-The goal is one owner per piece of lifecycle state, and that owner is a single thread. Every change to a processor goes through that thread, in order, as a message, and every request gets a truthful answer.
-
 **Goals**
 
-1. Each processor group's agent thread is the only writer of its processors' lifecycle state, including name ownership and audit-capture lifetime.
-2. All control requests to a group travel through one ordered mailbox, so a stop can never overtake the add it refers to.
-3. Every control call returns a reply future with a definite outcome: applied, refused with a reason, failed, or the group was not running. No request is ever left pending.
-4. Applied control is framed in each affected processor's audit log, and a stop is recorded in that processor's replay stream.
-5. The fast event path keeps its current cost: no new locks, allocation or branches per event.
-6. Public API stays source compatible. Existing `void` methods keep working; methods to be removed are deprecated first.
+1. Every lifecycle transition for a group's processors is decided by that group's generated control processor, on its agent thread.
+2. All control requests to a group travel through one ordered mailbox.
+3. Every control request gets exactly one final reply, including when a group closes or dies.
+4. The control audit records inputs, identities, decisions, effect requests, pending and final outcomes, and replies, causally linked, and states its own incompleteness.
+5. Invariants are written independently of the implementation and checked against audit evidence.
+6. A lifecycle regression yields matching graph, source and audit evidence that the analyser's existing verbs can investigate.
+7. Shutdown has an end-to-end bound and reports truthfully what is still running.
+8. The fast event path keeps its current cost.
+9. Each migration PR is releasable alone with coherent semantics.
 
-**What must hold whatever the configuration.** These follow the stability review of PR #69 and are not trade-offs:
+**Must hold in every configuration** (stability review on #69): an old stop never affects a newer registration under the same name, and a refused add leaves no reservation; nothing reopens after a stop completes; a reply never claims more than happened.
 
-- An old stop can never affect a newer processor registered under the same name, and a refused add leaves no reservation behind.
-- Nothing reopens after a stop completes. A callback that ignores cancellation may delay shutdown, but stop never reports completion early; it reports what is still running.
-- A reply never claims more than happened. `Applied` means the change is complete, not just accepted.
-
-**Non-goals**
-
-- Distribution, clustering or failover. Mongoose stays an in-process runtime.
-- A global order across groups. Each processor's consumed order is the evidence; commands to different groups are not ordered against each other.
-- Changing how feeds publish into queues. `EventToQueuePublisher` keeps `publishLock` and the #52 fix; feed delivery modes are a separate decision.
-- Changing the plugin contract for connectors, services and admin commands.
-- Changing Fluxtion's generated dispatch.
+**Non-goals:** distribution or failover; a global order across groups; feed delivery modes (`publishLock` and the #52 fix stay); changing data processors' generated dispatch; automated changes to control logic without human approval.
 
 ## Current control paths
 
-The group already behaves like a mailbox, but it has four of them, and the server keeps state of its own beside them. Code references are to the integration branch at `f54a768`.
+At `74ad868` the group already behaves like a set of mailboxes, and the server keeps state beside them.
 
-`ComposingEventProcessorAgent` has four control queues, all `ManyToOneConcurrentArrayQueue`, and `doWork()` drains them in a fixed order at the start of every duty cycle:
+- `ComposingEventProcessorAgent` drains four control queues each duty cycle: `toStopList`, `toStartList`, `servicesToBroadcast`, `onAgentThread`.
+- Admission is a send-time `putIfAbsent` of a `ProcessorRegistration` into `MongooseServer.reservedProcessorNames`; stops bind to the registration at call time; a stop that finds nothing cancels the registration only while its start has not been taken (`a92e864`).
+- Thread start goes through `LifecycleManager.startOnce` (`74ad868`).
+- `isServerAgentThread` compares `runner.thread()`, which Agrona swaps to a tombstone at the start of `close()`, before `onClose` runs.
+- Shutdown snapshots groups (`toGroupRunnerMap`) separately from `computeIfAbsent` in `addEventProcessor`; waits on `startupLock` and calls `service.stop()` without bounds; stop in New returns without closing existing groups.
+- Service registration inserts, injects, then broadcasts; removal removes, stops, then broadcasts; `startService`, `stopService` and the mutable `registeredServices()` map are further writers.
+- Audit capture opens on the caller, installs on the agent through `AgentHandoff`, and closes the queue if not adopted (`ChronicleAuditCaptureService.start`).
+- Replay keys streams by bare processor name (`ReplayStore.entries(name)`).
 
-1. `toStopList`, names to stop (`checkForStopped`)
-2. `toStartList`, suppliers that build a processor (`checkForAdded`)
-3. `servicesToBroadcast`, service register and deregister (`checkForBroadcasts`)
-4. `onAgentThread`, arbitrary `Runnable`s handed over by `runOnAgentThread`
+## Ownership
 
-The fixed order across queues is what lost a stop sent just after its add (#72). The fix drains `toStartList` before `toStopList`, which patches one pair but leaves the order between the others undefined.
+| State | Owner | Other writers allowed |
+| --- | --- | --- |
+| Name admission (name → live registration) | The group's admission table | Senders **insert** by compare-and-set, and remove an entry they inserted whose `Add` the mailbox never accepted. Only the control processor removes an entry after that |
+| Registration state and capture state | The group's control processor | None. After a group dies, the server, once it has joined the dead thread |
+| Processor records, subscriptions, timers, installed listener | The agent thread, performing control-processor effects | Same death exception |
+| Group state | Compare-and-set on one volatile word | Server; the group's `onClose`; its fatal-error path; a sender that finds the thread dead |
+| Outstanding commands | The group's outstanding registry | Senders add; agent and terminator claim |
+| Server lifecycle and group creation | Server admission lock | None |
+| Service registry and lifecycle | Server service lock | None; `registeredServices()` is an unmodifiable view |
+| Capture resources (open Chronicle queues) | The effect that opened it, then the registration's capture record, then the closer | One holder at a time; each hand-off clears the previous reference |
 
-**Who writes lifecycle state today**
-
-| State | Lives in | Written by | Threads |
-| --- | --- | --- | --- |
-| Server lifecycle (NEW to STOPPED) | `MongooseServer.lifecycleState`, an `AtomicReference` | `start()`, `stop()`, `runOrderedStop()` | caller, or `mongoose-server-stop` |
-| Processor name reservations | `MongooseServer.reservedProcessorNames`, a concurrent set | Added by `addEventProcessor` on the caller; removed on build failure, by `processorDropped` on the agent, and by a `runOnAgentThread` task queued by `stopProcessor` | caller and agent |
-| Registered processors | `registeredEventProcessors`, a `ConcurrentHashMap` in the group | `startProcessor`, `release`, `onClose` | agent; read from any thread by `registeredProcessors()` |
-| Audit capture per processor | `ChronicleAuditCaptureService.sinks` plus `synchronized` and `volatile` fields on each sink | `attach`, `start`, `stop`, `detach`, `stopAll`, using `AgentHandoff` to reach the agent | caller, agent, `mongoose-server-stop` |
-| Group closed | `closed`, `agentThread` (`volatile`) | `onStart`, `onClose` | agent; read by callers |
-
-**Where the threads meet**
-
-- `addEventProcessor` and `stopProcessor` return before the group acts. The caller cannot learn whether the add started, failed and was dropped, or never ran.
-- Stop is addressed by name. If a name is freed and reused, a stop meant for the old processor can find the new one. The reservation is freed after the stop to avoid that, which is the window where a name can be released twice.
-- `runOnAgentThread` runs the work inline on the caller's thread when the group has not started or its thread has died. The same code therefore runs on two different threads depending on timing.
-- `onClose` drains `onAgentThread` but not `toStartList` or `toStopList`. A processor added just before close is never built, and its name reservation is never released.
-- Audit capture calls `AgentHandoff.submit` and waits up to its apply timeout. Server stop calls `stopAll()` after the groups have closed, so it has to skip the hand-off and forget the sinks first.
-- Admin commands that change a processor run as lambdas outside an event cycle, so their audit records are unframed.
+The one cross-thread write into group-owned state is admission's insert. This resolves the conflict between immediate pre-start duplicate rejection and agent-owned admission: the *reservation of a name* is a send-time compare-and-set, so a duplicate throws at once even before the group starts; everything that *changes* a registration afterwards, including freeing its name, is decided on the agent thread.
 
 ## Proposed model
 
-Each group gets one ordered mailbox of control commands, and the group's agent thread is the only code that applies them. Callers send a command and get a reply future back. The server keeps no per-processor state of its own.
-
 ```mermaid
 flowchart LR
-    A[Admin and REST] -->|send| M
-    S["MongooseServer<br/>add, broadcast; closes via runner"] -->|send| M
-    H[Handlers, other groups] -->|send, never wait| M
-    M["Group mailbox<br/>ControlCommand, FIFO<br/>at most 64 per drain"] -->|apply| G
-    G["Group agent thread<br/>1. apply commands in order<br/>2. dispatch events<br/>single writer of processor records"]
-    G -.->|reply: Applied, Refused, Failed, NotRunning| A
-    G --> R[Audit log and GroupRecorder]
+    A[Admin and REST] -->|admit + send| M
+    S["MongooseServer<br/>admission lock, service lock"] -->|admit + send| M
+    H[Handlers, other groups] -->|send, never block| M
+    M["Group mailbox<br/>+ outstanding registry"] -->|onEvent command| C
+    Q["Completion queue<br/>late effect results"] -->|onEvent completion| C
+    C["Generated control processor<br/>gate, state nodes, rules,<br/>EffectQueue, EffectOutcomes"] -->|"batchEnd: perform effects"| G
+    G["Effects on the agent thread<br/>or async helpers"] -->|"processAsNewEventCycle outcome"| C
+    G -->|late results| Q
+    C -.->|reply, via reply executor| A
+    C --> R["Control audit<br/>analyser-readable"]
 ```
 
-Callers on any thread send commands; the group thread applies them in order before dispatching events, and completes each reply.
+### Identities
 
-**One mailbox per group.** The four queues become one `ManyToOneConcurrentArrayQueue<ControlCommand>`. Commands are applied in the order they were accepted, in a drain at the start of each duty cycle, before any event is dispatched. A drain applies at most 64 commands, so a burst of control cannot stall market data.
+| Identity | Assigned | Form | Carried by |
+| --- | --- | --- | --- |
+| Server run | Server start | `runId` (UUID) | Audit header, replay streams |
+| Group | Group creation | `group` name, plus `groupIncarnation` if a name is ever recreated | Every record |
+| Command | Send | `requestId`: group-local monotonic long, plus sender (thread, admin user or API) | Input, every decision, effect and reply in its chain |
+| Registration | Admission | `generation`: group-local monotonic long; one registration per accepted add | Commands, decisions, effects, outcomes, stops, handles |
+| Effect operation | Effect request | `opId` = `requestId.n` (n-th effect of that request's chain) | `EffectRequested`, every `EffectOutcome` (pending and final) |
+| Completion | Arrival on the completion queue | `completionId`, with the `opId` it answers | `Input` of the completion cycle |
+| Resource | Effect that creates it | `resourceId` (for example capture `Q#41`) | Open, install, close effects and outcomes |
+| Causal chain | Derived | `rootId` (originating `requestId`), `causeId` (the record that triggered this one) | Every record |
 
-**Commands.** A sealed `ControlCommand` type with one record per request:
+### Registrations and admission
 
-- `Add(name, supplier)` checks the name, then builds, wires and starts a processor.
-- `Stop(name, generation?)` stops it and releases everything it holds.
-- `Broadcast(service, register)` delivers or withdraws a service.
-- `AuditStart(name)` and `AuditStop(name)` start and end an audit capture.
-- `Run(task)` keeps `runOnAgentThread` working for plugins during migration. It is deprecated.
+A `Registration` (evolved from 1.0.33's `ProcessorRegistration`) holds group, name, generation, the add's `requestId`, a lifecycle state and a capture sub-state, both written only by the control processor.
 
-Closing a group is not a mailbox command; see Closing below.
+1. **Admit** (caller thread): `admission.putIfAbsent(name, registration)`. Taken → `IllegalArgumentException` at once, before or after the group starts (`LifecycleRacesTest#sameProcessorNameAddedTwiceBeforeStartIsRefused` unchanged).
+2. **Send** the `Add` ([terminal admission](#terminal-admission-and-death)). If the mailbox refuses it, the sender removes its own entry with `remove(name, registration)`.
+3. **Decide** (agent): the control processor moves the registration through [Registration states](#registration-states). Only its `ReleaseName` effect removes an admission entry after acceptance.
 
-**Replies.** Every command carries a future completed exactly once with one of four outcomes:
+Stops always carry a registration. `stopProcessor(group, name)` resolves `admission.get(name)` at call time and binds to it; `stopProcessor(handle)` carries the handle's. Admin stops resolve the same way: "stop what is there now".
 
-- `Applied(handle)`, with the processor's name and generation where one applies. Sent only once the change is complete.
-- `Refused(reason)`, for example a name already in use, no such processor, or the server is stopping
-- `Failed(cause)`, for example `start()` threw and the processor was dropped
-- `NotRunning`, when the group is closing, closed or dead
+### One mailbox
 
-A caller that stops waiting **detaches**: the command still applies and its outcome is logged. Unlike `AgentHandoff`, a timeout never cancels a command, so a slow stop is never silently dropped.
+The four queues become one `ManyToOneConcurrentArrayQueue<ControlCommand>`, plus an unbounded completion queue for late effect results. Both are drained at the start of each duty cycle, before event dispatch. A drain stops after 64 operations or a time budget (default 50 µs), whichever first, and applies at least one. Neither bounds a single slow effect; see [Risks](#risks).
 
-**The group owns names.** Each group keeps a plain `HashMap` from name to a processor record, written only by its agent thread. The record holds the processor, a generation number that increases with every add, its subscriptions and its audit-capture state. The server's `reservedProcessorNames` set is removed. The name is checked when the `Add` is applied, on the agent thread, so there is no window between checking a name and queuing its start; that window is the race left in 1.0.33's F4 fix. A name is freed in the same step that removes the record, so it can be released only once. Other threads read a snapshot that the agent thread publishes after each change.
+Commands: `Add(registration, supplier)`, `Stop(registration)`, `Broadcast(service, register, version)`, `AuditStart(registration)`, `AuditStop(registration)`, deprecated `Run(task)`. Suppliers, tasks, service objects and resources stay in a side table keyed by `requestId` or `resourceId`; only normalised, immutable intents enter the control processor.
 
-**Group states.** **New** (thread not started), **Starting** (inside `onStart`), **Running**, **Closing**, **Closed**, and **Dead** (the thread exited without `onClose`, for example an `Error` thrown from `onStart`, which Agrona rethrows before calling `onClose`). A command sent to a New group waits and is applied in `onStart`. A command sent to a Closing, Closed or Dead group completes `NotRunning` at once. Group code never runs on a caller's thread, with one exception: Agrona runs `onClose` for a group that never started on the thread that closes it.
+### The control processor
 
-**Closing.** Close stays driven by the runner, as today: the server sets the group's `closing` flag, then calls `AgentRunner.close()`. From the moment the flag is set, new commands complete `NotRunning`, and senders waiting on a full mailbox re-check the flag and leave. In `onClose` the group:
+One generated, ahead-of-time compiled processor per group. Mongoose adds the Fluxtion builder as a build-time dependency; interpreted mode is not used, because it loses labelled source and determinism. Node layout follows the analyser's:
 
-1. Sets `closed`, then drains the mailbox until `isEmpty()` reports no claimed slots, not just until `poll()` returns null. Agrona's drain stops at a slot a sender has claimed but not yet written, so stopping at null can miss a later sender's command.
-2. Completes each queued `Add` as `NotRunning` without running its supplier, and each other command as `NotRunning`, except a `Stop` of a running processor, which completes `Applied` after step 3.
-3. Stops every processor in add order, ending each one's audit capture, then replies.
+- **`OperationGate`** (upstream of all state): matches each outcome to its `opId` and registration generation and marks it accepted or stale before any state node sees it.
+- **State nodes:** registrations by generation, their lifecycle and capture states, delivered service versions.
+- **Rule nodes:** one labelled rule per transition (`stopStarted`, `captureOpenedStale`, …), each writing a `Decision` record.
+- **`EffectQueue`:** collects requests during dispatch; performs them in `@OnBatchEnd`.
+- **`EffectOutcomes`:** writes every outcome, pending or final, accepted or stale, under one shape.
 
-The server bounds its wait on each group. A group that does not close in time is reported as still running, never as stopped. `ChronicleAuditCaptureService.stopAll()` is deprecated: each group closes its own captures.
+Bootstrapping: the group builds the processor and attaches the control audit sink **before** `init()` (the analyser measured that attaching later leaks records to stdout), sets the level through the logger before `init()`, then calls `init()` and `start()` in `onStart`, before the first drain, and registers its effect adapter as a service, as the analyser does. It has a reserved name prefix (`control:`) that admission refuses; uses the data-driven Fluxtion clock (recording clock in record mode, replay clock in replay); is never attached to `GroupReplayer`, never subscribed to feeds, and not listed by `registeredProcessors()`. If it fails to start, the group becomes Dead before admitting anything.
 
-**Dead groups.** A sender checks that the runner's thread is alive before offering. Once the server sees a group's thread has terminated without closing, it is the only remaining consumer of that mailbox, so it drains it and completes every queued command `NotRunning`.
+### Effects and outcomes
 
-**Event path unchanged.** `doWork()` checks one `isEmpty()` where it checks four queues today. Dispatch is untouched, and rule 5 is never implemented as a per-event check.
+Per drained command or completion (the analyser's `SessionDriver.submit`, adapted):
+
+1. Claim the command in the outstanding registry.
+2. `onEvent(input)`: one decision cycle. Rules fire; internal follow-ons may run inside it via `queueReentrantEvent` (back) or `processReentrantEvent` (front). Effects are only requested (appended to `EffectQueue`). The cycle's `afterEvent()` publishes the decision records **before any effect happens**.
+3. While `EffectQueue` has requests: `batchEnd()`. `EffectQueue.performRequestedEffects` snapshots and clears the batch, performs each effect through the adapter, and re-dispatches each result with `processAsNewEventCycle`; those results dispatch after the batch record, each as its own audited cycle. Results may request more effects, which land in the next batch. At most 64 rounds.
+4. Synchronous effects (start, stop, release, install, uninstall, release name, deliver service) return a final outcome. Asynchronous effects (open capture, close capture) return a `pending` outcome at once, and their final result arrives later on the completion queue as a new input.
+5. A command's reply is requested only once every effect it depends on has a final outcome. A command whose effects are pending stays outstanding, so its reply waits for the completion.
+6. An exception from an effect becomes a failed outcome inside `batchEnd()`. A protocol violation or `VirtualMachineError` is stashed and handled once `batchEnd()` has returned and `processing` is clear: the command completes `Failed`, an `Anomaly` is written, and for a `VirtualMachineError` the group goes Dead.
+
+So the drain never starts a new command while a synchronous outcome is outstanding, and asynchronous effects are visible as explicit intermediate states.
+
+### Terminal admission and death
+
+A command must never be orphaned when a group closes or dies, even if a sender is paused between reserving a mailbox slot and publishing into it.
+
+**Group state** is one volatile word: `New`, `Starting`, `Running`, `Closing`, `Closed`, `Dead`. Transitions to `Closing` or `Dead` are compare-and-sets, made by whoever ends the group: the server before closing the runner; the group's `onClose` when Agrona calls it after `onStart` throws a non-`Error`; the group's fatal-error wrapper around `onStart` and `doWork` when an `Error` escapes (Agrona then exits without `onClose`); or a sender that finds the agent thread terminated.
+
+**Outstanding registry**, a concurrent set of every command sent and not finally replied:
+
+- **Sender:** (1) add the command; (2) if state ≥ `Closing`, claim and complete `NotRunning`; (3) offer, with bounded backoff off agent threads and none on them, re-checking state on each attempt; (4) after a successful offer, re-check state ≥ `Closing` or a dead thread, and if so claim and complete `NotRunning`.
+- **Agent:** claims each command before applying it; removes it when its final reply is complete.
+- **Terminator:** moves state to `Closing` or `Dead`, then sweeps the registry, claiming and completing every unclaimed command `NotRunning`, and every command waiting on a pending effect `Failed("group ended")`.
+
+The sender's add-then-read and the terminator's write-then-sweep are sequentially consistent, so one sees the other. The final drain is best effort. A command published after the sweep sits unread, already completed.
+
+**Cleanup after death.** When the server closes a Dead group, it joins the terminated thread (a happens-before edge), then releases every processor record itself, as Agrona already does for a group that never started, and hands any capture resources to the closer. A release that throws leaves the registration `Abandoned`: its name stays admitted and the server reports it. Under `bootServer`'s JVM-exit error handler Dead is not reachable in practice; it matters for embedded servers and tests.
+
+### Bounded shutdown
+
+**Admission against shutdown.** A server admission lock (read-write). `addEventProcessor`, service registration and removal, and service start and stop take the read lock and check the server is not stopping. `stop()` takes the write lock to move to `Stopping` and snapshot groups and services. No group is created after the snapshot. Stop in `New` closes every existing group, completing queued commands `NotRunning` without running suppliers.
+
+**One deadline**, `shutdownTimeout` (default 30 s), across all phases, each getting the remaining budget:
+
+1. Cancel any in-progress startup step; wait for the startup lock with `tryLock(remaining)`; a step that does not return is reported as blocked.
+2. Remove feeds (5 s bound, capped).
+3. Drain queued events (drain timeout, capped).
+4. Close processor groups in parallel, each from a helper thread, joining with the remaining budget. This enforces the bound, because `AgentRunner.close()` retries until the runner closes. Closing a group stops its registrations through the normal rules, including pending capture cleanup.
+5. Close service groups the same way.
+6. Stop registered services, each on a helper thread with a bounded join.
+
+**Truthful result.** `stop()` returns a `StopResult`: complete, or incomplete with the blocked startup step, groups still running, pending resource cleanups and services left running. If a processor group did not close, the services and service groups it may use are not stopped; the server stays `Stopping`, and calling `stop()` again resumes from the first incomplete phase (decision D2).
+
+### Agent threads and replies
+
+- **Persistent agent identity:** a thread-local marker set in `onStart` and cleared after `onClose`, read instead of `runner.thread()`.
+- **Never block an agent thread:** no waits, no backoff; a full mailbox completes `Refused("mailbox full")` at once.
+- **Completion isolation:** the agent completes an internal future; the public `CompletionStage` is completed from a per-server reply executor, so user continuations never run on, block or re-enter an agent thread.
+- **One deadline covers admission and execution**; broadcasts are sent to all groups, then awaited together.
+- **Never wait on a group that has not started**, for every wrapper.
+- **Timeouts detach**: the command still applies, and its outcome is audited.
+- **`Run` on its own thread** runs inline, as today: the one documented, deprecated exception to "control before events".
+
+### Audit capture
+
+Opening a Chronicle queue is file I/O, so it is an asynchronous effect performed on a helper thread, exactly the analyser's asynchronous open, plus compensation for the resource.
+
+Each registration has a capture sub-state: `Off`, `Opening(opId)`, `Recording(resourceId)`, `Closing(resourceId)`.
+
+1. `AuditStart(registration)` while Started and `Off`: rule `auditStartOnStarted`, capture → `Opening(opId)`; effect `OpenCapture(opId)` returns `pending`.
+2. The helper opens the queue and posts `CaptureOpened(opId, resourceId)` or `CaptureOpenFailed(opId, reason)` to the completion queue.
+3. `OperationGate` accepts the completion only if the registration is still Started **and** its capture is `Opening` with the same `opId`. Then rule `captureOpened`: `InstallCapture(resourceId)`, capture → `Recording`; reply `Applied`.
+4. Otherwise the completion is **stale** (the registration was released or replaced, or a later `AuditStop` cancelled the open): rule `captureOpenedStale` records it with `stale=true`, requests the compensating `CloseCapture(resourceId)`, and replies to the original `AuditStart` with `Refused`.
+5. `AuditStop`, `Stop` or group close while `Recording`: `UninstallCapture` (synchronous), capture → `Closing`, then `CloseCapture` (asynchronous, through the closer), whose `CaptureClosed(ok | failed)` returns capture to `Off` and is recorded. While `Opening`, they cancel the open: capture → `Off`, and the later completion arrives stale and is compensated.
+6. The closer owns a resource after hand-off and closes it exactly once. A failed physical close is recorded and counted, and never blocks a release. If the group has ended, the closer writes the completion to the fallback stream.
+
+A `Stop` does not wait for an outstanding open. The processor is released and its name freed at once; the open's eventual compensation is recorded as `PendingCleanup` until `CaptureClosed` arrives.
+
+### Service lifecycle
+
+Server-owned, under a service lock.
+
+- Register, remove, start and stop each take the lock; registry mutation, injection and broadcast publication happen under it, so publication order equals registry order. Each transition gets a per-service version.
+- Groups apply a `Broadcast` only if its version is newer than the last applied for that service; a processor joining a group takes the registry snapshot with versions.
+- `removeService` broadcasts the deregistration and waits (bounded) for groups to apply it before calling `service.stop()`.
+- `registeredServices()` returns an unmodifiable view (decision D4).
+- Service groups (`ComposingServiceAgent`) adopt the same mailbox and terminal-admission model; their one-to-one queues are written by many producers today, and `add` throws when they are full.
+
+### Event path
+
+`doWork()` checks one `isEmpty()` per queue (mailbox and completion queue) where it checks four today. Dispatch is untouched; no delivery rule becomes a per-event check.
 
 ## State machine
 
-Because one thread applies each command whole, a processor has only two states that anyone outside can observe: absent or running. Building and starting happen inside one apply step. The table covers every command in every group state.
+### Registration states
 
-| Command | New or Starting | Running, name absent | Running, name present | Closing, Closed or Dead |
-| --- | --- | --- | --- | --- |
-| `Add(name)` | Queued; applied in order in `onStart`. Boot fail-fast applies only to adds accepted before `onStart` began; an add sent during `onStart`, for example from a processor's own `start()`, is isolated like a runtime add | Build and start. Success: `Applied(name, gen)`. A throw: record removed, name freed, `Failed(cause)` | `Refused("name in use")`. Nothing changes | `NotRunning`; supplier never runs |
-| `Stop(name)` | Queued; applied in order, so it stops a processor added before it. A stop sent before its add now loses (release note) | `Refused("no such processor")` | Stop, tear down, cancel timers, release subscriptions, replay bindings and audit capture; free name; then `Applied(name, gen)`. A throw in `stop()` or `tearDown()` is reported and the release still completes | `Applied` after the group's own close stops it, if the processor was running; else `NotRunning` |
-| `Stop(name)` from that processor's own `stop()` | n/a | `Applied`; the release already in progress satisfies it | as left | as left |
-| `Stop(name, gen)` | As above | `Refused("no such processor")` | As `Stop(name)` when `gen` matches; `Refused("generation changed")` when the name belongs to a later add | As `Stop(name)` |
-| `Broadcast(service)` | Queued | Recorded for later adds; `Applied` | Delivered once to each running processor. A processor whose `@ServiceRegistered` throws is reported and counted as delivered; the reply is `Applied` with the failures listed | `NotRunning` |
-| `AuditStart(name)` | Queued | `Refused("no such processor")` | Install the capture listener. Already recording: `Applied`, no change | `NotRunning` |
-| `AuditStop(name)` | Queued | `Refused("no such processor")` | Restore the configured listener; hand the queue to be closed. Not recording: `Applied`, no change | `NotRunning` |
+Lifecycle states: `Admitted` (add queued), `Starting`, `Started`, `Releasing`, `Released`, `Cancelled`, `Failed`, `Abandoned`. Capture sub-state as in [Audit capture](#audit-capture). Every transition writes a `Decision` record naming its rule.
 
-**Timing and edge cases**
+| Input | Admitted | Starting | Started | Releasing | Released / Cancelled / Failed | Abandoned |
+| --- | --- | --- | --- | --- | --- | --- |
+| `Add` | `addAdmitted` → Starting; `BuildAndStart` | n/a | n/a | n/a | Cancelled: `addCancelled`, supplier never runs, `Refused("cancelled")` | n/a |
+| `Started` outcome | n/a | → Started; reply `Applied` | n/a | n/a | n/a | n/a |
+| `StartFailed` outcome | n/a | → Failed; `Release(dropped)`, `ReleaseName`; `Failed(cause)` | n/a | n/a | n/a | n/a |
+| `Stop` | `stopBeforeAdd` → Cancelled; `ReleaseName`; `Applied` | waits behind the start's outcome, then as Started | `stopStarted` → Releasing; capture cleanup (see below); `Release(stopped)` | `stopWhileReleasing`: joins the release | `stopReleased`: `Applied(alreadyStopped)` | `Failed("cleanup incomplete")` |
+| `Released` outcome | n/a | n/a | n/a | → Released; `ReleaseName`; replies `Applied` | n/a | n/a |
+| `ReleaseFailed` outcome | n/a | n/a | n/a | → Abandoned; name stays admitted; `Anomaly` | n/a | n/a |
+| `AuditStart` | `Refused` | `Refused` | Off: `auditStartOnStarted`, capture → Opening, `OpenCapture` (pending). Opening or Recording: `Applied(noChange)` | `Refused` | `Refused("generation released")` | `Refused` |
+| `CaptureOpened(opId, Q)` | stale | stale | Opening(opId): `captureOpened`, `InstallCapture(Q)`, → Recording, reply `Applied`. Otherwise stale | stale | stale | stale |
+| any stale `CaptureOpened` | `captureOpenedStale`: `CloseCapture(Q)`, `PendingCleanup`, original `AuditStart` replied `Refused` | same | same | same | same | same |
+| `CaptureOpenFailed(opId)` | stale: recorded | stale | Opening(opId): capture → Off; reply `Failed` | stale | stale | stale |
+| `AuditStop` | `Refused` | `Refused` | Opening: cancel, capture → Off. Recording: `UninstallCapture`, → Closing, `CloseCapture`. Off: `Applied(noChange)` | `Applied` | `Applied(alreadyStopped)` | `Failed` |
+| `CaptureClosed(Q)` | records outcome; capture → Off if it was Closing(Q); clears `PendingCleanup` | same | same | same | same | same |
 
-- **Commands from a handler during dispatch** are applied at the start of the next duty cycle, because the drain runs before dispatch. A command sent by an apply step itself, such as an add from a processor's `start()`, can be applied later in the same drain if the 64-command budget allows.
-- **A full mailbox on the group's own thread** completes the future `Refused("mailbox full")` instead of throwing, so the failure never lands inside dispatch and the event retry policy.
-- **Adds after server stop has begun** are refused by the server, `Refused("server stopping")`, and never create a group.
+Capture cleanup on `stopStarted`: Recording → `UninstallCapture`, `CloseCapture`; Opening → cancel (the late completion will be stale and compensated). A `Stop` from a processor's own `stop()` arrives as `stopWhileReleasing` or `stopReleased`, and never touches a replacement because it carries the registration.
 
-The cases that broke in 1.0.33 each map to one row: a stop just after its add (#72) is applied in order; a stale stop is refused by generation; a name is freed only when its record leaves the map, once; and an audit capture ends with its processor record, including at close (#65).
+### Group states
+
+| Command | New | Starting / Running | Closing / Closed / Dead |
+| --- | --- | --- | --- |
+| Any | Queued; applied in `onStart`. Boot fail-fast applies only to adds counted in a `size()` snapshot taken on entry to `onStart`; the drain budget does not apply to that boot drain | Normal | Swept: `NotRunning`; waiting on a pending effect: `Failed("group ended")`; suppliers never run |
+
+Closing completes queued commands `NotRunning`, then stops every Started registration in add order through the same rules, including capture cleanup. A queued `Broadcast(deregister)` at close is completed `NotRunning`, so processors stopped by the close do not see `@ServiceDeregistered`; this matches today and is documented.
+
+### Interleavings
+
+Each row is a named test and an invariant check over its audit.
+
+| Interleaving | Expected outcome |
+| --- | --- |
+| Sender pauses between reserving a slot and publishing; group closes | Sweep completes it `NotRunning`; the late publish is never applied |
+| `onStart` throws a non-`Error` (default boot failure) | `onClose` moves state to Closing before its drain and sweeps |
+| `Error` from `onStart` or `doWork` | Fatal wrapper moves state to Dead and sweeps; server releases processors after joining the thread |
+| Agent thread terminates without the wrapper running | Next sender sees a dead thread, moves state to Dead, sweeps |
+| Server stops in New with queued adds | Groups closed; adds `NotRunning`; suppliers never run; names released |
+| Startup fails after earlier processors started | Started registrations stopped by close; pending replies completed |
+| Fatal error interrupts a release | Registration Abandoned; name stays admitted; `Anomaly` |
+| Stop overtakes an add not yet queued | `stopBeforeAdd` → Cancelled; `addCancelled` skips the supplier |
+| Repeated, post-failure or stale stop | `stopReleased`; no extra state |
+| Recursive stop from a processor's own `stop()` | Joins the release; never touches a replacement |
+| Audit open → stop → replacement → late open completion | Stale by generation; compensated close exactly once; no install on the replacement ([worked example](#worked-example-late-audit-open-after-stop-and-replacement)) |
+| Audit open → audit stop → late open completion | Stale by capture state; compensated |
+| Close of a capture fails | `CaptureClosed(failed)` recorded and counted; release unaffected |
+| Two concurrent first adds to a new group | One thread start (`startOnce`) |
+| Concurrent register and remove of a service | Versions order them; groups end with the registry's state |
+| Handler sends a command to its own group | Applied at the next cycle's drain |
+| Effect re-requests itself through its outcome | 64 `batchEnd` rounds, then `Failed` with an `Anomaly` naming the effect |
+| Full mailbox on an agent thread | `Refused("mailbox full")` |
+| Replay ends a processor during cursor traversal | Cursor marked done; removed after traversal |
+| Server stop while a group's close exceeds the deadline | `StopResult` incomplete; its services left running; state stays Stopping |
 
 ## Rules
 
-These are the contract. Each one gets a named test (see Test plan), and the javadoc of the public methods states them.
+Intended behaviour. Each has a named test and, where observable, an invariant.
 
-1. **Single writer.** Only a group's agent thread changes that group's processor records, names, subscriptions, timers and audit-capture state. The one exception is `onClose` of a group that never started, which Agrona runs on the closing thread when no agent thread exists.
-2. **Order.** Commands to one group apply in the order the mailbox accepted them. Commands to different groups have no order between them.
-3. **One outcome.** Every accepted command completes its future exactly once: `Applied`, `Refused`, `Failed` or `NotRunning`. This holds for closing and dead groups, and for apply steps that throw.
-4. **Control before events.** Commands apply in the drain at the start of a duty cycle, never during dispatch. A command sent during dispatch applies at the next cycle.
-5. **Delivery.** Each event is delivered at least once to each processor that was running when it was dequeued. A retry goes only to the processor that threw (from #73). This is not exactly-once for external effects; applications that need it use idempotency keys or reconciliation.
-6. **Fatal errors.** A `VirtualMachineError` in an apply step completes that command `Failed(cause)` in a `finally`, then is rethrown to the agent's error handler. It is never retried or swallowed.
-7. **Names.** A name is checked and taken when its `Add` applies, on the agent thread, and freed when its record is released by stop, failed start or close. An `Add` applied after the `Stop` of the same name succeeds.
-8. **Stop releases everything.** Stopping a processor runs `stop()` then `tearDown()`, cancels its timers, releases its subscriptions and replay bindings, ends its audit capture and frees its name. Each step runs even if an earlier one throws.
-9. **Truthful shutdown.** Server stop drains event sources, closes each processor group with a bounded wait, then stops service groups. It returns a result that names any group still running; it never reports stopped while a group is.
-10. **No waiting on an agent thread.** Code on an agent thread never blocks on a reply. Methods called from an agent thread return without waiting.
-11. **Timeouts detach.** A caller that stops waiting leaves the command to apply; a timeout never cancels a command.
-12. **Capture lifetime.** An audit capture never outlives its processor record.
+1. **Single decider.** Only a group's control processor decides its registrations' transitions; only its agent thread performs synchronous effects. Exceptions: the admission insert; the server's cleanup after joining a dead thread.
+2. **Order.** Commands to one group apply in accepted order.
+3. **One final reply** per command, including on closed and dead groups.
+4. **Control before events**, except deprecated inline `Run` on its own thread.
+5. **Delivery.** At least once to each processor running when the event was dequeued; retries only to the processor that threw.
+6. **Fatal errors** complete the command `Failed`, move the group to Dead and are rethrown after `batchEnd()` returns.
+7. **Identity.** Every command, stop and completion is bound to a registration generation and, for effects, an `opId`; none affects another generation.
+8. **Stop releases everything**; an incomplete release leaves the registration Abandoned and its name admitted.
+9. **Truthful, bounded shutdown.**
+10. **No blocking on agent threads**: no waits, no backoff, no user continuations.
+11. **Timeouts detach.**
+12. **Nothing reopens after a stop:** no capture is installed on a registration after its release begins.
+13. **Every opened capture resource is closed exactly once.**
+14. **Decided before done:** no effect is performed before its decision's record is published.
+15. **Service publication order equals registry order.**
 
 ## Threading and API
 
-New methods return `CompletionStage<ControlReply>`. Existing `void` methods keep their signatures and wait for the reply only off agent threads, and a timeout detaches rather than cancels.
+| Method | Returns | Off an agent thread | On an agent thread | Group not started |
+| --- | --- | --- | --- | --- |
+| `addEventProcessor(...)` | `void` | Admit (duplicate throws at once); wait one deadline; `Failed` → `ProcessorStartException`; timeout logs, returns | Admit; queue; return | Admit; queue; return |
+| `addProcessor(...)` (new) | `CompletionStage<ControlReply>` with handle | Never waits | Never waits | Never waits |
+| `stopProcessor(group, name)` | `void` | Bind at call time; wait one deadline | Bind; queue | Bind; queue |
+| `stopProcessor(handle)` (new) | `CompletionStage<ControlReply>` | Never waits | Never waits | Never waits |
+| `registerService`, `removeService` | `void` | Service lock; broadcast; one deadline for all groups | Queue; return | Queue; return |
+| Admin `audit.start`, `audit.stop`, `stopProcessors` | admin reply | Wait at most 1 s, else reply "pending" with the `requestId`; outcome audited | n/a | Reply "queued" |
+| `runOnAgentThread` (deprecated) | `void` | Queue a `Run`; `NotRunning` throws | Inline | Queue |
+| `stop()` | `StopResult` (new overload; `void` kept) | One deadline | Hands off to a stop thread | Closes groups |
 
-| Method | Returns | Off an agent thread | On an agent thread |
-| --- | --- | --- | --- |
-| `addEventProcessor(...)` (existing) | `void` | Waits up to the control timeout; throws `IllegalArgumentException` on `Refused`, `ProcessorStartException` on `Failed`. On timeout logs and returns; the add still applies | Queues and returns; a duplicate surfaces as a logged `Refused` |
-| `addProcessor(...)` (new) | `CompletionStage<ControlReply>` | Never waits | Never waits |
-| `stopProcessor(group, name)` (existing) | `void` | Waits up to the control timeout; logs a `Refused`. On timeout the stop still applies | Queues and returns |
-| `stopProcessor(handle)` (new) | `CompletionStage<ControlReply>` | Never waits | Never waits |
-| `registerService` / `removeService` (existing) | `void` | Sends a `Broadcast` to every group and waits for all replies, up to the control timeout | Sends and returns. Matters at boot, where `registerAgentService` runs on the service-agent thread |
-| Admin `audit.start`, `audit.stop`, `stopProcessors` | admin reply | Waits at most 1 s, because the transport thread runs them inline; otherwise replies "pending" and logs the outcome | Not called from agent threads |
-| `runOnAgentThread(task)` (existing, deprecated) | `void` | Queues a `Run`; throws `IllegalStateException` on `NotRunning` | Runs inline on its own group's thread, as today |
+## Control audit
 
-**Sending, and why nothing is lost.** A sender checks the group is neither closing nor dead, offers the command, then re-reads the `closing` flag. If the flag is now set, it claims the command and completes it `NotRunning`. The agent claims each command it applies. Whichever side claims first completes the future. The agent's final drain runs until `isEmpty()` reports no claimed slots, so a command whose sender was preempted between claiming a slot and writing it is still found. The tail compare-and-set in `offer` is a full barrier, which makes the offer-then-re-read order safe.
+### Record schema
 
-**Full mailbox.** Off the group's thread, sending backs off for up to the control timeout of 10 s, re-checking `closing` on every pass. On the group's own thread it completes `Refused("mailbox full")` at once.
+Records are written by control-processor nodes through Fluxtion's audit (`EventLogSource`), so each input is one frame and each record names its node. Vocabulary follows the analyser's (`fact`, `opId`, `effect`, `success`, `stale`, `reason`), extended with identities. Every record carries `runId`, `group`, `seq` (group-local, gap-free while the sink works), `requestId`, `rootId`, `causeId` and control-clock time.
 
-**Before the group starts.** A `void` add to a group whose thread has not started cannot wait, because nothing would answer. It queues the `Add` and returns; a refusal or failure surfaces when the group starts, through the boot failure policy from #66. Duplicate names in configuration are caught when it loads: YAML parsing rejects duplicate keys, which today collapse silently in `EventProcessorGroupConfig.eventHandlers`, a `HashMap`, and the loader rejects a name repeated across two entries with the same `agentName`.
+| Record | Node | Key fields |
+| --- | --- | --- |
+| `Input` | gate | `fact`: command or completion type; `generation`; `opId` for completions; sender |
+| `Decision` | rule node | `rule`; state before and after (lifecycle and capture); `refused` reason |
+| `EffectRequested` | rule node | `opId`; `effect`; target `generation`; `resourceId` |
+| `EffectOutcome` | `EffectOutcomes` | `opId`; `effect`; `outcome`: `pending`, `succeeded` or `failed`; `stale`; `reason`; duration |
+| `Reply` | reply node | `requestId`; outcome; reason; handle |
+| `PendingCleanup` | state node | `resourceId`; owning `opId` |
+| `Anomaly` | gate, driver, fallback | description; last good `seq` |
+| `Gap` | sink | missing `seq` range; dropped count; sink failures |
 
-**Reads.** `registeredProcessors()` and `isProcessorRegistered()` read an immutable snapshot that the agent thread replaces after each change. They never block and may lag by one apply step.
+Unlike the analyser's `Pending` (recorded as `success=true`), `pending` is its own outcome kind and never satisfies "final outcome".
 
-## Audit and replay
+Data processors keep their own audit. Their start and stop are already framed by Fluxtion lifecycle records (`LifecycleEvent.Start`, `Stop` in `DefaultEventProcessor`; generated-template parity checked in PR 6). Capture install/uninstall and service delivery on a data processor are framed with `runInEventCycle(controlEvent, action)` where implemented, as admin commands are (`AdminCommandInvoker.executeInAuditRecord`), so no synthetic event reaches ordinary handlers; otherwise the bracketed fallback; otherwise a server-log line. An audit failure never suppresses an effect.
 
-Control is audited and replayed per processor, matching the runtime's deterministic boundary: each processor's consumed order is the evidence, and there is no group-wide sequence to place control in.
+### Causal links
 
-**Audit.** A framed record can only come from the processor's own event cycle; a record made outside it and pushed through its listener is exactly today's unframed admin record. So applying a command dispatches a small control event into each affected processor: after `start()` for an `Add`, and before `stop()` for a `Stop`. It costs one event cycle per command per processor, which is negligible for control.
+- A command's records share its `requestId`; `rootId = requestId`.
+- Internal follow-ons keep `requestId` and `rootId` and set `causeId`.
+- Effects are `opId = requestId.n`; synchronous outcomes, re-dispatched with `processAsNewEventCycle`, keep `rootId` and set `causeId` to the `EffectRequested`.
+- Asynchronous completions arrive later as inputs carrying their `opId`, so `rootId` links back to the originating command even after its registration is gone. Compensating effects requested by a stale completion are numbered within the same root.
+- Replies cite `requestId`; a reply deferred by a pending effect is linked to the completion that released it.
 
-**Replay.** The replay store is per processor (`ReplayStore.append(processor, entry)`), and `GroupReplayer` advances each processor's cursor independently. A `Stop` is recorded as the terminal entry of that processor's stream, and replay ends the processor there. `Add`, `Broadcast` and audit commands are not recorded: an `Add` cannot be placed against other processors' inputs, a replayed `Broadcast` would deliver a service twice, and replaying `AuditStart` would open files. A replay of a processor added at runtime starts at its first recorded entry and says so.
+One `rootId` gives the whole story: input, decisions, effects, pending and final outcomes, compensation, late completions and the reply.
 
-## Option: the control plane as a Fluxtion processor
+### Investigating through the analyser
 
-Recommended, and built in PR 3 rather than as a later replacement, so the state machine is written once. Each group's control logic becomes a generated Fluxtion processor. Mongoose then runs its own control plane on the same machinery it offers users, and its decisions appear in an audit log the analyser can read.
+The analyser presents and interrogates this evidence; it does not run anything. A typical investigation, with existing verbs:
 
-**Shape.** The control processor makes decisions; the group applies the effects. Splitting them keeps file and processor I/O out of the processor and keeps its handlers deterministic.
+| Step | Verb | Use |
+| --- | --- | --- |
+| Load | `open`, `context` | Open the project profile, the control processor's GraphML and the exported control audit; check graph/log pairing and audit readiness |
+| Select | `read` | Records for one `rootId` or `generation`, in `seq` order |
+| Count | `aggregate` | `EffectRequested` versus final `EffectOutcome` per `opId`; replies per `requestId` |
+| Trend | `series` | Outstanding commands, pending effects, drain durations over time |
+| Explain | `topology`, `source` | The rule node that decided; its authored source line |
+| Limits | `coverage` | Which nodes are audit-capable; a missing node record is not proof it did not run |
+| Point | `graph`, `flag`, `spotlight` | Chart counts; flag the violating record; light the record and node together |
+| Keep | `report`, `walk` | Expected versus observed, invariant results, evidence gaps; a replayable walk through the chain |
 
-1. The mailbox drain feeds each `ControlCommand` into the group's control processor as an event.
-2. Its nodes hold the name registry, generations, each processor's lifecycle state and each capture's state. They decide the transition and emit effects: build and start, release, install or remove a capture, reply.
-3. The group applies the effects, then feeds the outcome back as an event (`Started`, `StartFailed`, `Released`), and the processor decides the reply.
+### Acceptance criterion: analyser compatibility
 
-**Re-entrancy.** Follow-on decisions inside the control processor, such as stopping the dependants of a processor that stopped, use Fluxtion's own re-entrancy through the injected `EventDispatcher` (`SingleNamedNode` exposes it): `processReentrantEvent` puts a follow-on at the front of the queue so it runs next, `queueReentrantEvent` puts it at the back, which suits loops, and `processAsNewEventCycle` queues it at the back and forces a cycle if none is running. Requests from outside the group, including a processor's own `start()` adding a processor while an effect is applied, still go through the mailbox, so they keep their order against other callers.
+A lifecycle regression is accepted only with matching evidence:
 
-**What it buys.**
+1. The control processor's build emits its GraphML and generated source, with the authored rule source, for the exact commit.
+2. The failing scenario's control audit exports as analyser-readable YAML, one analyser record per dispatch, `seq` and identities intact, and records whether it is complete.
+3. The analyser opens graph, source and audit together, with a valid pairing.
+4. The violation can be located with existing verbs (`read` by `rootId`, `topology` and `source` for the deciding rule).
+5. A `report` or `walk` preserves expected behaviour (rule and invariant), observed behaviour (records) and any evidence gaps, and is committed with the regression test.
 
-- Every control decision is a framed record in the control processor's audit log, with the node that made it.
-- Recording the control processor's inputs gives the group-level control journal the review found missing. Replaying it reproduces the decisions exactly, though not the data processors' effects.
-- The state machine is a Fluxtion graph, so the analyser can show it, and the rules can be tested by firing events at the real processor.
+### When things fail
 
-**Costs and open points.**
+| Failure | What remains observable |
+| --- | --- |
+| Control processor throws during dispatch | A fallback `Anomaly` (structured server log plus `ErrorReporting`, independent of Fluxtion audit) with the last `requestId`; group moves to Dead; sweep replies recorded in the fallback stream |
+| An effect fails | `EffectOutcome(failed)` with reason; the rule's transition and the reply |
+| An effect throws a fatal error | Stashed; after `batchEnd()` returns, fallback `Anomaly` and Dead |
+| An asynchronous effect never completes | The command stays outstanding with `PendingCleanup` or a pending outcome; shutdown's result lists it |
+| The control audit sink fails | The transition still happens; failures counted (`control.audit.failures`); the next good record is a `Gap`; the export says incomplete |
+| The ring drops records | Dropped count in the `Gap`; `isComplete() == false` |
+| A capture fails to close | `CaptureClosed(failed)` recorded and counted |
+| The group has ended before a late completion | The closer writes the completion, with its `opId`, to the fallback stream |
 
-- Mongoose depends only on `fluxtion-runtime` today. The control processor must be generated ahead of time at Mongoose's build, which adds the Fluxtion compiler as a build-time dependency only. Interpreted mode is ruled out, because it loses labelled source and determinism.
-- It is created with its group and never added or stopped through the mailbox; it has no subscriptions and is invisible to `registeredProcessors()`.
-- It must read time only through Fluxtion's clock, so replay is deterministic.
-- It adds one event cycle per command. That is negligible for control, and the empty-mailbox check on the fast path is unchanged.
+### Evidence completeness and coverage limits
+
+- The control audit covers the control processor's inputs, decisions, effect requests, outcomes and replies. It does not cover data processors' internals, operating-system resource state beyond what an effect reports, or what a sender did before its command reached the mailbox (only what it put on the command).
+- A node that is not audit-capable writes nothing; its absence from a log is not evidence that it did not run (the analyser's `coverage` verb and the authoring guide make the same point).
+- Bounded retention and sink failures make a log incomplete; the record says so, and validation treats an incomplete log as unverifiable for any invariant whose evidence may be missing.
+- The scenario harness explores the interleavings it is told to, on one thread. Audit coverage is evidence of observability, not proof of complete lifecycle-state coverage or of real concurrent schedules.
+- Fallback-stream records are coarser than control-audit records and are not framed.
+
+## Invariant validation
+
+Invariants are written from this document's rules, ideally by someone other than the implementer, as predicates over exported audit records. They live in a test-scope module and never read implementation state. A violation reports the invariant, the records and their `rootId`s. On an incomplete log, an invariant whose evidence may be missing reports "unverifiable".
+
+| Invariant | Rule |
+| --- | --- |
+| I1. No `InstallCapture` for a generation after a `Decision` moving it to Releasing | 12 |
+| I2. Every command `Input` has exactly one `Reply`, or a fallback `NotRunning` / `Failed("group ended")` | 3 |
+| I3. Every `EffectRequested` has exactly one final `EffectOutcome` (`succeeded` or `failed`), or a fallback record; `pending` does not count | 3, 8 |
+| I4. Every `resourceId` opened is closed exactly once: one `CaptureOpened` matched by one `CaptureClosed` | 13 |
+| I5. At most one admitted, non-terminal generation per name at any `seq` | 7 |
+| I6. Every effect in a request's causal chain targets only the generation that request was bound to | 7 |
+| I7. No `BuildAndStart`, `OpenCapture` or `InstallCapture` after the group records Closing | 9, 12 |
+| I8. `Applied` only after every effect of that request has a `succeeded` outcome | 3 |
+| I9. No `EffectRequested` precedes the publication of its `Decision` | 14 |
+| I10. No `seq` gap without a `Gap` record | audit |
+
+A passing run shows these invariants held for that run, nothing more.
+
+## Development workflow
+
+| Step | Who and with what | Output |
+| --- | --- | --- |
+| 1. Agree | Human and LLM, this document | A rule change and, if needed, a new invariant, reviewed by a person |
+| 2. Generate | LLM with project tools: the property-based generator | Seeded scenarios: commands, interleavings, injected outcomes and faults (paused senders, failed or late effects, thread death, shutdown points) |
+| 3. Execute | Project tools: the single-threaded harness drives the real group and control processor, with a fake effect adapter registered as a service (the analyser's `FakeSessionAdapter` pattern) | Control audit exported as analyser YAML, plus GraphML and source for the build |
+| 4. Check | Invariant module | Violations, shrunk to the shortest failing seed |
+| 5. Investigate | LLM through analyser MCP verbs | Records located, deciding rule identified, findings flagged |
+| 6. Capture | LLM with project tools | A JUnit regression test asserting the invariant and the expected replies from the rules table, committed failing, with the `report` or `walk` |
+| 7. Correct | LLM with project tools | A rule change in the builder graph, regenerated |
+| 8. Validate | Tests, then a person | Regression and property suites pass with no new violations; the person checks the rule change against intended behaviour |
+
+Steps 1 and 8 stay human. The risk to guard against is an LLM changing the specification or tests to agree with an incorrect implementation; expected outcomes come from the rules table and invariants, never from the audit under test.
+
+## Worked example: late audit open after stop and replacement
+
+Group `G`; processor `pricer`, generation 7, Started.
+
+**Fixed input and outcome sequence** (as the harness drives it):
+
+| Step | Input | Injected effect result |
+| --- | --- | --- |
+| 1 | `AuditStart` (`req 1001`, gen 7) | `OpenCapture` (`op 1001.1`) → `pending` |
+| 2 | `Stop` (`req 1002`, gen 7) | `Release` → `succeeded` |
+| 3 | `Add` (`req 1003`, `pricer`, gen 8) | `BuildAndStart` → `succeeded` |
+| 4 | completion `CaptureOpened` (`op 1001.1`, `Q#41`) | — |
+| 5 | — | `CloseCapture` (`op 1001.2`, `Q#41`) → `pending`, then completion `CaptureClosed` (`op 1001.2`, ok) |
+
+**Independent invariant** (stated before running): *a capture opened for a generation is never installed on that generation after its release began, nor on any other generation; and every opened capture resource is closed exactly once* (I1, I6, I4), with I2 and I3 for replies and outcomes.
+
+**Expected transitions**
+
+1. `req 1001`: `auditStartOnStarted`; gen 7 capture Off → Opening(1001.1); effect `OpenCapture` pending; reply deferred.
+2. `req 1002`: `stopStarted`; gen 7 Started → Releasing; capture Opening → Off (open cancelled); `Release` succeeded → Released; `ReleaseName`; `PendingCleanup` for `op 1001.1`; reply `Applied`.
+3. `req 1003`: `addAdmitted`; gen 8 → Starting → Started; reply `Applied`.
+4. completion `op 1001.1`: gate finds gen 7 Released, no capture `Opening(1001.1)` anywhere; `captureOpenedStale` (`stale=true`); effect `CloseCapture(Q#41)` (`op 1001.2`) pending; reply to `req 1001`: `Refused("generation 7 released before the capture opened")`.
+5. completion `op 1001.2`: `CaptureClosed` succeeded; `PendingCleanup` cleared.
+
+**Audit evidence** (abridged)
+
+```yaml
+- {seq: 300, type: Input,           requestId: 1001, rootId: 1001, fact: AuditStart, generation: 7}
+- {seq: 301, type: Decision,        rule: auditStartOnStarted, generation: 7, capture: Off->Opening}
+- {seq: 302, type: EffectRequested, opId: 1001.1, effect: OpenCapture, generation: 7}
+- {seq: 304, type: EffectOutcome,   opId: 1001.1, effect: OpenCapture, outcome: pending, stale: false}
+- {seq: 305, type: Input,           requestId: 1002, rootId: 1002, fact: Stop, generation: 7}
+- {seq: 306, type: Decision,        rule: stopStarted, generation: 7, lifecycle: Started->Releasing, capture: Opening->Off}
+- {seq: 309, type: EffectOutcome,   opId: 1002.1, effect: Release, outcome: succeeded}
+- {seq: 311, type: PendingCleanup,  generation: 7, owningOpId: 1001.1}
+- {seq: 312, type: Reply,           requestId: 1002, outcome: Applied}
+- {seq: 313, type: Input,           requestId: 1003, rootId: 1003, fact: Add, name: pricer, generation: 8}
+- {seq: 318, type: Reply,           requestId: 1003, outcome: Applied}
+- {seq: 319, type: Input,           completionId: c-88, rootId: 1001, causeId: 1001.1, fact: CaptureOpened, opId: 1001.1, resourceId: Q#41}
+- {seq: 320, type: EffectOutcome,   opId: 1001.1, effect: OpenCapture, outcome: succeeded, stale: true}
+- {seq: 321, type: Decision,        rule: captureOpenedStale, generation: 7, refused: "generation 7 released"}
+- {seq: 322, type: EffectRequested, opId: 1001.2, effect: CloseCapture, resourceId: Q#41}
+- {seq: 324, type: Reply,           requestId: 1001, outcome: Refused, reason: "generation 7 released before the capture opened"}
+- {seq: 331, type: Input,           completionId: c-91, rootId: 1001, causeId: 1001.2, fact: CaptureClosed, resourceId: Q#41}
+- {seq: 332, type: EffectOutcome,   opId: 1001.2, effect: CloseCapture, outcome: succeeded}
+```
+
+**Checks**
+
+- I1 and I6: no `InstallCapture` anywhere in `rootId 1001`, and nothing in that chain targets gen 8.
+- I4 (resource cleanup): `Q#41` has one open (seq 319–320) and one close (seq 331–332), and its `PendingCleanup` (311) is cleared.
+- I2: `1001`, `1002` and `1003` each have exactly one `Reply`; `1001`'s comes after the stale completion.
+- I3: `op 1001.1` and `op 1001.2` each have a final outcome; their `pending` records do not count.
+
+**Investigation walk** (analyser MCP verbs, read-only):
+
+1. `open` the profile, the control processor's GraphML and the exported audit; `context` to confirm pairing and completeness.
+2. `read` records with `rootId == 1001`, then `generation in (7, 8)`.
+3. `aggregate` `EffectRequested` against final `EffectOutcome` by `opId`; and `CaptureOpened` against `CaptureClosed` by `resourceId`.
+4. `topology` and `source` on `captureOpenedStale`; `spotlight` seq 320–322 with the node; `flag` seq 320 ("stale open, compensated").
+5. `report`: expected (I1, I4, I6 and the rules table rows), observed (seq 300–332), result (all pass), gaps (none; `isComplete` true). Save a `walk` over the same records.
+
+**The bug this catches.** If the gate matched completions by processor name, step 4 would show `{rule: captureOpened, generation: 8}` and `InstallCapture(Q#41)` on the replacement. I6 flags `rootId 1001` (a request bound to gen 7 produced an effect on gen 8), and I4 would later flag `Q#41` closed by gen 8's stop instead of the compensation. The shrunk scenario becomes the regression test, the walk and report are committed with it, and the fix is the gate's match on `generation` and `opId`.
+
+## Deterministic replay
+
+Replay is separate from, and stronger than, audit.
+
+- **Control replay.** The control journal records every input to the control processor: normalised command intents and every effect outcome, pending and final, in dispatch order. Replaying it through the same generated processor, with the effect adapter replaced by one that answers from the journal, reproduces its decisions. It does not reproduce effects: suppliers, services, resources and futures are not journal inputs.
+- **Data-processor replay.** Streams are keyed by run, group, name and generation; a `Stop` ends a stream; the next incarnation attaches to the next stream; initialisation provenance (factory key, configuration hash) is recorded per stream.
+- **Service changes** are recorded per stream with versions; during replay, live service delivery to replayed processors is suppressed and recorded deliveries are replayed in position.
+- **Control requests from replayed processors** are intercepted: not executed live; the recorded outcome is fed back.
+- `GroupReplayer` ends a processor by sending `Stop` (rule 1) and marks its cursor done, removing it after traversal.
+
+Scope is decision D3.
 
 ## Migration plan
 
-Six stacked PRs, starting after 1.0.33 ships. Each one is releasable alone and keeps the public API source compatible. The F4 race found in review of #69 is fixed in 1.0.33 itself and is not part of this plan.
+Six stacked PRs after 1.0.33. Each is releasable alone and states its semantics.
 
-1. **One mailbox and the close policy.** Replace the four queues with one `ControlCommand` mailbox and internal futures. `onClose` drains until empty and completes queued commands `NotRunning`, without building queued adds. Add the `closing` flag, the dead-group drain, and the re-check of `closing` in the full-mailbox backoff. Behaviour changes, for the release notes: commands apply strictly in order, and a stop sent before its add now loses.
-2. **Reply API.** Add `addProcessor` and `stopProcessor(handle)`. The existing `void` methods wait off agent threads, and a timeout detaches. Admin commands wait at most 1 s. The server refuses adds once stopping.
-3. **The control processor owns names and lifecycle.** The generated Fluxtion control processor (the option above) holds processor records, generations, the name registry and the state machine; the group applies its effects and publishes the read snapshot. Add the duplicate-name checks at config load. Delete `reservedProcessorNames` and the stop-time release task. The rule tests are written against the control processor by firing command events at it. This comes after PR 2 so a duplicate add can still throw, which four `LifecycleRacesTest` cases and the boot failure on duplicate config names rely on.
-4. **Audit capture as commands.** Capture state moves into the control processor's records. Chronicle queues open and close on a helper thread, and the agent completes the future once the helper hands back. `stopAll()` and `attach(..., Executor)` are deprecated, not removed.
-5. **Service groups.** `ComposingServiceAgent`'s three one-to-one queues, written by many producers today, move to the same mailbox model.
-6. **Framed audit of control and `Stop` markers in replay**, plus recording the control processor's inputs as the group's control journal.
-
-PRs 1 to 3 carry most of the risk reduction.
+1. **Control processor, mailbox and terminal admission.** The generated control processor (gate, state, rules, `EffectQueue` at `@OnBatchEnd`, `EffectOutcomes`) for add and stop; the pinned builder version and a test asserting the emitted `batchEnd()` shape and queueing; one mailbox and the completion queue; per-group admission table (send-time compare-and-set, as 1.0.33); `Registration` with generation and states; outstanding registry and sweep; group states including Dead, fatal wrappers, server cleanup after death; stop in New; the control audit, identities and causal links; the analyser-YAML export; the invariant module and the scenario harness. Acceptance includes the [analyser compatibility criterion](#acceptance-criterion-analyser-compatibility). Semantics as 1.0.33 (duplicate throws at once; stop before add cancels), plus no orphaned commands; `void` methods stay fire-and-forget.
+2. **Bounded shutdown.** Admission lock, deadline, helper-thread joins, `StopResult`, dependency preservation, resumable Stopping.
+3. **Agent threads and replies.** Thread-local identity, non-blocking agent sends, reply executor, reply API and handles, waiting `void` wrappers with single deadlines.
+4. **Audit capture as effects.** Capture sub-states, asynchronous open with gate matching and compensation, closer. `stopAll()` and `attach(..., Executor)` deprecated.
+5. **Service lifecycle and service groups.**
+6. **Data-processor framing and replay identity.**
 
 ## Test plan
 
-Each rule gets one test named after it, written before the PR that makes it pass. The 1.0.33 regression tests stay and must pass unchanged at every step.
+- **Rules:** one named test each, written before its PR.
+- **Interleavings:** one named test per row of [Interleavings](#interleavings), in the harness.
+- **Property suite:** seeded generation over commands, completions, faults and shutdown points, with I1 to I10 on every run; failing seeds shrunk and kept.
+- **Analyser compatibility:** for each kept regression, the exported audit reopens in the analyser's reader, one record per dispatch, identities intact (the analyser's `SessionAuditRecordTest` pattern).
+- **Audit wiring:** no control record reaches stdout; a failing sink is counted, not thrown; a bounded ring reports incompleteness.
+- **Regression tests to keep:** `ProcessorStopReleaseTest`, `ProcessorStartFailureTest`, `RetryOnlyTheFailedProcessorTest`, `ServerStopEndsAuditCaptureTest`, `LifecycleRacesTest`, `AuditControlOnAgentThreadTest`, `IntegrationReleaseRegressionTest`, `EventToQueuePublisher#publishersInALoopDoNotStarveARemoveOrAnAdd`.
+- **Performance:** JMH of the duty cycle with an empty mailbox, and loaded event tail latency and allocation during control bursts.
 
-| Rule | Test | PR |
+## Risks
+
+- **A single slow effect** (a blocking `start()`) holds its agent thread; visible in outcome durations and shutdown's result, not prevented.
+- **Waiting `void` methods** (PR 3) can stall callers that hold locks the group needs, until their deadline.
+- **Interrupted close:** Agrona interrupts after a join timeout; Chronicle closes may throw `ClosedByInterruptException`, recorded as failed closes.
+- **Audit volume:** per command, not per event; bursts produce many frames; rings drop with counts.
+- **Generated-code constraints:** the no-`try`/`finally` `batchEnd()` makes `EffectQueue`'s catch-everything rule load-bearing; the PR 1 test pins it.
+- **Build dependency:** the Fluxtion builder at build time.
+
+## Decisions needed
+
+| # | Decision | Recommendation |
 | --- | --- | --- |
-| 1 Single writer | Every record, name and capture change asserts it runs on the group's thread (a check enabled in tests) | 3 |
-| 2 Order | 10,000 interleaved add, stop and re-add of one name from 4 threads; the final state matches applying the accepted order | 1 |
-| 3 One outcome | Commands sent while the group closes, including a sender held between claiming and writing a slot; every future completes once | 1 |
-| 3 One outcome, dead group | `onStart` throws an `Error`; every queued and later command completes `NotRunning` | 1 |
-| 4 Control before events | A handler stops its own processor; the stop applies at the next cycle and no event reaches it after | 1 |
-| 5 Delivery | Existing #73 tests | 1.0.33 |
-| 6 Fatal errors | A `VirtualMachineError` from `start()` and from `stop()`: the command completes `Failed`, the error reaches the handler | 1 |
-| 7 Names | Stop then re-add with no wait succeeds; two concurrent adds of one name give one `Applied` and one `Refused`; duplicate names in YAML, within one entry and across entries, fail at load | 3 |
-| 8 Stop releases everything | Timers, subscriptions, replay bindings, capture and name all released when `stop()` and `tearDown()` both throw | 3 |
-| 9 Truthful shutdown | A group that will not close in time is reported as running, and stop does not report stopped | 1 |
-| 10 No waiting on an agent thread | A handler calls the `void` add and stop on another group; nothing blocks. Admin stop replies within 1 s on a busy group | 2 |
-| 11 Timeouts detach | A `void` stop times out on a busy group; the processor is still stopped afterwards | 2 |
-| 12 Capture lifetime | Capture recording when its processor stops, is dropped, or the server stops; queue closed each time | 4 |
+| D1 | Immediate pre-start duplicate rejection, or exclusively agent-owned admission? | Resolved in [Ownership](#ownership): send-time compare-and-set for the reservation only; all transitions agent-decided. Confirm |
+| D2 | On shutdown timeout, keep dependencies of still-running processors and return a resumable Stopping result? | Yes |
+| D3 | Deterministic replay across service changes and reincarnations, or restricted? | Support it (PR 6); earlier recordings flagged partial |
+| D4 | Make `registeredServices()` unmodifiable? | Yes, with a release note |
+| D5 | Generated control-processor source checked in, or generated each build? | Generated each build, published with the build for review |
+| D6 | Builder version paired with runtime 1.1.0 | To be pinned in PR 1, with the `batchEnd()` shape test |
 
-**Regression tests to keep:** `ProcessorStopReleaseTest`, `ProcessorStartFailureTest`, `RetryOnlyTheFailedProcessorTest`, `ServerStopEndsAuditCaptureTest`, `LifecycleRacesTest`, `AuditControlOnAgentThreadTest`, `IntegrationReleaseRegressionTest`, and `EventToQueuePublisher` `publishersInALoopDoNotStarveARemoveOrAnAdd`.
+## Review responses
 
-**Latency check.** A JMH run of the duty cycle with an empty mailbox, before and after PR 1, to confirm the fast path is no slower.
+### Review 3: PR #75 independent review
 
-## Risks and open questions
+[Review](https://github.com/telaminai/mongoose/pull/75#issuecomment-6386453515) of design `6f08ec3` and runtime `ad07abc`, acknowledging changes through `228ce2c`. Every citation was re-checked at `ad07abc`, and Agrona claims against the 2.3.0 source.
 
-The biggest risk is still that existing `void` callers start waiting. The open questions are smaller after review.
-
-**Risks**
-
-- **Callers that start waiting.** `addEventProcessor`, `stopProcessor`, `registerService` and `removeService` will wait off agent threads, up to 10 s. A caller holding a lock the group needs could deadlock until the timeout. Mitigation: timeouts detach, a release note, and a server option to keep fire-and-forget for one release.
-- **Interrupted close.** After a 5 s join, Agrona interrupts the agent thread and `onClose` runs interrupted. Chronicle queue closes can then throw `ClosedByInterruptException`; they are reported, and the capture is marked as not closed cleanly.
-- **A stop that waits on a startup step.** From 1.0.33 (F1), server stop waits for an in-progress startup step and may call a service's `stop()` twice. This design keeps that and reports a group that cannot close in time instead of hanging.
-- **Control latency.** Commands wait for the next duty cycle, at most 64 per drain. A burst of 1,000 adds takes 16 cycles.
-- **Plugins using `runOnAgentThread`.** It stays, deprecated, until mongoose-plugins move off it.
-- **Feed publishing is still a lock boundary.** `publishLock` remains, with the #52 fix. Delivery modes for full queues (drop after a bounded wait today, logged and counted) are a separate decision, raised by the stability review.
-
-**Open questions**
-
-- [ ] Should a service `Broadcast` across several groups be all-or-nothing? This design applies it per group and reports each group's outcome.
-- [ ] Keep `Stop(name)` without a generation as the default, or require a handle in the new API?
-- [ ] Is 64 commands per drain the right bound, and should it be configurable per group?
-- [ ] For the control processor: is generated source checked in, or generated at each build?
-- [ ] What does server stop return to say a group is still running: a result object, or an exception naming the groups?
-
-## Independent review
-
-The review was done by Fable 5.1 working from the code at `f54a768`, without the author's reasoning. Its verdict: the direction is right and it removes the #72 and double-release class of bug rather than moving it, but it is **not ready to implement**. Three blockers must be fixed before PR 1, and PR 6 needs a redesign. All findings are accepted, and the sections above were revised to match on 2026-10-24.
-
-| # | Severity | Finding | Response |
+| # | Finding | Response | Evidence and change |
 | --- | --- | --- | --- |
-| 1 | Blocker | The never-lose protocol has a hole. Agrona's `drain` stops at the first slot a sender has claimed but not yet written, so a later sender's command can be missed by the final drain and never claimed back. Senders parked on a full mailbox never check `closed` | Accept. The final drain loops until `isEmpty()`, which covers claimed-but-unwritten slots. The full-mailbox backoff re-checks `closed` and completes `NotRunning` |
-| 2 | Blocker | It is unclear who ends the agent thread when `Close` is a mailbox command. `AgentRunner.close()` has no time bound, so rule 9's drain timeout cannot be met through it. `onClose` may run on an interrupted thread | Accept option (a): close stays runner-driven, `Close` only carries the reply, and `onClose` drains to empty. Bound the wait on our side and treat interrupted Chronicle closes as reported, not fatal |
-| 3 | Blocker | An `Error` thrown from `onStart` skips `onClose`, so the mailbox is never drained and every future stays pending. A fatal JVM error in an apply step also conflicts with rule 3 | Accept. Add a Dead group state; senders check the runner is alive. Each apply step uses try/finally to complete `Failed(cause)`, then rethrows the fatal error |
-| 4 | Major | PR 2 removes name reservations before PR 3 adds replies, breaking four `LifecycleRacesTest` cases and duplicate-name boot failure. YAML is not checked for duplicates today: `eventHandlers` is a `HashMap` (`EventProcessorGroupConfig.java:40`). PR 1 is not behaviour-neutral at close | Accept. Swap PR 2 and PR 3, add a real config-load duplicate check, and move the `NotRunning`-at-close policy into PR 1 |
-| 5 | Major | Framed audit of control is unspecified. A record made outside the processor reproduces today's unframed records | Accept. Use a control event dispatched through the processor's own cycle, after `start()` for `Add` and before `stop()` for `Stop` |
-| 6 | Major | The replay store is per processor (`ReplayStore.java:9-12`), with no group-level sequence to place control in | Accept. Shrink PR 6 to per-processor `Stop` markers; a group-level control journal becomes separate future work |
-| 7 | Major | If the `void` methods inherit `AgentHandoff`'s cancel on timeout, a slow stop is silently dropped | Accept. A timeout detaches the caller; the command still applies. Never cancel a `Stop` |
-| 8 | Major | Service groups have the same many-producer problem on one-to-one queues. `registerService` is called from agent threads at boot | Accept. Add service groups to scope as a later PR, and add `registerService` and `removeService` to the threading table |
-| 9 | Minor | `Close` needs a path past a full mailbox. Adds while the server is stopping are queued forever. Removing `stopAll()` breaks source compatibility. Admin `stopProcessors` blocks the transport thread (`MongooseServerAdmin.java:288-292`) | Accept all. Priority close flag; refuse adds at the server once stopping; deprecate `stopAll()` instead of removing it; admin calls do not wait |
+| 1 | Blocker: terminal admission unsafe; a paused producer can keep `isEmpty()` false indefinitely | **Accepted** | Confirmed: `offer` advances the tail before publishing. Replaced drain-until-empty with the outstanding registry and sweep; terminal transitions by every party that ends a group; server cleanup after joining a dead thread. No separate watcher thread: fatal wrappers plus the sender's liveness check cover death. [Terminal admission and death](#terminal-admission-and-death) |
+| 2 | Blocker: bounding runner waits does not bound shutdown | **Accepted** | Confirmed: unbounded `startupLock` wait and `service.stop()`; snapshot separate from `computeIfAbsent`. Admission lock, one deadline, helper-thread joins, `StopResult`, dependency preservation. [Bounded shutdown](#bounded-shutdown) |
+| 3 | Blocker: asynchronous capture needs intermediate states | **Accepted** | Capture sub-states `Opening` and `Closing` tagged with `opId`; the gate matches generation and `opId`; stale completions compensated by a close; completions on an unbounded queue; failed closes recorded. Follows `OperationGate` and `AsyncOpenReplayTest`, plus resource compensation. [Audit capture](#audit-capture) |
+| 4 | Major: never-wait conflicts with backoff; agent identity; continuations on agents | **Accepted** | Confirmed: `runner.thread()` is swapped to a tombstone before `onClose`. Thread-local identity, no backoff on agents, reply executor, single deadlines; inline `Run` kept as a documented, deprecated exception. [Agent threads and replies](#agent-threads-and-replies) |
+| 5 | Major: optional generations contradict stale-stop safety | **Accepted** | 1.0.33 already binds stops at call time (`stopProcessor` reads the reservation), as the review notes; binding is now mandatory, and self-stop joins. [Registrations and admission](#registrations-and-admission) |
+| 6 | Major: service lifecycle outside the model | **Accepted** | Confirmed: register inserts before broadcasting; remove stops before broadcasting; `registeredServices()` is mutable. Service lock, versions, snapshot, remove ordering. [Service lifecycle](#service-lifecycle) |
+| 7 | Major: injected control events can change behaviour | **Accepted** | Confirmed: functional handlers accept any object. Lifecycle frames plus `runInEventCycle`, as admin uses. [Record schema](#record-schema) |
+| 8 | Major: replay identity and omitted inputs | **Accepted** (scope D3) | Confirmed: bare-name keys in `ReplayStore` and `GroupReplayer`. [Deterministic replay](#deterministic-replay) |
+| 9 | Major: decision/effect separation underspecified | **Accepted** | Adopted Fluxtion's `batchEnd()` boundary and `processAsNewEventCycle` re-dispatch, verified in the generator template and runtime, with the analyser as precedent. [Effects and outcomes](#effects-and-outcomes) |
+| 10 | Major: migration compatibility contradictory | **Accepted** | Send-time admission (D1) keeps the duplicate test unchanged; identity and terminal admission precede the reply API. [Migration plan](#migration-plan) |
+| 11 | Minor: 64 commands is not a latency bound | **Accepted** | Time budget added; loaded tail latency measured; slow single effects listed as a risk. [One mailbox](#one-mailbox), [Risks](#risks) |
 
-**State machine cells to add:** a Dead group; commands sent while `onStart` is draining (an `Add` from a processor's own `start()` should be isolated, not fail the boot); same-cycle versus next-cycle for a handler's own commands; `Stop` from a processor's own `stop()` returns `Applied`; a `Stop` sent before its `Add` now loses (release note); a `Broadcast` whose `@ServiceRegistered` throws; a full mailbox on the group's own thread during dispatch; server state crossed with group state.
+All six state-machine gaps from this review are rows in [Interleavings](#interleavings).
 
-**Next step:** a second independent review of the revised design before PR 1.
+### Follow-up 1: the audit as a primary goal
+
+[Follow-up](https://github.com/telaminai/mongoose/pull/75#issuecomment-6386531920). Accepted in full: [design objective](#design-objective-an-inspectable-control-plane); control processor from PR 1; [record schema](#record-schema) covering input, identity, decision, effects, outcomes, completion and pending cleanup; [causal links](#causal-links); [invariant validation](#invariant-validation) independent of the implementation; [development workflow](#development-workflow); [when things fail](#when-things-fail); the [worked example](#worked-example-late-audit-open-after-stop-and-replacement); audit, validation and replay kept separate.
+
+### Follow-up 2: the analyser as a concrete reference
+
+[Follow-up](https://github.com/telaminai/mongoose/pull/75#issuecomment-6386576757). Accepted in full, after reading the cited sources at `985ea71`:
+
+1. Command, decision, effect, pending and final outcome, and reply mapped to audit records with group, generation and operation identity: [Identities](#identities), [Record schema](#record-schema).
+2. The analyser's session architecture as reference, with what transfers and what differs for Agrona agents, concurrent admission and shutdown: [Reference](#reference-the-analysers-session-controller). Its single-operation and latest-request-supersedes assumptions are not copied; staleness is per generation and `opId`.
+3. Analyser compatibility as acceptance: [Acceptance criterion](#acceptance-criterion-analyser-compatibility).
+4. Worked late-completion scenario with fixed sequence, independent invariant, transitions, effect and cleanup checks, and an MCP walk: [Worked example](#worked-example-late-audit-open-after-stop-and-replacement).
+5. Missing and truncated evidence and coverage limits: [Evidence completeness and coverage limits](#evidence-completeness-and-coverage-limits).
+
+The analyser's model does not by itself settle mailbox admission, agent death or bounded shutdown; those are resolved separately above (findings 1, 2 and 4).
+
+### Earlier reviews (condensed)
+
+- **Review 1** (Fable 5.1, design `410f792`): lost commands at close, unbounded runner close, dead groups, PR order, framing, replay store shape, timeout cancellation, service groups. All accepted in revision 2 and refined here.
+- **Review 2** (Fable 5.1, design `228ce2c`, code `ad07abc`): self-closed and dead groups → [terminal admission](#terminal-admission-and-death); `AgentRunner.close()` bound → [bounded shutdown](#bounded-shutdown); waits on unstarted groups → API table; stop-before-add kept as cancellation; effect ordering → [effects and outcomes](#effects-and-outcomes); duplicate framing → lifecycle frames; double thread start fixed in 1.0.33 (`74ad868`); self-stop, boot snapshot, deregister at close and replay `Stop` → state machine.
