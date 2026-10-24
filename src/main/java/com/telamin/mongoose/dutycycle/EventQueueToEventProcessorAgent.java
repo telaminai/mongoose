@@ -89,116 +89,128 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
         final int batchLimit = 64;
         Object event;
         while (processed < batchLimit && (event = inputQueue.poll()) != null) {
-            // Release the per-queue reference as we are now publishing to processors
+            // this queue's reference to a pooled event is held until every processor has been given it (released in
+            // the finally below, so a failure that escapes the retry loop cannot leak it)
             PoolTracker<?> tracker = trackerOf(event);
-            if (tracker != null) {
-                try {
-                    tracker.releaseReference();
-                } catch (Throwable ignored) {
-                }
-            }
-
-            // RECORD mode only, so replay OFF pays one null check (measured: DispatchPathJmh). A journalled item exists
-            // only in RECORD mode; it carries its feed's sequence number, and the processor receives the bare item (R3)
-            long seq = -1;
-            java.util.Collection<DataFlow> targets = null;
-            if (recorder != null) {
-                if (event instanceof JournalledItem journalled) {
+            try {
+                // Replay OFF pays one instanceof and one null check here (measured: DispatchPathJmh). A journalled item
+                // exists only in RECORD mode; it carries its feed's sequence number, and the processor receives the bare
+                // item (R3)
+                long seq = -1;
+                java.util.Collection<DataFlow> targets = null;
+                // a journalled feed writes JournalledItems to EVERY queue, including those of groups that do not record:
+                // always unwrap, so every processor receives the bare item (review of #63)
+                boolean journalledItem = event instanceof JournalledItem;
+                if (journalledItem) {
+                    JournalledItem journalled = (JournalledItem) event;
                     seq = journalled.seq();
                     event = journalled.item();
-                } else if (event instanceof com.telamin.fluxtion.runtime.event.NamedFeedEvent<?> named) {
-                    seq = named.sequenceNumber();
                 }
-                targets = eventToInvokeStrategy.registeredProcessors();
-                if (event instanceof ReplayRecord || event instanceof BroadcastEvent) seq = -1;
-                // a strategy that delivers but names no processor (registeredProcessors() left at its empty default)
-                // cannot be recorded: the processors this queue registered with it are known here, so each recorded one
-                // is marked failed, by name, rather than recording nothing for an input it delivered (cd52628 F4)
-                if (targets.isEmpty() && !subscribed.isEmpty()) {
-                    recorder.cannotRecord(sourceName, java.util.List.copyOf(subscribed), eventToInvokeStrategy.getClass().getName()
-                            + " delivers to processors it does not name (registeredProcessors() is empty), so what each"
-                            + " received cannot be recorded; implement registeredProcessors() to record through it");
-                }
-            }
-
-            int attempt = 0;
-            boolean done = false;
-            Throwable lastError = null;
-            while (!done) {
-                try {
-                    if (recorder != null) recorder.beforeDispatch(sourceName, seq, targets);
-                    if (event instanceof ReplayRecord replayRecord) {
-                        if (recorder == null) {
-                            eventToInvokeStrategy.processEvent(replayRecord.getEvent(), replayRecord.getWallClockTime());
-                        } else {
-                            // a recorded processor keeps its recording clock, pinned to the record's instant as the
-                            // strategy's synthetic clock would be, so its reads are still recorded; the rest as before
-                            long time = replayRecord.getWallClockTime();
-                            for (DataFlow target : targets) {
-                                if (!recorder.pinSyntheticTime(target, time)) eventToInvokeStrategy.setSyntheticTime(target, time);
-                            }
-                            eventToInvokeStrategy.processEventRecording(replayRecord.getEvent(), received);
-                        }
-                    } else if (recorder != null) {
-                        // RECORD: each recorded processor's input is copied just before it is given it (review of
-                        // 90f0d9b, finding 2). Only a first-attempt success commits the copy, below: one guard, D4
-                        eventToInvokeStrategy.processEventRecording(delivered(event), received);
-                    } else if (event instanceof BroadcastEvent broadcastEvent) {
-                        eventToInvokeStrategy.processEvent(broadcastEvent.getEvent());
-                    } else {
-                        eventToInvokeStrategy.processEvent(event);
+                if (recorder != null) {
+                    if (journalledItem) {
+                        // the journalled item's sequence number, read above
+                    } else if (event instanceof com.telamin.fluxtion.runtime.event.NamedFeedEvent<?> named) {
+                        seq = named.sequenceNumber();
                     }
-                    done = true;
-                } catch (Throwable t) {
-                    // D4: a retry is a failure; the recording is marked, not continued as if nothing happened. The
-                    // recorder never throws (its own failures are its own), so this path stays the dispatch's
-                    if (recorder != null && attempt == 0) recorder.failed(sourceName, delivered(event), t, targets);
-                    lastError = t;
-                    attempt++;
-                    String warnMsg = "event processing failed: agent=" + name +
-                            ", attempt=" + attempt +
-                            ", eventClass=" + (event == null ? "null" : event.getClass().getName()) +
-                            ", event=" + event +
-                            ", error=" + t;
-                    logger.warning(warnMsg);
-                    com.telamin.mongoose.service.error.ErrorReporting.report(
-                            "EventQueueToEventProcessorAgent:" + name,
-                            warnMsg,
-                            t,
-                            com.telamin.mongoose.service.error.ErrorEvent.Severity.WARNING);
-                    if (!retryPolicy.shouldRetry(t, attempt)) {
-                        String errMsg = "dropping event after retries: agent=" + name +
-                                ", attempts=" + attempt +
+                    targets = eventToInvokeStrategy.registeredProcessors();
+                    if (event instanceof ReplayRecord || event instanceof BroadcastEvent) seq = -1;
+                    // a strategy that delivers but names no processor (registeredProcessors() left at its empty default)
+                    // cannot be recorded: the processors this queue registered with it are known here, so each recorded one
+                    // is marked failed, by name, rather than recording nothing for an input it delivered (cd52628 F4)
+                    if (targets.isEmpty() && !subscribed.isEmpty()) {
+                        recorder.cannotRecord(sourceName, java.util.List.copyOf(subscribed), eventToInvokeStrategy.getClass().getName()
+                                + " delivers to processors it does not name (registeredProcessors() is empty), so what each"
+                                + " received cannot be recorded; implement registeredProcessors() to record through it");
+                    }
+                }
+
+                int attempt = 0;
+                boolean done = false;
+                Throwable lastError = null;
+                while (!done) {
+                    try {
+                        if (recorder != null) recorder.beforeDispatch(sourceName, seq, targets);
+                        if (event instanceof ReplayRecord replayRecord) {
+                            if (recorder == null) {
+                                eventToInvokeStrategy.processEvent(replayRecord.getEvent(), replayRecord.getWallClockTime());
+                            } else {
+                                // a recorded processor keeps its recording clock, pinned to the record's instant as the
+                                // strategy's synthetic clock would be, so its reads are still recorded; the rest as before
+                                long time = replayRecord.getWallClockTime();
+                                for (DataFlow target : targets) {
+                                    if (!recorder.pinSyntheticTime(target, time)) eventToInvokeStrategy.setSyntheticTime(target, time);
+                                }
+                                eventToInvokeStrategy.processEventRecording(replayRecord.getEvent(), received);
+                            }
+                        } else if (recorder != null) {
+                            // RECORD: each recorded processor's input is copied just before it is given it (review of
+                            // 90f0d9b, finding 2). Only a first-attempt success commits the copy, below: one guard, D4
+                            eventToInvokeStrategy.processEventRecording(delivered(event), received);
+                        } else if (event instanceof BroadcastEvent broadcastEvent) {
+                            eventToInvokeStrategy.processEvent(broadcastEvent.getEvent());
+                        } else {
+                            eventToInvokeStrategy.processEvent(event);
+                        }
+                        done = true;
+                    } catch (Throwable t) {
+                        // D4: a retry is a failure; the recording is marked, not continued as if nothing happened. The
+                        // recorder never throws (its own failures are its own), so this path stays the dispatch's
+                        if (recorder != null && attempt == 0) recorder.failed(sourceName, delivered(event), t, targets);
+                        lastError = t;
+                        attempt++;
+                        String warnMsg = "event processing failed: agent=" + name +
+                                ", attempt=" + attempt +
                                 ", eventClass=" + (event == null ? "null" : event.getClass().getName()) +
                                 ", event=" + event +
-                                ", lastError=" + t;
-                        logger.severe(errMsg);
+                                ", error=" + t;
+                        logger.warning(warnMsg);
                         com.telamin.mongoose.service.error.ErrorReporting.report(
                                 "EventQueueToEventProcessorAgent:" + name,
-                                errMsg,
+                                warnMsg,
                                 t,
-                                com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
-                        break;
+                                com.telamin.mongoose.service.error.ErrorEvent.Severity.WARNING);
+                        if (!retryPolicy.shouldRetry(t, attempt)) {
+                            String errMsg = "dropping event after retries: agent=" + name +
+                                    ", attempts=" + attempt +
+                                    ", eventClass=" + (event == null ? "null" : event.getClass().getName()) +
+                                    ", event=" + event +
+                                    ", lastError=" + t;
+                            logger.severe(errMsg);
+                            com.telamin.mongoose.service.error.ErrorReporting.report(
+                                    "EventQueueToEventProcessorAgent:" + name,
+                                    errMsg,
+                                    t,
+                                    com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
+                            break;
+                        }
+                        retryPolicy.backoff(attempt);
                     }
-                    retryPolicy.backoff(attempt);
                 }
-            }
 
-            // recorded after the dispatch, outside it: a recording failure is not a dispatch failure, so it is never
-            // retried as one (the processor would handle the input again) and never marks the processor as failing.
-            // Only a dispatch that succeeded FIRST TIME is recorded: one that a retry recovered is already marked
-            // Failed (D4, a retry is a failure: marked, not reproduced), and recording it too would make a replay re-run
-            // it, with the retry's clock reads rather than those of the attempt that happened
-            if (done && recorder != null && attempt == 0) {
-                recorder.afterDispatch(sourceName, route, delivered(event), seq, targets);
-            }
+                // recorded after the dispatch, outside it: a recording failure is not a dispatch failure, so it is never
+                // retried as one (the processor would handle the input again) and never marks the processor as failing.
+                // Only a dispatch that succeeded FIRST TIME is recorded: one that a retry recovered is already marked
+                // Failed (D4, a retry is a failure: marked, not reproduced), and recording it too would make a replay re-run
+                // it, with the retry's clock reads rather than those of the attempt that happened
+                if (done && recorder != null && attempt == 0) {
+                    recorder.afterDispatch(sourceName, route, delivered(event), seq, targets);
+                }
 
-            // After dispatching to all processors attempt to return to pool if no more references remain
-            if (tracker != null) {
-                try {
-                    tracker.returnToPool();
-                } catch (Throwable ignored) {
-                    logger.warning("unable to return to pool: " + tracker);
+            } finally {
+                // After dispatching to all processors, drop this queue's reference: released before dispatch, another
+                // queue's last release could recycle the event while a processor here still read it (#54). In a
+                // finally: a throw out of the retry loop (a backoff, the recorder, failure logging) must not leak it.
+                // The last release returns it to its pool
+                if (tracker != null) {
+                    try {
+                        tracker.releaseReference();
+                    } catch (Throwable t) {
+                        String why = "pooled event reference release failed: agent=" + name + ", error=" + t;
+                        logger.severe(why);
+                        com.telamin.mongoose.service.error.ErrorReporting.report(
+                                "EventQueueToEventProcessorAgent:" + name, why, t,
+                                com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
+                    }
                 }
             }
 
@@ -309,7 +321,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     private PoolTracker<?> trackerOf(Object event) {
         if (event == null) return null;
         Object candidate = event;
-        if (recorder != null && candidate instanceof JournalledItem journalled) {
+        if (candidate instanceof JournalledItem journalled) { // any group: see doWork
             candidate = journalled.item();
         }
         if (candidate instanceof ReplayRecord rr) {

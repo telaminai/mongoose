@@ -178,26 +178,30 @@ public class EventToQueuePublisher<T> {
             log.fine("listenerCount:" + targetQueues.size() + " sequenceNumber:" + sequenceNumber + " publish:" + itemToPublish);
         }
 
-        if (cacheEventLog) {
-            dispatchCachedEventLog();
-            // Store a detached snapshot in the cache to avoid retaining pooled instances
-            Object cachedData = (mappedItem instanceof PoolAware)
-                    ? String.valueOf(mappedItem)
-                    : mappedItem;
-            NamedFeedEventImpl<Object> namedFeedEvent = new NamedFeedEventImpl<>(name)
-                    .data(cachedData)
-                    .sequenceNumber(sequenceNumber);
-            eventLog.add(namedFeedEvent);
-        } else {
-            // Hold a reference while retained in the cache/event log
-            PoolTracker<?> tracker = trackerOf(mappedItem);
-            if (tracker != null) {
-                tracker.releaseReference();
+        // the publisher's own reference to a pooled item (the one acquire handed over), held until every queue holds
+        // its own: released first, the first consumer to finish could return it to the pool while it was still being
+        // offered to the next queue (#54). Released last, it returns the item when no queue took it
+        PoolTracker<?> publisherRef = trackerOf(mappedItem);
+        try {
+            if (cacheEventLog) {
+                dispatchCachedEventLog();
+                // Store a detached snapshot in the cache to avoid retaining pooled instances: the cache holds no reference
+                Object cachedData = (mappedItem instanceof PoolAware)
+                        ? String.valueOf(mappedItem)
+                        : mappedItem;
+                NamedFeedEventImpl<Object> namedFeedEvent = new NamedFeedEventImpl<>(name)
+                        .data(cachedData)
+                        .sequenceNumber(sequenceNumber);
+                eventLog.add(namedFeedEvent);
+            }
+
+            cacheReadPointer++;
+            dispatch(mappedItem, sequenceNumber);
+        } finally {
+            if (publisherRef != null) {
+                publisherRef.releaseReference();
             }
         }
-
-        cacheReadPointer++;
-        dispatch(mappedItem, sequenceNumber);
     }
 
     public void cache(T itemToCache) {
@@ -233,6 +237,12 @@ public class EventToQueuePublisher<T> {
                     .data(mappedItem)
                     .sequenceNumber(sequenceNumber);
             eventLog.add(namedFeedEvent);
+        } else {
+            // nothing holds the item (no event log, no dispatch): drop the reference handed over with it
+            PoolTracker<?> tracker = trackerOf(mappedItem);
+            if (tracker != null) {
+                tracker.releaseReference();
+            }
         }
     }
 
@@ -297,12 +307,16 @@ public class EventToQueuePublisher<T> {
             Object mapped = dataMapper.apply(item);
             if (mapped == null) {
                 log.fine("mappedItem is null");
-            } else if (item != mapped && (item instanceof PoolAware poolAware)) {
+            }
+            if (item != mapped && (item instanceof PoolAware poolAware)) {
+                // the input is not published (its mapping is, or nothing is): drop the reference handed over with it
                 poolAware.getPoolTracker().releaseReference();
-                poolAware.getPoolTracker().returnToPool();
             }
             return mapped;
         } catch (Throwable t) {
+            // the input is not published: drop the reference handed over with it, or a pooled input leaks and the
+            // pool runs dry (review of #63)
+            releaseUnpublished(item);
             log.severe("data mapping (" + context + ") failed: publisher=" + name + ", nextSequenceNumber=" + (sequenceNumber + 1) + ", item=" + item + ", error=" + t);
             com.telamin.mongoose.service.error.ErrorReporting.report(
                     "EventToQueuePublisher:" + name,
@@ -310,6 +324,20 @@ public class EventToQueuePublisher<T> {
                     t,
                     com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
             return null;
+        }
+    }
+
+    /** Releases the reference handed over with a pooled item that is not published; a failed release is reported. */
+    private void releaseUnpublished(Object item) {
+        if (item instanceof PoolAware poolAware) {
+            try {
+                poolAware.getPoolTracker().releaseReference();
+            } catch (Throwable releaseFailed) {
+                log.severe("pooled item reference release failed: publisher=" + name + ", error=" + releaseFailed);
+                com.telamin.mongoose.service.error.ErrorReporting.report("EventToQueuePublisher:" + name,
+                        "pooled item reference release failed", releaseFailed,
+                        com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
+            }
         }
     }
 
@@ -351,7 +379,7 @@ public class EventToQueuePublisher<T> {
     }
 
     private void dispatch(Object mappedItem, long seq) {
-        // no-op here; writeToQueue will handle PoolAware reference acquisition per queue
+        // writeToQueue acquires one PoolAware reference per queue
         for (int i = 0, targetQueuesSize = targetQueues.size(); i < targetQueuesSize; i++) {
             NamedQueue namedQueue = targetQueues.get(i);
             OneToOneConcurrentArrayQueue<Object> targetQueue = namedQueue.targetQueue();
@@ -378,23 +406,25 @@ public class EventToQueuePublisher<T> {
         long startNs = -1;
         final long maxSpinNs = java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(10); // bound spin to avoid publisher timeouts under contention
         PoolTracker<?> tracker = trackerOf(itemToPublish);
+        // the queue's reference, taken before the offer (a consumer may poll and release at once) and kept across
+        // retries; the publisher still holds its own, so releasing this one on a drop never returns the item early
+        boolean queueRef = false;
         try {
+            if (tracker != null) {
+                tracker.acquireReference();
+                queueRef = true;
+            }
             while (!offered) {
-                boolean attemptRef = false;
-                if (tracker != null) {
-                    tracker.acquireReference();
-                    attemptRef = true;
-                }
                 offered = targetQueue.offer(itemToPublish);
                 if (!offered) {
-                    // release per-attempt ref before retry/abandon
-                    if (attemptRef) {
-                        tracker.releaseReference();
-                    }
                     if (startNs < 0) {
                         startNs = System.nanoTime();
                     } else if (System.nanoTime() - startNs > maxSpinNs) {
                         droppedCount++; // written under publishLock only
+                        if (queueRef) {
+                            queueRef = false;
+                            tracker.releaseReference();
+                        }
                         if (logWarning) {
                             log.warning("dropping publish to slow/contended queue: " + namedQueue.name() +
                                     " after ~" + ((System.nanoTime() - startNs) / 1_000_000) + "ms seq:" + sequenceNumber +
@@ -406,9 +436,12 @@ public class EventToQueuePublisher<T> {
                 }
             }
         } catch (Throwable t) {
-            // ensure no attempt ref remains on exception path
-            if (tracker != null) {
-                tracker.returnToPool();
+            // ensure no queue ref remains on the exception path when the item never reached the queue
+            if (queueRef && !offered) {
+                try {
+                    tracker.releaseReference();
+                } catch (Throwable ignored) {
+                }
             }
             log.severe("queue write failed: publisher=" + name + ", queue=" + namedQueue.name() + ", seq=" + sequenceNumber + ", item=" + itemToPublish + ", error=" + t);
             com.telamin.mongoose.service.error.ErrorReporting.report(
