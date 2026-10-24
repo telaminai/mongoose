@@ -135,7 +135,7 @@ public class MongooseServer implements MongooseServerController {
      * group's own map only fills later, on its thread). Released by {@link #stopProcessor}, when building it fails, or when the group drops it after a failed
      * start ({@link #processorDropped}).
      */
-    private final Set<ProcessorName> reservedProcessorNames = ConcurrentHashMap.newKeySet();
+    private final ConcurrentHashMap<ProcessorName, Object> reservedProcessorNames = new ConcurrentHashMap<>();
 
     private record ProcessorName(String group, String name) {
     }
@@ -161,6 +161,9 @@ public class MongooseServer implements MongooseServerController {
     private final java.util.concurrent.atomic.AtomicReference<LifecycleState> lifecycleState =
             new java.util.concurrent.atomic.AtomicReference<>(LifecycleState.NEW);
     private final LifecycleManager lifecycleManager = new LifecycleManager(this);
+    /** Startup and shutdown callbacks may request stop themselves; neither may wait for its own completion. */
+    private volatile Thread startupThread;
+    private volatile Thread stopThread;
 
     /**
      * Entry point for starting a MongooseServer instance with default configuration.
@@ -439,9 +442,8 @@ public class MongooseServer implements MongooseServerController {
      * thread, once the group has stopped the processor and released what it holds for it; this releases what the server
      * bound to it: the audit capture forgets the instance and a capture still recording is ended.
      * <p>
-     * It does not free a processor-name reservation (mongoose#60): {@link #stopProcessor} frees that itself, ordered
-     * after the stop on the group's thread, so an add of the same name made once the name is free can never be removed
-     * by the stop meant for the old processor. Freeing it here as well could free the reservation of that new add.
+     * It does not free a processor-name reservation (mongoose#60): the accepted stop request frees its own registration
+     * when consumed on the group's thread. Freeing by name here could free a newer registration under that name.
      */
     public void processorStopped(String groupName, String processorName, DataFlow eventProcessor) {
         log.info("processor '" + processorName + "' stopped in group '" + groupName + "'");
@@ -908,21 +910,28 @@ public class MongooseServer implements MongooseServerController {
                 });
 
         ProcessorName reservation = new ProcessorName(groupName, processorName);
-        if (!reservedProcessorNames.add(reservation)) {
+        Object registration = new Object();
+        if (reservedProcessorNames.putIfAbsent(reservation, registration) != null) {
             log.warning("refusing to add event processor '" + processorName + "' to group '" + groupName
                     + "': the name is already assigned in that group");
             throw new IllegalArgumentException("cannot add event processor name is already assigned:" + processorName
                     + " in group:" + groupName);
         }
 
-        composingEventProcessorAgentRunner.group().addNamedEventProcessor(() -> {
-            try {
-                return buildNamedEventProcessor(processorName, feedConsumer, composingEventProcessorAgentRunner);
-            } catch (RuntimeException | Error e) {
-                reservedProcessorNames.remove(reservation);   // never built or wired: the name is free again
-                throw e;
-            }
-        });
+        try {
+            composingEventProcessorAgentRunner.group().addNamedEventProcessor(() -> {
+                try {
+                    return buildNamedEventProcessor(processorName, feedConsumer, composingEventProcessorAgentRunner);
+                } catch (RuntimeException | Error e) {
+                    reservedProcessorNames.remove(reservation, registration);
+                    throw e;
+                }
+            }, registration);
+        } catch (RuntimeException | Error e) {
+            // Rejected before the supplier ran: its own failure cleanup cannot release this reservation.
+            reservedProcessorNames.remove(reservation, registration);
+            throw e;
+        }
 
         if (isStarted() && composingEventProcessorAgentRunner.groupRunner().thread() == null) {
             log.info("staring event processor group:'" + groupName + "' for running server");
@@ -1028,12 +1037,14 @@ public class MongooseServer implements MongooseServerController {
         log.info("stopProcessor:" + processorName + " in group:" + groupName);
         var processorAgent = composingEventProcessorAgents.get(groupName);
         if (processorAgent != null) {
-            processorAgent.group().removeEventProcessorByName(processorName);
-            // free the name on the group's thread, after the cycle that took the stop: an add made once the name is free
-            // is then taken in a later cycle, which handles the stop first, so the new processor never replaces the old
-            // one in the group's map only to be removed by the stop meant for the old one
             ProcessorName reservation = new ProcessorName(groupName, processorName);
-            processorAgent.group().runOnAgentThread(() -> reservedProcessorNames.remove(reservation));
+            Object registration = reservedProcessorNames.get(reservation);
+            if (registration != null) {
+                // A stop belongs to this accepted add, including before its supplier runs. Release the name only when
+                // that stop is consumed, and never remove a newer reservation or stop a replacement under that name.
+                processorAgent.group().removeEventProcessorByName(processorName, registration,
+                        () -> reservedProcessorNames.remove(reservation, registration));
+            }
         }
     }
 
@@ -1165,6 +1176,7 @@ public class MongooseServer implements MongooseServerController {
                 ? MongooseServerConfig.DEFAULT_STARTUP_TIMEOUT_MILLIS
                 : mongooseServerConfig.getStartupTimeoutMillis();
         try {
+            startupThread = Thread.currentThread();
             lifecycleManager.start(registeredServices, serviceGroups, processorGroups, flowManager, registeredAgentServices,
                     startupTimeoutMillis);
         } catch (Throwable t) {
@@ -1172,6 +1184,8 @@ public class MongooseServer implements MongooseServerController {
                 throw new IllegalStateException(LifecycleManager.STOPPED_DURING_START, t);
             }
             throw t;   // the state stays STARTING: stop() still cleans up what a failed start left running
+        } finally {
+            startupThread = null;
         }
         // Flip the per-service "up" gauge to 1 for every service that's been
         // started via the lifecycle manager. The startService() entry point
@@ -1194,7 +1208,7 @@ public class MongooseServer implements MongooseServerController {
         composingEventProcessorAgents.forEach((groupName, runner) -> {
             if (isStarted() && runner.groupRunner().thread() == null) {
                 log.info("late-starting event processor agent registered during boot: " + groupName);
-                AgentRunner.startOnThread(runner.groupRunner());
+                lifecycleManager.startAgent(runner.groupRunner());
             }
         });
     }
@@ -1231,12 +1245,14 @@ public class MongooseServer implements MongooseServerController {
      * <p>
      * The stop runs once. Called from an ordinary thread, it returns when the server has stopped, and so does a call
      * that races an in-progress stop. Called from one of the server's own agent threads (a processor's event handler, an
-     * admin command, an agent hosted service), it cannot wait for that thread to close: it hands the stop to a new
+     * admin command, an agent hosted service), or from a synchronous startup callback, it cannot wait for itself: it
+     * hands the stop to a new
      * {@code mongoose-server-stop} thread and returns at once. Use {@link #awaitStopped(long, java.util.concurrent.TimeUnit)} from another
      * thread to wait for it to finish.
      */
     public void stop() {
-        boolean onAgentThread = isServerAgentThread(Thread.currentThread());
+        boolean onAgentThread = isServerAgentThread(Thread.currentThread()) || Thread.currentThread() == startupThread
+                || Thread.currentThread() == stopThread;
         while (true) {
             LifecycleState state = lifecycleState.get();
             if (state == LifecycleState.NEW) {
@@ -1256,7 +1272,7 @@ public class MongooseServer implements MongooseServerController {
             }
         }
         if (onAgentThread) {
-            log.info("stop called on agent thread " + Thread.currentThread().getName()
+            log.info("stop called on lifecycle or agent thread " + Thread.currentThread().getName()
                     + ", running the ordered shutdown on a separate thread");
             Thread stopper = new Thread(this::runOrderedStop, "mongoose-server-stop");
             stopper.setDaemon(false);
@@ -1287,6 +1303,7 @@ public class MongooseServer implements MongooseServerController {
     }
 
     private void runOrderedStop() {
+        stopThread = Thread.currentThread();
         try {
             long drainTimeoutMillis = mongooseServerConfig == null
                     ? MongooseServerConfig.DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS
@@ -1303,6 +1320,7 @@ public class MongooseServer implements MongooseServerController {
             }
             lifecycleState.set(LifecycleState.STOPPED);
             stopCompleted.countDown();
+            stopThread = null;
         }
     }
 

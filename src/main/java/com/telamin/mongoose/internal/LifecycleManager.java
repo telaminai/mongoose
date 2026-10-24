@@ -25,6 +25,10 @@ public final class LifecycleManager {
 
     private final MongooseServer server;
     private final java.util.concurrent.atomic.AtomicBoolean stopped = new java.util.concurrent.atomic.AtomicBoolean();
+    /** Serialises startup effects with shutdown, never used on an event-delivery path. */
+    private final Object startupLock = new Object();
+    /** A stop may first ask an in-progress synchronous startup callback to return. */
+    private volatile Runnable cancelStartup;
     /** Bound on taking the feeds off a service agent group shared with other services, during stop. */
     static final long EVENT_SOURCE_REMOVAL_TIMEOUT_MILLIS = 5_000;
 
@@ -93,17 +97,17 @@ public final class LifecycleManager {
         // Start non-LifeCycleEventSource services
         registeredServices.values().forEach(svc -> {
             if (!(svc.instance() instanceof LifeCycleEventSource)) {
-                svc.start();
+                startStep(svc::start, svc::stop);
             }
         });
         // Start flow manager
         log.info("start flowManager");
-        flowManager.start();
+        flowManager.start(source -> startStep(source::start, source::stop));
         // Start agent hosted services
         log.info("start agent hosted services");
         composingServiceAgents.forEach((k, v) -> {
             log.info("starting composing service agent " + k);
-            AgentRunner.startOnThread(v.getGroupRunner());
+            startAgent(v.getGroupRunner());
         });
         // Wait for service agents ACTIVE
         log.info("waiting for agent hosted services to start");
@@ -112,7 +116,7 @@ public final class LifecycleManager {
         log.info("start event processor agent workers");
         composingEventProcessorAgents.forEach((k, v) -> {
             log.info("starting composing event processor agent " + k);
-            AgentRunner.startOnThread(v.getGroupRunner());
+            startAgent(v.getGroupRunner());
         });
         // Wait for processor agents ACTIVE
         log.info("waiting for event processor agents to start");
@@ -121,12 +125,38 @@ public final class LifecycleManager {
         log.info("calling startup complete on services");
         for (Service<?> service : registeredServices.values()) {
             if (!registeredAgentServices.contains(service)) {
-                service.startComplete();
+                startStep(service::startComplete, service::stop);
             }
         }
         // Notify start complete on agent groups
         log.info("calling startup complete on agent hosted services");
-        composingServiceAgents.values().forEach(GroupRunner::startCompleteIfSupported);
+        composingServiceAgents.values().forEach(group -> startStep(group::startCompleteIfSupported, null));
+    }
+
+    /** Start a group only while startup is still admitted, including groups discovered during startup. */
+    public void startAgent(AgentRunner runner) {
+        startStep(() -> AgentRunner.startOnThread(runner), null);
+    }
+
+    private void startStep(Runnable effect, Runnable cancel) {
+        synchronized (startupLock) {
+            requireStarting();
+            cancelStartup = cancel;
+            try {
+                // A stop may have won between the first check and publishing the cancellation hook.
+                requireStarting();
+                effect.run();
+                requireStarting();
+            } finally {
+                cancelStartup = null;
+            }
+        }
+    }
+
+    private void requireStarting() {
+        if (stopped.get()) {
+            throw new IllegalStateException(STOPPED_DURING_START);
+        }
     }
 
     /**
@@ -142,6 +172,7 @@ public final class LifecycleManager {
             throws InterruptedException {
         long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(Math.max(0, timeoutMillis));
         while (true) {
+            requireStarting();
             java.util.List<String> notActive = groupsMatching(groups, g -> g.getGroup().status() != DynamicCompositeAgent.Status.ACTIVE);
             if (notActive.isEmpty()) {
                 return;
@@ -204,6 +235,20 @@ public final class LifecycleManager {
         if (!stopped.compareAndSet(false, true)) {
             log.info("server already stopped");
             return;
+        }
+        // Signal outside startupLock: a callback may need stop() to unblock. Once it returns, take the fence before
+        // the final cleanup, so a callback finishing late cannot reopen a resource after that resource was closed.
+        // Only this in-progress callback may receive stop twice: cancellation, then the ordered final stop below.
+        Runnable cancel = cancelStartup;
+        if (cancel != null) {
+            try {
+                cancel.run();
+            } catch (Throwable t) {
+                log.log(java.util.logging.Level.WARNING, "in-progress startup could not be cancelled", t);
+            }
+        }
+        synchronized (startupLock) {
+            // The last synchronous startup effect has returned, and all later ones see stopped == true.
         }
         log.info("stopping feeds");
         // a group hosting only feeds closes; one that also hosts other services keeps running them, and only its feeds

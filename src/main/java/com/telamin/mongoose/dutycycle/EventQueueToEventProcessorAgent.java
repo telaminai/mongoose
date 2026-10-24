@@ -310,6 +310,23 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     @Override
     public void onClose() {
         logger.info("onClose");
+        // Its producer has been detached (or stopped at server shutdown). Discarding the reader must release the
+        // references held by its abandoned backlog, including wrappers, rather than exhaust the source's pool.
+        Object event;
+        while ((event = inputQueue.poll()) != null) {
+            PoolTracker<?> tracker = trackerOf(event);
+            if (tracker != null) {
+                try {
+                    tracker.releaseReference();
+                } catch (VirtualMachineError fatal) {
+                    throw fatal;
+                } catch (Throwable t) {
+                    com.telamin.mongoose.service.error.ErrorReporting.report(
+                            "EventQueueToEventProcessorAgent:" + name, "failed to release discarded queued event", t,
+                            com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
+                }
+            }
+        }
     }
 
     @Override

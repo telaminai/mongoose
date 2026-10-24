@@ -150,6 +150,11 @@ public class EventFlowManager {
         forEachLifeCycleEventSource(LifeCycleEventSource::start);
     }
 
+    /** Let the server admit and cancel each source's startup independently of the others. */
+    public void start(java.util.function.Consumer<LifeCycleEventSource> startSource) {
+        forEachLifeCycleEventSource(startSource);
+    }
+
     /**
      * Stop and tear down every registered {@link LifeCycleEventSource} (mongoose#56), once: a second call is a no-op. A
      * source that throws is logged and the others still stop. Called by the server's ordered shutdown after the agent
