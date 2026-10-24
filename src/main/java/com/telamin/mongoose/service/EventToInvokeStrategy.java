@@ -55,6 +55,43 @@ public interface EventToInvokeStrategy {
     }
 
     /**
+     * Retry support (mongoose#53): the position, in dispatch order, of the processor whose handler threw out of the last
+     * {@code processEvent}, {@code processEventRecording} or {@code ...From} call on this strategy, or -1 when the
+     * strategy cannot say. With a position the agent retries that processor alone and then resumes with the processors
+     * after it ({@link #processEventFrom}), so a processor that already handled the event never sees it again. With -1
+     * (this default) the agent retries the whole call, as it did before #53, and every processor sees the event again.
+     * Read only on the agent thread, straight after the call threw.
+     */
+    default int failedPosition() {
+        return -1;
+    }
+
+    /**
+     * Retry support (mongoose#53): the processor at {@link #failedPosition()}, or null when the strategy cannot say.
+     * The recording marks this processor's input failed, and only this one's.
+     */
+    default DataFlow failedProcessor() {
+        return null;
+    }
+
+    /**
+     * Retry support (mongoose#53): deliver {@code event} as {@link #processEvent(Object)} does, but only to the
+     * processors at dispatch position {@code from} and after. The agent calls it only when {@link #failedPosition()}
+     * named a position, so a strategy that keeps the -1 default never receives it.
+     */
+    default void processEventFrom(Object event, int from) {
+        throw new UnsupportedOperationException(getClass().getName() + " cannot resume a dispatch at a processor");
+    }
+
+    /**
+     * Retry support (mongoose#53): as {@link #processEventRecording}, but only to the processors at dispatch position
+     * {@code from} and after. Called only when {@link #failedPosition()} named a position.
+     */
+    default void processEventRecordingFrom(Object event, java.util.function.BiConsumer<DataFlow, Object> beforeEach, int from) {
+        throw new UnsupportedOperationException(getClass().getName() + " cannot resume a dispatch at a processor");
+    }
+
+    /**
      * Set {@code target}'s synthetic clock to {@code time}, as {@link #processEvent(Object, long)} does for each
      * processor before it dispatches. Replay recording uses it to give a processor that is NOT recorded the same clock
      * a {@code ReplayRecord} input gives it today, while a recorded one keeps its recording clock.

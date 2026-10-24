@@ -40,6 +40,8 @@ public final class GroupRecorder {
         String uncopyable;
         /** A journalled input this processor received in a state the journal does not hold: recorded inline (N3). */
         boolean notAsJournalled;
+        /** This dispatch: the processor's handler threw, so its input is marked Failed and its retries go unrecorded (#53). */
+        boolean dispatchFailed;
 
         Recorded(String name, RecordingClock clock) {
             this.name = name;
@@ -108,6 +110,7 @@ public final class GroupRecorder {
             r.input = null;
             r.uncopyable = null;
             r.notAsJournalled = false;
+            r.dispatchFailed = false;
         }
     }
 
@@ -118,7 +121,7 @@ public final class GroupRecorder {
      */
     public void received(DataFlow target, Object event) {
         Recorded r = byFlow.get(target);
-        if (r == null || r.broken != null) return;
+        if (r == null || r.broken != null || r.dispatchFailed) return;   // a retry of a failed input is not recorded (#53)
         r.received = true;
         if (event instanceof UncapturedInput uncaptured) {
             r.uncopyable = uncaptured.reason();         // the strategy cannot say what this processor received (N4)
@@ -191,7 +194,7 @@ public final class GroupRecorder {
             if (r == null) continue;
             List<Long> reads = r.clock.captured();
             long instant = r.clock.instant(reads);
-            if (!r.received) continue;                  // the strategy did not give it this processor
+            if (!r.received) continue;                  // the strategy did not give it this processor, or it failed (#53)
             ReplayEntry entry;
             if (event instanceof AdminCommand admin && !admin.ran()) {
                 // cancelled by its caller, or refused before it ran: nothing reached the processor, so nothing is an
@@ -237,6 +240,22 @@ public final class GroupRecorder {
             r.input = null;
             append(r, new ReplayEntry.Failed(source, error + " on " + event, r.clock.instant(r.clock.captured())));
         }
+    }
+
+    /**
+     * Just after {@code target}'s handler threw {@code error} on its first attempt at an input of {@code source}: that
+     * processor's input alone is marked Failed (D4: a retry is a failure, marked, not reproduced) and its retries are not
+     * recorded (mongoose#53). The processors before it handled the input once and are recorded by {@link #afterDispatch}
+     * as usual, as are those after it, which are given it once the retries end.
+     */
+    public void failed(String source, Object event, Throwable error, DataFlow target) {
+        Recorded r = target == null ? null : byFlow.get(target);
+        if (r == null) return;
+        r.dispatchFailed = true;
+        r.received = false;
+        r.input = null;
+        r.uncopyable = null;
+        append(r, new ReplayEntry.Failed(source, error + " on " + event, r.clock.instant(r.clock.captured())));
     }
 
     /**
