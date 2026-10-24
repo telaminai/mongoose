@@ -198,6 +198,24 @@ public class EventToQueuePublisher<T> {
         }
     }
 
+    /**
+     * Publishes the item if {@link #startComplete()} has run, else caches it, deciding under the publish lock and so
+     * atomically with {@code startComplete}: a source that switches from caching to publishing at start cannot cache
+     * an item after the replay (it would wait for the next publish) or publish one before it.
+     */
+    public void publishOrCache(T item) {
+        if (item == null) {
+            return;
+        }
+        synchronized (publishLock) {
+            if (startComplete) {
+                publishSerialised(item);
+            } else {
+                cacheSerialised(item);
+            }
+        }
+    }
+
     public void cache(T itemToCache) {
         if (itemToCache == null) {
             log.fine("itemToCache is null");
