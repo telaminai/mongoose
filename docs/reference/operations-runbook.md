@@ -43,6 +43,26 @@ Operational guidance for running Mongoose Server in production. Tailor values to
 - Runtime errors in handlers: log with context; consider circuit breakers for flaky integrations.
 - Poison events: capture and route to quarantine sink with metadata.
 
+## Startup
+`MongooseServer.start()` waits for every agent group to become active. The wait is bounded by
+`startupTimeoutMillis` (default **60000 ms**). When the bound runs out, start fails with an `IllegalStateException`
+that names every group not yet active. A group whose thread ends before it becomes active (because its `onStart`
+failed) fails start straight away, and the failure names that group.
+
+```yaml
+startupTimeoutMillis: 30000   # default 60000
+```
+
+or `MongooseServerConfig.builder().startupTimeoutMillis(30000)`.
+
+A server starts once. If `stop()` runs while `start()` is still in progress, start fails with
+"the server was stopped during start", and the server is never marked started. `stop()` also cleans up after a
+failed start. Calling `start()` again after a stop throws `IllegalStateException`.
+
+Processor names must be unique within a group. Configuring the same processor name twice in one group (for
+example, two `eventHandlers` entries with the same `agentName` and the same handler name) fails boot with an error
+that names the group and the processor. Before this, boot went ahead and the duplicate was at most logged.
+
 ## Shutdown
 `MongooseServer.stop()` runs an ordered shutdown, once:
 

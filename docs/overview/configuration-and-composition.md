@@ -108,6 +108,7 @@ What the config did:
 
 ```yaml
 # Server lifecycle bounds (optional)
+startupTimeoutMillis: 60000        # start(): fail, naming the groups, if any agent group is not active by then
 shutdownDrainTimeoutMillis: 2000   # stop(): wait for queued events to reach processors (0 = no wait)
 
 # Feeds
@@ -161,4 +162,5 @@ var server = MongooseServer.bootServer(new java.io.StringReader(yaml), rec -> {}
   logic.
 - Configure execution: Choose agent names, idle strategies, and logging via config. Ops can tune these independently.
 - Lifecycle managed: The server owns init/start/stop; your components implement standard lifecycle if needed. See
-  the [operations runbook](../reference/operations-runbook.md#shutdown) for the shutdown order and its bounds.
+  the [operations runbook](../reference/operations-runbook.md#startup) for the startup and shutdown order and
+  their bounds.
