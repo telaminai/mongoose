@@ -31,6 +31,9 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.function.BooleanSupplier;
 import java.util.stream.Stream;
+import java.util.logging.Handler;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -239,6 +242,70 @@ class IntegrationReleaseRegressionTest {
             assertTrue(first.stopped && first.tornDown, "the original must not leak after its name is reused");
             assertFalse(second.stopped, "the original stop must not stop its replacement");
         } finally { s.stop(); }
+    }
+
+    @Test
+    void aStopConsumedBeforeItsStartCancelsTheRegistration() throws Exception {
+        ComposingEventProcessorAgent group = new ComposingEventProcessorAgent("DEMO", new EventFlowManager(), null,
+                new DeadWheelScheduler(), new ConcurrentHashMap<>());
+        group.onStart(); Object registration = new Object(); AtomicInteger built = new AtomicInteger();
+        AtomicInteger acknowledged = new AtomicInteger();
+        try {
+            group.removeEventProcessorByName("DEMO", registration, acknowledged::incrementAndGet);
+            group.doWork();
+            assertEquals(1, acknowledged.get(), "stop consumed before the start is queued");
+            group.addNamedEventProcessor(() -> {
+                built.incrementAndGet(); return new NamedEventProcessor("DEMO", new Proc());
+            }, registration);
+            group.doWork();
+            assertEquals(0, built.get(), "a consumed stop must cancel a start queued afterwards for that registration");
+            assertFalse(group.isProcessorRegistered("DEMO"), "cancelled registration cannot run without a reservation");
+            Proc replacement = new Proc(); Object next = new Object();
+            group.addNamedEventProcessor(() -> new NamedEventProcessor("DEMO", replacement), next);
+            group.doWork();
+            assertTrue(replacement.started, "the name is free for a later registration");
+            group.removeEventProcessorByName("DEMO", next, null); group.doWork();
+            assertTrue(replacement.stopped && replacement.tornDown, "the later registration remains stoppable");
+            assertFalse(group.isProcessorRegistered("DEMO"));
+        } finally { group.onClose(); }
+    }
+
+    @Test
+    void aStopAfterStartedDoesNotTurnTheLateStartPassIntoAStartupFailure() throws Exception {
+        MongooseServer s = server(); AtomicInteger built = new AtomicInteger(); AtomicBoolean stopped = new AtomicBoolean();
+        s.registerService(new Service<>(new Gate() {
+            @Override public void start() {
+                s.addEventProcessor("DEMO", "DEMO-late", null, () -> { built.incrementAndGet(); return new Proc(); });
+            }
+        }, Gate.class, "DEMO-loader"));
+        Logger logger = Logger.getLogger(MongooseServer.class.getName());
+        Handler stopAtLateStart = new Handler() {
+            @Override public void publish(LogRecord record) {
+                // The real logging call is after the STARTED check and before startAgent, so this forces precisely
+                // the reviewer's interleaving without a sleep or a production-only test hook.
+                if (record.getMessage().startsWith("late-starting event processor agent") && stopped.compareAndSet(false, true)) s.stop();
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        logger.addHandler(stopAtLateStart);
+        try {
+            s.init();
+            assertDoesNotThrow(s::start, "a stop after STARTED must not be reported as a startup failure");
+            assertTrue(stopped.get(), "stop landed between the late-start check and its effect");
+            assertTrue(s.awaitStopped(5, TimeUnit.SECONDS));
+            assertEquals(0, built.get(), "the stopped late group never builds its processor");
+        } finally { logger.removeHandler(stopAtLateStart); s.stop(); }
+    }
+
+    @Test
+    void aDropCannotFreeANewerReservationUnderTheSameName() {
+        MongooseServer s = server();
+        s.addEventProcessor("DEMO", "DEMO", null, Proc::new);
+        s.processorDropped("DEMO", "DEMO", new Proc(), new Object());
+        assertThrows(IllegalArgumentException.class, () -> s.addEventProcessor("DEMO", "DEMO", null, Proc::new),
+                "a stale drop must not free a newer registration's reservation");
+        s.init(); s.start(); s.stop();
     }
 
     @Test

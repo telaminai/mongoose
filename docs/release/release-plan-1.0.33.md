@@ -104,6 +104,11 @@ The skipped tests are skipped on `main` as well.
 - **Stop**: `stop()` stops feeds, drains queued events for up to `shutdownDrainTimeoutMillis` (default 2 s), stops
   and tears down processors on their own threads, then services; it is idempotent; called on an agent thread it
   returns before the shutdown completes (`awaitStopped()` waits); concurrent callers wait.
+- **Stop during synchronous startup**: stop now waits for an in-progress synchronous startup step to return before
+  final cleanup completes. A service whose `start()` blocks and ignores `stop()` delays server stop. Give blocking
+  startup operations a timeout or a cooperative cancellation path.
+- **Startup cancellation**: a service in progress when stop arrives may receive `stop()` twice: first as the
+  cancellation signal, then during final cleanup. Services must tolerate the second call.
 - **Start**: fails after `startupTimeoutMillis` (default 60 s), or at once if a group closes or its thread dies
   during start; throws if called twice or after `stop()`.
 - **Names**: a duplicate processor name is refused, and in YAML config now **fails boot**.

@@ -67,3 +67,34 @@ and produced no usable measurement; the reported runs include it.
 
 The production publisher's event path is unchanged by this response. New registration objects and lifecycle work
 are confined to adds, stops and startup/shutdown. No hosted generation or plugin reactor was run.
+
+## Follow-up to the review of 2bbfe45
+
+The [independent delta review](https://github.com/telaminai/mongoose/pull/69#issuecomment-6386122791) accepted F1-F3
+and identified an additional F4 interleaving plus two minor code changes and release-note disclosures.
+
+- **Stop consumed before enqueue:** an agent-thread-only identity set remembers a non-null registration whose stop
+  finds no matching processor. `startProcessor` removes the cancellation marker and returns without invoking its
+  supplier. Markers are also cleared when the group closes. The test
+  `aStopConsumedBeforeItsStartCancelsTheRegistration` failed on 2bbfe45 at the supplier-count assertion (expected 0,
+  actual 1), then passed with the fix. It also proves the name is available to a fresh registration that starts and
+  remains stoppable.
+- **Late-start reporting:** after the server has reached STARTED, a stop winning before a late group's start is logged
+  and ends the pass normally. `aStopAfterStartedDoesNotTurnTheLateStartPassIntoAStartupFailure` forces the exact
+  interval using the real logging boundary. On 2bbfe45 it failed at the no-startup-failure assertion; fixed, it passes.
+- **Qualified drops:** the accepted registration now travels through the processor-drop hook and releases its own
+  reservation with `remove(key, registration)`. The unreleased `processorDropped` hook and its test override now take
+  the registration argument. `aDropCannotFreeANewerReservationUnderTheSameName` turns red if removal is changed back
+  to key-only; the source was restored byte-identically afterwards. The existing failed-start hook test also checks
+  that the real drop carries a registration.
+- **Release disclosures:** the Markdown and PDF now state that stop awaits an in-progress synchronous startup
+  callback, and that such a service must tolerate cancellation and final-cleanup stop calls. A callback that ignores
+  cancellation can delay shutdown. The original PDF identifies headless Chrome as its renderer; the same local
+  Chrome/HTML pipeline was used. `docs/release/render_release_plan.py` records the repeatable conversion, using
+  `markdown-it-py` and an isolated temporary Chrome profile. The previous PDF's generation script was not tracked.
+
+Verification for this follow-up: focused suites **37 / 0 failures / 0 errors / 0 skips**, including **21** integration
+regression cases; clean full JDK 21 suite **494 / 0 / 0 / 9**, **110 reports**. All five regenerated PDF pages were
+rendered and visually inspected, the new disclosures extracted successfully, text bounds fit the pages, and the five
+main release steps and ten nested items were checked. An initial Markdown renderer flattened nested lists; it was
+replaced with CommonMark parsing before delivery. Exact-head CI is recorded in the PR response.

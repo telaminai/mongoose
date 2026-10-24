@@ -428,12 +428,12 @@ public class MongooseServer implements MongooseServerController {
      * to it by name ({@link #releaseProcessorBindings}) and its name reservation (mongoose#60), so the name can be
      * added again.
      */
-    public void processorDropped(String groupName, String processorName, DataFlow eventProcessor) {
+    public void processorDropped(String groupName, String processorName, DataFlow eventProcessor, Object registration) {
         log.info("processor '" + processorName + "' dropped from group '" + groupName + "' after a failed start");
         try {
             releaseProcessorBindings(processorName, eventProcessor);
         } finally {
-            reservedProcessorNames.remove(new ProcessorName(groupName, processorName));
+            if (registration != null) reservedProcessorNames.remove(new ProcessorName(groupName, processorName), registration);
         }
     }
 
@@ -1205,12 +1205,24 @@ public class MongooseServer implements MongooseServerController {
         // the processorGroups snapshot above has already been passed to LifecycleManager,
         // so without this pass their agent thread would never be started and the loaded
         // processor would receive no events.
-        composingEventProcessorAgents.forEach((groupName, runner) -> {
-            if (isStarted() && runner.groupRunner().thread() == null) {
-                log.info("late-starting event processor agent registered during boot: " + groupName);
-                lifecycleManager.startAgent(runner.groupRunner());
+        for (var entry : composingEventProcessorAgents.entrySet()) {
+            String groupName = entry.getKey();
+            var runner = entry.getValue();
+            if (!isStarted()) {
+                log.info("server stopped after startup; skipping remaining late processor groups");
+                return;
             }
-        });
+            if (runner.groupRunner().thread() == null) {
+                log.info("late-starting event processor agent registered during boot: " + groupName);
+                try {
+                    lifecycleManager.startAgent(runner.groupRunner());
+                } catch (IllegalStateException refused) {
+                    if (!isStopRequested()) throw refused;
+                    log.info("server stopped after startup; skipping late processor group " + groupName);
+                    return;
+                }
+            }
+        }
     }
 
     /**

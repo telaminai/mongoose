@@ -85,6 +85,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     private final ManyToOneConcurrentArrayQueue<ProcessorStop> toStopList = new ManyToOneConcurrentArrayQueue<>(CONTROL_QUEUE_CAPACITY);
     /** Registration identity is used only for lifecycle operations, never for event delivery. */
     private final java.util.Map<NamedEventProcessor, Object> registrations = new java.util.IdentityHashMap<>();
+    /** Stops consumed before their starts arrive; agent-thread-only, with registration identity rather than names. */
+    private final java.util.Set<Object> cancelledRegistrations =
+            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
     // Dynamic-service broadcast queue. MongooseServer.registerService /
     // removeService publish onto it so the agent thread (and only the
     // agent thread) calls eventProcessor.registerService /
@@ -304,6 +307,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         closed = true;                                                    // no work is taken after this
         for (Runnable r; (r = onAgentThread.poll()) != null; ) r.run();   // work handed over before the close still runs
         stopAndTearDownProcessors();   // mongoose#56: on the group's thread, as every other processor callback
+        cancelledRegistrations.clear();
         agentThread = null;
         log.info("onClose " + roleName());
         super.onClose();
@@ -536,6 +540,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
      * still exits the JVM.
      */
     private void startProcessor(ProcessorStart start, boolean failFast) {
+        if (start.registration() != null && cancelledRegistrations.remove(start.registration())) {
+            return; // its stop won before the start was queued: do not even run the supplier
+        }
         NamedEventProcessor namedEventProcessor = null;
         try {
             namedEventProcessor = start.init().get();
@@ -595,6 +602,8 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
             NamedEventProcessor named = registeredEventProcessors.get(stop.name());
             if (named != null && (stop.registration() == null || registrations.get(named) == stop.registration())) {
                 release(named, true);     // tells the server (processorStopped), once
+            } else if (stop.registration() != null) {
+                cancelledRegistrations.add(stop.registration());
             }
         } finally {
             if (stop.completed() != null) stop.completed().run();
@@ -626,7 +635,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         String name = named.name();
         DataFlow eventProcessor = named.eventProcessor();
         registeredEventProcessors.remove(name, named);
-        registrations.remove(named);
+        Object registration = registrations.remove(named);
         servicesDelivered.remove(eventProcessor);
         if (eventProcessor instanceof Lifecycle lifecycle) {
             if (stopping) {
@@ -642,7 +651,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         if (mongooseServer != null) {
             guarded(name, "failed to release its server bindings", stopping
                     ? () -> mongooseServer.processorStopped(roleName(), name, eventProcessor)
-                    : () -> mongooseServer.processorDropped(roleName(), name, eventProcessor));
+                    : () -> mongooseServer.processorDropped(roleName(), name, eventProcessor, registration));
         }
     }
 
