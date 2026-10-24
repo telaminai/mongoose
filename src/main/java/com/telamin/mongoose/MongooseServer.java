@@ -407,6 +407,27 @@ public class MongooseServer implements MongooseServerController {
     }
 
     /**
+     * Whether a processor whose {@code start()} throws while its group starts fails that start, and so the server's
+     * boot (review of #66). True until the server has started, unless
+     * {@link MongooseServerConfig#isIsolateProcessorStartFailuresAtBoot()} opts into isolating it; false once started,
+     * when a processor that fails to start is always isolated (reported and dropped).
+     */
+    public boolean failsBootOnProcessorStartFailure() {
+        return !started && (mongooseServerConfig == null || !mongooseServerConfig.isIsolateProcessorStartFailuresAtBoot());
+    }
+
+    /**
+     * A processor group dropped {@code processorName} after its {@code start()} failed (mongoose#57). Called on the
+     * group's thread, once the group has released what it holds for the processor; this releases what the server bound
+     * to it by name: its audit-capture binding. Anything else the server reserves per processor name is to be released
+     * here too.
+     */
+    public void processorDropped(String groupName, String processorName, DataFlow eventProcessor) {
+        log.info("processor '" + processorName + "' dropped from group '" + groupName + "' after a failed start");
+        auditCaptureService.detach(processorName, eventProcessor);
+    }
+
+    /**
      * Register a factory to produce event-to-callback mapping strategies for a given callback type.
      * <p>
      * This allows customization of how events are mapped to processor invocation strategies,
@@ -609,8 +630,38 @@ public class MongooseServer implements MongooseServerController {
             // are running yet — those groups pick up registeredServices
             // at processor-join time via ComposingEventProcessorAgent.
             // checkForAdded.
-            composingEventProcessorAgents.values().forEach(runner ->
-                    runner.group().broadcastServiceRegistered(service));
+            broadcastToGroups(service, true);
+        }
+    }
+
+    /**
+     * Queue a service (de)registration for every processor group. All or report (review of #67): every group is
+     * attempted, so one stalled group does not keep the others from the service; a group whose control queue cannot
+     * take it (its thread is not draining, see {@code ComposingEventProcessorAgent.enqueue}) is skipped, and the groups
+     * skipped are reported together, once, through {@code ErrorReporting}. The registry is left as the call made it -
+     * the service registered (or removed) - because it is the source of truth: a processor that joins any group later
+     * is given the registry's services, and the injection into other services already done cannot be undone.
+     */
+    private void broadcastToGroups(Service<?> service, boolean register) {
+        List<String> missed = new ArrayList<>();
+        composingEventProcessorAgents.forEach((groupName, runner) -> {
+            try {
+                if (register) {
+                    runner.group().broadcastServiceRegistered(service);
+                } else {
+                    runner.group().broadcastServiceDeregistered(service);
+                }
+            } catch (IllegalStateException notQueued) {
+                missed.add(groupName);
+                log.fine("group " + groupName + " not told of service " + service.serviceName() + ": " + notQueued);
+            }
+        });
+        if (!missed.isEmpty()) {
+            com.telamin.mongoose.service.error.ErrorReporting.report("MongooseServer",
+                    "service '" + service.serviceName() + "' is " + (register ? "registered" : "removed")
+                            + ", but processor group(s) " + missed + " could not be told (control queue full, group not"
+                            + " draining): their running processors were not " + (register ? "given" : "relieved of")
+                            + " it", null, com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
         }
     }
 
@@ -639,8 +690,7 @@ public class MongooseServer implements MongooseServerController {
             log.warning("error stopping service '" + serviceName + "' during remove: " + ex);
         }
         flipServiceUp(serviceName, 0);
-        composingEventProcessorAgents.values().forEach(runner ->
-                runner.group().broadcastServiceDeregistered(removed));
+        broadcastToGroups(removed, false);
     }
 
     /**

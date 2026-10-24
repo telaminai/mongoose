@@ -101,6 +101,12 @@ public final class GroupReplayer {
         if (failed != null) stop(cursor, failed);
     }
 
+    /** A processor that left its group (a failed start, review of #66): its replay cursor and captures are dropped. */
+    public void detach(DataFlow flow) {
+        cursors.removeIf(c -> c.flow == flow);
+        captured.remove(flow);
+    }
+
     /**
      * L2 (D8): the service {@code flow} is given. A replayed processor's sinks are replaced by a capture, so what it sends
      * is kept for comparison ({@link #outputs}) and never delivered: a replay must not repeat a run's side effects

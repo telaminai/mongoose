@@ -91,6 +91,15 @@ public interface MongooseAuditCaptureService {
     }
 
     /**
+     * Forget a processor that left the server without stopping normally (a failed start, mongoose#57): stop any capture
+     * of it and drop the reference to {@code dataFlow}. Ignored when {@code processorName} is now bound to another
+     * {@code DataFlow}. Default: a no-op.
+     */
+    default void detach(String processorName, DataFlow dataFlow) {
+        // no-op default — NoOp impl ignores
+    }
+
+    /**
      * Begin capturing audit records for the named processor. The
      * processor must already be registered with the mongoose runtime
      * (i.e. live in {@code MongooseServer.registeredProcessors()}) AND
