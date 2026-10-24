@@ -211,6 +211,12 @@ public class EventToQueuePublisher<T> {
                     .data(mappedItem)
                     .sequenceNumber(sequenceNumber);
             eventLog.add(namedFeedEvent);
+        } else {
+            // nothing holds the item (no event log, no dispatch): drop the reference handed over with it
+            PoolTracker<?> tracker = trackerOf(mappedItem);
+            if (tracker != null) {
+                tracker.releaseReference();
+            }
         }
     }
 
@@ -280,6 +286,9 @@ public class EventToQueuePublisher<T> {
             }
             return mapped;
         } catch (Throwable t) {
+            // the input is not published: drop the reference handed over with it, or a pooled input leaks and the
+            // pool runs dry (review of #63)
+            releaseUnpublished(item);
             log.severe("data mapping (" + context + ") failed: publisher=" + name + ", nextSequenceNumber=" + (sequenceNumber + 1) + ", item=" + item + ", error=" + t);
             com.telamin.mongoose.service.error.ErrorReporting.report(
                     "EventToQueuePublisher:" + name,
@@ -287,6 +296,20 @@ public class EventToQueuePublisher<T> {
                     t,
                     com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
             return null;
+        }
+    }
+
+    /** Releases the reference handed over with a pooled item that is not published; a failed release is reported. */
+    private void releaseUnpublished(Object item) {
+        if (item instanceof PoolAware poolAware) {
+            try {
+                poolAware.getPoolTracker().releaseReference();
+            } catch (Throwable releaseFailed) {
+                log.severe("pooled item reference release failed: publisher=" + name + ", error=" + releaseFailed);
+                com.telamin.mongoose.service.error.ErrorReporting.report("EventToQueuePublisher:" + name,
+                        "pooled item reference release failed", releaseFailed,
+                        com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
+            }
         }
     }
 
