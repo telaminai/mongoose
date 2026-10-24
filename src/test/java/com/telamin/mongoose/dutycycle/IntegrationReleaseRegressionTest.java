@@ -12,6 +12,7 @@ import com.telamin.mongoose.config.MongooseServerConfig;
 import com.telamin.mongoose.dispatch.EventFlowManager;
 import com.telamin.mongoose.dispatch.EventToOnEventInvokeStrategy;
 import com.telamin.mongoose.dispatch.EventToQueuePublisher;
+import com.telamin.mongoose.internal.LifecycleManager;
 import com.telamin.mongoose.replay.JournalledItem;
 import com.telamin.mongoose.service.*;
 import com.telamin.mongoose.service.pool.PoolAware;
@@ -19,6 +20,9 @@ import com.telamin.mongoose.service.pool.impl.PoolTracker;
 import com.telamin.mongoose.service.pool.impl.Pools;
 import com.telamin.mongoose.service.scheduler.DeadWheelScheduler;
 import org.agrona.concurrent.OneToOneConcurrentArrayQueue;
+import org.agrona.concurrent.Agent;
+import org.agrona.concurrent.AgentRunner;
+import org.agrona.concurrent.SleepingMillisIdleStrategy;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -26,6 +30,8 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.lang.ref.Reference;
+import java.lang.ref.WeakReference;
 import java.time.Duration;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
@@ -34,6 +40,7 @@ import java.util.stream.Stream;
 import java.util.logging.Handler;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
+import java.util.logging.Level;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -326,12 +333,11 @@ class IntegrationReleaseRegressionTest {
             assertTrue(second.started);
             assertFalse(second.stopped, "a delayed old stop cannot address a newer registration by name");
             assertEquals(1, completed.get(), "old stop still acknowledges completion");
-            assertEquals(0, group.pendingCancellations(), "a stop for a start already taken is not remembered");
         } finally { group.onClose(); }
     }
 
     @Test
-    void aStopThatFindsNothingIsRememberedOnlyWhileItsStartCanStillArrive() throws Exception {
+    void stopsThatFindNothingDoNotAffectFreshRegistrations() throws Exception {
         ComposingEventProcessorAgent group = new ComposingEventProcessorAgent("DEMO", new EventFlowManager(), null,
                 new DeadWheelScheduler(), new ConcurrentHashMap<>());
         group.onStart();
@@ -343,7 +349,7 @@ class IntegrationReleaseRegressionTest {
             group.removeEventProcessorByName("DEMO-a", released, null);
             group.removeEventProcessorByName("DEMO-a", released, null);
             group.doWork();
-            assertEquals(0, group.pendingCancellations(), "a repeated stop is not remembered");
+            assertFalse(group.isProcessorRegistered("DEMO-a"), "a repeated stop leaves its processor removed");
 
             // a stop after a failed start: the processor was dropped, its start will not come again
             ProcessorRegistration failed = new ProcessorRegistration();
@@ -353,7 +359,7 @@ class IntegrationReleaseRegressionTest {
             group.doWork();
             group.removeEventProcessorByName("DEMO-b", failed, null);
             group.doWork();
-            assertEquals(0, group.pendingCancellations(), "a stop after a failed start is not remembered");
+            assertFalse(group.isProcessorRegistered("DEMO-b"), "a failed start remains removed after its stop");
 
             // a stale stop: the name now belongs to a replacement
             ProcessorRegistration old = new ProcessorRegistration(), current = new ProcessorRegistration();
@@ -367,19 +373,113 @@ class IntegrationReleaseRegressionTest {
             group.removeEventProcessorByName("DEMO-c", old, null);
             group.doWork();
             assertFalse(replacement.stopped, "the stale stop does not reach the replacement");
-            assertEquals(0, group.pendingCancellations(), "a stale stop is not remembered");
+            assertTrue(group.isProcessorRegistered("DEMO-c"), "the fresh registration remains registered");
 
             // the race it exists for: the stop overtakes a start not yet queued, and is forgotten once that start comes
             ProcessorRegistration overtaken = new ProcessorRegistration(); AtomicInteger built = new AtomicInteger();
             group.removeEventProcessorByName("DEMO-d", overtaken, null);
             group.doWork();
-            assertEquals(1, group.pendingCancellations(), "a stop overtaking its start is remembered");
+            assertFalse(group.isProcessorRegistered("DEMO-d"), "the stop was consumed before its start arrived");
             group.addNamedEventProcessor(() -> { built.incrementAndGet(); return new NamedEventProcessor("DEMO-d", new Proc()); },
                     overtaken);
             group.doWork();
             assertEquals(0, built.get(), "the overtaken start is skipped");
-            assertEquals(0, group.pendingCancellations(), "and the cancellation is forgotten once its start is taken");
+            assertFalse(group.isProcessorRegistered("DEMO-d"), "the overtaken registration never becomes live");
         } finally { group.onClose(); }
+    }
+
+    @Test
+    void aRejectedEnqueueDoesNotRetainItsCancelledRegistration() throws Exception {
+        ComposingEventProcessorAgent group = new ComposingEventProcessorAgent("DEMO", new EventFlowManager(), null,
+                new DeadWheelScheduler(), new ConcurrentHashMap<>());
+        group.onStart();
+        try {
+            WeakReference<ProcessorRegistration> rejected = rejectStartAndConsumeItsStop(group);
+            WeakReference<Object> gcControl = new WeakReference<>(new Object());
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while ((rejected.get() != null || gcControl.get() != null) && System.nanoTime() < deadline) {
+                System.gc(); Thread.sleep(20);
+            }
+            assertNull(gcControl.get(), "GC control must collect an unowned object");
+            assertNull(rejected.get(), "a live group must not retain a cancelled registration whose enqueue failed");
+        } finally { group.onClose(); Reference.reachabilityFence(group); }
+    }
+
+    private static WeakReference<ProcessorRegistration> rejectStartAndConsumeItsStop(ComposingEventProcessorAgent group)
+            throws Exception {
+        for (int i = 0; i < ComposingEventProcessorAgent.CONTROL_QUEUE_CAPACITY; i++) {
+            String name = "fill-" + i;
+            group.addNamedEventProcessor(() -> new NamedEventProcessor(name, new Proc()));
+        }
+        ProcessorRegistration rejected = new ProcessorRegistration(); AtomicInteger built = new AtomicInteger();
+        AtomicInteger acknowledged = new AtomicInteger();
+        group.removeEventProcessorByName("DEMO-rejected", rejected, acknowledged::incrementAndGet);
+        assertThrows(IllegalStateException.class, () -> group.addNamedEventProcessor(() -> {
+            built.incrementAndGet(); return new NamedEventProcessor("DEMO-rejected", new Proc());
+        }, rejected), "the full start queue rejects this enqueue on its own thread");
+        group.doWork();
+        assertEquals(1, acknowledged.get(), "the rejected add's stop was consumed");
+        assertEquals(0, built.get(), "no supplier ran for the rejected add");
+        return new WeakReference<>(rejected);
+    }
+
+    @Test
+    void aSecondLaunchIsRefusedBeforeTheFirstThreadHasStarted() throws Exception {
+        LifecycleManager manager = new LifecycleManager(null);
+        CountDownLatch atLaunch = new CountDownLatch(1), release = new CountDownLatch(1);
+        AtomicInteger launches = new AtomicInteger(); AtomicReference<Throwable> failure = new AtomicReference<>();
+        Agent agent = new Agent() {
+            @Override public int doWork() { return 0; }
+            @Override public String roleName() { return "DEMO-held-launch"; }
+        };
+        AgentRunner runner = new AgentRunner(new SleepingMillisIdleStrategy(1), failure::set, null, agent) {
+            @Override public Agent agent() {
+                if (launches.incrementAndGet() == 1) {
+                    atLaunch.countDown();
+                    try { if (!release.await(5, TimeUnit.SECONDS)) throw new AssertionError("launch not released"); }
+                    catch (InterruptedException e) { throw new AssertionError(e); }
+                }
+                return super.agent();
+            }
+        };
+        Thread first = new Thread(() -> { try { manager.startOnce(runner); } catch (Throwable t) { failure.set(t); } });
+        first.start();
+        try {
+            assertTrue(atLaunch.await(5, TimeUnit.SECONDS));
+            assertNull(runner.thread(), "first launch is held before the runner can claim its thread");
+            manager.startOnce(runner);
+            assertEquals(1, launches.get(), "a competing caller must not attempt a second thread launch");
+        } finally {
+            release.countDown(); first.join(5000); runner.close();
+        }
+        assertFalse(first.isAlive(), "launch caller terminated");
+        assertNull(failure.get(), "launch and runner callbacks succeeded");
+    }
+
+    @Test
+    void aRuntimeAddLosingItsLaunchToStopNeverRunsItsSupplier() throws Exception {
+        MongooseServer s = server(); s.init(); s.start();
+        AtomicInteger built = new AtomicInteger(); AtomicBoolean stopped = new AtomicBoolean();
+        Logger logger = Logger.getLogger(MongooseServer.class.getName()); Level prior = logger.getLevel();
+        Handler stopBeforeLaunch = new Handler() {
+            @Override public void publish(LogRecord record) {
+                if (record.getMessage().startsWith("staring event processor group:'DEMO-stop-race'")
+                        && stopped.compareAndSet(false, true)) s.stop();
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        logger.setLevel(Level.INFO); logger.addHandler(stopBeforeLaunch);
+        try {
+            assertDoesNotThrow(() -> s.addEventProcessor("DEMO", "DEMO-stop-race", null,
+                    () -> { built.incrementAndGet(); return new Proc(); }));
+            assertTrue(stopped.get(), "stop won after the runtime admission check and before the launch");
+            assertTrue(s.awaitStopped(5, TimeUnit.SECONDS));
+            AgentRunner runner = groupRunner(s, "DEMO-stop-race");
+            assertSame(AgentRunner.TOMBSTONE, runner.thread(), "the stopped runner cannot claim a thread afterwards");
+            assertTrue(runner.isClosed());
+            assertEquals(0, built.get(), "an add whose launch loses to stop never runs its supplier");
+        } finally { logger.removeHandler(stopBeforeLaunch); logger.setLevel(prior); s.stop(); }
     }
 
     @Test
@@ -391,9 +491,13 @@ class IntegrationReleaseRegressionTest {
                 String group = "DEMO-" + i;
                 Proc first = new Proc(), second = new Proc();
                 CyclicBarrier together = new CyclicBarrier(2);
-                Thread a = new Thread(() -> addAfter(together, s, "DEMO-a", group, first));
-                Thread b = new Thread(() -> addAfter(together, s, "DEMO-b", group, second));
+                AtomicReference<Throwable> failure = new AtomicReference<>();
+                Thread a = new Thread(() -> addAfter(together, s, "DEMO-a", group, first, failure));
+                Thread b = new Thread(() -> addAfter(together, s, "DEMO-b", group, second, failure));
                 a.start(); b.start(); a.join(5_000); b.join(5_000);
+                assertFalse(a.isAlive(), "first add caller terminated");
+                assertFalse(b.isAlive(), "second add caller terminated");
+                assertNull(failure.get(), "both concurrent adds returned successfully");
                 await(() -> first.started && second.started, "both processors start in " + group);
                 assertFalse(groupRunner(s, group).isClosed(),
                         "a second start of the group's runner must not mark it closed while its thread runs: " + group);
@@ -401,12 +505,13 @@ class IntegrationReleaseRegressionTest {
         } finally { s.stop(); }
     }
 
-    private static void addAfter(CyclicBarrier together, MongooseServer s, String name, String group, Proc proc) {
+    private static void addAfter(CyclicBarrier together, MongooseServer s, String name, String group, Proc proc,
+                                 AtomicReference<Throwable> failure) {
         try {
             together.await(5, TimeUnit.SECONDS);
             s.addEventProcessor(name, group, null, () -> proc);
-        } catch (Exception e) {
-            throw new IllegalStateException(e);
+        } catch (Throwable e) {
+            failure.compareAndSet(null, e);
         }
     }
 

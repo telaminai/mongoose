@@ -98,3 +98,37 @@ regression cases; clean full JDK 21 suite **494 / 0 / 0 / 9**, **110 reports**. 
 rendered and visually inspected, the new disclosures extracted successfully, text bounds fit the pages, and the five
 main release steps and ten nested items were checked. An initial Markdown renderer flattened nested lists; it was
 replaced with CommonMark parsing before delivery. Exact-head CI is recorded in the PR response.
+
+## Follow-up to the review of 74ad868
+
+The rejected-enqueue path remained outside the `startTaken` fix: an add could publish its reservation, queue a stop,
+then time out before enqueue. Its stop retained a cancellation for a start that would never arrive. A standalone
+real-server probe observed a rolled-back reservation, zero supplier calls and one retained cancellation.
+
+Cancellation now lives on the single-use `ProcessorRegistration` itself. The group does not retain a cancellation
+set. A stop overtaking a start marks that registration, and the eventual start skips its supplier; when enqueue
+fails, consuming the outstanding requests leaves no group-owned token to retain. Both state fields remain confined
+to the agent thread. This adds no lock, volatile read or allocation to normal event delivery.
+
+Maintained evidence:
+
+- `aRejectedEnqueueDoesNotRetainItsCancelledRegistration` fills the real group start queue, rejects the add and
+  consumes its stop. It keeps the group alive while checking that the registration can be reclaimed. On unchanged
+  74ad868 the unrelated GC control was collected but the registration remained, failing at the named reclamation
+  assertion. Fixed, the registration is collected. The bounded test relies on explicit GC being enabled in the
+  standard JDK 21 test configuration; its separate control reports a GC-fixture failure rather than mislabelling
+  disabled collection as a retention defect. This checks ownership rather than the size of an implementation set.
+- `aSecondLaunchIsRefusedBeforeTheFirstThreadHasStarted` holds Agrona's real launch boundary before the runner can
+  claim its thread, then invokes the competing caller. It counts launch attempts synchronously. Bypassing only the
+  start-once guard makes the named assertion fail (expected 1, actual 2); source restoration was byte-identical.
+- `aRuntimeAddLosingItsLaunchToStopNeverRunsItsSupplier` forces shutdown after runtime admission but before launch,
+  then checks the closed-runner tombstone and zero supplier calls. It uses the existing logging boundary, with no
+  production test hook.
+- The existing 50-group race stress test now captures worker failures and checks both add callers terminated. Its
+  reflective runner inspection remains secondary coverage; the deterministic launch proof uses public APIs and
+  does not depend on a scheduler winning the race. Other stop tests now assert processor outcomes rather than a
+  private cancellation-set count; the obsolete count accessor has been removed.
+
+Focused verification: **46 / 0 failures / 0 errors / 0 skips**, including **26** integration regression cases. Clean
+`mvn -o -q clean test`, JDK 21: **499 / 0 / 0 / 9**, **110 reports**. Exact-head CI is recorded with the pushed
+response. No full mutation campaign was run.

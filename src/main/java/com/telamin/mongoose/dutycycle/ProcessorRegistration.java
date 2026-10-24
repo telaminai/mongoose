@@ -8,7 +8,12 @@ public final class ProcessorRegistration {
 
     /**
      * Set when the group takes this add's start, whether it then starts, fails or is skipped as cancelled. A stop that
-     * finds no processor cancels the registration only while this is false: only then can its start still arrive.
+     * finds no processor cancels the registration only while this is false. It does not promise an enqueue will succeed.
      */
     boolean startTaken;
+    /**
+     * A stop overtook this start. Stored on this single-use identity, not in a group-owned collection: if enqueue
+     * fails and no start can arrive, the registration can be reclaimed once its outstanding requests are consumed.
+     */
+    boolean cancelled;
 }

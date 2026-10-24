@@ -85,9 +85,6 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     private final ManyToOneConcurrentArrayQueue<ProcessorStop> toStopList = new ManyToOneConcurrentArrayQueue<>(CONTROL_QUEUE_CAPACITY);
     /** Registration identity is used only for lifecycle operations, never for event delivery. */
     private final java.util.Map<NamedEventProcessor, ProcessorRegistration> registrations = new java.util.IdentityHashMap<>();
-    /** Stops consumed before their starts arrive; agent-thread-only, with registration identity rather than names. */
-    private final java.util.Set<ProcessorRegistration> cancelledRegistrations =
-            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
     // Dynamic-service broadcast queue. MongooseServer.registerService /
     // removeService publish onto it so the agent thread (and only the
     // agent thread) calls eventProcessor.registerService /
@@ -307,7 +304,6 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         closed = true;                                                    // no work is taken after this
         for (Runnable r; (r = onAgentThread.poll()) != null; ) r.run();   // work handed over before the close still runs
         stopAndTearDownProcessors();   // mongoose#56: on the group's thread, as every other processor callback
-        cancelledRegistrations.clear();
         agentThread = null;
         log.info("onClose " + roleName());
         super.onClose();
@@ -542,7 +538,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     private void startProcessor(ProcessorStart start, boolean failFast) {
         if (start.registration() != null) {
             start.registration().startTaken = true;
-            if (cancelledRegistrations.remove(start.registration())) {
+            if (start.registration().cancelled) {
                 return; // its stop won before the start was queued: do not even run the supplier
             }
         }
@@ -606,8 +602,8 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
             if (named != null && (stop.registration() == null || registrations.get(named) == stop.registration())) {
                 release(named, true);     // tells the server (processorStopped), once
             } else if (stop.registration() != null && !stop.registration().startTaken) {
-                // only a start not yet taken can still arrive; a repeated, stale or post-failure stop is not remembered
-                cancelledRegistrations.add(stop.registration());
+                // No group-owned tombstone: a rejected enqueue may mean this start never arrives.
+                stop.registration().cancelled = true;
             }
         } finally {
             if (stop.completed() != null) stop.completed().run();
@@ -752,11 +748,6 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     private java.util.Set<Service<?>> servicesDeliveredTo(DataFlow eventProcessor) {
         return servicesDelivered.computeIfAbsent(eventProcessor,
                 k -> java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
-    }
-
-    /** Cancellations waiting for their start, for tests: each is removed when that start is taken. */
-    int pendingCancellations() {
-        return cancelledRegistrations.size();
     }
 
     public boolean isProcessorRegistered(String processorName) {
