@@ -25,7 +25,7 @@ public class ControlState {
     public static final class Reg {
         public final long generation;
         public final int incarnation;
-        public final String name;
+        public String name;
         public final long addRequestId;
         public Lifecycle lifecycle = Lifecycle.STARTING;
 
@@ -46,6 +46,7 @@ public class ControlState {
         public final ChainKind kind;
         public int outstanding;
         public String failure;
+        public boolean failBoot;
 
         Chain(long requestId, ChainKind kind) {
             this.requestId = requestId;
@@ -64,6 +65,7 @@ public class ControlState {
     private transient long causeSeq = -1;
     private transient String causeOp;
     private transient long inputSeq = -1;
+    private transient boolean closing;
 
     /** Begin recording a command or completion cycle. */
     public void beginInput(long requestId) {
@@ -130,6 +132,24 @@ public class ControlState {
 
     public Reg registration(long generation) {
         return registrations.get(generation);
+    }
+
+    /** The live registration answering to {@code name}, for a stop that names a processor but carries no generation. */
+    public Reg registration(String name) {
+        if (name == null) return null;
+        for (Reg r : registrations.values()) {
+            if (name.equals(r.name) && (r.lifecycle == Lifecycle.STARTED || r.lifecycle == Lifecycle.RELEASING)) return r;
+        }
+        return null;
+    }
+
+    /** Set by the close rule: from then on adds are refused and nothing new is started. */
+    public void closing() {
+        this.closing = true;
+    }
+
+    public boolean isClosing() {
+        return closing;
     }
 
     public void forget(long generation) {

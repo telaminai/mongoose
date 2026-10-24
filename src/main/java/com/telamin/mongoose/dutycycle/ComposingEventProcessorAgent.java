@@ -109,7 +109,6 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     /** Agent thread only: what each generation built, the registration it answers to, and the live name index. */
     private final Map<Long, NamedEventProcessor> processorsByGeneration = new HashMap<>();
     private final Map<Long, ProcessorRegistration> registrationsByGeneration = new HashMap<>();
-    private final Map<String, Long> generationsByName = new HashMap<>();
     private final List<EventQueueToEventProcessor> queueReadersToAdd = new ArrayList<>();
     /**
      * mongoose#60 (item 1): the services each processor has been handed, by identity, so each is handed over once. A
@@ -269,13 +268,13 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     private AddIntent addIntent(long requestId, ProcessorRegistration registration) {
         if (registration == null) {
             long generation = generations.incrementAndGet();
-            return new AddIntent(requestId, generation, 0, null, false, bootDraining, true);
+            return new AddIntent(requestId, generation, 0, null, false, bootDraining, bootFailFast, true);
         }
         registrationsByGeneration.put(registration.generation(), registration);
         boolean cancelled = registration.cancelled;
         registration.startTaken = true;
         return new AddIntent(requestId, registration.generation(), registration.incarnation(), registration.name(),
-                cancelled, bootDraining, false);
+                cancelled, bootDraining, bootFailFast, false);
     }
 
     private StopIntent stopIntent(long requestId, String name, ProcessorRegistration registration) {
@@ -283,10 +282,8 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             registrationsByGeneration.putIfAbsent(registration.generation(), registration);
             return new StopIntent(requestId, registration.generation(), name, true, registration.startTaken);
         }
-        Long generation = generationsByName.get(name);
-        return generation == null
-                ? new StopIntent(requestId, -1, name, false, false)
-                : new StopIntent(requestId, generation, name, true, true);
+        // no registration: the control processor resolves the name against what is running when the stop is applied
+        return new StopIntent(requestId, -1, name, false, false);
     }
 
     // ============================================================================================ agent lifecycle
@@ -441,6 +438,15 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             case ControlEffect.CancelRegistration e -> cancelRegistration(e);
             case ControlEffect.DeliverService e -> deliver(e);
             case ControlEffect.RunTask e -> runTask(e);
+            case ControlEffect.FailBoot e -> {
+                bootFailure = lastStartFailure != null ? lastStartFailure : new IllegalStateException(e.reason());
+                bootFailureName = e.name() == null ? "<not built>" : e.name();
+                yield result(e, ControlOutcome.SUCCEEDED, null);
+            }
+            case ControlEffect.ReportFailure e -> {
+                reportProcessorFailure(e.name() == null ? "<not built>" : e.name(), e.what(), lastStartFailure);
+                yield result(e, ControlOutcome.SUCCEEDED, null);
+            }
             case ControlEffect.Reply e -> {
                 control.reply(e.requestId(), e.outcome(), e.reason(), e.generation(), e.name());
                 yield result(e, ControlOutcome.SUCCEEDED, e.outcome().name());
@@ -482,7 +488,6 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             registeredEventProcessors.put(name, namedEventProcessor);
             registrations.put(namedEventProcessor, payload.registration());
             processorsByGeneration.put(effect.generation(), namedEventProcessor);
-            generationsByName.put(name, effect.generation());
             com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(eventProcessor);
             // replay: a recorded processor gets a live recording clock, a replayed one a pinned replay clock. Before
             // anything that can subscribe it (services, the feed): a replayed processor's live inputs are muted as
@@ -505,15 +510,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             throw fatal;
         } catch (Throwable t) {
             String name = namedEventProcessor == null ? effect.name() : namedEventProcessor.name();
-            lastStartFailure = t;
-            if (bootDraining && bootFailFast) {
-                if (bootFailure == null) {
-                    bootFailure = t;
-                    bootFailureName = name == null ? "<not built>" : name;
-                }
-            } else {
-                reportProcessorFailure(name == null ? "<not built>" : name, "failed to start, dropped from the group", t);
-            }
+            lastStartFailure = t;   // whether it fails the boot or is reported is the control processor's decision
             return result(effect, name, ControlOutcome.FAILED, String.valueOf(t));
         } finally {
             com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
@@ -526,7 +523,6 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         if (named == null) {
             return result(effect, ControlOutcome.SUCCEEDED, "nothing built");
         }
-        generationsByName.remove(named.name(), effect.generation());
         stepFailures = 0;
         if (registeredEventProcessors.get(named.name()) == named) {
             release(named, effect.stopping());

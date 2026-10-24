@@ -11,7 +11,7 @@ package com.telamin.mongoose.control.effect;
  */
 public sealed interface ControlEffect permits ControlEffect.BuildAndStart, ControlEffect.Release,
         ControlEffect.ReleaseName, ControlEffect.CancelRegistration, ControlEffect.DeliverService, ControlEffect.RunTask,
-        ControlEffect.Reply {
+        ControlEffect.Reply, ControlEffect.FailBoot, ControlEffect.ReportFailure {
 
     String opId();
 
@@ -38,6 +38,12 @@ public sealed interface ControlEffect permits ControlEffect.BuildAndStart, Contr
                           boolean register) implements ControlEffect { }
 
     record RunTask(String opId, long requestId, long generation, String name) implements ControlEffect { }
+
+    /** A boot processor failed to start under the fail-fast policy: the group's start fails once its boot drain ends. */
+    record FailBoot(String opId, long requestId, long generation, String name, String reason) implements ControlEffect { }
+
+    /** A failure the group reports through {@code ErrorReporting} and carries on. */
+    record ReportFailure(String opId, long requestId, long generation, String name, String what) implements ControlEffect { }
 
     record Reply(String opId, long requestId, long generation, String name,
                  com.telamin.mongoose.control.event.ReplyOutcome outcome, String reason) implements ControlEffect { }

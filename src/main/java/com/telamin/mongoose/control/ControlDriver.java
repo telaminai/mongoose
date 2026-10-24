@@ -324,24 +324,16 @@ public final class ControlDriver {
         if (before == GroupState.CLOSED) return;
         if (before != GroupState.DEAD) state.set(GroupState.CLOSING);
         List<ControlRequest> held = new ArrayList<>();
-        for (ControlRequest r; (r = mailbox.poll()) != null; ) {
-            if (r.claim()) held.add(r);
-            else outstanding.remove(r);
-        }
+        for (ControlRequest r; (r = mailbox.poll()) != null; ) held.add(r);
         if (!controlWedged && before != GroupState.DEAD) {
             for (ControlInput c; (c = completions.poll()) != null; ) dispatch(c, null);
             ControlRequest close = new ControlRequest(ControlRequest.Kind.CLOSE, "close " + group, CloseIntent::new, null);
             close.assignId(requestIds.incrementAndGet());
             outstanding.add(close);
             apply(close);
-        }
-        for (ControlRequest r : held) {
-            ControlReply answer = r.kind() == ControlRequest.Kind.STOP
-                    ? new ControlReply(r.requestId(), ReplyOutcome.APPLIED, "stopped by the group's close", -1, null)
-                    : ControlReply.notRunning(r.requestId(), "group " + group + " closed");
-            r.completeClaimed(answer);
-            outstanding.remove(r);
-            audit.fallback(answer.outcome().name(), "group", group, "requestId", r.requestId(), "request", r.description());
+            // what was queued before the close is still answered by the control processor's rules, now that it is
+            // closing: an add is refused without running its supplier, a stop finds its processor already stopped
+            for (ControlRequest r : held) apply(r);
         }
         failClaimed("group ended");
         if (state.get() != GroupState.DEAD) state.set(GroupState.CLOSED);

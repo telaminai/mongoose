@@ -52,9 +52,16 @@ public class LifecycleRules extends EventLogNode {
             decide("addCancelled", intent.generation(), intent.name(), "Admitted", "Cancelled", reply);
             return true;
         }
+        if (state.isClosing()) {
+            // queued before the close: nothing new starts in a closing group, and its supplier never runs
+            ControlEffect reply = reply(req, intent.generation(), intent.name(), ReplyOutcome.NOT_RUNNING, "group closed");
+            decide("addWhileClosing", intent.generation(), intent.name(), "Admitted", "Refused", reply);
+            return true;
+        }
         Reg reg = state.admit(intent.generation(), intent.incarnation(), intent.name(), req);
         reg.lifecycle = Lifecycle.STARTING;
-        state.openChain(req, ChainKind.ADD);
+        Chain chain = state.openChain(req, ChainKind.ADD);
+        chain.failBoot = intent.boot() && intent.failBootOnStartFailure();
         ControlEffect start = new ControlEffect.BuildAndStart(state.nextOp(req), req, intent.generation(), intent.name());
         decide("addAdmitted", intent.generation(), intent.name(), "Admitted", "Starting", start);
         return true;
@@ -65,7 +72,9 @@ public class LifecycleRules extends EventLogNode {
     @OnEventHandler
     public boolean onStop(StopIntent intent) {
         long req = intent.requestId();
-        Reg reg = intent.bound() ? state.registration(intent.generation()) : null;
+        // a stop bound to a registration addresses that generation only; one that only names a processor addresses
+        // whichever registration answers to the name now
+        Reg reg = intent.bound() ? state.registration(intent.generation()) : state.registration(intent.name());
         if (reg == null) {
             if (!intent.bound()) {
                 ControlEffect reply = reply(req, intent.generation(), intent.name(), ReplyOutcome.REFUSED,
@@ -110,6 +119,7 @@ public class LifecycleRules extends EventLogNode {
     @OnEventHandler
     public boolean onClose(CloseIntent intent) {
         long req = intent.requestId();
+        state.closing();
         List<Reg> started = state.started();
         if (started.isEmpty()) {
             ControlEffect reply = reply(req, -1, null, ReplyOutcome.APPLIED, "nothing running");
@@ -162,7 +172,10 @@ public class LifecycleRules extends EventLogNode {
         long req = result.requestId();
         Reg reg = state.registration(result.generation());
         if (result.succeeded()) {
-            if (reg != null) reg.lifecycle = Lifecycle.STARTED;
+            if (reg != null) {
+                reg.lifecycle = Lifecycle.STARTED;
+                if (reg.name == null) reg.name = result.name();   // an add without admission: named once built
+            }
             ControlEffect reply = reply(req, result.generation(), result.name(), ReplyOutcome.APPLIED, "started");
             decide("started", result.generation(), result.name(), "Starting", "Started", reply);
             return;
@@ -172,7 +185,14 @@ public class LifecycleRules extends EventLogNode {
         chain.failure = result.reason();
         ControlEffect release = new ControlEffect.Release(state.nextOp(req), req, result.generation(), result.name(),
                 false);
-        decide("startFailed", result.generation(), result.name(), "Starting", "Failed", release);
+        // at boot under the fail-fast policy the group's start fails; otherwise the failure is reported and the group
+        // carries on
+        ControlEffect consequence = chain.failBoot
+                ? new ControlEffect.FailBoot(state.nextOp(req), req, result.generation(), result.name(), result.reason())
+                : new ControlEffect.ReportFailure(state.nextOp(req), req, result.generation(), result.name(),
+                "failed to start, dropped from the group");
+        decide(chain.failBoot ? "bootStartFailed" : "startFailed", result.generation(), result.name(), "Starting",
+                "Failed", consequence, release);
     }
 
     private void released(Chain chain, EffectResult result) {
