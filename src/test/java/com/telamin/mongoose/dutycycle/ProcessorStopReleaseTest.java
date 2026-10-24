@@ -147,6 +147,22 @@ class ProcessorStopReleaseTest {
         group.onClose();
     }
 
+    /** A stop made while the processor's add is still queued stops it: the add is taken first, then the stop. */
+    @Test
+    void stopMadeWhileTheAddIsStillQueuedStopsTheProcessor() throws Exception {
+        ComposingEventProcessorAgent group = newGroup();
+        group.onStart();
+        Proc late = new Proc(-1).noSubscription();
+        group.addNamedEventProcessor(() -> new NamedEventProcessor("late", late));
+        group.removeEventProcessorByName("late");
+        group.doWork();
+
+        assertTrue(late.started, "the queued add is taken");
+        assertTrue(late.stopped && late.tornDown, "and then stopped by the stop made after it");
+        assertFalse(group.isProcessorRegistered("late"), "it is no longer in the group");
+        group.onClose();
+    }
+
     /** A stop that throws still tears the processor down and releases the rest: each step is guarded. */
     @Test
     void processorWhoseStopThrowsIsStillTornDownAndItsTimersCancelled() throws Exception {
