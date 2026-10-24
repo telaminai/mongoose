@@ -1208,6 +1208,13 @@ public class MongooseServer implements MongooseServerController {
             lifecycleManager.stop(true, toGroupRunnerMap(composingEventProcessorAgents), toGroupRunnerMap(composingServiceAgents),
                     registeredServices, flowManager, drainTimeoutMillis);
         } finally {
+            // the processors have stopped: close every audit capture still recording, so its queue is flushed and
+            // closed rather than left open until the JVM exits
+            try {
+                auditCaptureService.stopAll();
+            } catch (RuntimeException e) {
+                log.log(java.util.logging.Level.WARNING, "audit capture could not be stopped at server stop", e);
+            }
             lifecycleState.set(LifecycleState.STOPPED);
             stopCompleted.countDown();
         }
