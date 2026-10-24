@@ -574,11 +574,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     private void stopProcessor(String name) {
         NamedEventProcessor named = registeredEventProcessors.get(name);
         if (named != null) {
-            release(named, true);
-        }
-        if (mongooseServer != null) {
-            guarded(name, "failed to release its server bindings",
-                    () -> mongooseServer.processorStopped(roleName(), name, eventProcessor));
+            release(named, true);     // tells the server (processorStopped), once
         }
     }
 

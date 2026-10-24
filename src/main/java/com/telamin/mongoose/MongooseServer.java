@@ -437,7 +437,7 @@ public class MongooseServer implements MongooseServerController {
     /**
      * A processor group stopped {@code processorName} ({@link #stopProcessor}, mongoose#71). Called on the group's
      * thread, once the group has stopped the processor and released what it holds for it; this releases what the server
-     * bound to it by name ({@link #releaseProcessorBindings}), as for a dropped processor.
+     * bound to it: the audit capture forgets the instance and a capture still recording is ended.
      * <p>
      * It does not free a processor-name reservation (mongoose#60): {@link #stopProcessor} frees that itself, ordered
      * after the stop on the group's thread, so an add of the same name made once the name is free can never be removed
@@ -445,7 +445,14 @@ public class MongooseServer implements MongooseServerController {
      */
     public void processorStopped(String groupName, String processorName, DataFlow eventProcessor) {
         log.info("processor '" + processorName + "' stopped in group '" + groupName + "'");
-        releaseProcessorBindings(processorName, eventProcessor);
+        // the audit capture forgets the torn-down instance first (mongoose#46), so nothing is installed on it again and
+        // an audit.start for it is refused; then a capture still recording is ended and its queue closed without
+        // touching the instance (mongoose#71), rather than left open for a processor that has gone
+        try {
+            auditCaptureService.processorStopped(processorName, eventProcessor);
+        } finally {
+            auditCaptureService.stop(processorName);
+        }
     }
 
     /**
@@ -454,15 +461,6 @@ public class MongooseServer implements MongooseServerController {
      */
     private void releaseProcessorBindings(String processorName, DataFlow eventProcessor) {
         auditCaptureService.detach(processorName, eventProcessor);
-    }
-
-    /**
-     * A processor group stopped and tore down {@code processorName} (mongoose#46). Called on the group's thread; the
-     * audit-capture service forgets the instance, so nothing is installed on it again and an {@code audit.start} for
-     * it is refused rather than reported as recording a processor that is gone.
-     */
-    public void processorStopped(String groupName, String processorName, DataFlow eventProcessor) {
-        auditCaptureService.processorStopped(processorName, eventProcessor);
     }
 
     /**
