@@ -144,7 +144,9 @@ Key details:
 
 - `EventWrapStrategy` controls whether items are wrapped in `NamedFeedEvent` or sent raw.
 - If `cacheEventLog` is enabled in the publisher, events are recorded and replayed on `startComplete()`.
-- `EventToQueuePublisher` bounds spin when queues are contended to avoid blocking publishers; slow consumers are warned.
+- `EventToQueuePublisher` bounds spin (~10 ms) on a full queue, then drops the item for that queue, warns and counts it
+  (`droppedCount()`). Publishes on one publisher are serialised on a lock held through that spin, so a slow consumer
+  delays every publisher of the same feed; see [Publisher serialisation and slow subscribers](event-flow.md#publisher-serialisation-and-slow-subscribers).
 
 ## 4) Where does my code run?
 

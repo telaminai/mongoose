@@ -83,6 +83,12 @@ public final class PoolTracker<T extends PoolAware> {
      * The count never goes below zero: a release with no reference held, while the object is still out of the pool,
      * is a double release and is refused with an {@link IllegalStateException}. A late release after the object has
      * gone back to the pool is tolerated as a no-op.
+     * <p>
+     * <b>The late-release no-op holds only until the object is acquired again.</b> Once the pool hands the object out
+     * again its tracker is re-initialised (count 1, not returned), so a late release from a previous holder then
+     * counts against the NEW holder's reference (an ABA): it can take the count to zero and return the object while
+     * the new holder still uses it, or make the new holder's own release fail as a double release. A holder must
+     * therefore release exactly once per reference it acquired, and never after it has given its reference up.
      */
     public void releaseReference() {
         if (detached || returned.get()) {

@@ -65,7 +65,11 @@ groups can publish to one pipe without losing events; each subscriber receives
 on its own agent thread. (Before the fix for #51, concurrent publishers could
 overwrite each other's slots in the single-producer subscriber queues.) An item
 dropped because a subscriber queue stayed full for more than 10 ms is logged and
-counted (`EventToQueuePublisher.droppedCount()`). With `agentName` set, the
+counted (`EventToQueuePublisher.droppedCount()`). The publishers wait for each
+other while a subscriber queue is full (the serialising lock is held through
+that 10 ms spin), so one slow subscriber slows every publisher on the pipe; see
+[Publisher serialisation and slow subscribers](../../architecture/event-flow.md#publisher-serialisation-and-slow-subscribers).
+With `agentName` set, the
 pipe's agent drains items handed to `InMemoryEventSource.offer(...)`; values
 sent into the sink are still published in-line.
 
