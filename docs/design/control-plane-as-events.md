@@ -212,7 +212,7 @@ Recommended, and built in PR 3 rather than as a later replacement, so the state 
 2. Its nodes hold the name registry, generations, each processor's lifecycle state and each capture's state. They decide the transition and emit effects: build and start, release, install or remove a capture, reply.
 3. The group applies the effects, then feeds the outcome back as an event (`Started`, `StartFailed`, `Released`), and the processor decides the reply.
 
-**Re-entrancy.** Follow-on decisions inside the control processor, such as stopping the dependants of a processor that stopped, use Fluxtion's own re-entrancy through the injected context: queued for the next cycle, which suits loops, or run as a new event cycle. Requests from outside the group, including a processor's own `start()` adding a processor while an effect is applied, still go through the mailbox, so they keep their order against other callers.
+**Re-entrancy.** Follow-on decisions inside the control processor, such as stopping the dependants of a processor that stopped, use Fluxtion's own re-entrancy through the injected `EventDispatcher` (`SingleNamedNode` exposes it): `processReentrantEvent` puts a follow-on at the front of the queue so it runs next, `queueReentrantEvent` puts it at the back, which suits loops, and `processAsNewEventCycle` queues it at the back and forces a cycle if none is running. Requests from outside the group, including a processor's own `start()` adding a processor while an effect is applied, still go through the mailbox, so they keep their order against other callers.
 
 **What it buys.**
 
