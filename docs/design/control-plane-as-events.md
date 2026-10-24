@@ -1,6 +1,6 @@
 # Mongoose control plane as events — design
 
-Status: proposal, revision 3, 2026-10-24. Responds to three reviews and two follow-ups on PR #75 (see [Review responses](#review-responses)). Targets the release after 1.0.33. Mongoose code references are to `integration/next-release` at `74ad868` unless stated; review citations at `ad07abc` were re-checked there. Analyser references are to `telaminai/fluxtionauditlog-analyser` at `985ea71`.
+Status: proposal, revision 3, 2026-10-24. Responds to three reviews and three follow-ups on PR #75 (see [Review responses](#review-responses)). Targets the release after 1.0.33. Mongoose code references are to `integration/next-release` at `74ad868` unless stated; review citations at `ad07abc` were re-checked there. Analyser references are to `telaminai/fluxtionauditlog-analyser` at `985ea71`.
 
 ## Summary
 
@@ -18,6 +18,7 @@ What revision 3 changes:
 - Audit capture opens asynchronously with explicit `Opening` and `Closing` capture states; a stale open is detected by identity and compensated by closing it.
 - Matching graph, source and audit evidence, investigable through existing MCP verbs, is an acceptance criterion.
 - Diagnostic audit, invariant validation and deterministic replay are separate capabilities with separate promises, and the audit's coverage limits are stated.
+- The authoring and investigation workflow has been tried end to end on a small lifecycle lab (see [Field evidence](#field-evidence-the-authoring-and-investigation-experiment)). It demonstrates the authoring and investigation benefit; it does not test this design's concurrency, shutdown or replay guarantees.
 
 ## Design objective: an inspectable control plane
 
@@ -76,6 +77,34 @@ The analyser already runs a generated Fluxtion state machine for its own session
 | Marshalling late results | `post()` on the designated thread | An unbounded completion queue drained with the mailbox, so a full mailbox can never refuse a completion |
 | Lifetime | The driver lives as long as the app | Groups close and can die: terminal admission, sweeps and server cleanup |
 | Audit sink | Bounded ring, counted drops and failures, export to analyser YAML | Same, plus `seq` numbers so a gap is detectable per group |
+
+## Field evidence: the authoring and investigation experiment
+
+A hands-on experiment, [reported on PR #75](https://github.com/telaminai/mongoose/pull/75#issuecomment-6386919320), used the Audit analyser bundle template and its Spring add-a-node authoring skill. One agent (GPT-6.1) built a small lifecycle model; a separate reviewing agent inspected its tests and investigated the hosted run through the analyser's MCP verbs.
+
+**What was built.** A Spring-defined graph, `allocationBoundary → lifecyclePolicy → simulatedEffects → effectEvidence`, modelling one active resource slot. Scripted completions stood in for external open operations. A fake adapter kept its own ledgers of handle existence, ownership and close counts, independently of the audit text. A successful completion allocated its simulated handle before the policy decided to adopt or dispose of it.
+
+**Reported results** (from the comment; the artifacts are local and not published):
+
+| Check | Result |
+| --- | --- |
+| Tests | 7 passed (6 lifecycle tests through the generated processor, plus the graph test); no failures or skips |
+| Hosted run | 13 scripted commands, 31 audit records, clean stop; 13 command cycles, 11 with effect and outcome evidence |
+| Late completion | Operation 201 for generation 2 arrived while generation 3 was ready; adoption refused; the old handle closed once; the replacement stayed ready with one live, owned handle. Tests asserted the close count and ownership from the ledger |
+| Stale stop and duplicate completion | No downstream effect in the audit, and tests asserted unchanged invocation counters rather than inferring non-execution from missing records |
+| Final accounting | 3 allocations, 3 closes, 0 live and 0 owned handles; MCP series queries found `allocations - closes - live = 0` and `live - owned = 0` across all 11 effect outcomes |
+| Coverage | All 4 lab nodes logged; whole-graph coverage 4/7 because three template nodes were not exercised. Observability information, not state-machine coverage |
+
+**What it demonstrates**, and this design adopts:
+
+- **Explicit, authored structure.** A Spring XML graph gave the LLM something concrete to edit; generation made it executable without hand-editing generated source.
+- **Decisions connected to actual outcomes.** The audit recorded what the policy decided and what the effects actually did, as separate records.
+- **Investigation another person can follow.** Through MCP the reviewer ran queries, located and inspected records, checked accounting expressions, and preserved the result as flags, a chart, a report, a four-step walkthrough and an evidence bundle.
+- **Assertions against resource state, not narration.** Tests checked independent ledgers (allocations, closes, ownership, invocation counts). The audit was used to explain, and the ledgers to judge.
+
+**Friction it found**, now addressed in this design: a domain event named `LifecycleEvent` collided in generated Java with the runtime's `Lifecycle.LifecycleEvent` (see [Risks](#risks) for naming rules); and a report used a series-section shape that the PDF marked "NOT RENDERED", caught only by visual review (the [workflow](#development-workflow) now includes rendering checks).
+
+**What it does not establish.** Resources were simulated, ordering was scripted, effects ran as ordinary graph triggers (not at `batchEnd()`), and the template pinned Fluxtion 1.0.79 with Mongoose 1.0.32, not this design or the 1.0.33 candidate. It did not test the mailbox protocol, agent death, shutdown bounds, cleanup-failure behaviour, `batchEnd()` publication ordering, deterministic replay or performance. Its deduplication ledgers had no eviction policy. It is evidence for the authoring and investigation workflow, not a conformance test of this protocol; the blockers in [Review 3](#review-3-pr-75-independent-review) are resolved by the protocols in this document and must be proved by their own adversarial tests.
 
 ## Problem
 
@@ -187,7 +216,7 @@ Commands: `Add(registration, supplier)`, `Stop(registration)`, `Broadcast(servic
 
 ### The control processor
 
-One generated, ahead-of-time compiled processor per group. Mongoose adds the Fluxtion builder as a build-time dependency; interpreted mode is not used, because it loses labelled source and determinism. Node layout follows the analyser's:
+One generated, ahead-of-time compiled processor per group, **authored as a Spring XML graph** with the same authoring model as the analyser bundle, so a person or an LLM edits explicit structure and regenerates, and never hand-edits generated source. Mongoose adds the Fluxtion builder as a build-time dependency; interpreted mode is not used, because it loses labelled source and determinism. Node layout follows the analyser's:
 
 - **`OperationGate`** (upstream of all state): matches each outcome to its `opId` and registration generation and marks it accepted or stale before any state node sees it.
 - **State nodes:** registrations by generation, their lifecycle and capture states, delivered service versions.
@@ -419,13 +448,15 @@ The analyser presents and interrogates this evidence; it does not run anything. 
 
 ### Acceptance criterion: analyser compatibility
 
-A lifecycle regression is accepted only with matching evidence:
+Every lifecycle change and every lifecycle regression is accepted only with an investigation another person can follow, as demonstrated in the [field experiment](#field-evidence-the-authoring-and-investigation-experiment):
 
-1. The control processor's build emits its GraphML and generated source, with the authored rule source, for the exact commit.
-2. The failing scenario's control audit exports as analyser-readable YAML, one analyser record per dispatch, `seq` and identities intact, and records whether it is complete.
-3. The analyser opens graph, source and audit together, with a valid pairing.
-4. The violation can be located with existing verbs (`read` by `rootId`, `topology` and `source` for the deciding rule).
-5. A `report` or `walk` preserves expected behaviour (rule and invariant), observed behaviour (records) and any evidence gaps, and is committed with the regression test.
+1. **Matching artefacts.** The build emits the Spring source, generated source and GraphML of the control processor for the exact commit.
+2. **Executable scenario.** The scenario runs through the generated processor in the harness, with a fake effect adapter that keeps independent resource ledgers.
+3. **Exported evidence.** The control audit exports as analyser-readable YAML, one analyser record per dispatch, `seq` and identities intact, stating whether it is complete.
+4. **Pairing.** The analyser opens Spring source, GraphML and audit together, with a valid pairing.
+5. **Investigation with existing verbs:** queries (`read`, `aggregate`) locate the records; record inspection shows identities, decisions and outcomes; accounting checks (`series` or `aggregate` expressions such as opened − closed − live = 0) agree with the ledger; `topology` and `source` name the deciding rule.
+6. **Preserved explanation.** A `report` and a `walk`, with flags on the key records, separate expected behaviour (rules and invariants), observed behaviour (records) and evidence gaps. The report is rendered and checked for unrendered sections before it is committed with the test and the evidence bundle.
+7. **Independent judgement.** The test's verdict comes from invariants and ledger assertions, never from the audit narration alone.
 
 ### When things fail
 
@@ -465,6 +496,11 @@ Invariants are written from this document's rules, ideally by someone other than
 | I9. No `EffectRequested` precedes the publication of its `Decision` | 14 |
 | I10. No `seq` gap without a `Gap` record | audit |
 
+| I11. Resource accounting: at every `EffectOutcome`, opened − closed − live = 0 | 13 |
+| I12. Ownership: live handles = handles owned by a Started registration's capture | 12, 13 |
+
+**Resource-state assertions.** I11 and I12 are checked twice: from the audit, by the invariant module and by the analyser (`series` or `aggregate`), and from the fake adapter's own ledgers of handle existence, ownership, close counts and effect invocation counts. Tests judge by the ledgers; the audit explains. Non-execution is asserted from unchanged invocation counters, not inferred from a missing record. A disagreement between ledger and audit is a finding in itself, about the audit.
+
 A passing run shows these invariants held for that run, nothing more.
 
 ## Development workflow
@@ -473,10 +509,10 @@ A passing run shows these invariants held for that run, nothing more.
 | --- | --- | --- |
 | 1. Agree | Human and LLM, this document | A rule change and, if needed, a new invariant, reviewed by a person |
 | 2. Generate | LLM with project tools: the property-based generator | Seeded scenarios: commands, interleavings, injected outcomes and faults (paused senders, failed or late effects, thread death, shutdown points) |
-| 3. Execute | Project tools: the single-threaded harness drives the real group and control processor, with a fake effect adapter registered as a service (the analyser's `FakeSessionAdapter` pattern) | Control audit exported as analyser YAML, plus GraphML and source for the build |
-| 4. Check | Invariant module | Violations, shrunk to the shortest failing seed |
-| 5. Investigate | LLM through analyser MCP verbs | Records located, deciding rule identified, findings flagged |
-| 6. Capture | LLM with project tools | A JUnit regression test asserting the invariant and the expected replies from the rules table, committed failing, with the `report` or `walk` |
+| 3. Execute | Project tools: the single-threaded harness drives the real group and control processor, with a fake effect adapter registered as a service (the analyser's `FakeSessionAdapter` pattern) that keeps independent ledgers of resources, ownership and invocations | Control audit exported as analyser YAML, ledger snapshots, plus Spring source, GraphML and generated source for the build |
+| 4. Check | Invariant module and ledger assertions | Violations, shrunk to the shortest failing seed |
+| 5. Investigate | LLM through analyser MCP verbs | Queries and record inspection locate the evidence; accounting checks compared with the ledger; deciding rule identified; findings flagged |
+| 6. Capture | LLM with project tools, analyser for the report | A JUnit regression test asserting the invariant, ledger state and expected replies from the rules table, committed failing, with a rendered and visually checked `report`, a `walk` and the evidence bundle |
 | 7. Correct | LLM with project tools | A rule change in the builder graph, regenerated |
 | 8. Validate | Tests, then a person | Regression and property suites pass with no new violations; the person checks the rule change against intended behaviour |
 
@@ -575,6 +611,7 @@ Six stacked PRs after 1.0.33. Each is releasable alone and states its semantics.
 - **Interleavings:** one named test per row of [Interleavings](#interleavings), in the harness.
 - **Property suite:** seeded generation over commands, completions, faults and shutdown points, with I1 to I10 on every run; failing seeds shrunk and kept.
 - **Analyser compatibility:** for each kept regression, the exported audit reopens in the analyser's reader, one record per dispatch, identities intact (the analyser's `SessionAuditRecordTest` pattern).
+- **Resource ledgers:** every scenario asserts final ledger state (opened, closed, live, owned, invocation counts) as well as invariants.
 - **Audit wiring:** no control record reaches stdout; a failing sink is counted, not thrown; a bounded ring reports incompleteness.
 - **Regression tests to keep:** `ProcessorStopReleaseTest`, `ProcessorStartFailureTest`, `RetryOnlyTheFailedProcessorTest`, `ServerStopEndsAuditCaptureTest`, `LifecycleRacesTest`, `AuditControlOnAgentThreadTest`, `IntegrationReleaseRegressionTest`, `EventToQueuePublisher#publishersInALoopDoNotStarveARemoveOrAnAdd`.
 - **Performance:** JMH of the duty cycle with an empty mailbox, and loaded event tail latency and allocation during control bursts.
@@ -587,6 +624,9 @@ Six stacked PRs after 1.0.33. Each is releasable alone and states its semantics.
 - **Audit volume:** per command, not per event; bursts produce many frames; rings drop with counts.
 - **Generated-code constraints:** the no-`try`/`finally` `batchEnd()` makes `EffectQueue`'s catch-everything rule load-bearing; the PR 1 test pins it.
 - **Build dependency:** the Fluxtion builder at build time.
+- **Generated-name collisions:** a domain type named like a runtime type (for example `LifecycleEvent`, which collides with `Lifecycle.LifecycleEvent`) breaks generated Java. Control events use a `Control` prefix (`ControlCommand`, `ControlOutcome`), and PR 1 adds a build check for collisions with runtime types.
+- **Bounded bookkeeping:** stale and duplicate detection must not grow without bound. Here identities live on registrations and are released with them; the experiment's ledgers had no eviction policy, which is not acceptable in a long-running server.
+- **Unrendered evidence:** a report can pass its queries and still fail to render a section; the workflow renders and checks reports before committing them.
 
 ## Decisions needed
 
@@ -636,6 +676,10 @@ All six state-machine gaps from this review are rows in [Interleavings](#interle
 5. Missing and truncated evidence and coverage limits: [Evidence completeness and coverage limits](#evidence-completeness-and-coverage-limits).
 
 The analyser's model does not by itself settle mailbox admission, agent death or bounded shutdown; those are resolved separately above (findings 1, 2 and 4).
+
+### Follow-up 3: the hands-on experiment
+
+[Follow-up](https://github.com/telaminai/mongoose/pull/75#issuecomment-6386919320). Accepted. The design now records the experiment as [field evidence](#field-evidence-the-authoring-and-investigation-experiment), makes the control processor Spring-authored, adds resource-ledger assertions and accounting invariants (I11, I12), and makes the full investigation workflow (queries, record inspection, accounting checks, reports, walkthroughs, evidence bundle) part of the [acceptance criterion](#acceptance-criterion-analyser-compatibility). It also takes the two friction points as risks with mitigations. The experiment's limits are stated, and it is not used as evidence for the mailbox, death, shutdown, `batchEnd()` ordering or replay protocols.
 
 ### Earlier reviews (condensed)
 
