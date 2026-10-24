@@ -73,8 +73,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
      * waited on (see {@link #enqueue}), never dropped.
      */
     static final int CONTROL_QUEUE_CAPACITY = 4096;
-    /** How long a producer waits for this group's thread to make room in a full control queue before it fails. */
+    /** Default for how long a producer waits for this group's thread to make room in a full control queue. */
     static final long CONTROL_QUEUE_FULL_TIMEOUT_NANOS = java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+    private volatile long controlQueueFullTimeoutNanos = CONTROL_QUEUE_FULL_TIMEOUT_NANOS;
     private final ManyToOneConcurrentArrayQueue<Supplier<NamedEventProcessor>> toStartList = new ManyToOneConcurrentArrayQueue<>(CONTROL_QUEUE_CAPACITY);
     private final ManyToOneConcurrentArrayQueue<String> toStopList = new ManyToOneConcurrentArrayQueue<>(CONTROL_QUEUE_CAPACITY);
     // Dynamic-service broadcast queues. MongooseServer.registerService /
@@ -148,14 +149,17 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     /**
      * Queue {@code item} for this group's thread. Safe from any number of threads at once (mongoose#58). When the queue
      * is full the caller backs off until the group's thread drains it; it fails with a clear error, rather than drop
-     * the item, only when that cannot happen: it is the group's own thread, or the queue stays full for
-     * {@link #CONTROL_QUEUE_FULL_TIMEOUT_NANOS} (the group is not running).
+     * the item, only when that cannot happen: it is the group's own thread (immediately), or the queue stays full for
+     * the control-queue timeout, 10 s by default ({@link #setControlQueueFullTimeout}): the group is not running.
+     *
+     * @throws IllegalStateException naming the group and the queue when the item cannot be queued
      */
     private <T> void enqueue(ManyToOneConcurrentArrayQueue<T> queue, T item, String what) {
         if (queue.offer(item)) {
             return;
         }
-        long deadline = System.nanoTime() + CONTROL_QUEUE_FULL_TIMEOUT_NANOS;
+        long timeoutNanos = controlQueueFullTimeoutNanos;
+        long deadline = System.nanoTime() + timeoutNanos;
         while (!queue.offer(item)) {
             if (Thread.currentThread() == agentThread) {
                 throw new IllegalStateException("group " + roleName() + ": " + what + " queue is full ("
@@ -163,11 +167,19 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
             }
             if (System.nanoTime() - deadline > 0) {
                 throw new IllegalStateException("group " + roleName() + ": " + what + " queue stayed full ("
-                        + queue.capacity() + ") for " + java.util.concurrent.TimeUnit.NANOSECONDS.toSeconds(
-                        CONTROL_QUEUE_FULL_TIMEOUT_NANOS) + "s; is the group's thread running?");
+                        + queue.capacity() + ") for " + java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(timeoutNanos)
+                        + " ms; is the group's thread running?");
             }
             java.util.concurrent.locks.LockSupport.parkNanos(50_000);
         }
+    }
+
+    /**
+     * How long a producer waits on a full control queue for this group's thread to drain it before failing; 10 s by
+     * default.
+     */
+    public void setControlQueueFullTimeout(java.time.Duration timeout) {
+        this.controlQueueFullTimeoutNanos = Objects.requireNonNull(timeout, "timeout is null").toNanos();
     }
 
     /** Queue a service for broadcast {@code @ServiceRegistered} dispatch
