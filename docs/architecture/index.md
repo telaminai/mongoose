@@ -35,7 +35,7 @@ organized into several sections, each focusing on a different aspect of the arch
 5. [Deployment Guide](deployment.md)
     - Deployment models
     - Performance considerations
-    - High availability
+    - Availability and recovery (and what is not yet supported)
     - Monitoring and observability
     - Security considerations
     - Configuration management

@@ -122,30 +122,30 @@ Recommendations:
 - Monitor queue overflow and adjust as needed
 - Consider using different queue sizes for different event types
 
-## High Availability
+## Availability and recovery
 
-### Clustering
+A Mongoose server is one JVM. What it supports today for keeping a deployment available:
 
-For high availability, deploy multiple instances of Mongoose server in a cluster:
+- **Supervised restart.** Run the server under a process supervisor (systemd, a Kubernetes Deployment, a container
+  restart policy) so a failed JVM is restarted. Make startup fail fast when a critical service, feed or processor
+  does not start (see the [operations runbook](../reference/operations-runbook.md)), so a bad deployment exits
+  instead of running half-started.
+- **Health checks.** `MongooseHealthService` aggregates the built-in and your own checks; expose it to your
+  supervisor or load balancer for liveness and readiness.
+- **Rebuilding state.** Mongoose does not replicate or snapshot processor state. Rebuild it on restart from your own
+  source of truth (a database, a venue's state, an event log you keep), or replay a recorded run into a processor
+  ([record and replay](../example/how-to/how-to-record-and-replay-a-processor.md)) to reproduce or verify state.
+- **Running more than one instance.** You can run several independent servers, each with its own feeds and
+  processors. Mongoose does not coordinate them: partitioning the work, electing an active instance and moving load
+  are up to your deployment.
 
-1. **Active-Passive**: One active instance with one or more passive instances ready to take over
-2. **Active-Active**: Multiple active instances sharing the load
+### Not yet supported (direction)
 
-### State Replication
+The following are directions, not features. Do not plan a deployment that depends on them:
 
-If your application maintains state, consider state replication strategies:
-
-1. **Shared Database**: Store state in a shared database
-2. **Event Sourcing**: Rebuild state from event logs
-3. **State Snapshots**: Periodically save and restore state snapshots
-
-### Failover
-
-Implement failover mechanisms to handle instance failures:
-
-1. **Health Checks**: Regular health checks to detect failures
-2. **Automatic Restart**: Restart failed instances automatically
-3. **Load Balancing**: Distribute load across healthy instances
+- **Clustering**: active-passive or active-active groups of servers managed by Mongoose.
+- **State replication**: Mongoose-managed replication or snapshots of processor state between instances.
+- **Failover**: Mongoose-managed detection of a failed instance and hand-over of its work.
 
 ## Monitoring and Observability
 
@@ -171,13 +171,11 @@ Recommendations:
 - Configure appropriate log levels for different components
 - Rotate logs to manage disk space
 
-### Distributed Tracing
+### Tracing across processes
 
-Implement distributed tracing to track events across components:
-
-1. **Trace IDs**: Add trace IDs to events
-2. **Span IDs**: Create spans for different processing stages
-3. **Visualization**: Use tools like Jaeger or Zipkin to visualize traces
+Mongoose has no built-in distributed tracing (trace or span propagation, Jaeger/Zipkin export); it is not yet
+supported. Within one server the audit log records each event cycle. For work that leaves the process, carry your
+own correlation id on the events you publish and log it at each boundary.
 
 ## Security Considerations
 
@@ -217,14 +215,11 @@ Manage configuration files effectively:
 
 ### Dynamic Configuration
 
-Consider dynamic configuration for runtime changes:
-
-```java
-// Update configuration at runtime
-ConfigUpdate configUpdate = new ConfigUpdate();
-configUpdate.setConfigMap(newConfigMap);
-eventProcessor.onEvent(configUpdate);
-```
+Change a running processor's configuration by delivering the change as an event on the processor's own agent
+thread: publish it on a feed the processor subscribes to, or register an admin command from the processor
+([how to write an admin command](../example/how-to/how-to-write-an-admin-command.md)), which Mongoose runs in the
+processor's event cycle. Never call a running processor's `onEvent` from another thread: a processor is not
+thread-safe, and the call would race its agent thread.
 
 ## Deployment Checklist
 
@@ -239,6 +234,6 @@ Before deploying Mongoose server to production, ensure:
 
 ## Conclusion
 
-Deploying Mongoose server requires careful consideration of various factors including performance, high availability, monitoring, and security. By following the guidelines in this document, you can ensure a successful deployment that meets your application's requirements.
+Deploying Mongoose server requires careful consideration of performance, availability and recovery, monitoring, and security. By following the guidelines in this document, you can ensure a successful deployment that meets your application's requirements.
 
 Remember that deployment is not a one-time activity but an ongoing process. Continuously monitor, evaluate, and improve your deployment to maintain optimal performance and reliability.
