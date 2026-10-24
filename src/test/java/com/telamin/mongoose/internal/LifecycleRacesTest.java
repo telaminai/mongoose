@@ -85,7 +85,12 @@ class LifecycleRacesTest {
 
         @Override public void addEventFeed(EventFeed f) { feeds.add(f); }
 
-        @Override public void onEvent(Object e) { if (e instanceof String) received.incrementAndGet(); }
+        volatile long nanosPerEvent;   // > 0: a slow processor, so the feed outruns it and its queue stays full
+
+        @Override public void onEvent(Object e) {
+            if (e instanceof String) received.incrementAndGet();
+            if (nanosPerEvent > 0) java.util.concurrent.locks.LockSupport.parkNanos(nanosPerEvent);
+        }
     }
 
     /** A feed that publishes a burst on every duty cycle, for as long as its agent runs. */
@@ -523,5 +528,34 @@ class LifecycleRacesTest {
         long stopMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0);
 
         assertTrue(stopMillis < 1_500, "stop with a busy feed took " + stopMillis + "ms");
+    }
+
+    /**
+     * The feed outruns a slow processor, so the processor's queue is full and the feed spins on it at every publish.
+     * Stop still completes: the feed is stopped before the processor group closes, and the drain is bounded, so no
+     * agent is left spinning on a queue nobody reads.
+     */
+    @Test
+    void stopWithAFeedThatOutrunsASlowProcessorCompletes() throws Exception {
+        BusyFeed feed = new BusyFeed();
+        Probe processor = new Probe();
+        processor.subscribeToFeed = true;
+        processor.nanosPerEvent = TimeUnit.MILLISECONDS.toNanos(1);
+        MongooseServerConfig cfg = new MongooseServerConfig();
+        cfg.setShutdownDrainTimeoutMillis(500);
+        cfg.addProcessor("g", processor, "A");
+        cfg.addEventSourceWorker(feed, FEED, true, "feed-agent", new SleepingMillisIdleStrategy(1));
+        MongooseServer server = MongooseServer.bootServer(cfg);
+        await(() -> processor.received.get() > 50 && feed.published.get() > processor.received.get() + 1_000,
+                "the feed has outrun the processor");
+
+        Thread stopper = new Thread(server::stop, "test-stop");
+        long t0 = System.nanoTime();
+        stopper.start();
+        stopper.join(10_000);
+        long stopMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0);
+
+        assertFalse(stopper.isAlive(), "stop with a full processor queue hung (" + stopMillis + " ms)");
+        assertTrue(stopMillis < 5_000, "stop with a full processor queue took " + stopMillis + "ms");
     }
 }
