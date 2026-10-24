@@ -300,7 +300,9 @@ public final class ControlDriver {
 
     private void complete(ControlRequest request, ReplyOutcome outcome, String reason) {
         claimed.remove(request.requestId());
-        request.completeClaimed(new ControlReply(request.requestId(), outcome, reason, -1, null));
+        if (request.completeClaimed(new ControlReply(request.requestId(), outcome, reason, -1, null))) {
+            audit.fallback(outcome.name(), "group", group, "requestId", request.requestId(), "reason", reason);
+        }
         outstanding.remove(request);
     }
 
