@@ -29,6 +29,11 @@ public final class LifecycleManager {
     private final Object startupLock = new Object();
     /** A stop may first ask an in-progress synchronous startup callback to return. */
     private volatile Runnable cancelStartup;
+    /**
+     * Runners whose thread has been started (review of #69). Agrona's losing {@code run()} still marks the runner closed,
+     * so a second start of the same runner would report it closed while its real thread runs.
+     */
+    private final Set<AgentRunner> startedRunners = ConcurrentHashMap.newKeySet();
     /** Bound on taking the feeds off a service agent group shared with other services, during stop. */
     static final long EVENT_SOURCE_REMOVAL_TIMEOUT_MILLIS = 5_000;
 
@@ -135,7 +140,14 @@ public final class LifecycleManager {
 
     /** Start a group only while startup is still admitted, including groups discovered during startup. */
     public void startAgent(AgentRunner runner) {
-        startStep(() -> AgentRunner.startOnThread(runner), null);
+        startStep(() -> startOnce(runner), null);
+    }
+
+    /** Start {@code runner}'s thread unless it was already started; safe when several threads race to start it. */
+    public void startOnce(AgentRunner runner) {
+        if (startedRunners.add(runner)) {
+            AgentRunner.startOnThread(runner);
+        }
     }
 
     private void startStep(Runnable effect, Runnable cancel) {

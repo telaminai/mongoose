@@ -381,4 +381,39 @@ class IntegrationReleaseRegressionTest {
             assertEquals(0, group.pendingCancellations(), "and the cancellation is forgotten once its start is taken");
         } finally { group.onClose(); }
     }
+
+    @Test
+    void concurrentFirstAddsToANewGroupStartItsThreadOnce() throws Exception {
+        MongooseServer s = server();
+        s.init(); s.start();
+        try {
+            for (int i = 0; i < 50; i++) {
+                String group = "DEMO-" + i;
+                Proc first = new Proc(), second = new Proc();
+                CyclicBarrier together = new CyclicBarrier(2);
+                Thread a = new Thread(() -> addAfter(together, s, "DEMO-a", group, first));
+                Thread b = new Thread(() -> addAfter(together, s, "DEMO-b", group, second));
+                a.start(); b.start(); a.join(5_000); b.join(5_000);
+                await(() -> first.started && second.started, "both processors start in " + group);
+                assertFalse(groupRunner(s, group).isClosed(),
+                        "a second start of the group's runner must not mark it closed while its thread runs: " + group);
+            }
+        } finally { s.stop(); }
+    }
+
+    private static void addAfter(CyclicBarrier together, MongooseServer s, String name, String group, Proc proc) {
+        try {
+            together.await(5, TimeUnit.SECONDS);
+            s.addEventProcessor(name, group, null, () -> proc);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private static org.agrona.concurrent.AgentRunner groupRunner(MongooseServer s, String group) throws Exception {
+        java.lang.reflect.Field f = MongooseServer.class.getDeclaredField("composingEventProcessorAgents");
+        f.setAccessible(true);
+        return ((java.util.Map<String, com.telamin.mongoose.internal.ComposingEventProcessorAgentRunner>) f.get(s))
+                .get(group).groupRunner();
+    }
 }

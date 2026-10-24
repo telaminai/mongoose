@@ -936,7 +936,8 @@ public class MongooseServer implements MongooseServerController {
 
         if (isStarted() && composingEventProcessorAgentRunner.groupRunner().thread() == null) {
             log.info("staring event processor group:'" + groupName + "' for running server");
-            AgentRunner.startOnThread(composingEventProcessorAgentRunner.groupRunner());
+            // two adds racing to a new group both get here; only one may start its thread
+            lifecycleManager.startOnce(composingEventProcessorAgentRunner.groupRunner());
         }
     }
 
