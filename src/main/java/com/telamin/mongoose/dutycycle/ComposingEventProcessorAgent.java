@@ -258,7 +258,8 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
      * Deregister {@code subscriber} from one reader. When that leaves the reader with no listeners it is dead: its
      * queue is no longer a target of the feed (the reader's unsubscribe action removed it), so it is released here
      * (mongoose#55) - the map entry goes, so a later subscribe builds a fresh reader rather than reuse this one; the
-     * source subscription is released; and the reader leaves the composite rather than poll a queue nobody fills.
+     * source subscription is released once no group reads the key; and the reader leaves the composite rather than
+     * poll a queue nobody fills.
      */
     private void deregister(DataFlow subscriber, EventSubscriptionKey<?> subscriptionKey, EventQueueToEventProcessor reader) {
         if (reader.deregisterProcessor(subscriber) > 0) {
@@ -268,10 +269,21 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
             return; // already released
         }
         log.info("EventQueueToEventProcessor listener count = 0, removing subscription:" + subscriptionKey);
-        eventFlowManager.unSubscribe(subscriptionKey);
-        // a reader not yet added to the composite is simply never added; one already in it is taken out
+        // the group's own bookkeeping first, so a failing source cannot leak the reader: a reader not yet added to the
+        // composite is simply never added; one already in it is taken out
         if (!queueReadersToAdd.remove(reader)) {
             queueReadersToRemove.add(reader);
+        }
+        // the source is unsubscribed only when no group reads the key any more (EventFlowManager counts readers across
+        // groups). Its failure is the source's: reported, and it neither stops this release nor escapes the duty cycle
+        try {
+            eventFlowManager.releaseReader(subscriptionKey);
+        } catch (VirtualMachineError fatal) {
+            throw fatal;
+        } catch (Throwable t) {
+            String message = "group '" + roleName() + "' failed to unsubscribe the source of " + subscriptionKey + ": " + t;
+            com.telamin.mongoose.service.error.ErrorReporting.report("ComposingEventProcessorAgent:" + roleName(),
+                    message, t, com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
         }
     }
 
