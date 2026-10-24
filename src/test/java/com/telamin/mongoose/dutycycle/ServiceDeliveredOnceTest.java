@@ -16,6 +16,7 @@ import com.telamin.mongoose.service.scheduler.DeadWheelScheduler;
 import org.agrona.concurrent.SleepingMillisIdleStrategy;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -143,6 +144,88 @@ class ServiceDeliveredOnceTest {
 
         assertEquals(2, processor.registrations("svc"), "registered, removed, registered again");
         assertEquals(1, processor.deregistered.get("svc").get(), "deregistered once");
+        group.onClose();
+    }
+
+    @Test
+    void serviceReRegisteredAfterRemovalIsDeliveredAgainInEveryGroup() throws Exception {
+        MongooseServer server = new MongooseServer(new MongooseServerConfig());
+        server.setDefaultErrorHandler(t -> {});
+        Counting a = new Counting(), b = new Counting(), c = new Counting();
+        server.addEventProcessor("a", "g1", null, () -> a);
+        server.addEventProcessor("b", "g2", null, () -> b);
+        server.addEventProcessor("c", "g2", null, () -> c);
+        server.init();
+        server.start();
+        try {
+            await(() -> a.started && b.started && c.started, "all started");
+            server.registerService(new Service<>(new Object(), Object.class, "svc"));
+            await(() -> a.registrations("svc") == 1 && b.registrations("svc") == 1 && c.registrations("svc") == 1,
+                    "registered in every group");
+            server.removeService("svc");
+            await(() -> List.of(a, b, c).stream().allMatch(p -> p.deregistered.containsKey("svc")), "removed everywhere");
+            server.registerService(new Service<>(new Object(), Object.class, "svc"));   // a new instance, same name
+            await(() -> a.registrations("svc") == 2 && b.registrations("svc") == 2 && c.registrations("svc") == 2,
+                    "registered again in every group");
+            Thread.sleep(100);
+            for (Counting p : List.of(a, b, c)) {
+                assertEquals(2, p.registrations("svc"), p.counts().toString());
+                assertEquals(1, p.deregistered.get("svc").get());
+            }
+        } finally {
+            server.stop();
+        }
+    }
+
+    /** Documents #68's rule: a register that throws still counts as delivered, so the processor is not offered it again. */
+    @Test
+    void aRegisterThatThrowsCountsAsDelivered() throws Exception {
+        ConcurrentHashMap<String, Service<?>> registry = new ConcurrentHashMap<>();
+        ComposingEventProcessorAgent group = newGroup(registry);
+        AtomicInteger attempts = new AtomicInteger();
+        Counting processor = new Counting() {
+            @Override public void registerService(Service<?> s) {
+                if (s.serviceName().equals("svc")) {
+                    attempts.incrementAndGet();
+                    throw new IllegalStateException("boom in registerService");
+                }
+            }
+        };
+        group.addNamedEventProcessor(() -> new NamedEventProcessor("p", processor));
+        group.onStart();
+
+        Service<Object> svc = new Service<>(new Object(), Object.class, "svc");
+        group.broadcastServiceRegistered(svc);
+        group.doWork();
+        group.broadcastServiceRegistered(svc);
+        group.doWork();
+        assertEquals(1, attempts.get(), "not offered again after it threw");
+
+        group.broadcastServiceDeregistered(svc);
+        group.doWork();
+        assertEquals(1, processor.deregistered.get("svc").get(), "the deregister reaches it, as delivered");
+        group.onClose();
+    }
+
+    @Test
+    void processorAddedAgainAfterAFailedStartIsGivenEveryServiceOnce() throws Exception {
+        ConcurrentHashMap<String, Service<?>> registry = new ConcurrentHashMap<>();
+        Service<Object> svc = new Service<>(new Object(), Object.class, "svc");
+        registry.put(svc.serviceName(), svc);
+        ComposingEventProcessorAgent group = newGroup(registry);
+        group.onStart();
+        Counting failing = new Counting() {
+            @Override public void start() { throw new IllegalStateException("boom in start"); }
+        };
+        group.addNamedEventProcessor(() -> new NamedEventProcessor("p", failing));
+        group.doWork();
+        assertFalse(group.isProcessorRegistered("p"));
+        Counting again = new Counting();
+        group.addNamedEventProcessor(() -> new NamedEventProcessor("p", again));
+        group.broadcastServiceRegistered(svc);
+        group.doWork();
+        group.doWork();
+        assertEquals(1, again.registrations("svc"), again.counts().toString());
         group.onClose();
     }
 
