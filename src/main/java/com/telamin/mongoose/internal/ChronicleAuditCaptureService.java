@@ -236,11 +236,19 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
 
     /**
      * Stop every live capture, each as {@link #stop} would. One that cannot be stopped is logged and the rest are
-     * still stopped.
+     * still stopped. The server calls it at the end of {@code stop()}, once its processors have stopped and their
+     * groups have closed: no processor instance is touched.
      */
+    @Override
     public void stopAll() {
-        for (String name : sinks.keySet()) {
+        for (java.util.Map.Entry<String, ProcessorSink> entry : sinks.entrySet()) {
+            String name = entry.getKey();
             try {
+                // at server stop the processors have stopped and their groups have closed: forget each instance, so
+                // the capture is ended without touching it and without waiting on a group thread that has gone
+                ProcessorSink sink = entry.getValue();
+                DataFlow flow = sink.dataFlow;
+                if (flow != null) sink.forget(flow);
                 stop(name);
             } catch (RuntimeException e) {
                 log.log(Level.WARNING, "audit-capture could not stop '" + name + "'", e);

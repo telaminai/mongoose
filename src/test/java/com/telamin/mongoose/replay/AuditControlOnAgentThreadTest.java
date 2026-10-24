@@ -376,9 +376,12 @@ class AuditControlOnAgentThreadTest {
         ThreadCheckingProcessor p = rig.processor();
         int controlBefore = p.controlEvents.get();
         long t0 = System.nanoTime();
-        IllegalStateException refused = assertThrows(IllegalStateException.class, () -> rig.capture().start("quotes"));
+        // refused as "not running" (the group closed) or, once server stop has ended every capture (#65's stopAll),
+        // as "left its group": either way at once, and nothing is installed
+        RuntimeException refused = assertThrows(RuntimeException.class, () -> rig.capture().start("quotes"));
         long tookMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0);
-        assertTrue(refused.getMessage().contains("not running"), refused.getMessage());
+        assertTrue(refused.getMessage().contains("not running") || refused.getMessage().contains("left its group"),
+                refused.getMessage());
         assertTrue(tookMs < 2_000, "refused at once, not after a timeout: " + tookMs + " ms");
         assertFalse(rig.capture().isRecording("quotes"));
         assertEquals(controlBefore, p.controlEvents.get(), "nothing was installed on the closed group's processor");
