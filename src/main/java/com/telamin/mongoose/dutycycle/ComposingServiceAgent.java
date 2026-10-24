@@ -44,6 +44,8 @@ public class ComposingServiceAgent extends DynamicCompositeAgent {
     private final OneToOneConcurrentArrayQueue<ServiceAgent<?>> toCallStartupCompleteList = new OneToOneConcurrentArrayQueue<>(128);
     private final ServiceRegistryNode serviceRegistry = new ServiceRegistryNode();
     private final AtomicBoolean startUpComplete = new AtomicBoolean(false);
+    /** Every service agent registered on this group, in registration order. */
+    private final java.util.List<ServiceAgent<?>> hostedAgents = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     public ComposingServiceAgent(String roleName,
                                  EventFlowManager eventFlowManager,
@@ -57,6 +59,7 @@ public class ComposingServiceAgent extends DynamicCompositeAgent {
     }
 
     public <T> void registerServer(ServiceAgent<T> server) {
+        hostedAgents.add(server);
         toStartList.add(server);
         toCallStartupCompleteList.add(server);
         log.info("registerServer toCallStartupCompleteList size:" + toCallStartupCompleteList.size());
@@ -85,6 +88,36 @@ public class ComposingServiceAgent extends DynamicCompositeAgent {
     public void startComplete() {
         log.info("startComplete toCallStartupCompleteList size:" + toCallStartupCompleteList.size());
         startUpComplete.set(true);
+    }
+
+    /**
+     * mongoose#56: take the hosted agents matching {@code which} out of this group while it keeps running the others.
+     * Each removal is handed to the group's own thread, which closes the agent in its next duty cycle; this waits for
+     * each, at most {@code timeoutMillis} in all. A group that is not active runs nothing, so there is nothing to remove.
+     *
+     * @return false when the wait ran out before every matching agent was removed
+     */
+    public boolean removeHostedAgents(java.util.function.Predicate<ServiceAgent<?>> which, long timeoutMillis)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(Math.max(0, timeoutMillis));
+        for (ServiceAgent<?> serviceAgent : hostedAgents) {
+            if (!which.test(serviceAgent)) {
+                continue;
+            }
+            try {
+                while (!tryRemove(serviceAgent.delegate())) {   // another removal is still pending
+                    if (System.nanoTime() - deadline >= 0) return false;
+                    Thread.sleep(1);
+                }
+                while (!hasRemoveAgentCompleted()) {
+                    if (System.nanoTime() - deadline >= 0) return false;
+                    Thread.sleep(1);
+                }
+            } catch (IllegalStateException notActive) {
+                return true;   // the group is not (or no longer) running: none of its agents run
+            }
+        }
+        return true;
     }
 
     @Override

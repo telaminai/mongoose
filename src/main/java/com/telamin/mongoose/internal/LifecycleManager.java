@@ -26,9 +26,16 @@ public final class LifecycleManager {
     private final MongooseServer server;
     private final java.util.concurrent.atomic.AtomicBoolean stopped = new java.util.concurrent.atomic.AtomicBoolean();
     private volatile boolean startAttempted;
+    /** Bound on taking the feeds off a service agent group shared with other services, during stop. */
+    static final long EVENT_SOURCE_REMOVAL_TIMEOUT_MILLIS = 5_000;
 
     public LifecycleManager(MongooseServer server) {
         this.server = server;
+    }
+
+    /** True once start has been called, even if it failed: stop() must still close the threads it started. */
+    public boolean isStartAttempted() {
+        return startAttempted;
     }
 
     public void init(Map<String, Service<?>> registeredServices,
@@ -167,12 +174,13 @@ public final class LifecycleManager {
     /**
      * The ordered shutdown (mongoose#56), run once: a second call, or one racing the first, is a no-op.
      * <ol>
-     *   <li>stop the feeds: close the agent groups that host event sources, so they publish no more, then stop and tear
+     *   <li>stop the feeds: close the agent groups that host only event sources, and take the event sources off the
+     *   groups that also host other services (those keep running), so no feed publishes any more; then stop and tear
      *   down every event source;</li>
      *   <li>drain: wait, at most {@code drainTimeoutMillis}, for the events already queued to processors to be
      *   delivered (processor groups still run);</li>
      *   <li>close each processor group: on its own thread the group stops and tears down its processors;</li>
-     *   <li>close the remaining service agent groups and stop the registered services.</li>
+     *   <li>close every remaining service agent group, shared ones included, and stop the registered services.</li>
      * </ol>
      */
     public void stop(boolean started,
@@ -191,9 +199,26 @@ public final class LifecycleManager {
             return;
         }
         log.info("stopping feeds");
+        // a group hosting only feeds closes; one that also hosts other services keeps running them, and only its feeds
+        // are taken off its thread: processors may still use those services while they drain and stop
+        Set<String> closedServiceGroups = new java.util.HashSet<>();
         composingServiceAgents.forEach((k, v) -> {
-            if (v.hostsEventSource()) {
+            if (!v.hostsEventSource()) {
+                return;
+            }
+            if (v.hostsOnlyEventSources()) {
                 closeGroup("event source agent", k, v);
+                closedServiceGroups.add(k);
+            } else {
+                log.info("removing the event sources from shared service agent " + k);
+                try {
+                    if (!v.removeEventSources(EVENT_SOURCE_REMOVAL_TIMEOUT_MILLIS)) {
+                        log.warning("event sources in service agent " + k + " not removed after "
+                                + EVENT_SOURCE_REMOVAL_TIMEOUT_MILLIS + "ms, stopping them anyway");
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
             }
         });
         flowManager.stop();
@@ -214,7 +239,7 @@ public final class LifecycleManager {
 
         log.info("stopping agent hosted services");
         composingServiceAgents.forEach((k, v) -> {
-            if (!v.hostsEventSource()) {
+            if (!closedServiceGroups.contains(k)) {
                 closeGroup("service agent", k, v);
             }
         });
@@ -250,7 +275,16 @@ public final class LifecycleManager {
 
         default void startCompleteIfSupported() { /* no-op by default */ }
 
-        /** True for a service agent group hosting an event source: the ordered shutdown closes it first. */
+        /** True for a service agent group hosting an event source: the ordered shutdown stops its feeds first. */
         default boolean hostsEventSource() { return false; }
+
+        /** True when every agent in the group is an event source: the ordered shutdown closes the whole group first. */
+        default boolean hostsOnlyEventSources() { return hostsEventSource(); }
+
+        /**
+         * Take the event source agents off this running group, leaving its other services running; waits at most
+         * {@code timeoutMillis}. Returns false if the wait ran out.
+         */
+        default boolean removeEventSources(long timeoutMillis) throws InterruptedException { return true; }
     }
 }

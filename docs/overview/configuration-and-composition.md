@@ -107,6 +107,9 @@ What the config did:
 ## Equivalent YAML sketch
 
 ```yaml
+# Server lifecycle bounds (optional)
+shutdownDrainTimeoutMillis: 2000   # stop(): wait for queued events to reach processors (0 = no wait)
+
 # Feeds
 eventFeeds:
   - instance: !!com.telamin.mongoose.connector.memory.InMemoryEventSource
@@ -157,4 +160,5 @@ var server = MongooseServer.bootServer(new java.io.StringReader(yaml), rec -> {}
 - Reuse plugins: Select or build feeds/sinks/services as libraries. Swap them via config without changing business
   logic.
 - Configure execution: Choose agent names, idle strategies, and logging via config. Ops can tune these independently.
-- Lifecycle managed: The server owns init/start/stop; your components implement standard lifecycle if needed.
+- Lifecycle managed: The server owns init/start/stop; your components implement standard lifecycle if needed. See
+  the [operations runbook](../reference/operations-runbook.md#shutdown) for the shutdown order and its bounds.

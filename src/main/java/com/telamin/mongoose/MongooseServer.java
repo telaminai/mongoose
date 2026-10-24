@@ -141,6 +141,12 @@ public class MongooseServer implements MongooseServerController {
 
     /** mongoose#56: service agent groups hosting an event source, closed first by the ordered shutdown. */
     private final Set<String> eventSourceAgentGroups = ConcurrentHashMap.newKeySet();
+    /** Service agent groups hosting a service that is not an event source: the ordered shutdown keeps them running. */
+    private final Set<String> nonEventSourceAgentGroups = ConcurrentHashMap.newKeySet();
+    /** Set by the first stop() that has something to stop; later and concurrent calls do not stop again. */
+    private final java.util.concurrent.atomic.AtomicBoolean stopInitiated = new java.util.concurrent.atomic.AtomicBoolean();
+    /** Released once the ordered shutdown has finished. */
+    private final java.util.concurrent.CountDownLatch stopCompleted = new java.util.concurrent.CountDownLatch(1);
     /** Configured pipes — tracked separately from registeredServices because
      *  a pipe is one logical config entry but two service registrations.
      *  Order-preserving so the admin surface lists pipes in declaration order. */
@@ -725,6 +731,8 @@ public class MongooseServer implements MongooseServerController {
 
         if (service.exportedService().instance() instanceof EventSource) {
             eventSourceAgentGroups.add(agentGroup);
+        } else {
+            nonEventSourceAgentGroups.add(agentGroup);
         }
         composingAgentRunner.group().registerServer(service);
     }
@@ -1105,19 +1113,89 @@ public class MongooseServer implements MongooseServerController {
     }
 
     /**
-     * Stops the server and all its components, in order (mongoose#56): the feeds stop (their agent groups close, then
-     * every event source is stopped and torn down); events already queued to processors drain, bounded by
+     * Stops the server and all its components, in order (mongoose#56): the feeds stop (agent groups hosting only feeds
+     * close, feeds sharing a group with other services are taken off it, then every event source is stopped and torn
+     * down); events already queued to processors drain, bounded by
      * {@link MongooseServerConfig#getShutdownDrainTimeoutMillis()}; each processor group stops and tears down its
      * processors on its own thread; then the remaining agent hosted services and registered services stop.
-     * Calling it again is a no-op.
+     * <p>
+     * The stop runs once. Called from an ordinary thread, it returns when the server has stopped, and so does a call
+     * that races an in-progress stop. Called from one of the server's own agent threads (a processor's event handler, an
+     * admin command, an agent hosted service), it cannot wait for that thread to close: it hands the stop to a new
+     * {@code mongoose-server-stop} thread and returns at once. Use {@link #awaitStopped(long, java.util.concurrent.TimeUnit)} from another
+     * thread to wait for it to finish.
      */
     public void stop() {
-        long drainTimeoutMillis = mongooseServerConfig == null
-                ? MongooseServerConfig.DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS
-                : mongooseServerConfig.getShutdownDrainTimeoutMillis();
-        lifecycleManager.stop(started, toGroupRunnerMap(composingEventProcessorAgents), toGroupRunnerMap(composingServiceAgents),
-                registeredServices, flowManager, drainTimeoutMillis);
-        started = false;
+        if (!started && !lifecycleManager.isStartAttempted()) {
+            log.info("server not started, nothing to stop");
+            return;
+        }
+        boolean onAgentThread = isServerAgentThread(Thread.currentThread());
+        if (!stopInitiated.compareAndSet(false, true)) {
+            log.info("server stop already in progress or done");
+            if (!onAgentThread) {
+                awaitStopCompletedUninterruptibly();
+            }
+            return;
+        }
+        if (onAgentThread) {
+            log.info("stop called on agent thread " + Thread.currentThread().getName()
+                    + ", running the ordered shutdown on a separate thread");
+            Thread stopper = new Thread(this::runOrderedStop, "mongoose-server-stop");
+            stopper.setDaemon(false);
+            stopper.start();
+            return;
+        }
+        runOrderedStop();
+    }
+
+    /**
+     * Wait, at most {@code timeout}, for a stop to finish: useful after a {@link #stop()} that was called on an agent
+     * thread and so returned before the server had stopped.
+     *
+     * @return true once the ordered shutdown has finished, false if it has not (or no stop was requested) in time
+     */
+    public boolean awaitStopped(long timeout, java.util.concurrent.TimeUnit unit) throws InterruptedException {
+        return stopCompleted.await(timeout, unit);
+    }
+
+    private void runOrderedStop() {
+        try {
+            long drainTimeoutMillis = mongooseServerConfig == null
+                    ? MongooseServerConfig.DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS
+                    : mongooseServerConfig.getShutdownDrainTimeoutMillis();
+            lifecycleManager.stop(true, toGroupRunnerMap(composingEventProcessorAgents), toGroupRunnerMap(composingServiceAgents),
+                    registeredServices, flowManager, drainTimeoutMillis);
+        } finally {
+            started = false;
+            stopCompleted.countDown();
+        }
+    }
+
+    private void awaitStopCompletedUninterruptibly() {
+        boolean interrupted = false;
+        while (true) {
+            try {
+                stopCompleted.await();
+                break;
+            } catch (InterruptedException e) {
+                interrupted = true;
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /** True when {@code thread} runs one of this server's agent groups. */
+    private boolean isServerAgentThread(Thread thread) {
+        for (ComposingEventProcessorAgentRunner runner : composingEventProcessorAgents.values()) {
+            if (runner.groupRunner().thread() == thread) return true;
+        }
+        for (ComposingWorkerServiceAgentRunner runner : composingServiceAgents.values()) {
+            if (runner.groupRunner().thread() == thread) return true;
+        }
+        return false;
     }
 
     private ConcurrentHashMap<String, LifecycleManager.GroupRunner> toGroupRunnerMap(ConcurrentHashMap<String, ? extends Object> source) {
@@ -1155,6 +1233,17 @@ public class MongooseServer implements MongooseServerController {
                     @Override
                     public boolean hostsEventSource() {
                         return eventSourceAgentGroups.contains(k);
+                    }
+
+                    @Override
+                    public boolean hostsOnlyEventSources() {
+                        return eventSourceAgentGroups.contains(k) && !nonEventSourceAgentGroups.contains(k);
+                    }
+
+                    @Override
+                    public boolean removeEventSources(long timeoutMillis) throws InterruptedException {
+                        return cws.group().removeHostedAgents(
+                                agent -> agent.exportedService().instance() instanceof EventSource, timeoutMillis);
                     }
                 });
             }
