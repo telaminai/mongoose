@@ -121,6 +121,12 @@ pipe.sink().accept("order-123-created");
 Notes:
 - `cacheEventLog(true)` will cache any events published before `startComplete`
   and replay them automatically when the source calls `startComplete()`.
+  After `startComplete` the log stops growing (#59): it keeps only the pre-start
+  events. To keep logging every event for the life of the pipe (unbounded; only
+  for a bounded pipe or a reader that needs the full history from the event log),
+  opt in with `retainEventLogAfterStart(true)` on the `HandlerPipe`, the
+  `HandlerPipeConfig` builder, or `retainEventLogAfterStart: true` in a YAML
+  `pipes:` entry.
 - You can customise data mapping and wrapping like other `EventSource` services.
 
 ## Sample code
@@ -134,7 +140,9 @@ Notes:
 ## Lifecycle semantics
 HandlerPipe delegates lifecycle to InMemoryEventSource:
 - start(): If cacheEventLog is true, publishes are cached (not dispatched).
-- startComplete(): Cached events are replayed to subscribers, subsequent publishes dispatch immediately.
+- startComplete(): Cached events are replayed to subscribers, subsequent publishes dispatch immediately. The
+  source goes live only after its publisher has replayed and stopped logging, and an item sent while it goes live
+  is published at once, not cached.
 
 You can still push items before start() using pipe.sink().accept(...); they will be cached if caching is enabled and replayed later.
 
