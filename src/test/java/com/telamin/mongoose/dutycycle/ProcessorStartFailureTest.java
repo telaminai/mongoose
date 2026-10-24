@@ -175,6 +175,40 @@ class ProcessorStartFailureTest {
 
     // ---- runtime: always isolated ----
 
+    /**
+     * Integration of #65 and #66: a processor dropped after a failed runtime start releases its name reservation, so a
+     * processor of the same name can be added to that group again (it used to be refused as a duplicate for ever).
+     */
+    @Test
+    void processorDroppedAfterAFailedRuntimeStartReleasesItsName() throws Exception {
+        MongooseServer server = new MongooseServer(new MongooseServerConfig());
+        server.setDefaultErrorHandler(t -> {});
+        server.registerEventSource("feed", new Feed());
+        server.addEventProcessor("first", "g", null, Proc::new);
+        server.init();
+        server.start();
+        try {
+            server.addEventProcessor("p", "g", null, () -> new Proc().failStart());
+            await(() -> reported.stream().anyMatch(e -> e.getMessage().contains("'p'")), "the failed start reported");
+            Proc again = new Proc();
+            java.util.concurrent.atomic.AtomicBoolean added = new java.util.concurrent.atomic.AtomicBoolean();
+            await(() -> {
+                if (added.get()) return true;   // await checks once more after it succeeds: add only once
+                try {
+                    server.addEventProcessor("p", "g", null, () -> again);
+                    added.set(true);
+                    return true;
+                } catch (IllegalArgumentException stillReserved) {
+                    return false;
+                }
+            }, "the name 'p' is free again in group 'g'");
+            await(() -> again.started, "the re-added processor started");
+            assertTrue(server.registeredProcessors().get("g").stream().anyMatch(n -> n.name().equals("p")));
+        } finally {
+            server.stop();
+        }
+    }
+
     /** A processor added at runtime to a group the running server starts for it is isolated, not a failed boot. */
     @Test
     void startFailureInANewGroupAddedAtRuntimeIsIsolated() throws Exception {

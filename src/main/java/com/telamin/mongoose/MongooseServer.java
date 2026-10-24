@@ -132,7 +132,8 @@ public class MongooseServer implements MongooseServerController {
     private final Set<Service<?>> registeredAgentServices = ConcurrentHashMap.newKeySet();
     /**
      * mongoose#60: processor names taken, per group, reserved atomically when {@link #addEventProcessor} is called (the
-     * group's own map only fills later, on its thread). Released by {@link #stopProcessor} or when building it fails.
+     * group's own map only fills later, on its thread). Released by {@link #stopProcessor}, when building it fails, or when the group drops it after a failed
+     * start ({@link #processorDropped}).
      */
     private final Set<ProcessorName> reservedProcessorNames = ConcurrentHashMap.newKeySet();
 
@@ -413,18 +414,23 @@ public class MongooseServer implements MongooseServerController {
      * when a processor that fails to start is always isolated (reported and dropped).
      */
     public boolean failsBootOnProcessorStartFailure() {
-        return !started && (mongooseServerConfig == null || !mongooseServerConfig.isIsolateProcessorStartFailuresAtBoot());
+        LifecycleState state = lifecycleState.get();
+        boolean booting = state == LifecycleState.NEW || state == LifecycleState.STARTING;
+        return booting && (mongooseServerConfig == null || !mongooseServerConfig.isIsolateProcessorStartFailuresAtBoot());
     }
 
     /**
      * A processor group dropped {@code processorName} after its {@code start()} failed (mongoose#57). Called on the
      * group's thread, once the group has released what it holds for the processor; this releases what the server bound
-     * to it by name: its audit-capture binding. Anything else the server reserves per processor name is to be released
-     * here too.
+     * to it by name: its audit-capture binding and its name reservation (mongoose#60), so the name can be added again.
      */
     public void processorDropped(String groupName, String processorName, DataFlow eventProcessor) {
         log.info("processor '" + processorName + "' dropped from group '" + groupName + "' after a failed start");
-        auditCaptureService.detach(processorName, eventProcessor);
+        try {
+            auditCaptureService.detach(processorName, eventProcessor);
+        } finally {
+            reservedProcessorNames.remove(new ProcessorName(groupName, processorName));
+        }
     }
 
     /**
