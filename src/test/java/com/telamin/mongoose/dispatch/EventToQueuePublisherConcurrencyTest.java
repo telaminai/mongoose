@@ -13,6 +13,7 @@ import java.util.function.IntConsumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * A publisher called from several threads (telaminai/mongoose#51): every target queue is single-producer, so the
@@ -105,6 +106,59 @@ class EventToQueuePublisherConcurrencyTest {
         }
         assertNull(failure.get(), () -> "publish threw while queues were removed: " + failure.get());
         assertExactlyOnce(stable);
+    }
+
+    /**
+     * The Lombok getters for the sequence number and the replay pointer read without the publish lock (taking it could
+     * block a reader for the full-queue spin), so the fields they read must be volatile to be safe to read from another
+     * thread (review of #52).
+     */
+    @Test
+    void stateReadByLockFreeGettersIsVolatile() throws Exception {
+        for (String field : new String[]{"sequenceNumber", "cacheReadPointer"}) {
+            int modifiers = EventToQueuePublisher.class.getDeclaredField(field).getModifiers();
+            assertTrue(java.lang.reflect.Modifier.isVolatile(modifiers), field + " is read without the lock: it must be volatile");
+        }
+        EventToQueuePublisher<String> publisher = new EventToQueuePublisher<>("getters");
+        publisher.setCacheEventLog(true);
+        publisher.publish("a");
+        assertEquals(1, publisher.getSequenceNumber(), "getter still exists");
+        assertEquals(1, publisher.getCacheReadPointer(), "getter still exists");
+    }
+
+    /**
+     * Documents the cost the lock carries (review of #52): the publish lock is held through the bounded spin on a full
+     * queue, so a second publisher on the same publisher, and add/removeTargetQueue, wait for that spin. The wait is
+     * bounded (about 10 ms per full queue per publish), never indefinite: a remove completes once the publish in flight
+     * has dropped its item.
+     */
+    @Test
+    void aFullQueueHoldsOtherCallersForTheSpinBoundOnly() throws Exception {
+        EventToQueuePublisher<String> publisher = new EventToQueuePublisher<>("slowFeed");
+        OneToOneConcurrentArrayQueue<Object> full = new OneToOneConcurrentArrayQueue<>(2);
+        publisher.addTargetQueue(full, "full");
+        publisher.publish("fill-1");
+        publisher.publish("fill-2");
+
+        Thread slow = new Thread(() -> {
+            for (int i = 0; i < 50; i++) {
+                publisher.publish("drop-" + i); // each spins ~10 ms under the lock, then drops
+            }
+        }, "slow-publisher");
+        slow.start();
+        long deadline = System.nanoTime() + 5_000_000_000L;
+        while (publisher.droppedCount() < 1 && System.nanoTime() < deadline) {
+            Thread.onSpinWait(); // the slow publisher is now dropping, spin after spin
+        }
+        long start = System.nanoTime();
+        publisher.removeTargetQueueByName("full");
+        long removeMs = (System.nanoTime() - start) / 1_000_000;
+        slow.join(5_000);
+
+        assertTrue(removeMs < 2_000, "the remove waits only for the publish in flight, took " + removeMs + " ms");
+        assertTrue(publisher.droppedCount() >= 1 && publisher.droppedCount() < 50,
+                "drops stop once the queue is removed: " + publisher.droppedCount());
+        assertEquals(2, full.size(), "nothing written past capacity");
     }
 
     static void runProducers(IntConsumer publish) throws InterruptedException {
