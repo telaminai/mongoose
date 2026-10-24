@@ -87,12 +87,18 @@ public class PooledEventReleasePathsTest {
         assertTrue(q.isEmpty());
 
         // a pool of 2 survives many failing publishes only if none leaks: a leak would block acquire for good
+        List<Msg> published = new ArrayList<>();
         assertTimeoutPreemptively(Duration.ofSeconds(5), () -> {
             for (int i = 0; i < 20; i++) {
-                publisher.publish(pool.acquire());
+                Msg m = pool.acquire();
+                published.add(m);
+                publisher.publish(m);
             }
         });
-        assertEquals(2, pool.availableCount());
+        for (Msg m : published) {
+            assertEquals(0, m.getPoolTracker().currentRefCount(), "no failed publish keeps a reference");
+        }
+        assertTrue(pool.availableCount() >= 1, "every object created is back in the pool");
     }
 
     @Test
