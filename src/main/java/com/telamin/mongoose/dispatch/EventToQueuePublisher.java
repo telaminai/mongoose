@@ -232,6 +232,7 @@ public class EventToQueuePublisher<T> {
         if (item == null) {
             return;
         }
+        yieldToSubscriberChanges();
         synchronized (publishLock) {
             if (startComplete) {
                 publishSerialised(item);
@@ -311,6 +312,7 @@ public class EventToQueuePublisher<T> {
      * {@link #cache(Object)} afterwards are still logged and replayed on the next publish or dispatch.
      */
     public void startComplete() {
+        yieldToSubscriberChanges();
         synchronized (publishLock) {
             dispatchCachedEventLogSerialised();
             startComplete = true;
