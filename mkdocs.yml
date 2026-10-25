@@ -72,8 +72,8 @@ extra:
   # Define variables here
   source_root: https://github.com/telaminai/mongoose/tree/feature/control-plane/src
   example_root: https://github.com/telaminai/mongoose-examples/tree/main
-  mongoose_version: 1.0.25
-  release_date: "2026-06-16"
+  mongoose_version: 1.0.33-rc1
+  release_date: "RC pending publication"
 
 nav:
   - Home:

@@ -1,5 +1,11 @@
 # Mongoose Server
 
+!!! warning "Pre-release documentation"
+    This documentation targets **1.0.33-rc1**, pending publication and qualification.
+    See the [release notes](release/release-notes-1.0.33-rc1.md) and
+    [client migration checklist](release/client-migration-1.0.33.md) before adopting it.
+
+
 Mongoose Server is a high‑performance, event‑driven library for building scalable event processing applications fast.
 It wires sources, processors, sinks, and services for you, handling threading and lifecycle behind the scenes, so you
 can focus on business logic.
@@ -27,6 +33,9 @@ standalone single‑server app — the same APIs support both.
   make operational control simpler.
 
 ### Performance at a glance
+
+These are historical measurements, not qualification results for 1.0.33-rc1. Pinned-core Linux testing of this
+candidate remains open; measure with your workload and audit profile before adopting a performance budget.
 
 - At 1 million messages/second, latency statistics:
     - Avg ≈ 270 nanos (0.00027 ms), p99.999 ≈ 81 µs, Max ≈ 90.1 µs.
