@@ -605,7 +605,9 @@ configuration key. See [configuration keys](#configuration-keys).
 ```java
 public interface AuditCaptureResources {
     Object openCapture(String processorName) throws Exception;                  // on an I/O helper
-    default Object openCaptureScoped(AuditCaptureIdentity identity) throws Exception; // delegates to old API
+    default Object openCaptureScoped(AuditCaptureIdentity identity) throws Exception {
+        return openCapture(identity.name());
+    }
     void installCapture(Object resource, String processorName, DataFlow flow);   // on the group's agent thread
     void uninstallCapture(Object resource, String processorName, DataFlow flow); // on the group's agent thread
     void closeCapture(Object resource) throws Exception;                         // on the closer, once per resource
