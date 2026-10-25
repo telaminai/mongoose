@@ -53,7 +53,7 @@ public enum ReplyOutcome { APPLIED, REFUSED, FAILED, NOT_RUNNING }
 | Outcome | Meaning | Typical `reason` values (from the code) |
 | --- | --- | --- |
 | `APPLIED` | The requested transition has finished, not just been accepted. For a stop, release was attempted and the name freed; reported lifecycle callback failures do not imply callback success. A processor already gone is also `APPLIED`. | `started`, `stopped`, `alreadyStopped`, `releasing`, `cancelled` (a stop overtook its add), `recording`, `not recording`, `delivered`, `ignored: stale version N` |
-| `REFUSED` | Nothing changed. The request was turned down before any effect ran. | `name in use`, `cancelled` (the add was cancelled by an earlier stop), `no such processor`, `not started yet`, `mailbox full`, `not admitted within its deadline: mailbox full`, `handle belongs to another server`, `no such group` |
+| `REFUSED` | The requested transition was not applied. Admission refusals run no effects; a cancelled capture start may already have an open in flight and still require cleanup. | `name in use`, `cancelled` (the add was cancelled by an earlier stop), `no such processor`, `not started yet`, `mailbox full`, `not admitted within its deadline: mailbox full`, `handle belongs to another server`, `no such group` |
 | `FAILED` | The request was accepted and acted on, but its effect did not complete. | the start failure's text; `open timed out`; `open failed: ...`; `delivered with failures: ...`; `group died: ...`; `control processor threw: ...` |
 | `NOT_RUNNING` | The group, or the server, is closing, closed or dead. The request was not applied. | `group closed`, `server is stopping` |
 
@@ -324,7 +324,7 @@ admission into the mailbox and waiting for the reply.
 | `REFUSED`, reason `not admitted within its deadline: mailbox full` | The mailbox stayed full past the deadline |
 | `null` | No such group, nothing admitted under the name, the caller may not wait (agent thread, group not started), or no reply by the deadline. In the last two cases the stop still applies |
 
-On an agent thread with a full mailbox it throws `IllegalStateException`, as the void form does.
+On an agent thread with a full mailbox this reply-returning form returns `REFUSED`; the void form throws.
 
 ### The admin stop command
 
@@ -460,7 +460,8 @@ One deadline, `shutdownTimeoutMillis` (default 30 000 ms), covers the whole stop
 **Guaranteed**
 
 - `shutdown()` returns by the deadline (plus scheduling slack) with a truthful `StopResult`. It never reports
-  `complete` while something it started is still running.
+  `complete` while tracked lifecycle/capture work remains unconfirmed. Independent diagnostic export workers
+  are not awaited; finish exports before terminating the process.
 - If any processor group did not close, remaining service dependencies are retained. Event sources were already
   stopped in the feed phase; this guarantee does not keep their inbound streams available.
 - Groups closing do not run queued adds: their suppliers never run and they are answered `NOT_RUNNING`.
@@ -553,6 +554,11 @@ agent thread.
 | Group begins applying the request | 5 s | Request cancelled; `IllegalStateException` ("cancelled, and nothing changed") |
 | The open, once begun | group open timeout, 30 s by default | Reply `FAILED: open timed out`; `IllegalStateException`. A later open completion is closed, never installed |
 | Caller's wait for an open in progress | 35 s | `IllegalStateException` ("still being applied"); the request may still complete |
+
+These are successive reply waits, not one end-to-end deadline. Before they start, mailbox admission may back off
+for its full-mailbox timeout (10 s by default) on a waiting caller. The 5 s claim wait can be followed by the 35 s
+open-progress wait if the group already claimed the request. Scheduling and filesystem delays also apply; do not
+interpret the table as a single 5 s or 35 s method-call bound.
 
 **Failure modes**
 
@@ -647,6 +653,10 @@ public interface AuditCaptureResources {
 
 The group decides and an `AuditCaptureResources` only acts. The contract for an implementation:
 
+Install/uninstall normally run on the owning agent thread. Exclusive cleanup after that agent has terminated and
+been joined may run on a shutdown helper; implementations must permit that ownership handoff. They must not
+require dispatch to a thread that can no longer execute work.
+
 - `openCapture` / `openCaptureScoped` must close anything created before throwing. The group calls the scoped form;
   implementations that inherit the compatibility default still receive bare names. A custom backend must implement
   scoped ownership before claiming isolation between same-named processors in different groups.
@@ -656,6 +666,9 @@ The group decides and an `AuditCaptureResources` only acts. The contract for an 
 - `closeCapture` flushes and closes. The group calls it exactly once per resource. A failure is recorded and counted,
   and never blocks a processor's release.
 - A resource is opaque to the group. It is held by id and handed back.
+
+The additive `processorReleased(identity, flow)` hook lets direct embeddings retire the exact scoped binding
+after lifecycle release. It does not transfer physical-close ownership away from the group.
 
 The server wires a group to a capture service only when the installed `MongooseAuditCaptureService` also implements
 `AuditCaptureResources`. In this build that is the built-in Chronicle service. A group used directly can be given one
@@ -776,8 +789,10 @@ equivalence. Positive recorded versions fail closed if publication identity is s
 a registration may be visible briefly before its versioned broadcast reaches the group. Version numbers identify
 bindings within the configured run, not a build, service state or cross-machine identity proof.
 
-In a replay, a withdrawal the stream records is not confirmed to its sender until the stream delivers it, so
-`removeService` keeps the instance meanwhile (until shutdown if the stream never withdraws it). A replayed processor's
+In a replay, a live withdrawal suppressed because the stream owns its delivery returns a failed acknowledgement.
+That acknowledgement is not later upgraded when the stream withdraws it: `removeService` retains the instance
+until shutdown has stopped the groups. Repeated churn can therefore retain services for the server's lifetime.
+A replayed processor's
 registry requests (`registerService`, `registerEventSource`, `removeService`) are never executed against the live
 server: the replay stops, because they need an isolated replay registry.
 
@@ -820,8 +835,11 @@ boolean complete = audit.isComplete();               // false once anything was 
 long total = audit.total(), dropped = audit.dropped(), failures = audit.sinkFailures();
 ```
 
-`MongooseServer` has no public accessor for its groups or their control audits in this build. The control audit is
-reachable from a `ComposingEventProcessorAgent` you hold, as the tests do.
+For a server-owned group, use `server.exportControlAudit(groupName, newDirectory)` from an ordinary background
+thread, or admin `control.audit.export <group> <new-directory>` and `control.audit.export.status <job-id>`.
+`control.group.status <group>` / `server.controlGroupStatus(groupName)` expose non-blocking cleanup diagnostics.
+See [export and investigation](../example/how-to/how-to-investigate-control-audit.md) for permissions, file
+verification and the deployed graph. The direct group access above is also available to embedded callers.
 
 ### Exporting it, with a completeness manifest
 
@@ -847,7 +865,8 @@ if (v.permitsInvariantPass()) { /* COMPLETE */ }
 
 ### Reading it
 
-The export is a sequence of YAML documents, one per record, each preceded by `---`. To follow one request, select the
+The export is a sequence of YAML documents, each preceded by `---`. A Fluxtion event-cycle document can contain
+several structured control records; fallback records occupy their own documents. To follow one request, select the
 records with its `rootId`. Control records have `seq`, fallback records have a separate `fallbackSeq`; preserve
 export order when comparing them. Fallback cleanup can instead link by `opId`, `resourceId` and generation, and may
 not carry the original request's `rootId`. Include these resource-linked records when checking physical cleanup.

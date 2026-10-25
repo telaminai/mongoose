@@ -132,6 +132,8 @@ public class CaptureMigrationAcceptanceTest {
             assertEquals(5, listing.size());
             assertEquals(5, listing.stream().map(AuditSinkHandle::id).distinct().count());
             assertEquals(3, listing.stream().filter(AuditSinkHandle::isLive).count());
+            assertEquals(2, index.capturesFor("g1", "p").size());
+            assertEquals(index.currentSink("g1/p").id(), index.latestCapture("g1", "p").id());
             for (AuditSinkHandle h : listing) {
                 assertEquals(h.id(), h.path().getFileName().toString());
                 assertTrue(Files.isRegularFile(h.path().resolve(".mongoose-capture.properties")));
@@ -139,7 +141,12 @@ public class CaptureMigrationAcceptanceTest {
             String status = command(admin, "audit.status");
             String all = command(admin, "audit.list");
             assertTrue(status.contains("g1/p") && status.contains("g2/p"), status);
-            for (AuditSinkHandle h : listing) assertTrue(all.contains(h.path().toString()), all);
+            for (AuditSinkHandle h : listing) {
+                assertTrue(all.contains("id=" + h.id()), all);
+                assertTrue(all.contains("selector=" + h.processorName()), all);
+                assertTrue(all.contains("path=" + h.path()), all);
+                if (h.isLive()) assertTrue(status.contains("id=" + h.id()), status);
+            }
             StopResult stop = server.shutdown();
             assertEquals(StopResult.completed(), stop);
             for (var p : processors) assertSame(configured, p.listener, "shutdown restores the exact listener");

@@ -89,7 +89,8 @@ Choose a request's actual `rootId` in the log (472 below is only an example), th
 {"tool":"analyser_filter","arguments":{"text":"rootId: 472"}}
 ```
 
-Follow Input → Decision → EffectRequested → pending/final EffectOutcome → Reply. Check expected effects and
+Follow Input → Decision (its `effects` list) → pending/final EffectOutcome → Reply. Separate `EffectRequested`
+records are used on fallback cleanup paths. Check expected effects and
 outcomes against the agreed lifecycle contract, not only the rule's own label. Follow `opId`, `causeOp`,
 `resourceId` and generation too. Cancellation can have a different root; fallback cleanup may omit the original
 root altogether. Clear the filter to find these related records:

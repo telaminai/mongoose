@@ -28,7 +28,8 @@ built-in router binds scoped auto-start to the exact admitted generation.
 `currentSinks` keys are qualified selectors; per-processor capture metric names
 also use that selector. Introspection joins live and historical captures by
 capture id, so successive recordings of the same registration remain distinct.
-Counters and timestamps restart for each new routed physical capture.
+Each handle's record count and timestamps restart for a new routed physical capture. The named Agrona metric
+`audit.<selector>.records` reuses its counter and is cumulative for that label within the counters service.
 
 Existing capture plugins keep their original methods. New `attachScoped`,
 `openCaptureScoped` and `startScoped` default methods delegate to their old
@@ -82,8 +83,9 @@ does not make those old paths authoritative for new server captures. Back up old
 scripts. Preserve the sidecar alongside all Chronicle files when archiving a new capture.
 
 `currentSinks()` and `liveSinks()` now use `g/p` rather than `p`, and the built-in record counter is
-`audit.g/p.records`. Components containing `/` or `%` are percent-encoded individually. Counters, start times and
-last-write times restart for each session; dashboards must distinguish session identity from processor identity.
+`audit.g/p.records`. Components containing `/` or `%` are percent-encoded individually. Handle counts, start times
+and last-write times restart for each session; the Agrona named metric is cumulative. Dashboards must distinguish
+session identity from processor identity.
 
 There is no core retention janitor. `retainHours` is a configuration hint for external tooling, not an enforced
 expiry. Repeated starts accumulate directories. Update pruning jobs to discover metadata rather than glob a

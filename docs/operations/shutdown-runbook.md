@@ -152,6 +152,27 @@ the ordered phase log fragments above and `StopResult.completed()`. Its full log
 
 Read the successful phases in order: feeds stop, queued events drain, processor groups close (including capture
 cleanup), service groups close, registered services stop, then the recorded `StopResult` confirms completion.
-The qualification report links the preserved full log and the forced-close-failure example. For that failure,
-the operator preserves the failed resource, exports the control audit and escalates; repeated shutdown does not
-retry an uncertain physical close.
+The [qualification report](../reports/pr76-review-followup-2026-10-25/README.md) links the preserved full logs.
+The successful log ends with this asserted result:
+
+```text
+StopResult[complete=true, handedOff=false, blockedStartup=null, groupsRunning=[], servicesLeftRunning=[]]
+```
+
+`ChronicleShutdownFailureEvidenceTest` uses a real Chronicle queue and real Agrona group through
+`LifecycleManager`; its wrapper forces one physical close to throw. It is an integration test of the shutdown
+path, not the complete YAML server fixture. The log contains:
+
+```text
+mongoose-stop-chronicle-close failed
+group chronicle-close has 1 unresolved physical capture resources; cleanup failures={1=physical close: java.lang.IllegalStateException: forced Chronicle close failure}
+stop incomplete: processor group(s) [chronicle-close] did not close within the shutdown deadline; services left running for them: []
+StopResult[complete=false, handedOff=false, blockedStartup=null, groupsRunning=[chronicle-close], servicesLeftRunning=[]]
+```
+
+The first line identifies the helper. The exception identifies resource **1** and the failed stage. The final
+result retains the group despite its thread having ended. A second stop produces the same result and does not
+repeat the physical close. The test asserts these exact messages, both results, one close attempt and the
+`CleanupPending` fields. The complete control export reports the failure; completeness does not make it a
+successful invariant check. The operator preserves the resource/files, exports the control audit and escalates
+under the finite shutdown policy.

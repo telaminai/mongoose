@@ -11,7 +11,8 @@ import com.telamin.fluxtion.runtime.DataFlow;
  * group decides; this only does. Each method is called on a known thread:
  * <ul>
  *   <li>{@link #openCapture} on an I/O helper: file work never lands on a processor's thread;</li>
- *   <li>{@link #installCapture} and {@link #uninstallCapture} on the group's agent thread, between event cycles;</li>
+ *   <li>{@link #installCapture} and normal {@link #uninstallCapture} on the group's agent thread, between event
+ *       cycles; exclusive post-death cleanup may uninstall on a shutdown helper after joining the ended agent;</li>
  *   <li>{@link #closeCapture} on the closer, exactly once per resource.</li>
  * </ul>
  * A resource is opaque to the group: it holds it by id in its resource table and hands it back.

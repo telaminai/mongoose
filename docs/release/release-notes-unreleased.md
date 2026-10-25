@@ -81,7 +81,8 @@ metadata instead of deriving a directory from a processor name. See the [layout/
 For processor `p` in group `g`, `currentSinks` and `liveSinks` use key **`g/p`** and the record counter is
 **`audit.g/p.records`**, replacing bare-name keys. Special characters are encoded by `AuditCaptureIdentity.selector`.
 These are breaking key changes for dashboards and REST consumers, including integrations with `svc-admin-web`.
-Record counters and timestamps restart for each session. Unique bare names still work for operator start/stop/status
+Handle record counts and timestamps restart for each session; the named Agrona metric is cumulative for the label.
+Unique bare names still work for operator start/stop/status
 and current-sink lookup; ambiguous names require the exact qualified selector printed by the error.
 
 YAML `autoStart` is asynchronous. Boot returning confirms processor startup, not completion of capture I/O.
@@ -150,6 +151,10 @@ applies)`.
 - `MongooseServerConfig`: `controlWaitMillis`, `shutdownTimeoutMillis` (also on the builder), `addFailurePolicy`.
 - `AuditCaptureResources`.
 - `ControlAuditSink`, `ControlAuditExport` (completeness manifest and `verify`).
+- `MongooseServer.exportControlAudit`, `controlGroupStatus` and immutable `ControlGroupStatus`; admin
+  `control.audit.export`, `control.audit.export.status`, `control.group.status`.
+- `MongooseAuditIntrospectionService.capturesFor` and `latestCapture`, with selector and group/name overloads.
+- `MongooseCountersService.queueDropCounter`, `EventToQueuePublisher.droppedCount(queueName)` and `getDropAudit`.
 - `ReplayConfig.withControlInterception`, `withProvenance`; `ReplayEntry.Stopped`, `ServiceChanged`, `ControlCall`;
   `Provenance`; `ReplayStreams`.
 - `ComposingEventProcessorAgent.setCaptureOpenLimit`, `setCaptureOpenTimeout`, `setControlDrainBudget`.
