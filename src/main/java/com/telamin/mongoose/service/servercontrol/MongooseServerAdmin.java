@@ -310,7 +310,15 @@ public class MongooseServerAdmin implements Lifecycle {
         if (auditUnavailable(err)) return;
         if (args.size() >= 2) {
             String processor = args.get(1);
-            out.accept("audit: " + processor + " " + (auditCapture.isRecording(processor) ? "RECORDING" : "idle"));
+            try {
+                boolean recording = auditCapture.isRecording(processor);
+                AuditSinkHandle handle = auditIntrospection == null ? null : recording
+                        ? auditIntrospection.currentSink(processor) : auditIntrospection.latestCapture(processor);
+                out.accept("audit: " + processor + " " + (recording ? "RECORDING" : "idle")
+                        + (handle == null ? "" : (recording ? " " : " latest ") + captureLocation(handle)));
+            } catch (IllegalArgumentException | IllegalStateException refused) {
+                err.accept("audit: " + refused.getMessage());
+            }
             return;
         }
         // No processor — list state for every active processor we know about.
@@ -320,7 +328,7 @@ public class MongooseServerAdmin implements Lifecycle {
         }
         StringBuilder sb = new StringBuilder("audit status:");
         auditIntrospection.currentSinks().forEach((proc, handle) ->
-                sb.append("\n\t").append(proc).append("  RECORDING  ").append(handle.path()));
+                sb.append("\n\t").append("RECORDING ").append(captureLocation(handle)));
         out.accept(sb.toString());
     }
 
@@ -338,12 +346,15 @@ public class MongooseServerAdmin implements Lifecycle {
         for (AuditSinkHandle h : all) {
             sb.append("\n\t")
                     .append(h.isLive() ? "● " : "  ")
-                    .append(h.processorName())
+                    .append(captureLocation(h))
                     .append("  ").append(h.recordCount() < 0 ? "?" : h.recordCount()).append(" records")
-                    .append("  ").append(h.sizeBytes() < 0 ? "?" : (h.sizeBytes() + " bytes"))
-                    .append("  ").append(h.path());
+                    .append("  ").append(h.sizeBytes() < 0 ? "?" : (h.sizeBytes() + " bytes"));
         }
         out.accept(sb.toString());
+    }
+
+    private static String captureLocation(AuditSinkHandle handle) {
+        return "id=" + handle.id() + " selector=" + handle.processorName() + " path=" + handle.path();
     }
 
     private void listServices(List<String> args, Consumer<String> out, Consumer<String> err) {

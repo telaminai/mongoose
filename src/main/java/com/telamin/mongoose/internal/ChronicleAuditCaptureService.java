@@ -97,6 +97,8 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
     /** Resolve a selector only while unique; an old resource is never looked up by name. */
     private ProcessorSink selectedSink(String selector) {
         ProcessorSink found = null;
+        java.util.List<String> choices = new java.util.ArrayList<>();
+        int matches = 0;
         for (ProcessorSink sink : attachedSinks()) {
             if (!sink.isAttached() && !sink.isRecording()) continue;
             int slash = selector.indexOf('/');
@@ -105,10 +107,13 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
                         && sink.identity.name().equals(AuditCaptureIdentity.decode(selector.substring(slash + 1)))
                     : sink.processorName.equals(selector);
             if (!match) continue;
-            if (found != null && found != sink) throw new IllegalArgumentException("ambiguous audit processor '"
-                    + selector + "': use an encoded group/name selector");
+            if (found == sink) continue;
+            matches++;
+            choices.add(sink.selector());
             found = sink;
         }
+        if (matches > 1) throw new IllegalArgumentException("ambiguous audit processor '" + selector
+                + "': use one of " + choices.stream().distinct().sorted().toList());
         return found;
     }
 
@@ -303,7 +308,7 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             return;
         }
         sink.requireAttached("start");
-        ChronicleQueue opened = sink.openQueue(config, queueBuilder);
+        ChronicleQueue opened = openQueue(sink);
         boolean[] adopted = {false};
         try {
             sink.applyOnAgent("start", () -> adopted[0] = sink.beginRecording(opened, counters));
@@ -417,13 +422,26 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
 
     // ------------------------------------------------------------------ AuditCaptureResources: the group's hands
 
+    private ChronicleQueue openQueue(ProcessorSink sink) {
+        try {
+            return sink.openQueue(config, queueBuilder);
+        } catch (RuntimeException | Error failure) {
+            // A concurrent listing may have cached the directory while the builder was opening it.
+            try { liveSinkMutation.run(); }
+            catch (RuntimeException | Error observerFailure) {
+                if (observerFailure != failure) failure.addSuppressed(observerFailure);
+            }
+            throw failure;
+        }
+    }
+
     @Override
     public Object openCapture(String processorName) {
         // Legacy routed callers supply the exact instance only at install. Never guess its owner or share its path.
         ProcessorSink sink = router == null
                 ? sinks.computeIfAbsent(processorName, n -> new ProcessorSink(null, n)) : null;
         ProcessorSink opener = sink == null ? new ProcessorSink(null, processorName, null, true) : sink;
-        CaptureHandle handle = new CaptureHandle(sink, opener.openQueue(config, queueBuilder));
+        CaptureHandle handle = new CaptureHandle(sink, openQueue(opener));
         openResources.add(handle);
         return handle;
     }
@@ -440,12 +458,12 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             }
             if (!legacy) throw new IllegalArgumentException("capture registration is not attached: " + identity);
             var opener = new ProcessorSink(null, identity.name(), identity, true);
-            CaptureHandle handle = new CaptureHandle(null, opener.openQueue(config, queueBuilder));
+            CaptureHandle handle = new CaptureHandle(null, openQueue(opener));
             openResources.add(handle);
             return handle;
         }
         sink.requireAttached("open");
-        CaptureHandle handle = new CaptureHandle(sink, sink.openQueue(config, queueBuilder));
+        CaptureHandle handle = new CaptureHandle(sink, openQueue(sink));
         openResources.add(handle);
         return handle;
     }
@@ -799,6 +817,7 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
                     java.util.Properties metadata = new java.util.Properties();
                     metadata.setProperty("schema", "1");
                     metadata.setProperty("processor", selector());
+                    metadata.setProperty("openedAt", Instant.now().toString());
                     if (identity != null) {
                         metadata.setProperty("group", identity.group());
                         metadata.setProperty("name", identity.name());

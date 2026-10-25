@@ -29,19 +29,22 @@ class CaptureOpenFailureCleanupTest {
         Path history = Files.createDirectory(dir.resolve("history"));
         Files.writeString(history.resolve("existing.cq4"), "keep");
         var failedPath = new AtomicReference<Path>();
+        var introspection = new AtomicReference<DirAuditIntrospectionService>();
         var expected = new IllegalStateException("Chronicle build failed");
         var service = new ChronicleAuditCaptureService(config(dir), NoOpCountersService.INSTANCE, path -> {
             failedPath.set(path);
+            assertEquals(2, introspection.get().listAvailable().size(), "a concurrent reader can snapshot the opening directory");
             try { Files.writeString(path.resolve("partial.cq4"), "partial"); }
             catch (java.io.IOException e) { throw new java.io.UncheckedIOException(e); }
             throw expected;
         });
+        introspection.set(new DirAuditIntrospectionService(config(dir), service));
         var identity = new AuditCaptureIdentity("g", "p", 1);
         service.attachScoped(new Flow(), identity, r -> { }, Runnable::run);
         assertSame(expected, assertThrows(IllegalStateException.class, () -> service.openCaptureScoped(identity)));
         assertFalse(Files.exists(failedPath.get()), "failed open must not leave a directory or owner sidecar");
         assertEquals("keep", Files.readString(history.resolve("existing.cq4")));
-        assertEquals(1, new DirAuditIntrospectionService(config(dir), service).listAvailable().size());
+        assertEquals(1, introspection.get().listAvailable().size(), "failed open invalidates a concurrently cached phantom listing");
     }
     @Test void failedStandaloneBuildNeverDeletesExistingHistory(@TempDir Path dir) throws Exception {
         Path history = Files.createDirectory(dir.resolve("p"));

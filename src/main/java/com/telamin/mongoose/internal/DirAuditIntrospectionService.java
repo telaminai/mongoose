@@ -121,7 +121,7 @@ public final class DirAuditIntrospectionService implements MongooseAuditIntrospe
     }
 
     private List<AuditSinkHandle> walk() {
-        Path root = Path.of(config.getDirectory());
+        Path root = Path.of(config.getDirectory()).toAbsolutePath().normalize();
         if (!Files.isDirectory(root)) {
             return Collections.emptyList();
         }
@@ -131,12 +131,20 @@ public final class DirAuditIntrospectionService implements MongooseAuditIntrospe
             entries.filter(Files::isDirectory).forEach(procDir -> {
                 String id = procDir.getFileName().toString();
                 String name = id;
+                Instant openedAt = Instant.EPOCH;
                 Path metadata = procDir.resolve(".mongoose-capture.properties");
                 if (Files.isRegularFile(metadata)) {
                     java.util.Properties properties = new java.util.Properties();
                     try (var reader = Files.newBufferedReader(metadata)) {
                         properties.load(reader);
-                        if ("1".equals(properties.getProperty("schema"))) name = properties.getProperty("processor", id);
+                        if ("1".equals(properties.getProperty("schema"))) {
+                            name = properties.getProperty("processor", id);
+                            String opened = properties.getProperty("openedAt");
+                            if (opened != null) {
+                                try { openedAt = Instant.parse(opened); }
+                                catch (java.time.format.DateTimeParseException invalid) { /* older/malformed metadata uses mtime */ }
+                            }
+                        }
                     } catch (IOException ignored) { /* retain the unique directory id when metadata is unreadable */ }
                 }
                 AuditSinkHandle liveHandle = live.get(id);
@@ -167,7 +175,7 @@ public final class DirAuditIntrospectionService implements MongooseAuditIntrospe
                         -1L,       // cycle: unknown from a closed dir walk
                         size,
                         -1L,       // recordCount: -1 = needs a tailer walk; deferred
-                        Instant.EPOCH,           // startedAt: unknown without metadata file
+                        openedAt,                // older metadata falls back to last-write ordering in history lookup
                         lastModified,
                         false));
             });

@@ -173,7 +173,9 @@ public interface MongooseAuditCaptureService {
 
     /**
      * True iff capture is currently active for the named processor.
-     * A unique bare name or an encoded group/name selector; safe to call from any thread.
+     * The built-in Chronicle service accepts a unique bare name or encoded group/name selector.
+     * Other implementations define their own namespace and are responsible for selector/ambiguity support.
+     * Safe to call from any thread.
      */
     boolean isRecording(String processorName);
 }
