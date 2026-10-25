@@ -657,7 +657,7 @@ public class MongooseServer implements MongooseServerController {
 
     public void registerService(Service<?>... services) {
         for (Service<?> service : services) {
-            Map<String, com.telamin.mongoose.control.ControlRequest> sent;
+            ServiceBroadcast sent;
             java.util.concurrent.locks.Lock read = admitServiceChange();
             if (read == null) {
                 throw new IllegalStateException("server is stopping: service '" + service.serviceName() + "' was not registered");
@@ -675,7 +675,7 @@ public class MongooseServer implements MongooseServerController {
                 serviceLock.lock();     // registry state and broadcast publication in one order
                 try {
                     // removed meanwhile: its deregistration was published, so publishing this would resurrect it
-                    sent = registeredServices.get(service.serviceName()) == service ? sendBroadcast(service, true) : Map.of();
+                    sent = registeredServices.get(service.serviceName()) == service ? sendBroadcast(service, true) : new ServiceBroadcast(Map.of(), List.of());
                 } finally {
                     serviceLock.unlock();
                 }
@@ -749,7 +749,7 @@ public class MongooseServer implements MongooseServerController {
      * is given the registry's services, and the injection into other services already done cannot be undone.
      */
     /** Publish a service transition to every processor group, with its version; called under the service lock. */
-    private Map<String, com.telamin.mongoose.control.ControlRequest> sendBroadcast(Service<?> service, boolean register) {
+    private ServiceBroadcast sendBroadcast(Service<?> service, boolean register) {
         long version = serviceVersions.computeIfAbsent(service.serviceName(), n -> new java.util.concurrent.atomic.AtomicLong())
                 .incrementAndGet();
         List<String> missed = new ArrayList<>();
@@ -768,24 +768,27 @@ public class MongooseServer implements MongooseServerController {
                 log.fine("group " + groupName + " not told of service " + service.serviceName() + ": " + notQueued);
             }
         });
-        if (!missed.isEmpty()) {
-            // Reporting invokes a configurable handler. Never run that user callback under the publication lock.
-            com.telamin.mongoose.control.ControlReplies.executeSafely(replyExecutor, () ->
-                    com.telamin.mongoose.service.error.ErrorReporting.report("MongooseServer",
-                    "service '" + service.serviceName() + "' is " + (register ? "registered" : "removed")
-                            + ", but processor group(s) " + missed + " could not be told (control queue full, group not"
-                            + " draining): their running processors were not " + (register ? "given" : "relieved of")
-                            + " it", null, com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR));
-        }
-        return sent;
+        return new ServiceBroadcast(sent, List.copyOf(missed));
     }
+
+    private record ServiceBroadcast(Map<String, com.telamin.mongoose.control.ControlRequest> requests,
+                                    List<String> missed) { }
 
     /**
      * Await every group's reply to a broadcast under one deadline, where waiting is safe; never under the lock.
      *
      * @return true when every group confirmed it
      */
-    private boolean awaitBroadcast(Service<?> service, boolean register, Map<String, com.telamin.mongoose.control.ControlRequest> sent) {
+    private boolean awaitBroadcast(Service<?> service, boolean register, ServiceBroadcast broadcast) {
+        // Called after releasing the publication/admission locks: reporting invokes a configurable user handler.
+        if (!broadcast.missed().isEmpty()) {
+            com.telamin.mongoose.service.error.ErrorReporting.report("MongooseServer",
+                    "service '" + service.serviceName() + "' is " + (register ? "registered" : "removed")
+                            + ", but processor group(s) " + broadcast.missed() + " could not be told (control queue full, group not"
+                            + " draining): their running processors were not " + (register ? "given" : "relieved of")
+                            + " it", null, com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
+        }
+        Map<String, com.telamin.mongoose.control.ControlRequest> sent = broadcast.requests();
         // design PR 3: sent to every group first, then awaited together under one deadline, where waiting is safe
         long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(controlWaitMillis());
         boolean all = true;
@@ -838,7 +841,7 @@ public class MongooseServer implements MongooseServerController {
         log.info("removeService:" + serviceName);
         Service<?> removed;
         RemovedService retirement;
-        Map<String, com.telamin.mongoose.control.ControlRequest> sent;
+        ServiceBroadcast sent;
         java.util.concurrent.locks.Lock read = admitServiceChange();
         if (read == null) {
             // the stop stops every registered service once; removing it here too would stop it twice, concurrently
@@ -866,10 +869,10 @@ public class MongooseServer implements MongooseServerController {
             retirement.stop();
             return;
         }
-        java.util.concurrent.CompletableFuture<?>[] replies = sent.values().stream()
+        java.util.concurrent.CompletableFuture<?>[] replies = sent.requests().values().stream()
                 .map(com.telamin.mongoose.control.ControlRequest::reply).toArray(java.util.concurrent.CompletableFuture[]::new);
         java.util.concurrent.CompletableFuture.allOf(replies).whenComplete((done, failed) -> {
-            if (failed == null && sent.values().stream().allMatch(r -> r.reply().join().applied())) {
+            if (failed == null && sent.requests().values().stream().allMatch(r -> r.reply().join().applied())) {
                 com.telamin.mongoose.control.ControlReplies.executeSafely(replyExecutor, retirement::stop);
             } else {
                 log.warning("service '" + serviceName + "' remains owned until shutdown: withdrawal was not confirmed");
