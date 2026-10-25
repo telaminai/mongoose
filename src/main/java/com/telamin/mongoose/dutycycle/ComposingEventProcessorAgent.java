@@ -103,6 +103,17 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
      * first-use class loading) would otherwise push every request behind it to a later duty cycle.
      */
     static final int DRAIN_MAX = 64;
+    /**
+     * System property sizing each group's control audit ring ({@link ControlAuditSink#DEFAULT_CAPACITY} records by
+     * default). A ring that overflows drops its oldest records and reports itself incomplete, after which the
+     * invariants that need the whole record are unverifiable; a long run that must stay verifiable sizes it up.
+     */
+    public static final String CONTROL_AUDIT_CAPACITY_PROPERTY = "mongoose.control.auditCapacity";
+
+    private static int controlAuditCapacity() {
+        Integer configured = Integer.getInteger(CONTROL_AUDIT_CAPACITY_PROPERTY);
+        return configured == null || configured < 1 ? ControlAuditSink.DEFAULT_CAPACITY : configured;
+    }
     private volatile long drainBudgetNanos = Long.MAX_VALUE;
     private final ControlDriver control;
     private final AtomicLong generations = new AtomicLong();
@@ -186,7 +197,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         scheduler.setProcessorNames(this::nameOf);
         this.eventsProcessedCounter = eventFlowManager.getCountersService().agentEventsCounter(roleName);
         this.idleCyclesCounter = eventFlowManager.getCountersService().agentIdleCyclesCounter(roleName);
-        this.control = new ControlDriver(roleName, CONTROL_QUEUE_CAPACITY, this, new ControlAuditSink());
+        this.control = new ControlDriver(roleName, CONTROL_QUEUE_CAPACITY, this, new ControlAuditSink(controlAuditCapacity()));
         this.control.onOrphanCompletion(this::orphanCompletion);
     }
 
