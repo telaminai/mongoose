@@ -1,0 +1,152 @@
+[
+  {
+    "name": "baseline",
+    "exitCode": 0,
+    "caughtBy": [],
+    "tests": 101,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "name-only-stop-without-release",
+    "exitCode": 1,
+    "caughtBy": [
+      "ControlScenarioHarnessTest",
+      "GeneratedProcessorFailureIsolationTest"
+    ],
+    "tests": 101,
+    "failures": 6,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "missing-stop-reply",
+    "exitCode": 1,
+    "caughtBy": [
+      "CaptureAsEffectsTest",
+      "ControlScenarioHarnessTest"
+    ],
+    "tests": 101,
+    "failures": 21,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "applied-without-release-renamed-rule",
+    "exitCode": 1,
+    "caughtBy": [
+      "CaptureAsEffectsTest",
+      "ControlScenarioHarnessTest",
+      "GeneratedProcessorFailureIsolationTest",
+      "ReplayIdentityTest"
+    ],
+    "tests": 101,
+    "failures": 26,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "missing-stale-open-close",
+    "exitCode": 1,
+    "caughtBy": [
+      "CaptureAsEffectsTest",
+      "ControlScenarioHarnessTest"
+    ],
+    "tests": 101,
+    "failures": 3,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "skip-terminal-sweep",
+    "exitCode": 1,
+    "caughtBy": [
+      "ControlScenarioHarnessTest"
+    ],
+    "tests": 101,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "drop-claimed-stop",
+    "exitCode": 1,
+    "caughtBy": [
+      "ControlScenarioHarnessTest"
+    ],
+    "tests": 101,
+    "failures": 7,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "missing-stop-reply-relabelled-as-effect-failure",
+    "exitCode": 1,
+    "caughtBy": [
+      "CaptureAsEffectsTest",
+      "ControlScenarioHarnessTest"
+    ],
+    "tests": 101,
+    "failures": 18,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "applied-reply-classified-as-failure",
+    "exitCode": 1,
+    "caughtBy": [
+      "CaptureAsEffectsTest",
+      "ControlScenarioHarnessTest",
+      "FailureKindFlowTest"
+    ],
+    "tests": 101,
+    "failures": 46,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "quarantine-kind-dropped",
+    "exitCode": 1,
+    "caughtBy": [
+      "GeneratedProcessorFailureIsolationTest"
+    ],
+    "tests": 101,
+    "failures": 2,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "deadline-kind-dropped",
+    "exitCode": 1,
+    "caughtBy": [
+      "FailureKindFlowTest"
+    ],
+    "tests": 101,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "leftover-marker-dropped",
+    "exitCode": 1,
+    "caughtBy": [
+      "CaptureAsEffectsTest"
+    ],
+    "tests": 101,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "replay-identity-kind-dropped",
+    "exitCode": 1,
+    "caughtBy": [
+      "ReplayIdentityTest"
+    ],
+    "tests": 101,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0
+  }
+]
