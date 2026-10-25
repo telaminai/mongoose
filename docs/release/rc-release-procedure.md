@@ -58,3 +58,17 @@ Post the Mongoose tag, SHA, evidence and known limits on PR #76, including:
 
 Any test failure, flaky result, unruled review finding or proposal to weaken assertions stops publication until
 resolved. Release qualification does not replace the [client migration checklist](client-migration-1.0.33.md).
+
+## Retrying an unchanged qualified tag
+
+If publication fails because of publishing tooling, keep the RC tag fixed. The manually dispatched
+`prerelease.yml` accepts an existing `release_tag` and its full `expected_sha`, checks both against
+the checkout/POM, and publishes that checkout. It uses checksum-verified Maven 3.9.11 because the
+tagged Central publisher 0.10.0 is incompatible with Maven 3.10 staging metadata. The initial
+1.0.33-rc1 attempt was rejected with "Bundle has content that does NOT have a .pom file"; its
+upload did not publish. See [the publisher compatibility notes](https://central.sonatype.org/publish/publish-portal-maven/).
+
+Merge a workflow-only correction through a PR, then dispatch from main with the original qualified
+tag and SHA. No source/POM changes or tag moves are permitted in this retry. The workflow repeats
+Java 21 tests, package generation, signing and publication, and retains the generated bundle for inspection.
+A successful workflow still requires independent clean-cache artifact resolution before release completion.
