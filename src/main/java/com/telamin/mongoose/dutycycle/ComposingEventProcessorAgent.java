@@ -181,6 +181,23 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     private volatile int captureOpenLimit = 8;
     private final java.util.concurrent.atomic.AtomicInteger opensInFlight = new java.util.concurrent.atomic.AtomicInteger();
     private final ConcurrentHashMap<Long, Object> captureHandles = new ConcurrentHashMap<>();
+    /** Includes queued opens, installed captures, handed-off closes and unresolved failed physical closes. */
+    private volatile int captureResourceLimit = 1024;
+    private final AtomicInteger captureResourceSlots = new AtomicInteger();
+    private final ConcurrentHashMap<Long, CaptureResourcePermit> captureResourcePermits = new ConcurrentHashMap<>();
+    private final AtomicLong physicalCleanupOps = new AtomicLong();
+
+    private final class CaptureResourcePermit {
+        private final java.util.concurrent.atomic.AtomicBoolean held = new java.util.concurrent.atomic.AtomicBoolean(true);
+        private volatile Object handle;
+        private volatile String closeFailure;
+        void release() {
+            if (held.compareAndSet(true, false)) {
+                handle = null;
+                captureResourceSlots.decrementAndGet();
+            }
+        }
+    }
     /** Resources whose live detach failed: retry without the instance only after its release. */
     private final java.util.Set<Long> captureDetachFailures = ConcurrentHashMap.newKeySet();
     private final ConcurrentHashMap<String, com.telamin.mongoose.control.CaptureIo.Cancellable> openTimeouts = new ConcurrentHashMap<>();
@@ -358,6 +375,32 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     /** Physical opens a helper is still performing, whatever their requests' state. */
     public int captureOpensInFlight() {
         return opensInFlight.get();
+    }
+
+    /** Maximum admitted physical capture resources, including closes still queued or failed; default 1024. */
+    public void setCaptureResourceLimit(int limit) {
+        if (limit < 1) throw new IllegalArgumentException("resource limit must be positive: " + limit);
+        captureResourceLimit = limit;
+    }
+
+    public int captureResourceSlotsInUse() { return captureResourceSlots.get(); }
+
+    /** Failed closes remain owned and consume budget; the adapter's close is not blindly retried. */
+    public Map<Long, String> captureCloseFailures() {
+        Map<Long, String> failures = new HashMap<>();
+        captureResourcePermits.forEach((id, permit) -> {
+            if (permit.closeFailure != null) failures.put(id, permit.closeFailure);
+        });
+        return java.util.Collections.unmodifiableMap(failures);
+    }
+
+    private CaptureResourcePermit admitCaptureResource() {
+        int current;
+        do {
+            current = captureResourceSlots.get();
+            if (current >= captureResourceLimit) return null;
+        } while (!captureResourceSlots.compareAndSet(current, current + 1));
+        return new CaptureResourcePermit();
     }
 
     /** How long an open may take before its audit start is answered Failed; 30 s by default. */
@@ -565,9 +608,10 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             registration.releaseName();
         }
         registrationsByGeneration.clear();
-        deathCleanupComplete = captureHandles.isEmpty();
+        deathCleanupComplete = captureHandles.isEmpty() && captureResourceSlots.get() == 0;
         control.audit().fallback(deathCleanupComplete ? "CleanedUp" : "CleanupPending", "group", roleName(),
-                "processorsLeft", registeredEventProcessors.size(), "captureResourcesLeft", captureHandles.size());
+                "processorsLeft", registeredEventProcessors.size(), "captureResourcesLeft", captureResourceSlots.get(),
+                "failedPhysicalCloses", captureCloseFailures().size());
     }
 
     /**
@@ -780,7 +824,13 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         if (resources == null) {
             return result(effect, ControlOutcome.FAILED, "audit capture is not enabled");
         }
-        if (!admitCaptureOpen()) return result(effect, ControlOutcome.FAILED, "unresolved capture open limit reached");
+        CaptureResourcePermit initialResourcePermit = admitCaptureResource();
+        if (initialResourcePermit == null) return result(effect, ControlOutcome.FAILED, "physical capture resource limit reached");
+        if (!admitCaptureOpen()) {
+            initialResourcePermit.release();
+            return result(effect, ControlOutcome.FAILED, "unresolved capture open limit reached");
+        }
+        var firstExecution = new java.util.concurrent.atomic.AtomicBoolean(true);
         long root = effect.requestId();
         String op = effect.opId();
         String name = effect.name();
@@ -801,14 +851,32 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             // A zero-delay/custom timer may fire before its cancellation handle was published.
             if (timeoutFired.get()) openTimeouts.remove(op, timeout);
             io.open(() -> {
+                // A custom helper that repeats a task creates another resource; it needs its own slot.
+                boolean initial = firstExecution.compareAndSet(true, false);
+                if (!initial && !admitCaptureOpen()) {
+                    control.audit().fallback("CaptureDuplicateSuppressed", "group", roleName(), "requestId", root,
+                            "opId", op, "reason", "unresolved capture open limit reached");
+                    return;
+                }
+                Runnable releaseThisOpen = initial ? releasePermit : () -> opensInFlight.decrementAndGet();
+                CaptureResourcePermit resourcePermit = initial ? initialResourcePermit : admitCaptureResource();
+                if (resourcePermit == null) {
+                    releaseThisOpen.run();
+                    control.audit().fallback("CaptureDuplicateSuppressed", "group", roleName(), "requestId", root,
+                            "opId", op, "reason", "physical capture resource limit reached");
+                    return;
+                }
                 try {
                     CaptureCompletion done;
                     try {
-                        Object handle = resources.openCapture(name);
+                        Object handle = Objects.requireNonNull(resources.openCapture(name), "capture open returned null");
                         long id = captureResourceIds.incrementAndGet();
+                        resourcePermit.handle = handle;
+                        captureResourcePermits.put(id, resourcePermit);
                         captureHandles.put(id, handle);
                         done = new CaptureCompletion(root, op, completionIds.incrementAndGet(), CaptureCompletion.Kind.OPENED, id, null);
                     } catch (Throwable t) {
+                        resourcePermit.release();
                         done = new CaptureCompletion(root, op, completionIds.incrementAndGet(), CaptureCompletion.Kind.OPEN_FAILED,
                                 -1, String.valueOf(t));
                     }
@@ -816,7 +884,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                     if (pendingTimeout != null) pendingTimeout.cancel();
                     control.complete(done);
                 } finally {
-                    releasePermit.run();
+                    releaseThisOpen.run();
                 }
             });
         } catch (RuntimeException | Error rejected) {
@@ -824,6 +892,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             try {
                 if (pendingTimeout != null) pendingTimeout.cancel();
             } finally {
+                initialResourcePermit.release();
                 releasePermit.run();
             }
             if (rejected instanceof Error fatal) throw fatal;
@@ -891,8 +960,12 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     private CaptureCompletion closeResource(long root, String op, long resourceId, Object handle) {
         try {
             captureResources.closeCapture(handle);
+            CaptureResourcePermit permit = captureResourcePermits.remove(resourceId);
+            if (permit != null) permit.release();
             return new CaptureCompletion(root, op, completionIds.incrementAndGet(), CaptureCompletion.Kind.CLOSED, resourceId, null);
         } catch (Throwable t) {
+            CaptureResourcePermit permit = captureResourcePermits.get(resourceId);
+            if (permit != null) permit.closeFailure = String.valueOf(t);
             return new CaptureCompletion(root, op, completionIds.incrementAndGet(), CaptureCompletion.Kind.CLOSE_FAILED,
                     resourceId, String.valueOf(t));
         }
@@ -954,21 +1027,33 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         for (Long id : new ArrayList<>(captureHandles.keySet())) {
             Object handle = captureHandles.get(id);
             if (handle == null) continue;
-            boolean closed = false;
+            String detachOp = "group-detach." + id + "." + physicalCleanupOps.incrementAndGet();
+            control.audit().fallback("EffectRequested", "group", roleName(), "requestId", -1, "opId", detachOp,
+                    "effect", "UninstallCapture", "resourceId", id, "generation", -1, "offline", true,
+                    "reason", "released without the control processor");
             try {
                 resources.uninstallCapture(handle, null, null);
-                if (!captureHandles.remove(id, handle)) continue;
-                captureDetachFailures.remove(id);
-                resources.closeCapture(handle);
-                closed = true;
-            } catch (VirtualMachineError fatal) {
-                throw fatal;
+                control.audit().fallback("EffectOutcome", "group", roleName(), "requestId", -1, "opId", detachOp,
+                        "effect", "UninstallCapture", "outcome", "succeeded", "resourceId", id,
+                        "generation", -1, "offline", true);
             } catch (Throwable t) {
-                reportCloseFailure("<capture " + id + ">", "could not be closed", t);
+                control.audit().fallback("EffectOutcome", "group", roleName(), "requestId", -1, "opId", detachOp,
+                        "effect", "UninstallCapture", "outcome", "failed", "resourceId", id,
+                        "generation", -1, "offline", true, "reason", String.valueOf(t));
+                if (t instanceof VirtualMachineError fatal) throw fatal;
+                reportCloseFailure("<capture " + id + ">", "could not be detached", t);
+                continue;
             }
-            control.audit().fallback("EffectOutcome", "group", roleName(), "opId", "group-close." + id,
-                    "effect", "CloseCapture", "outcome", closed ? "succeeded" : "failed", "resourceId", id,
-                    "reason", "released without the control processor");
+            if (!captureHandles.remove(id, handle)) continue;
+            captureDetachFailures.remove(id);
+            String closeOp = "group-close." + id;
+            control.audit().fallback("EffectRequested", "group", roleName(), "requestId", -1, "opId", closeOp,
+                    "effect", "CloseCapture", "resourceId", id, "generation", -1, "offline", true, "causeOp", detachOp);
+            CaptureCompletion closed = closeResource(-1, closeOp, id, handle);
+            control.audit().fallback("EffectOutcome", "group", roleName(), "requestId", -1, "opId", closeOp,
+                    "effect", "CloseCapture", "outcome", closed.kind() == CaptureCompletion.Kind.CLOSED ? "succeeded" : "failed",
+                    "resourceId", id, "generation", -1, "offline", true, "causeOp", detachOp,
+                    "reason", closed.reason());
         }
     }
 

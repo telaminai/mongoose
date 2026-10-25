@@ -51,6 +51,7 @@ class CaptureAdmissionAndOrphanReviewTest {
             var refused=group.auditStart("p",null); group.doWork();
             assertEquals(ReplyOutcome.FAILED,refused.reply().join().outcome());
             assertEquals(0,group.captureOpensInFlight());
+            assertEquals(0,group.captureResourceSlotsInUse());
         } finally { group.onClose(); io.runAll(); }
     }
     @Test void boundedRealExecutorRejectsExcessWorkWithoutStartingMoreThreads() throws Exception {
@@ -71,6 +72,35 @@ class CaptureAdmissionAndOrphanReviewTest {
             assertEquals(1,timer.getQueue().size()); pending.cancel(false);
             assertTrue(timer.getQueue().isEmpty(),"cancelled timeout must not stay retained until its original deadline");
         } finally { timer.shutdownNow(); assertTrue(timer.awaitTermination(5,TimeUnit.SECONDS)); }
+    }
+    @Test void failedPhysicalCloseRetainsBudgetAndIsNotRetriedBlindly() throws Exception {
+        var io=new CaptureRig.ManualIo(); var resources=new CaptureRig.FakeResources(); var group=group(io,resources);
+        group.setCaptureResourceLimit(1);
+        try {
+            group.auditStart("p",null); group.doWork(); io.runOpen(); group.doWork();
+            resources.failCloses=true;
+            group.auditStop("p",null); group.doWork(); io.runClose(); group.doWork();
+            assertEquals(1,group.captureResourceSlotsInUse()); assertEquals(1,group.captureCloseFailures().size());
+            var refused=group.auditStart("p",null); group.doWork();
+            assertEquals(ReplyOutcome.FAILED,refused.reply().join().outcome());
+            assertTrue(refused.reply().join().reason().contains("resource limit"));
+        } finally { group.onClose(); io.runAll(); }
+        assertEquals(1,resources.opened.get(0).closeAttempts);
+        assertEquals(1,group.captureResourceSlotsInUse(),"unknown physical state stays owned and observable");
+    }
+    @Test void failedPhysicalOpenReturnsResourceBudget() throws Exception {
+        var io=new CaptureRig.ManualIo(); var resources=new CaptureRig.FakeResources(); var group=group(io,resources);
+        group.setCaptureResourceLimit(1);
+        try {
+            resources.failOpens=true;
+            var failed=group.auditStart("p",null); group.doWork(); io.runOpen(); group.doWork();
+            assertEquals(ReplyOutcome.FAILED,failed.reply().join().outcome());
+            assertEquals(0,group.captureResourceSlotsInUse());
+            resources.failOpens=false;
+            group.auditStart("p",null); group.doWork(); io.runOpen(); group.doWork();
+            assertEquals(1,group.captureResourceSlotsInUse());
+        } finally { group.onClose(); io.runAll(); }
+        assertEquals(0,group.captureResourceSlotsInUse());
     }
     @Test void orphanCloseFailureHasItsOwnAuditedOperationAndFailureReason() throws Exception {
         var io=new CaptureRig.ManualIo(); var resources=new CaptureRig.FakeResources(); var group=group(io,resources);

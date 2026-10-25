@@ -99,12 +99,14 @@ class CaptureAsEffectsTest {
         if (expectCloseFailure) {
             assertFalse(resources.leaks().isEmpty(), "a failed close must not claim physical resources are closed");
             assertFalse(resources.failedCloseResources().isEmpty());
+            assertEquals(resources.failedCloseResources().size(), group.captureResourceSlotsInUse());
             java.util.Set<Long> recordedFailures = evidence.ofType("EffectOutcome").stream()
                     .filter(r -> "CloseCapture".equals(r.str("effect")) && "failed".equals(r.str("outcome")))
                     .map(r -> r.num("resourceId")).filter(id -> id >= 0).collect(java.util.stream.Collectors.toSet());
             assertEquals(resources.failedCloseResources(), recordedFailures);
         } else {
             assertEquals("", resources.leaks(), "physical resource ledger");
+            assertEquals(0, group.captureResourceSlotsInUse(), "successful cleanup returns every physical resource slot");
         }
         assertEquals(0, group.captureResourcesHeld());
         assertEquals(0, group.control().outstanding());
@@ -448,6 +450,21 @@ class CaptureAsEffectsTest {
         assertEquals(0, group.captureResourcesHeld());
         assertTrue(group.control().audit().records().stream()
                 .anyMatch(r -> r.contains("released without the control processor")), "recorded in the fallback stream");
+        assertEquals(0, group.captureResourceSlotsInUse());
+        var records = ControlEvidence.parse(group.control().audit().exportText(), true).records();
+        var detachRequest = records.stream().filter(r -> r.type().equals("EffectRequested")
+                && "UninstallCapture".equals(r.str("effect")) && Boolean.TRUE.equals(r.fields().get("offline")))
+                .findFirst().orElseThrow();
+        var detachOutcome = records.stream().filter(r -> r.type().equals("EffectOutcome")
+                && detachRequest.str("opId").equals(r.str("opId"))).findFirst().orElseThrow();
+        var closeRequest = records.stream().filter(r -> r.type().equals("EffectRequested")
+                && detachRequest.str("opId").equals(r.str("causeOp"))).findFirst().orElseThrow();
+        var closeOutcome = records.stream().filter(r -> r.type().equals("EffectOutcome")
+                && closeRequest.str("opId").equals(r.str("opId"))).findFirst().orElseThrow();
+        assertEquals("succeeded", detachOutcome.str("outcome"));
+        assertTrue(records.indexOf(detachRequest) < records.indexOf(detachOutcome));
+        assertTrue(records.indexOf(detachOutcome) < records.indexOf(closeRequest));
+        assertTrue(records.indexOf(closeRequest) < records.indexOf(closeOutcome));
     }
 
     /** Review of PR 5, finding 4: a decision that answers a command at once is not cleanup. */

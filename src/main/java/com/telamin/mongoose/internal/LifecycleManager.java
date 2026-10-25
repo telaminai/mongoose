@@ -581,8 +581,9 @@ public final class LifecycleManager {
                 log.log(java.util.logging.Level.WARNING, "composing " + kind + " " + name + " failed its post-death cleanup", t);
                 throw new IllegalStateException("group cleanup failed: " + name, t);
             }
-            if (processors.captureResourcesHeld() != 0) {
-                throw new IllegalStateException("group " + name + " still holds " + processors.captureResourcesHeld() + " capture resources");
+            if (processors.captureResourcesHeld() != 0 || processors.captureResourceSlotsInUse() != 0) {
+                throw new IllegalStateException("group " + name + " has " + processors.captureResourceSlotsInUse()
+                        + " unresolved physical capture resources; failed closes=" + processors.captureCloseFailures());
             }
         }
     }
