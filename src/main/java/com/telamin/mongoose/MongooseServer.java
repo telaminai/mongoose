@@ -1414,24 +1414,44 @@ public class MongooseServer implements MongooseServerController {
         return new com.telamin.mongoose.internal.ChronicleAuditCaptureService.CaptureRouter() {
             @Override
             public com.telamin.mongoose.control.ControlRequest send(String processorName, boolean start) {
-                for (var entry : reservedProcessorNames.entrySet()) {
-                    if (!entry.getKey().name().equals(processorName)) continue;
-                    var runner = composingEventProcessorAgents.get(entry.getKey().group());
-                    if (runner == null) continue;
-                    return start ? runner.group().auditStart(processorName, entry.getValue())
-                            : runner.group().auditStop(processorName, entry.getValue());
-                }
-                return null;
+                var entry = admitted(processorName);
+                if (entry == null) return null;
+                var runner = composingEventProcessorAgents.get(entry.getKey().group());
+                if (runner == null) return null;
+                String name = entry.getKey().name();
+                return start ? runner.group().auditStart(name, entry.getValue())
+                        : runner.group().auditStop(name, entry.getValue());
             }
 
             @Override
             public boolean safeToWait(String processorName) {
-                for (ProcessorName key : reservedProcessorNames.keySet()) {
-                    if (key.name().equals(processorName)) return MongooseServer.this.safeToWait(key.group());
-                }
-                return false;
+                var entry = admitted(processorName);
+                return entry != null && MongooseServer.this.safeToWait(entry.getKey().group());
             }
         };
+    }
+
+    /**
+     * The admission a capture request names: {@code group/name} exactly, or a bare name admitted in one group only. A
+     * bare name admitted in several groups is ambiguous and refused, never resolved to whichever is found first (FM-7).
+     */
+    private java.util.Map.Entry<ProcessorName, ProcessorRegistration> admitted(String processorName) {
+        int slash = processorName.indexOf('/');
+        String group = slash > 0 ? processorName.substring(0, slash) : null;
+        String name = slash > 0 ? processorName.substring(slash + 1) : processorName;
+        java.util.Map.Entry<ProcessorName, ProcessorRegistration> found = null;
+        java.util.List<String> groups = new java.util.ArrayList<>();
+        for (var entry : reservedProcessorNames.entrySet()) {
+            if (!entry.getKey().name().equals(name)) continue;
+            if (group != null && !entry.getKey().group().equals(group)) continue;
+            found = entry;
+            groups.add(entry.getKey().group());
+        }
+        if (groups.size() > 1) {
+            throw new IllegalArgumentException("processor '" + name + "' is in groups " + groups
+                    + ": name it as <group>/" + name);
+        }
+        return found;
     }
 
     /** Build a processor from its supplier and wire it into the server (audit, perf monitor, capture). */

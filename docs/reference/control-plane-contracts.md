@@ -543,6 +543,13 @@ on failure. `audit.start` prints `audit: RECORDING <name>` once `start` returns.
 thread, `start` returns before the capture is installed, so that line means "requested", not "recording". Check with
 `audit.status`.
 
+### Naming the processor to capture
+
+`start(name)` and `stop(name)` (and the admin `audit.start` / `audit.stop`) take a processor name. A name admitted in
+one group addresses that processor. A name admitted in **several** groups is ambiguous: the call throws
+`IllegalArgumentException` naming the groups, and you address one as `group/name`. A processor never inherits a capture
+recording another processor of the same name in a different group.
+
 ### The open in-flight limit
 
 Each group allows at most **8** physical opens in flight by default. An open that timed out still holds its permit

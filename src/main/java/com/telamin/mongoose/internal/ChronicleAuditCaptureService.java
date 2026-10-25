@@ -146,6 +146,13 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             // start() returned early on isRecording() and the sink kept answering "recording: true".
             // Measured on a live server: 3 events after a re-registration reached the listener, the
             // capture recordCount stayed at 23, and the export held none of them. Adopt the new flow.
+            if (router != null && existing.isRecording()) {
+                // routed: a stop closes the capture, so a recording sink belongs to a live processor; this attach is a
+                // namesake in another group, which must not inherit that capture (FM-7)
+                log.warning("audit capture of '" + processorName + "' is recording another processor of that name;"
+                        + " the new processor is not captured");
+                return existing;
+            }
             existing.reattach(dataFlow, configuredListener, onAgentThread);
             liveSinkMutation.run();
             return existing;
@@ -302,6 +309,10 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
     @Override
     public void installCapture(Object resource, String processorName, DataFlow dataFlow) {
         CaptureHandle handle = (CaptureHandle) resource;
+        if (handle.sink().isRecording()) {
+            // checked before adopting: a recording sink's instance is never replaced by another one (FM-7)
+            throw new IllegalStateException("audit capture of '" + processorName + "' is already recording");
+        }
         handle.sink().adopt(dataFlow);
         if (!handle.sink().beginRecording(handle.queue(), counters)) {
             throw new IllegalStateException("audit capture of '" + processorName + "' is already recording");
