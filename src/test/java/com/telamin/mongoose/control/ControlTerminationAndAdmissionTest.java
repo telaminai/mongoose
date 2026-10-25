@@ -154,8 +154,10 @@ class ControlTerminationAndAdmissionTest {
             assertEquals(ReplyOutcome.REFUSED, async.reply().toCompletableFuture().get(2, TimeUnit.SECONDS).outcome());
             var stopped = caller.submit(() -> server.stopProcessor(handle)).get(250, TimeUnit.MILLISECONDS);
             assertEquals(ReplyOutcome.REFUSED, stopped.toCompletableFuture().get(2, TimeUnit.SECONDS).outcome());
-            caller.submit(() -> server.stopProcessor("g", "p")).get(250, TimeUnit.MILLISECONDS);
-            caller.submit(() -> server.addEventProcessor("void-refused", "g", null, RepliesAndServiceLockReviewTest.Proc::new))
+            caller.submit(() -> assertThrows(IllegalStateException.class, () -> server.stopProcessor("g", "p")))
+                    .get(250, TimeUnit.MILLISECONDS);
+            caller.submit(() -> assertThrows(IllegalStateException.class,
+                            () -> server.addEventProcessor("void-refused", "g", null, RepliesAndServiceLockReviewTest.Proc::new)))
                     .get(250, TimeUnit.MILLISECONDS);
             assertNotNull(server.processorHandle("g", "p"), "refusing a stop never releases the processor's name");
             assertNull(server.processorHandle("g", "refused"));
