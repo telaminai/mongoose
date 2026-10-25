@@ -63,10 +63,12 @@ public class AdminCommandProcessor implements AdminCommandRegistry, LifeCycleEve
      * the class is loaded via YAML, the builder API, or {@code new}.
      */
     public AdminCommandProcessor() {
-        registerCommand("help", this::printHelp);
-        registerCommand("?", this::printHelp);
-        registerCommand("eventSources", this::printQueues);
-        registerCommand("commands", this::registeredCommands);
+        // These commands belong to the registry, even if it is constructed inside a processor callback.
+        // There is no injected event-flow manager yet and no processor-owned dispatch to register.
+        registerDirectCommand("help", this::printHelp);
+        registerDirectCommand("?", this::printHelp);
+        registerDirectCommand("eventSources", this::printQueues);
+        registerDirectCommand("commands", this::registeredCommands);
     }
 
     @Override
@@ -110,9 +112,7 @@ public class AdminCommandProcessor implements AdminCommandRegistry, LifeCycleEve
     @SuppressWarnings("unchecked")
     public <OUT, ERR> void registerCommand(String name, AdminFunction<OUT, ERR> command) {
         if (com.telamin.mongoose.dispatch.ProcessorContext.currentProcessor() == null) {
-            AdminCommand direct = new AdminCommand((AdminFunction<Object, Object>) command);
-            direct.setName(name);
-            registeredCommandMap.put(name, direct);
+            registerDirectCommand(name, command);
         } else {
             String queueKey = "adminCommand." + name;
             addCommand(
@@ -120,6 +120,13 @@ public class AdminCommandProcessor implements AdminCommandRegistry, LifeCycleEve
                     queueKey,
                     new AdminCommand((AdminFunction<Object, Object>) command, eventFlowManager.registerEventSource(queueKey, this)));
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private <OUT, ERR> void registerDirectCommand(String name, AdminFunction<OUT, ERR> command) {
+        AdminCommand direct = new AdminCommand((AdminFunction<Object, Object>) command);
+        direct.setName(name);
+        registeredCommandMap.put(name, direct);
     }
 
     @Override

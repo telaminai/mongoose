@@ -1,6 +1,16 @@
 name: Publish qualified Mongoose pre-release
 
 on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing qualified RC tag to publish (never moved)
+        required: true
+        type: string
+      expected_sha:
+        description: Full qualified commit SHA; must match the tag
+        required: true
+        type: string
   push:
     tags:
       - 'v*-rc*'
@@ -9,7 +19,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: prerelease-${{ github.ref }}
+  group: prerelease-${{ inputs.release_tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -19,15 +29,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          ref: ${{ inputs.release_tag || github.ref }}
       - name: Verify exact release version
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: |
           python3 - <<'PYTHON'
-          import os, re, xml.etree.ElementTree as ET
+          import os, re, subprocess, xml.etree.ElementTree as ET
           version = ET.parse('pom.xml').getroot().find('{http://maven.apache.org/POM/4.0.0}version').text
           assert re.fullmatch(r'\d+\.\d+\.\d+-rc\d+', version), version
           assert os.environ['RELEASE_TAG'] == 'v' + version, 'tag/POM mismatch'
+          expected = os.environ.get('EXPECTED_SHA', '')
+          if expected:
+              assert re.fullmatch(r'[0-9a-f]{40}', expected), 'full commit SHA required'
+              assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == expected, 'tag/SHA mismatch'
           PYTHON
           git log -1 --format='%H %s'
       - uses: actions/setup-java@v4
@@ -39,8 +55,22 @@ jobs:
           server-password: MAVEN_CENTRAL_TOKEN
           gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
           gpg-passphrase: MAVEN_GPG_PASSPHRASE
+      - name: Use Maven compatible with the tagged Central publisher
+        # Central publisher 0.10.0 supports Maven 3.9.x. Maven 3.10 adds local repository
+        # bookkeeping to its staged bundle, rejected by Central as content without a POM.
+        run: |
+          set -euo pipefail
+          base=https://archive.apache.org/dist/maven/maven-3/3.9.11/binaries
+          archive=apache-maven-3.9.11-bin.tar.gz
+          curl --fail --location --retry 3 "$base/$archive" -o "$RUNNER_TEMP/$archive"
+          curl --fail --location --retry 3 "$base/$archive.sha512" -o "$RUNNER_TEMP/$archive.sha512"
+          cd "$RUNNER_TEMP"
+          printf '%s  %s\n' "$(cat "$archive.sha512")" "$archive" | sha512sum --check --strict
+          tar -xzf "$archive"
+          echo "$RUNNER_TEMP/apache-maven-3.9.11/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/apache-maven-3.9.11/bin/mvn" --version
       - name: Publish the tagged version to Central
-        run: mvn -B -P release clean deploy
+        run: mvn -B -ntp -Dmaven.test.redirectTestOutputToFile=true -P release clean deploy
         env:
           MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
           MAVEN_CENTRAL_TOKEN: ${{ secrets.OSSRH_TOKEN }}
@@ -49,4 +79,6 @@ jobs:
         if: always()
         with:
           name: prerelease-test-reports
-          path: target/surefire-reports/
+          path: |
+            target/surefire-reports/
+            target/central-publishing/*.zip

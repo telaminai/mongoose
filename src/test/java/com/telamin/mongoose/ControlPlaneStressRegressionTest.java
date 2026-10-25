@@ -46,6 +46,7 @@ class ControlPlaneStressRegressionTest {
         final CountDownLatch startEntered = new CountDownLatch(1);
         final CountDownLatch release;
         final AtomicInteger stops = new AtomicInteger();
+        final java.util.List<CompletionStage<ControlReply>> queuedReplies = new java.util.ArrayList<>();
 
         Proc(boolean blockInStart) {
             this.release = new CountDownLatch(blockInStart ? 1 : 0);
@@ -101,7 +102,7 @@ class ControlPlaneStressRegressionTest {
         server.addProcessor("blocker", "g", null, () -> blocker);
         assertTrue(blocker.startEntered.await(10, TimeUnit.SECONDS), "the blocker holds the group's thread");
         int capacity = group(server, "g").control().capacity();
-        for (int i = 0; i < capacity; i++) server.stopProcessor(gone.handle());
+        for (int i = 0; i < capacity; i++) blocker.queuedReplies.add(server.stopProcessor(gone.handle()));
         return blocker;
     }
 
@@ -125,6 +126,13 @@ class ControlPlaneStressRegressionTest {
         }
         assertEquals(ReplyOutcome.REFUSED, refused.outcome(), refused.toString());
         blocker.release.countDown();
+
+        // Releasing start() does not mean the agent has been scheduled and drained its full mailbox.
+        // Wait for every pre-existing command (some sends may already have been refused) before
+        // asserting a new stop can be admitted. No queue-size sampling or scheduler delay assumption.
+        java.util.concurrent.CompletableFuture.allOf(blocker.queuedReplies.stream()
+                .map(CompletionStage::toCompletableFuture)
+                .toArray(java.util.concurrent.CompletableFuture[]::new)).get(20, TimeUnit.SECONDS);
 
         assertEquals(0, victim.stops.get(), "the refused stop did not stop it");
         ProcessorHandle current = server.processorHandle("g", "victim");
