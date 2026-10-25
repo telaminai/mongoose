@@ -137,6 +137,7 @@ final class CaptureRig {
          */
         final List<String> findings = new ArrayList<>();
         boolean failUninstalls;
+        boolean failLiveUninstalls;
 
         @Override
         public Object openCapture(String processorName) {
@@ -159,7 +160,9 @@ final class CaptureRig {
 
         @Override
         public void uninstallCapture(Object resource, String processorName, DataFlow dataFlow) {
-            if (failUninstalls) throw new IllegalStateException("simulated uninstall failure");
+            if (failUninstalls || (failLiveUninstalls && dataFlow != null)) {
+                throw new IllegalStateException("simulated uninstall failure");
+            }
             Res r = (Res) resource;
             if (dataFlow != null) installed.remove(dataFlow, r);
             else installed.values().removeIf(x -> x == r);

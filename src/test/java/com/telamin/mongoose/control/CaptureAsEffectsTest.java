@@ -36,7 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class CaptureAsEffectsTest {
 
-    static final class Proc implements DataFlow, Lifecycle {
+    static class Proc implements DataFlow, Lifecycle {
         final String label;
         Proc(String label) { this.label = label; }
         @Override public void init() { }
@@ -326,6 +326,49 @@ class CaptureAsEffectsTest {
         io.runClose();
         work();
         closeAndCheck("capture-uninstall-failed");
+    }
+
+    @Test
+    void failedUninstallDuringProcessorStopIsRetriedAfterRelease() throws Exception {
+        boolean[] closeSubmittedDuringStop = {false};
+        Proc p = new Proc("p") {
+            @Override public void stop() {
+                closeSubmittedDuringStop[0] = !io.closes.isEmpty();
+            }
+        };
+        ProcessorRegistration reg = add("p", p);
+        group.auditStart("p", reg);
+        work();
+        io.runOpen();
+        work();
+        resources.failLiveUninstalls = true;
+        ControlRequest stop = group.removeEventProcessorByName("p", reg, null);
+        work();
+        assertEquals(ReplyOutcome.FAILED, stop.reply().getNow(null).outcome(), "report the failed live detach");
+        assertFalse(closeSubmittedDuringStop[0], "nothing handed to the closer before stop finishes");
+        assertTrue(resources.installed.isEmpty(), "offline uninstall after release clears the failed live uninstall");
+        io.runClose();
+        assertTrue(resources.findings.isEmpty(), resources.findings.toString());
+        closeAndCheck("capture-release-uninstall-failed");
+    }
+
+    @Test
+    void failedOfflineUninstallRetainsOwnershipForGroupCleanup() throws Exception {
+        Proc p = new Proc("p");
+        ProcessorRegistration reg = add("p", p);
+        group.auditStart("p", reg);
+        work();
+        io.runOpen();
+        work();
+        resources.failUninstalls = true;
+        group.removeEventProcessorByName("p", reg, null);
+        work();
+        assertTrue(io.closes.isEmpty(), "cannot close until detached");
+        assertEquals(1, group.captureResourcesHeld(), "failed detach must not discard ownership");
+        resources.failUninstalls = false;
+        group.onClose();
+        assertEquals("", resources.leaks());
+        assertEquals(0, group.captureResourcesHeld());
     }
 
     @Test

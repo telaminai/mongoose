@@ -175,6 +175,8 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     private volatile com.telamin.mongoose.control.CaptureIo captureIo = com.telamin.mongoose.control.CaptureIo.shared();
     private volatile long captureOpenTimeoutMillis = 30_000;
     private final ConcurrentHashMap<Long, Object> captureHandles = new ConcurrentHashMap<>();
+    /** Resources whose live detach failed: retry without the instance only after its release. */
+    private final java.util.Set<Long> captureDetachFailures = ConcurrentHashMap.newKeySet();
     private final ConcurrentHashMap<String, com.telamin.mongoose.control.CaptureIo.Cancellable> openTimeouts = new ConcurrentHashMap<>();
     private final AtomicLong captureResourceIds = new AtomicLong();
     private final AtomicLong completionIds = new AtomicLong();
@@ -775,16 +777,32 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         }
         NamedEventProcessor named = processorsByGeneration.get(effect.generation());
         DataFlow flow = named == null ? null : named.eventProcessor();
-        resources.uninstallCapture(handle, effect.name(), flow);
+        try {
+            resources.uninstallCapture(handle, effect.name(), flow);
+            captureDetachFailures.remove(effect.resourceId());
+        } catch (RuntimeException | Error failed) {
+            captureDetachFailures.add(effect.resourceId());
+            throw failed;
+        }
         return result(effect, ControlOutcome.SUCCEEDED, null);
     }
 
     /** Hand the resource to the closer, which closes it exactly once: whoever removes it from the table closes it. */
     private EffectResult closeCapture(ControlEffect.CloseCapture effect) {
-        Object handle = captureHandles.remove(effect.resourceId());
+        Object handle = captureHandles.get(effect.resourceId());
         if (handle == null) {
             return result(effect, ControlOutcome.FAILED, "unknown resource");
         }
+        if (captureDetachFailures.contains(effect.resourceId())
+                && !processorsByGeneration.containsKey(effect.generation())) {
+            // Release has finished. A failed live uninstall may have left the listener installed; detach the resource
+            // without calling the released processor. Keep ownership if this fails, for group/death cleanup to retry.
+            captureResources.uninstallCapture(handle, effect.name(), null);
+        }
+        if (!captureHandles.remove(effect.resourceId(), handle)) {
+            return result(effect, ControlOutcome.FAILED, "resource already released");
+        }
+        captureDetachFailures.remove(effect.resourceId());
         Runnable close = () -> control.complete(closeResource(effect.requestId(), effect.opId(), effect.resourceId(), handle));
         try {
             captureIo.close(close);
@@ -839,11 +857,13 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         var resources = captureResources;
         if (resources == null) return;
         for (Long id : new ArrayList<>(captureHandles.keySet())) {
-            Object handle = captureHandles.remove(id);
+            Object handle = captureHandles.get(id);
             if (handle == null) continue;
             boolean closed = false;
             try {
                 resources.uninstallCapture(handle, null, null);
+                if (!captureHandles.remove(id, handle)) continue;
+                captureDetachFailures.remove(id);
                 resources.closeCapture(handle);
                 closed = true;
             } catch (VirtualMachineError fatal) {

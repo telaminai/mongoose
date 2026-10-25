@@ -105,8 +105,7 @@ public class LifecycleRules extends EventLogNode {
                 state.openChain(req, ChainKind.STOP);
                 // a capture is uninstalled before the release and closed after it, never waited for
                 List<String> pendingCleanup = new java.util.ArrayList<>();
-                List<ControlEffect> requested = new java.util.ArrayList<>(capture.releaseCapture(reg, req, pendingCleanup));
-                requested.add(new ControlEffect.Release(state.nextOp(req), req, reg.generation, reg.name, true, true));
+                List<ControlEffect> requested = releaseEffects(reg, req, pendingCleanup, true);
                 decide("stopStarted", reg.generation, reg.name, "Started", "Releasing", pendingCleanup,
                         requested.toArray(new ControlEffect[0]));
             }
@@ -140,12 +139,25 @@ public class LifecycleRules extends EventLogNode {
         List<String> pendingCleanup = new java.util.ArrayList<>();
         for (Reg reg : started) {
             reg.lifecycle = Lifecycle.RELEASING;
-            requested.addAll(capture.releaseCapture(reg, req, pendingCleanup));
-            requested.add(new ControlEffect.Release(state.nextOp(req), req, reg.generation, reg.name, true, false));
+            requested.addAll(releaseEffects(reg, req, pendingCleanup, false));
         }
         chain.outstanding = started.size();
         decide("closeGroup", -1, null, "Running", "Closing", pendingCleanup, requested.toArray(new ControlEffect[0]));
         return true;
+    }
+
+    /** Never hand a capture to the asynchronous closer while stop/tearDown can still emit audit records. */
+    private List<ControlEffect> releaseEffects(Reg reg, long request, List<String> pendingCleanup, boolean byRequest) {
+        List<ControlEffect> captureEffects = capture.releaseCapture(reg, request, pendingCleanup);
+        List<ControlEffect> requested = new java.util.ArrayList<>();
+        for (ControlEffect effect : captureEffects) {
+            if (!(effect instanceof ControlEffect.CloseCapture)) requested.add(effect);
+        }
+        requested.add(new ControlEffect.Release(state.nextOp(request), request, reg.generation, reg.name, true, byRequest));
+        for (ControlEffect effect : captureEffects) {
+            if (effect instanceof ControlEffect.CloseCapture) requested.add(effect);
+        }
+        return requested;
     }
 
     // ------------------------------------------------------------------ outcomes
@@ -227,7 +239,8 @@ public class LifecycleRules extends EventLogNode {
                     decide("nameReleased", result.generation(), result.name(), "Released", "Released");
                     return;
                 }
-                ControlEffect reply = reply(req, -1, null, ReplyOutcome.APPLIED, "closed");
+                ControlEffect reply = reply(req, -1, null, chain.failure == null ? ReplyOutcome.APPLIED : ReplyOutcome.FAILED,
+                        chain.failure == null ? "closed" : chain.failure);
                 decide("groupClosed", result.generation(), result.name(), "Closing", "Closed", reply);
             }
             case ADD -> {
@@ -245,7 +258,9 @@ public class LifecycleRules extends EventLogNode {
                 decide("addRefused", result.generation(), result.name(), "Refused", "Refused", reply);
             }
             default -> {
-                ControlEffect reply = reply(req, result.generation(), result.name(), ReplyOutcome.APPLIED, "stopped");
+                ControlEffect reply = reply(req, result.generation(), result.name(),
+                        chain.failure == null ? ReplyOutcome.APPLIED : ReplyOutcome.FAILED,
+                        chain.failure == null ? "stopped" : chain.failure);
                 decide("stopComplete", result.generation(), result.name(), "Released", "Released", reply);
             }
         }

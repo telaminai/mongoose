@@ -361,7 +361,10 @@ public class CaptureRules extends EventLogNode {
             case "UninstallCapture" -> {
                 Chain chain = state.chain(req);
                 if (chain == null || chain.kind != ChainKind.AUDIT_STOP) {
-                    return false;   // part of a release: its close was requested with it
+                    if (chain != null && !result.succeeded()) {
+                        chain.failure = "processor released, but capture uninstall failed: " + result.reason();
+                    }
+                    return false;   // part of a release: its close follows the release
                 }
                 if (!result.succeeded()) {
                     // still installed: never close a resource that may be receiving records (review of PR 5, finding 2)
