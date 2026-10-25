@@ -43,6 +43,8 @@ public class OverloadPolicyConfig {
     private static final Logger LOG = Logger.getLogger(OverloadPolicyConfig.class.getName());
     /** Above this a block deadline is warned at boot (review finding 7): it behaves like the deferred unbounded BLOCK. */
     public static final long MAX_RECOMMENDED_DEADLINE_MILLIS = 60_000;
+    /** The shortest configurable quiet period (review of 1d925ee, finding 9). */
+    public static final long MIN_QUIET_PERIOD_MILLIS = 1_000;
 
     /** Required in an {@code overload} block. */
     private OverloadPolicy policy;
@@ -108,9 +110,10 @@ public class OverloadPolicyConfig {
         }
         long quietNanos = FeedOverloadSettings.DEFAULT_QUIET_PERIOD_NANOS;
         if (quietPeriodMillis != null) {
-            if (quietPeriodMillis < 0) {
-                throw new ConfigurationException("feed '" + feed + "': overload.quietPeriodMillis must be >= 0, was "
-                        + quietPeriodMillis);
+            if (quietPeriodMillis < MIN_QUIET_PERIOD_MILLIS) {
+                // a shorter period lets a flapping queue write two state records per health poll (review finding 9)
+                throw new ConfigurationException("feed '" + feed + "': overload.quietPeriodMillis must be >= "
+                        + MIN_QUIET_PERIOD_MILLIS + ", was " + quietPeriodMillis);
             }
             quietNanos = TimeUnit.MILLISECONDS.toNanos(quietPeriodMillis);
         }

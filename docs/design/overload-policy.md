@@ -129,10 +129,12 @@ warning once per publisher:
 
 - An agent thread of any processor group or service agent group (`AgentThreads.isAgentThread()`).
 - A publish nested inside **any** publisher's dispatch, through user code that dispatch runs under its lock: a data
-  mapper, a journal codec, an item's `toString`, or an error listener. A static per-thread depth counter is raised
-  around every locked publish path that can run user code. A nested publish cannot release the outer lock to wait,
-  and waiting would hold it for the deadline. `Thread.holdsLock(publishLock)` only saw the same publisher (review of
-  35bdeb2, finding 1).
+  mapper, a journal codec, an item's `toString`, or an error listener. A nested publish cannot release the outer
+  lock to wait, and waiting would hold it for the deadline. Detection is exact and costs nothing on the default path.
+  Only a publish that is about to wait checks `Thread.holdsLock` on its own lock and on the lock of every other live
+  publisher, which are held in a weak registry. The first fix used `Thread.holdsLock(publishLock)`, which saw only
+  the same publisher (review of 35bdeb2, finding 1). A per-publish `ThreadLocal` depth counter that replaced it was
+  itself replaced (review of 1d925ee).
 
 The publish is counted as downgraded only when it would actually have waited, that is, when a blocking queue lacks
 room. Agent-thread publishes that find room are not counted. The resulting drop is an ordinary counted drop. Its first-loss reason names the downgrade, for example
@@ -171,12 +173,15 @@ proposed.
 | Drops under any policy, including downgraded ones: the PR #76 per-queue counter, health check and first-drop `QueueDrop` audit | implemented (unchanged) |
 | `refusedCount()`, `refusedCount(queue)`, `downgradedCount()` on the publisher; a warning on the first refusal per binding and the first downgrade per publisher | implemented |
 | `MongooseCountersService` counters per queue, `queue.{path}.refused`, `.blocked` (waits, delivered or refused), `.blockedNanos` (total) and `.blockedMaxNanos`; per feed, `feed.{name}.downgraded` (publishes that would have waited) | implemented |
-| Loss state per queue (`OverloadState`). A **never-drop** queue (`BLOCK_WITH_DEADLINE` binding) goes to `LATCHED` on a refusal, a downgraded drop or a dropped cache replay, and stays there until an operator clears it. A **drop-tolerant** queue goes to `DEGRADED` on a drop and returns to `UP` once the feed's `quietPeriodMillis` (default 60 s) passes with no further loss. The quiet-period recovery is applied when the state is read (by the health check, `overload.status`, or the API), so its record appears then. A refusal at shutdown changes no state. | implemented |
+| Loss state per queue (`OverloadState`). A **never-drop** queue (`BLOCK_WITH_DEADLINE` binding) goes to `LATCHED` on a refusal, a downgraded drop or a dropped cache replay, and stays there until an operator clears it. A **drop-tolerant** queue goes to `DEGRADED` on a drop and returns to `UP` once the feed's `quietPeriodMillis` passes with no further loss. The default is 60 s, the configurable minimum 1 s. A refusal at shutdown changes no state. | implemented |
+| **Default-feed parity (D2, owner decision).** A feed that configured no `overload` block (`FeedOverloadSettings.DEFAULT`, `explicit() == false`) keeps PR #76's health exactly: `DEGRADED` after a loss, **no** quiet-period recovery, and no new record in the group control audit. Quiet-period recovery starts when the feed configures a policy. | implemented |
+| **The latch survives the queue (finding 1).** A latch is kept per queue path, outside the binding. When a latched queue is unsubscribed, the record `LATCHED→REMOVED` (not a clear) is written, and the path's health check stays registered and reports the latch. If the queue is re-added it comes back `LATCHED` (record `REMOVED→LATCHED`). Only an operator clear ends it, and that also closes a health check kept for a queue that has gone. | implemented |
+| **Honest history (finding 2).** Recovery is lazy, but exact. A loss first applies its binding's pending quiet-period recovery, so two loss episodes are two `DEGRADED` records with an `UP` between them. The `UP` record's `epochMillis` is the wall-clock time the quiet period ended (time of last loss + quiet period). `observedEpochMillis` is when it was applied (a health poll, `overload.status`, the API or the next loss). | implemented |
 | Health: the per-queue check (`queue-drops:{path}`) reports the state. `LATCHED` is DEGRADED with "latched until cleared". As before, it is UNKNOWN while counters are disabled, and the health service caches a status for 1 s. | implemented |
 | Operator clear: admin `overload.clear <feed>`, `MongooseServer.clearOverloadState(feed)`. Status: admin `overload.status`, `MongooseServer.overloadStates()`. Counters are not reset. | implemented |
-| One structured log line (`overload state: feed=… queue=… group=… from=… to=… reason=…`; WARNING, or INFO back to UP) and one `OverloadState` audit record per state change, never per event. Records go to the publisher's `getStateAudit()` and to the subscribing group's control audit. PR #76's `QueueDrop` first-loss records are unchanged. | implemented |
-| Kill switch (D5): a feed with `killSwitch: true` calls the hook set with `MongooseServer.setOverloadKillSwitch` when a never-drop queue enters `LATCHED`, once per latch. The hook gets an `OverloadLoss` and runs on the daemon thread `mongoose-overload-kill-switch`, never under a publish lock. Off by default. A feed that enables it with no hook set is warned after start. | implemented |
-| Recording (owner decision): in RECORD mode, a drop keeps its journal entry and sequence number. The publisher marks the queue's producer position (`DropMarks`). The reader, on its group thread, appends one `ReplayEntry.Dropped` to each recorded processor once every item offered before the drop has been dispatched. The entry names the count, the sequence range and the reason, and consecutive drops are coalesced; it is also stored in CSV as `DROPPED`. A replay reports the loss (`GroupReplayer.losses(processor)`) and **carries on**. The processor never received those items, so its recorded stream is still reproducible. A terminal `Failed` entry was tried first: it stopped the chaos replay stress test (`ChaosReplayStressTest`) at the first drop, for no gain in fidelity. CSV readers older than this change reject a `DROPPED` row rather than misread it. | implemented |
+| One structured log line (`overload state: feed=… queue=… group=… from=… to=… reason=…`; WARNING, or INFO back to UP) and one `OverloadState` audit record (`epochMillis`, `observedEpochMillis`) per state change, never per event. Every record goes to the publisher's `getStateAudit()`. Only never-drop changes (to or from `LATCHED`, and `REMOVED`) also go to the subscribing group's control audit, so a flapping drop-tolerant queue cannot evict control-plane records (finding 9). PR #76's `QueueDrop` first-loss records are unchanged. | implemented |
+| Kill switch (D5): a feed with `killSwitch: true` calls the hook set with `MongooseServer.setOverloadKillSwitch` when a never-drop queue enters `LATCHED`, once per latch, with an `OverloadLoss`. Each feed runs its hooks on its own daemon thread, `mongoose-overload-kill-switch-<feed>`, never under a publish lock, so a hook that blocks never holds up another feed's (finding 3). A queued hook whose latch was cleared is skipped. A hook running longer than 5 s is warned. While the server stops, the latch is recorded but the hook is not run (finding 5). A hook set after a queue latched is called for that latch (finding 6). A latch on a kill-switch feed with no hook set is warned, as is a kill-switch feed with no hook after start. Off by default. | implemented |
+| Recording (owner decision): in RECORD mode, a drop keeps its journal entry and sequence number. The publisher marks the queue's producer position (`DropMarks`). The reader, on its group thread, appends one `ReplayEntry.Dropped` to each recorded processor before the first item offered after the drop. It checks before and after each poll, so the entry lands exactly where the items were lost (finding 7). The entry names the count, the sequence range and the reason; consecutive drops are coalesced, and drops past the 1024 pending marks are counted into the next one. It is stored in CSV as `DROPPED`. A replay warns when it reaches the entry and **carries on**: the processor never received those items, so its recorded stream is still reproducible. Completeness checks must also read `GroupReplayer.lossless()`, which is false once a replay has reached a loss, beside `complete()`. `losses(processor)` lists the losses, as `stopped(processor)` says why a replay ended early. `OverloadReplayLossStressTest` records a run that really drops, then replays it: the output is line for line identical, `complete()`, not `stopped`, `lossless()` false, and every loss is reported. CSV readers older than this change reject a `DROPPED` row rather than misread it. | implemented |
 
 ## 9. The default path is unchanged
 
@@ -185,10 +190,13 @@ additions:
 
 - one plain `int` compare (`blockingTargets == 0`) under the lock it already holds;
 - the body of `publishSerialised` moved into `publishMapped`, one extra call frame;
-- a `ThreadLocal` read, plus an increment and a decrement of the per-thread dispatch depth (section 6), so that a
-  publish nested in any dispatch is recognised. In the single-threaded micro-benchmark this costs about 0.6 ns per
-  publish, roughly 16.6 ns before and 17.2 ns after. It is the only measurable cost, and it buys the cross-publisher
-  nesting guard.
+- nothing else. The nesting guard (section 6) runs only on the blocking path. In the single-threaded
+  micro-benchmark, the best of eight alternating runs is 16.40 ns per publish before #79 and 16.32 ns after; the
+  per-run spread is larger than the difference.
+
+On a feed with no configured policy, loss *evidence* is also unchanged: the health check stays `DEGRADED` after a
+loss, as in PR #76 (section 8). The new publisher-level `OverloadState` record goes to the publisher's own audit,
+not to the group's control audit.
 
 `publishOrCache` gains the same compare. `writeToQueue` is identical on a successful offer. On a full queue it reads
 the binding's spin bound from the per-binding map once per full queue per publish (10 ms by default), and builds

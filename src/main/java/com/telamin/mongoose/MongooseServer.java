@@ -1963,13 +1963,9 @@ public class MongooseServer implements MongooseServerController {
     }
 
     /**
-     * #79 review finding 6: an overload override keyed by a group that has bound no queue and is not a processor group
-     * of this server is almost certainly a misspelt or renamed group; its queues would silently get the feed default.
-     * Warned once per (feed, group), after start.
-     */
-    /**
      * Set the hook called when a never-drop queue latches on a feed whose overload settings turn the kill switch on
-     * (telaminai/mongoose#79, D5). Off by default; runs on a dedicated daemon thread. Null removes it.
+     * (telaminai/mongoose#79, D5). Off by default. Each feed runs its hooks on its own daemon thread, so a hook that
+     * blocks never holds up another feed's; a hook set after a queue latched is called for that latch. Null removes it.
      */
     public void setOverloadKillSwitch(com.telamin.mongoose.dispatch.OverloadKillSwitch killSwitch) {
         flowManager.setOverloadKillSwitch(killSwitch);
@@ -1988,6 +1984,12 @@ public class MongooseServer implements MongooseServerController {
         return flowManager.overloadStates();
     }
 
+    /**
+     * #79 review finding 6: an overload override keyed by a group that has bound no queue and is not a processor group
+     * of this server is almost certainly a misspelt or renamed group; its queues would silently get the feed default.
+     * Warned once per (feed, group), after start. Also warns when a feed turns the kill switch on and no
+     * hook is set.
+     */
     private void warnUnknownOverloadGroups() {
         if (flowManager.overloadKillSwitch() == null && !flowManager.killSwitchFeeds().isEmpty()) {
             log.warning("overload kill switch enabled for feeds " + flowManager.killSwitchFeeds()

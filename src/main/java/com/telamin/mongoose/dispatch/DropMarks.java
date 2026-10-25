@@ -12,7 +12,8 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * Where items were dropped from one subscriber queue, so a RECORD-mode reader can mark the loss in its processors'
  * recordings at the right point (telaminai/mongoose#79): a drop keeps its journal entry and sequence number, and the
- * recording gets a {@code Failed} entry naming it, so a replay stops at the loss rather than diverging silently.
+ * recording gets a {@code ReplayEntry.Dropped} entry naming it where it happened. A replay reports the loss
+ * ({@code GroupReplayer.losses}, {@code lossless()}) and carries on: the processor never received those items.
  * <p>
  * The publisher adds a mark, under its lock, with the queue's producer position (addedCount) at the drop: the dropped item would
  * have followed every item offered before it. The reader, on its own thread, takes a mark once its consumer position (removedCount)

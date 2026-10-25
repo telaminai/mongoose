@@ -255,8 +255,8 @@ class OverloadPolicyConfigTest {
         assertFalse(defaults.killSwitchOnLoss(), "the kill switch is off by default");
         assertBad("may not set quietPeriodMillis or killSwitch", cfg(OverloadPolicy.DROP_AFTER_SPIN, null, null)
                 .subscriber("t", cfg(OverloadPolicy.DROP_AFTER_SPIN, null, null).killSwitch(true)));
-        assertBad("overload.quietPeriodMillis must be >= 0", cfg(OverloadPolicy.DROP_AFTER_SPIN, null, null)
-                .quietPeriod(Duration.ofMillis(-1)));
+        assertBad("overload.quietPeriodMillis must be >= 1000", cfg(OverloadPolicy.DROP_AFTER_SPIN, null, null)
+                .quietPeriod(Duration.ofMillis(999)));
     }
 
     @Test

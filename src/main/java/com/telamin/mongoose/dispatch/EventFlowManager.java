@@ -234,7 +234,18 @@ public class EventFlowManager {
      */
     public int clearOverloadState(String sourceName) {
         EventSource_QueuePublisher<?> p = eventSourceToQueueMap.get(new EventSourceKey<>(sourceName));
-        return p == null ? -1 : p.queuePublisher().clearOverloadState();
+        if (p == null) return -1;
+        int cleared = p.queuePublisher().clearOverloadState();
+        // health checks kept only for latched queues that have since gone away are closed now
+        for (EventSourceKey_Subscriber<?> key : queueDropChecks.keySet()) {
+            if (!key.eventSourceKey().sourceName().equals(sourceName)) continue;
+            queueDropChecks.computeIfPresent(key, (k, check) -> {
+                if (!check.bindings.isEmpty()) return check;
+                check.handle.close();
+                return null;
+            });
+        }
+        return cleared;
     }
 
     /** Per feed and queue, the overload state: for the admin {@code overload.status} command. */
@@ -413,7 +424,7 @@ public class EventFlowManager {
                 ? group.control().audit() : null;
         EventToQueuePublisher<T> queuePublisher = sourcePublisher.queuePublisher();
         queuePublisher.addTargetQueue(eventQueue, name, drops, groupAudit, subscriber.roleName(), path);
-        // #79 M3: overload counters per queue, and in RECORD mode the drop marks its reader turns into Failed entries
+        // #79 M3: overload counters per queue, and in RECORD mode the drop marks its reader turns into Dropped entries
         DropMarks dropMarks = replayConfig.mode() == ReplayConfig.Mode.RECORD ? new DropMarks() : null;
         queuePublisher.bindOverloadExtras(name, countersService.queueRefusalCounter(path),
                 countersService.queueBlockCounter(path), countersService.queueBlockedNanosGauge(path),
@@ -509,6 +520,8 @@ public class EventFlowManager {
             queueDropChecks.computeIfPresent(keySubscriber, (key, check) -> {
                 check.bindings.remove(name);
                 if (!check.bindings.isEmpty()) return check;
+                // #79 D4: a latched never-drop queue keeps its health check after it goes away, until an operator clears
+                if (sourcePublisher.queuePublisher().latched(queuePathFor(key))) return check;
                 check.handle.close();
                 return null;
             });

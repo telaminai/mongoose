@@ -186,7 +186,7 @@ class OverloadReviewRegressionTest {
         outer.addTargetQueue(new OneToOneConcurrentArrayQueue<>(8), "oq");
         outer.setDataMapper(o -> { try { inner.publish(o); } catch (PublishRefusedException e) { } return o; });
         Out o = publishOn(outer, "x", "pub");
-        assertTrue(o.done.await(1, TimeUnit.SECONDS), "the outer publish never waited for the inner deadline");
+        assertTrue(o.done.await(1, TimeUnit.SECONDS), "the outer publish must not wait for the inner deadline");
         assertNull(o.err.get());
         long s = System.nanoTime();
         outer.removeTargetQueueByName("oq");

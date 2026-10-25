@@ -419,7 +419,20 @@ public final class GroupReplayer {
         return snapshot(adminReplies);
     }
 
-    /** The losses a processor's recording names, as the replay has reached them (#79): dropped inputs. */
+    /**
+     * True when no replayed processor's recording has named a loss so far (#79). Check it beside {@link #complete()}:
+     * a replay can complete and still have reached {@code Dropped} entries, as it can complete with a processor
+     * {@link #stopped(String) stopped}. {@link #losses(String)} says what was lost.
+     */
+    public boolean lossless() {
+        return cursors.stream().allMatch(c -> c.losses.isEmpty());
+    }
+
+    /**
+     * The losses a processor's recording names, as the replay has reached them (#79): items dropped by a full queue in
+     * the recorded run, before the processor received them. Beside {@link #stopped(String)}: a stopped replay ended
+     * early; a replay with losses ran to the end of a stream that has gaps the live run also had.
+     */
     public List<String> losses(String processor) {
         for (Cursor c : cursors) {
             if (c.name.equals(processor)) return List.copyOf(c.losses);
@@ -490,6 +503,8 @@ public final class GroupReplayer {
                 // the recorded run lost these items before the processor saw them: named, not reproduced, and the
                 // stream goes on (#79)
                 c.losses.add(d.description());
+                log.warning("replay of " + c.name + " reached a recorded loss: " + d.description()
+                        + "; the replay carries on (the processor never received those items)");
                 return true;
             }
             case ReplayEntry.ControlCall cc -> {

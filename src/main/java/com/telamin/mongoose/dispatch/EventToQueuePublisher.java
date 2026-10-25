@@ -67,6 +67,7 @@ public class EventToQueuePublisher<T> {
     public EventToQueuePublisher(String name, MongooseCounter publishCounter) {
         this.name = name;
         this.publishCounter = publishCounter;
+        PUBLISHERS.put(this, Boolean.TRUE);
     }
 
     public EventToQueuePublisher(String name) {
@@ -150,12 +151,15 @@ public class EventToQueuePublisher<T> {
      */
     static volatile long maxParkNanos = java.util.concurrent.TimeUnit.MICROSECONDS.toNanos(100);
     /**
-     * How many publishers' dispatches the current thread is inside (any publisher, not just this one). A dispatch runs
-     * user code under its publish lock (a data mapper, a journal codec, an item's toString, an error listener); a
-     * publish from there into a BLOCK_WITH_DEADLINE feed must not wait, or it would hold the outer publisher's lock for
-     * the deadline (review of 35bdeb2, finding 1). Raised around every locked publish path that can run user code.
+     * Every live publisher, weakly held, so a publish about to wait can tell whether the current thread holds ANY
+     * publisher's lock up the stack (review of 35bdeb2, finding 1; review of 1d925ee, the exact zero-default-cost form).
+     * A dispatch runs user code under its publish lock (a data mapper, a journal codec, an item's toString, an error
+     * listener); a publish from there into a BLOCK_WITH_DEADLINE feed must not wait, or it would hold the outer lock for
+     * the deadline. Consulted only on the blocking path, never by a default-policy publish. Leaf lock: held only to
+     * register or to iterate.
      */
-    private static final ThreadLocal<int[]> DISPATCH_DEPTH = ThreadLocal.withInitial(() -> new int[1]);
+    private static final java.util.Map<EventToQueuePublisher<?>, Boolean> PUBLISHERS =
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
     /** Override groups that have bound a queue at some time; guarded by the publish lock. */
     @Getter(lombok.AccessLevel.NONE)
     private final java.util.Set<String> boundGroups = new java.util.HashSet<>();
@@ -166,6 +170,14 @@ public class EventToQueuePublisher<T> {
     private volatile MongooseCounter downgradeCounter = NO_COUNTER;
     @Getter(lombok.AccessLevel.NONE)
     private volatile OverloadKillSwitch killSwitch;
+    /** Latches by queue path, kept across the queue's removal until an operator clears them; guarded by the lock. */
+    @Getter(lombok.AccessLevel.NONE)
+    private final java.util.Map<String, Latch> latchedPaths = new java.util.HashMap<>();
+    @Getter(lombok.AccessLevel.NONE)
+    private java.util.concurrent.ExecutorService hookExecutor;
+    @Getter(lombok.AccessLevel.NONE)
+    private volatile long hookStartedNanos;
+    private static final long HOOK_WARN_NANOS = java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
     /** The feed's policy and per-group overrides. Written under the publish lock. */
     @Getter(lombok.AccessLevel.NONE)
     private FeedOverloadSettings overload = FeedOverloadSettings.DEFAULT;
@@ -219,6 +231,15 @@ public class EventToQueuePublisher<T> {
                 if (!targetQueues.contains(namedQueue)) {
                     QueueDrops binding = new QueueDrops(dropCounter, groupAudit, group, path);
                     binding.settings = overload.forGroup(group);
+                    Latch latch = latchedPaths.get(path);
+                    if (latch != null) {
+                        // the queue was removed while latched and is back: still latched until an operator clears it
+                        binding.state = OverloadState.LATCHED;
+                        binding.stateReason = latch.reason;
+                        long now = System.currentTimeMillis();
+                        writeStateRecord(name, binding, "REMOVED", "LATCHED",
+                                "queue re-added while latched (" + latch.reason + ")", now, now, true);
+                    }
                     queueDrops.put(namedQueue, binding);
                     targetQueues.add(namedQueue);
                     if (group != null) {
@@ -320,57 +341,89 @@ public class EventToQueuePublisher<T> {
 
     /**
      * A loss on a binding (decision D4): a never-drop (BLOCK_WITH_DEADLINE) binding latches until an operator clears it;
-     * a drop-tolerant one is DEGRADED until its quiet period passes. One log line and one audit record per state change,
-     * and, on a feed with the kill switch on, the hook on entering LATCHED. Under the publish lock.
+     * a drop-tolerant one is DEGRADED until its quiet period passes. The binding's quiet-period recovery is applied first,
+     * so separate loss episodes are separate records (review of 1d925ee, finding 2). One log line and one audit record
+     * per state change, and, on a feed with the kill switch on, the hook on entering LATCHED. Under the publish lock.
      */
     private void loss(NamedQueue queue, QueueDrops binding, String kind, long sequence, String reason) {
-        long now = System.nanoTime();
-        binding.lastLossNanos = now;
+        long nowNanos = System.nanoTime();
+        long nowMillis = System.currentTimeMillis();
+        refreshBinding(queue, binding, nowNanos, nowMillis);
+        binding.lastLossNanos = nowNanos;
+        binding.lastLossEpochMillis = nowMillis;
         OverloadState to = binding.settings.blocks() ? OverloadState.LATCHED : OverloadState.DEGRADED;
         if (binding.state == to || binding.state == OverloadState.LATCHED) {
             return;
         }
-        changeState(queue, binding, to, kind + ": " + reason);
-        OverloadKillSwitch hook = killSwitch;
-        if (to == OverloadState.LATCHED && overload.killSwitchOnLoss() && hook != null) {
-            OverloadLoss event = new OverloadLoss(name, queue.name(), binding.group, kind, sequence, reason,
-                    System.currentTimeMillis());
-            KillSwitchThread.submit(hook, event);
+        changeState(queue.name(), binding, binding.state.name(), to, kind + ": " + reason, nowMillis, nowMillis);
+        if (to == OverloadState.LATCHED) {
+            Latch latch = new Latch(kind + ": " + reason,
+                    new OverloadLoss(name, queue.name(), binding.group, kind, sequence, reason, nowMillis));
+            latch.groupAudit = binding.groupAudit;
+            latchedPaths.put(binding.path, latch);
+            fireKillSwitch(binding.path, latch);
         }
     }
 
-    private void changeState(NamedQueue queue, QueueDrops binding, OverloadState to, String why) {
-        OverloadState from = binding.state;
+    /**
+     * Apply one state change: the binding's state, one log line and one audit record. {@code epochMillis} is when the
+     * change happened (for a quiet-period recovery: when the quiet period ended), {@code observedEpochMillis} when it was
+     * applied. Drop-tolerant changes go to the publisher's state audit only; never-drop changes (anything to or from
+     * LATCHED) also go to the subscribing group's control audit (review of 1d925ee, finding 9).
+     */
+    private void changeState(String queueName, QueueDrops binding, String from, OverloadState to, String why,
+                             long epochMillis, long observedEpochMillis) {
         binding.state = to;
         binding.stateReason = why;
-        String line = "overload state: feed=" + name + " queue=" + queue.name() + " group=" + binding.group
+        writeStateRecord(queueName, binding, from, to.name(), why, epochMillis, observedEpochMillis,
+                binding.settings.blocks() || "LATCHED".equals(from) || to == OverloadState.LATCHED);
+    }
+
+    private void writeStateRecord(String queueName, QueueDrops binding, String from, String to, String why,
+                                  long epochMillis, long observedEpochMillis, boolean toGroupAudit) {
+        String line = "overload state: feed=" + name + " queue=" + queueName + " group=" + binding.group
                 + " from=" + from + " to=" + to + " reason=" + why;
-        if (to == OverloadState.UP) {
+        if ("UP".equals(to)) {
             log.info(line);
         } else {
             log.warning(line);
         }
-        Object[] fields = {"feed", name, "queue", queue.name(), "queuePath", binding.path, "group", binding.group,
-                "from", from.name(), "to", to.name(), "reason", why, "epochMillis", System.currentTimeMillis()};
+        Object[] fields = {"feed", name, "queue", queueName, "queuePath", binding.path, "group", binding.group,
+                "from", from, "to", to, "reason", why, "epochMillis", epochMillis,
+                "observedEpochMillis", observedEpochMillis};
         stateAudit.fallback("OverloadState", fields);
-        if (binding.groupAudit != null) binding.groupAudit.fallback("OverloadState", fields);
+        if (toGroupAudit && binding.groupAudit != null) binding.groupAudit.fallback("OverloadState", fields);
     }
 
-    /** Drop-tolerant bindings whose quiet period has passed return to UP. Under the publish lock. */
-    private void refreshStates() {
-        long now = System.nanoTime();
+    /**
+     * A drop-tolerant binding whose quiet period has passed returns to UP, stamped with the time the quiet period ended.
+     * Not on an unconfigured feed: there a loss leaves the queue DEGRADED, as before #79 (D2 parity, finding 4).
+     */
+    private void refreshBinding(NamedQueue queue, QueueDrops b, long nowNanos, long nowMillis) {
+        if (!overload.explicit()) {
+            return;
+        }
         long quiet = overload.quietPeriodNanos();
+        if (b.state == OverloadState.DEGRADED && nowNanos - b.lastLossNanos >= quiet) {
+            changeState(queue.name(), b, OverloadState.DEGRADED.name(), OverloadState.UP,
+                    "quiet for " + (quiet / 1_000_000) + " ms",
+                    b.lastLossEpochMillis + java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(quiet), nowMillis);
+        }
+    }
+
+    /** Apply every binding's quiet-period recovery. Under the publish lock. */
+    private void refreshStates() {
+        long nowNanos = System.nanoTime();
+        long nowMillis = System.currentTimeMillis();
         for (var e : queueDrops.entrySet()) {
-            QueueDrops b = e.getValue();
-            if (b.state == OverloadState.DEGRADED && now - b.lastLossNanos >= quiet) {
-                changeState(e.getKey(), b, OverloadState.UP, "quiet for " + (quiet / 1_000_000) + " ms");
-            }
+            refreshBinding(e.getKey(), e.getValue(), nowNanos, nowMillis);
         }
     }
 
     /**
      * The worst loss state of the bindings with queue path {@code path} (several callback bindings can share one
-     * queue), after applying the quiet period, with a description; UP with an empty description when none is degraded.
+     * queue), after applying the quiet period, with a description. A path whose queue was removed while LATCHED is still
+     * LATCHED until an operator clears it (finding 1).
      */
     public OverloadHealth overloadHealth(String path) {
         synchronized (publishLock) {
@@ -387,7 +440,19 @@ public class EventToQueuePublisher<T> {
                     reason = b.stateReason;
                 }
             }
+            Latch latch = latchedPaths.get(path);
+            if (latch != null && worst != OverloadState.LATCHED) {
+                worst = OverloadState.LATCHED;
+                reason = latch.reason + " (queue removed while latched)";
+            }
             return new OverloadHealth(worst, drops, refusals, reason);
+        }
+    }
+
+    /** True while the queue path is latched, bound or not: its health check is kept until an operator clears it. */
+    public boolean latched(String path) {
+        synchronized (publishLock) {
+            return latchedPaths.containsKey(path);
         }
     }
 
@@ -403,25 +468,117 @@ public class EventToQueuePublisher<T> {
     }
 
     /**
-     * Operator clear (decision D4): every DEGRADED or LATCHED binding of this feed returns to UP, each with its state
-     * change record. Counters are not reset. Returns how many bindings were cleared.
+     * Operator clear (decision D4): every DEGRADED or LATCHED binding of this feed returns to UP, and every latch kept
+     * for a removed queue is dropped, each with its state change record. A kill-switch hook still queued for a cleared
+     * latch is skipped. Counters are not reset. Returns how many queues were cleared.
      */
     public int clearOverloadState() {
         synchronized (publishLock) {
             int cleared = 0;
+            long now = System.currentTimeMillis();
+            java.util.Set<String> boundPaths = new java.util.HashSet<>();
             for (var e : queueDrops.entrySet()) {
+                boundPaths.add(e.getValue().path);
                 if (e.getValue().state != OverloadState.UP) {
-                    changeState(e.getKey(), e.getValue(), OverloadState.UP, "cleared by operator");
+                    changeState(e.getKey().name(), e.getValue(), e.getValue().state.name(), OverloadState.UP,
+                            "cleared by operator", now, now);
                     cleared++;
                 }
             }
+            for (var e : latchedPaths.entrySet()) {
+                if (boundPaths.contains(e.getKey())) continue;
+                QueueDrops ghost = new QueueDrops(NO_COUNTER, e.getValue().groupAudit, e.getValue().loss.group(), e.getKey());
+                writeStateRecord(e.getValue().loss.queue(), ghost, "LATCHED", "UP",
+                        "cleared by operator (queue removed)", now, now, true);
+                cleared++;
+            }
+            latchedPaths.clear();
             return cleared;
+        }
+    }
+
+    /**
+     * Run the kill switch for a latch (decision D5), unless the feed did not turn it on, the server is stopping (the
+     * state is still recorded; finding 5), or no hook is set (warned). Each feed has its own hook thread, so a hook that
+     * blocks never holds up another feed's (finding 3); a hook still queued when its latch is cleared is skipped.
+     * Under the publish lock; the hook itself runs on the feed's hook thread.
+     */
+    private void fireKillSwitch(String path, Latch latch) {
+        if (!overload.killSwitchOnLoss()) {
+            return;
+        }
+        if (closing) {
+            log.info("feed " + name + ": kill switch not run for the latch of " + latch.loss.queue()
+                    + " (server stopping); the state is recorded");
+            return;
+        }
+        OverloadKillSwitch hook = killSwitch;
+        if (hook == null) {
+            log.warning("feed " + name + ": overload kill switch enabled but no hook is set "
+                    + "(MongooseServer.setOverloadKillSwitch): the latch of " + latch.loss.queue() + " is not reported");
+            return;
+        }
+        long running = hookStartedNanos;
+        if (running != 0 && System.nanoTime() - running > HOOK_WARN_NANOS) {
+            log.warning("feed " + name + ": the previous kill switch hook has been running for "
+                    + (System.nanoTime() - running) / 1_000_000 + " ms; this latch's hook waits behind it");
+        }
+        hookExecutor().execute(() -> {
+            synchronized (publishLock) {
+                if (latchedPaths.get(path) != latch) {
+                    log.info("feed " + name + ": kill switch skipped for " + latch.loss.queue()
+                            + ": its latch was cleared before the hook ran");
+                    return;
+                }
+            }
+            long start = System.nanoTime();
+            hookStartedNanos = start;
+            try {
+                hook.onNeverDropLoss(latch.loss);
+            } catch (Throwable t) {
+                log.log(Level.SEVERE, "overload kill switch failed for " + latch.loss, t);
+            } finally {
+                hookStartedNanos = 0;
+                long took = System.nanoTime() - start;
+                if (took > HOOK_WARN_NANOS) {
+                    log.warning("feed " + name + ": kill switch hook took " + took / 1_000_000 + " ms");
+                }
+            }
+        });
+    }
+
+    private synchronized java.util.concurrent.ExecutorService hookExecutor() {
+        if (hookExecutor == null) {
+            hookExecutor = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "mongoose-overload-kill-switch-" + name);
+                t.setDaemon(true);
+                return t;
+            });
+        }
+        return hookExecutor;
+    }
+
+    /** A latch, kept per queue path so it survives the queue's removal and re-add until an operator clears it. */
+    private static final class Latch {
+        final String reason;
+        final OverloadLoss loss;
+        com.telamin.mongoose.control.ControlAuditSink groupAudit;
+
+        Latch(String reason, OverloadLoss loss) {
+            this.reason = reason;
+            this.loss = loss;
         }
     }
 
     /** Set the hook called when a never-drop queue latches, on feeds with the kill switch on (decision D5). */
     public void setKillSwitch(OverloadKillSwitch killSwitch) {
-        this.killSwitch = killSwitch;
+        synchronized (publishLock) {
+            this.killSwitch = killSwitch;
+            // a hook set after a queue latched still hears of that latch (finding 6)
+            if (killSwitch != null) {
+                latchedPaths.forEach(this::fireKillSwitch);
+            }
+        }
     }
 
     /** Attach the M3 counters and, in RECORD mode, the drop marks to the binding named {@code queueName}. */
@@ -449,29 +606,24 @@ public class EventToQueuePublisher<T> {
     public record OverloadHealth(OverloadState state, long drops, long refusals, String reason) {
     }
 
-    /** Runs kill-switch hooks off the publishing thread and outside any publish lock. */
-    private static final class KillSwitchThread {
-        private static final java.util.concurrent.ExecutorService EXECUTOR =
-                java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
-                    Thread t = new Thread(r, "mongoose-overload-kill-switch");
-                    t.setDaemon(true);
-                    return t;
-                });
 
-        static void submit(OverloadKillSwitch hook, OverloadLoss loss) {
-            EXECUTOR.execute(() -> {
-                try {
-                    hook.onNeverDropLoss(loss);
-                } catch (Throwable t) {
-                    log.log(Level.SEVERE, "overload kill switch failed for " + loss, t);
-                }
-            });
+    /**
+     * True when the current thread holds this or any other publisher's lock: the publish is nested inside a dispatch.
+     * Exact for the current thread ({@link Thread#holdsLock}); costs one pass over the live publishers, and only on
+     * the blocking path.
+     */
+    private boolean insideDispatch() {
+        if (Thread.holdsLock(publishLock)) {
+            return true;
         }
-    }
-
-    /** True while the current thread is inside any publisher's dispatch (see {@link #DISPATCH_DEPTH}). */
-    static boolean insideDispatch() {
-        return DISPATCH_DEPTH.get()[0] > 0;
+        synchronized (PUBLISHERS) {
+            for (EventToQueuePublisher<?> other : PUBLISHERS.keySet()) {
+                if (other != this && Thread.holdsLock(other.publishLock)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**
@@ -510,17 +662,11 @@ public class EventToQueuePublisher<T> {
             return;
         }
         yieldToSubscriberChanges();
-        int[] depth = DISPATCH_DEPTH.get();
-        depth[0]++;
-        try {
-            synchronized (publishLock) {
-                if (blockingTargets == 0) {
-                    publishSerialised(itemToPublish);
-                    return;
-                }
+        synchronized (publishLock) {
+            if (blockingTargets == 0) {
+                publishSerialised(itemToPublish);
+                return;
             }
-        } finally {
-            depth[0]--;
         }
         publishWithOverload(itemToPublish);
     }
@@ -551,34 +697,28 @@ public class EventToQueuePublisher<T> {
                 ? "agent thread " + Thread.currentThread().getName() : null;
         Object mappedItem;
         NamedQueue blocker;
-        int[] depth = DISPATCH_DEPTH.get();
-        depth[0]++;
-        try {
-            synchronized (publishLock) {
-                if (blockingTargets == 0) {
-                    publishSerialised(itemToPublish);
-                    return;
-                }
-                if (downgrade != null) {
-                    publishDowngraded(itemToPublish, downgrade);
-                    return;
-                }
-                mappedItem = mapItemSafely(itemToPublish, "publish");
-                if (mappedItem == null) {
-                    log.fine("mapped itemToPublish is null");
-                    return;
-                }
-                blocker = blockerWithoutRoom();
-                if (blocker == null) {
-                    publishMapped(itemToPublish, mappedItem);
-                    return;
-                }
-                if (closing) {
-                    throw refuse(mappedItem, blocker, PublishRefusedException.Reason.SHUTDOWN, 0);
-                }
+        synchronized (publishLock) {
+            if (blockingTargets == 0) {
+                publishSerialised(itemToPublish);
+                return;
             }
-        } finally {
-            depth[0]--;
+            if (downgrade != null) {
+                publishDowngraded(itemToPublish, downgrade);
+                return;
+            }
+            mappedItem = mapItemSafely(itemToPublish, "publish");
+            if (mappedItem == null) {
+                log.fine("mapped itemToPublish is null");
+                return;
+            }
+            blocker = blockerWithoutRoom();
+            if (blocker == null) {
+                publishMapped(itemToPublish, mappedItem);
+                return;
+            }
+            if (closing) {
+                throw refuse(mappedItem, blocker, PublishRefusedException.Reason.SHUTDOWN, 0);
+            }
         }
         awaitRoomThenPublish(itemToPublish, mappedItem, blocker);
     }
@@ -633,9 +773,6 @@ public class EventToQueuePublisher<T> {
                         || blocker.targetQueue().remainingCapacity() > 0 || !targetQueues.contains(blocker)) {
                     epochSeen = targetsEpoch.get();
                     yieldToSubscriberChanges();
-                    int[] depth = DISPATCH_DEPTH.get();
-                    depth[0]++;
-                    try {
                     synchronized (publishLock) {
                         NamedQueue current = blockingTargets == 0 ? null : blockerWithoutRoom();
                         if (current == null) {
@@ -660,9 +797,6 @@ public class EventToQueuePublisher<T> {
                             // the interrupt stays set for the caller
                             throw refuse(mappedItem, current, PublishRefusedException.Reason.INTERRUPTED, waited);
                         }
-                    }
-                    } finally {
-                        depth[0]--;
                     }
                 }
                 if (waited < spinNanos) {
@@ -804,21 +938,15 @@ public class EventToQueuePublisher<T> {
             return;
         }
         yieldToSubscriberChanges();
-        int[] depth = DISPATCH_DEPTH.get();
-        depth[0]++;
-        try {
-            synchronized (publishLock) {
-                if (!startComplete) {
-                    cacheSerialised(item);
-                    return;
-                }
-                if (blockingTargets == 0) {
-                    publishSerialised(item);
-                    return;
-                }
+        synchronized (publishLock) {
+            if (!startComplete) {
+                cacheSerialised(item);
+                return;
             }
-        } finally {
-            depth[0]--;
+            if (blockingTargets == 0) {
+                publishSerialised(item);
+                return;
+            }
         }
         publishWithOverload(item);
     }
@@ -829,14 +957,8 @@ public class EventToQueuePublisher<T> {
             return;
         }
         yieldToSubscriberChanges();
-        int[] depth = DISPATCH_DEPTH.get();
-        depth[0]++;
-        try {
-            synchronized (publishLock) {
-                cacheSerialised(itemToCache);
-            }
-        } finally {
-            depth[0]--;
+        synchronized (publishLock) {
+            cacheSerialised(itemToCache);
         }
     }
 
@@ -882,21 +1004,15 @@ public class EventToQueuePublisher<T> {
         }
 
         yieldToSubscriberChanges();
-        int[] depth = DISPATCH_DEPTH.get();
-        depth[0]++;
-        try {
         synchronized (publishLock) {
-            for (int i = 0, targetQueuesSize = targetQueues.size(); i < targetQueuesSize; i++) {
-                NamedQueue namedQueue = targetQueues.get(i);
-                OneToOneConcurrentArrayQueue<Object> targetQueue = namedQueue.targetQueue();
-                if (!targetQueue.offer(record)) recordDrop(namedQueue, -1, "replay offer full; no retry");
-                if (log.isLoggable(Level.FINE)) {
-                    log.fine("queue:" + namedQueue.name() + " size:" + targetQueue.size());
-                }
+        for (int i = 0, targetQueuesSize = targetQueues.size(); i < targetQueuesSize; i++) {
+            NamedQueue namedQueue = targetQueues.get(i);
+            OneToOneConcurrentArrayQueue<Object> targetQueue = namedQueue.targetQueue();
+            if (!targetQueue.offer(record)) recordDrop(namedQueue, -1, "replay offer full; no retry");
+            if (log.isLoggable(Level.FINE)) {
+                log.fine("queue:" + namedQueue.name() + " size:" + targetQueue.size());
             }
         }
-        } finally {
-            depth[0]--;
         }
     }
 
@@ -907,30 +1023,18 @@ public class EventToQueuePublisher<T> {
      */
     public void startComplete() {
         yieldToSubscriberChanges();
-        int[] depth = DISPATCH_DEPTH.get();
-        depth[0]++;
-        try {
-            synchronized (publishLock) {
-                warnCacheReplayOnBlockingFeed();
-                dispatchCachedEventLogSerialised();
-                startComplete = true;
-            }
-        } finally {
-            depth[0]--;
+        synchronized (publishLock) {
+            warnCacheReplayOnBlockingFeed();
+            dispatchCachedEventLogSerialised();
+            startComplete = true;
         }
     }
 
     public void dispatchCachedEventLog() {
         yieldToSubscriberChanges();
-        int[] depth = DISPATCH_DEPTH.get();
-        depth[0]++;
-        try {
-            synchronized (publishLock) {
-                warnCacheReplayOnBlockingFeed();
-                dispatchCachedEventLogSerialised();
-            }
-        } finally {
-            depth[0]--;
+        synchronized (publishLock) {
+            warnCacheReplayOnBlockingFeed();
+            dispatchCachedEventLogSerialised();
         }
     }
 
@@ -1219,6 +1323,7 @@ public class EventToQueuePublisher<T> {
         // ---- M3 (#79): loss state, counters, recording marks; written under the publish lock ----
         OverloadState state = OverloadState.UP;
         long lastLossNanos;
+        long lastLossEpochMillis;
         String stateReason = "";
         MongooseCounter refusalCounter = NO_COUNTER;
         MongooseCounter blockCounter = NO_COUNTER;
@@ -1257,6 +1362,13 @@ public class EventToQueuePublisher<T> {
                     }
                     if (e.getValue().settings.blocks()) {
                         blockingTargets--;
+                    }
+                    if (e.getValue().state == OverloadState.LATCHED) {
+                        // not a clear: the latch stays with the queue path until an operator clears it (finding 1)
+                        long now = System.currentTimeMillis();
+                        writeStateRecord(queueName, e.getValue(), "LATCHED", "REMOVED",
+                                "queue removed while latched; the latch is kept until an operator clears it", now, now,
+                                true);
                     }
                     return true;
                 });
