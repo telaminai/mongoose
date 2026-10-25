@@ -129,7 +129,10 @@ class ControlScenarioHarnessTest {
     }
 
     static LongStream seeds() {
-        return LongStream.rangeClosed(1, 200);
+        long first = Long.getLong("mongoose.harness.seedStart", 1L);
+        long count = Long.getLong("mongoose.harness.seedCount", 200L);
+        if (count <= 0) throw new IllegalArgumentException("mongoose.harness.seedCount must be positive");
+        return LongStream.range(first, Math.addExact(first, count));
     }
 
     @ParameterizedTest(name = "seed {0}")
