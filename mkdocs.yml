@@ -138,6 +138,7 @@ nav:
           - Threading model: architecture/threading-model.md
           - Object pooling: architecture/object_pooling.md
           - Server control: architecture/server-control.md
+          - Failure handling (design, issue 77): design/failure-handling.md
       - Reference:
           - Control plane contracts: reference/control-plane-contracts.md
           - Release notes (1.0.33-rc1): release/release-notes-1.0.33-rc1.md
