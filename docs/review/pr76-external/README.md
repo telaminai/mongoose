@@ -9,6 +9,7 @@ documents so it can be reviewed, assigned and verified independently.
 | `77-overload-policy-spec.md` | Post-release, issue #77 | Design skeleton for explicit data-path loss policy (blocking/backpressure publish) |
 | `fluxtion-issue-generated-processor-wedge.md` | Post-release, Fluxtion repo | Ready-to-paste issue: generated processor wedges on a handler throw |
 | `maintainability-plan.md` | Post-release, tracking issue | Eight refactors ordered and sized |
+| `77-reviewer-response.md` | Reviewer input requested by issue #77; owner decisions marked OWNER | Matrix additions, the four defaults, terminal-state table, failure taxonomy, proposed split of work |
 
 Source material: `author-prompt-combined-requirements.md` (the combined requirements file) and the review
 report at the session scratchpad `pr76-review-report.md`. Reproduction tests referenced by name live under
