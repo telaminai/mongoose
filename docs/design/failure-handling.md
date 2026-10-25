@@ -12,6 +12,7 @@ Every guarantee carries one of three status marks:
 | Mark | Meaning |
 | --- | --- |
 | **[Implemented]** | True at the base commit. The cited test exists at the base commit and passes in the full suite (1013 tests, 0 failures, 14 skipped at `dfbfdd9`). |
+| **[Implemented: M2]** | True on this branch after milestone 2. The cited test was added or changed on this branch and passes in its full suite. |
 | **[Proposed: Mn]** | Agreed direction, implemented on this branch in milestone *n* (see [Milestones](#milestones)). It is not true until that milestone lands. |
 | **[Unsupported]** | A deliberate non-guarantee. Callers must not rely on it. |
 
@@ -48,11 +49,11 @@ These are the seven principles from the #78 catalogue, folded into #77, with the
 
 | # | Principle | Status |
 | --- | --- | --- |
-| P1 | **Every request ends.** It ends with exactly one reply, within its deadline, including across death, close and shutdown. *Amendment:* the reply has an **identified author**: a rule, the driver's safety net, or the shutdown/death path. | One reply: **[Implemented]** (`ControlTerminalAdmissionTest`, `ControlScenarioHarnessTest#terminalSweepAnswersEveryIndependentlyRetainedUnpublishedRequest`, `ControlTerminationAndAdmissionTest#errorHandlerDeathCompletesClaimsWithoutAnotherSenderAndAllowsReentrantCompletion`). Author: a driver-authored reply is marked `replyAuthor: DRIVER` in the audit **[Implemented]** (`IndependentEvidenceMutationTest#structuredDriverFallbackIsRejectedRegardlessOfReasonWording`); a structured author on every reply **[Proposed: M2]**. |
+| P1 | **Every request ends.** It ends with exactly one reply, within its deadline, including across death, close and shutdown. *Amendment:* the reply has an **identified author**: a rule, the driver's safety net, or the shutdown/death path. | One reply: **[Implemented]** (`ControlTerminalAdmissionTest`, `ControlScenarioHarnessTest#terminalSweepAnswersEveryIndependentlyRetainedUnpublishedRequest`, `ControlTerminationAndAdmissionTest#errorHandlerDeathCompletesClaimsWithoutAnotherSenderAndAllowsReentrantCompletion`). Author: a driver-authored reply is marked `replyAuthor: DRIVER` in the audit **[Implemented]** (`IndependentEvidenceMutationTest#structuredDriverFallbackIsRejectedRegardlessOfReasonWording`); every reply's `kind` names its author class: `FAILED_RULE` / `FAILED_DRIVER_FALLBACK` are the driver's safety net, `FAILED_DEAD` / `FAILED_SHUTDOWN` the death or close path, any other kind a rule or the sender **[Implemented: M2]** (`FailureKindFlowTest`, `ControlScenarioHarnessTest`). |
 | P2 | **Ownership is explicit and exact.** Every resource, name and service instance has one owner, identified by (group, generation) or by the instance. Ownership passes only on a confirmed release. An unconfirmed release keeps ownership until shutdown, which reports it. | **[Implemented]** for processors, names, captures and services (rows R7, R8, M1, M4 below). |
 | P3 | **Physical work outlives logical decisions.** A logical timeout or cancellation never releases what a physical operation holds. Bounds are permits held until the physical operation returns. | **[Implemented]** (row R6). |
 | P4 | **One deadline per call.** It is computed at entry and spent on admission, locks and reply together. No unbounded wait on an agent thread, and no wait under a lock the stop path needs. | **[Implemented]** (row R2). |
-| P5 | **Honest outcomes.** APPLIED means it happened. Refusal, failure, "not yet" and "cannot verify" are distinct and each carries a reason. *Amendment:* **APPLIED for a stop means the Release effect was observed**, not that a rule said so. | APPLIED-stop: **[Implemented]** by audit invariant I17 and the harness's caller-side ledger (`IndependentEvidenceMutationTest#appliedStopWithoutReleaseIsRejected`, `#stopObligationDoesNotDependOnRuleSpelling`, `ControlScenarioHarnessTest#nameOnlyStopLedgerRejectsAReplyBeforeReleaseWithoutConsultingAudit`). Distinct outcomes: `ReplyOutcome` has four values **[Implemented]**; a structured reason **[Proposed: M2]**. |
+| P5 | **Honest outcomes.** APPLIED means it happened. Refusal, failure, "not yet" and "cannot verify" are distinct and each carries a reason. *Amendment:* **APPLIED for a stop means the Release effect was observed**, not that a rule said so. | APPLIED-stop: **[Implemented]** by audit invariant I17 and the harness's caller-side ledger (`IndependentEvidenceMutationTest#appliedStopWithoutReleaseIsRejected`, `#stopObligationDoesNotDependOnRuleSpelling`, `ControlScenarioHarnessTest#nameOnlyStopLedgerRejectsAReplyBeforeReleaseWithoutConsultingAudit`). Distinct outcomes: `ReplyOutcome` has four values **[Implemented]**; a structured `FailureKind` beside the reason **[Implemented: M2]** (`FailureKindFlowTest#ruleAuthoredRepliesCarryTheirKindToTheCallerAndTheAudit`). |
 | P6 | **Fail closed in replay and evidence.** Anything that cannot be reproduced or verified stops with a reason. Audit gaps are reported, never smoothed over. | Replay: **[Implemented]** (row R9). Evidence: an incomplete audit makes invariants unverifiable **[Implemented]** (`ControlAuditExportTest#sinkFailureSurvivesExportAndFalseCompleteClaimIsRejected`); the runtime reaction to a failed audit sink **[Proposed: M3]** ([Audit failure](#audit-failure)). |
 | P7 | **Every failure is evidence.** It has a recorded outcome, attributed to its owner, checkable by an invariant with a mutation test. *Amendment:* **absence is not evidence.** An oracle reports which invariants were vacuous on an export, that is, had zero records to judge. | Recorded outcome and mutation tests: **[Implemented]** (`ControlInvariantsMutationTest`, `IndependentEvidenceMutationTest`, `docs/reports/pr76-third-review-followup-2026-10-25/run-source-mutations.py`). Vacuity reporting: **[Proposed: M6]**. |
 
@@ -62,7 +63,7 @@ These four facts are related but never interchangeable. A test or an operator re
 
 | Fact | Values | Where it is read |
 | --- | --- | --- |
-| Command disposition | refused, accepted/pending, applied, failed, detached | `ControlReply.outcome` (and its kind, M2); a `null` from a timed-out wait means detached |
+| Command disposition | refused, accepted/pending, applied, failed, detached | `ControlReply.outcome` and `ControlReply.kind`; a `null` from a timed-out wait means detached |
 | Runtime availability | `NEW`, `STARTING`, `RUNNING`, `CLOSING`, `CLOSED`, `DEAD` | `ControlDriver.GroupState`, `controlGroupStatus(group).state()` |
 | Physical resource status | acquired, installed, closing, confirmed closed, close failed (unknown) | `controlGroupStatus`: `captureResourcesHeld`, `captureResourceSlotsInUse`, `captureCloseFailures`, `captureCleanupFailures` |
 | Evidence status | complete, incomplete, unknown | `ControlAuditSink.isComplete()`, `ControlAuditExport.verify(path)` |
@@ -112,7 +113,7 @@ third review. "Status" refers to the containment and evidence columns together; 
 | R6 | Capture open times out | The logical request fails; the physical open keeps its permit until it returns; a late resource is closed, never installed | `FAILED` (`open timed out`); the pending physical operation stays visible in `captureResourceSlotsInUse` | Compensation of the late resource | **[Implemented]** `CaptureAsEffectsTest#anOpenThatTimesOutIsAnsweredFailedAndItsLateResourceClosed`, `#lateOpenAfterStopAndReplacementIsCompensatedNeverInstalled`, `CapturePermitRegressionTest#rejectedTimeoutSchedulingDoesNotLeakPhysicalAdmission`, `IndependentReviewControlProbesTest#anOpenWhoseTimerRefusesMustReturnItsPermit` |
 | R7 | Physical close throws | Ownership and the resource slot are retained; closure is never inferred | Resource ID, operation, failure, `captureCloseFailures()`, `StopResult` incomplete; invariant I4 reports it unverifiable | Adapter-specific verified recovery; no generic automatic retry | **[Implemented]** `CaptureAsEffectsTest#aCloseThatFailsIsRecordedAndCountedOnce`, `CapturePhysicalShutdownTest#failedPhysicalCloseKeepsShutdownIncompleteWithoutRepeatingCallback`, `ChronicleShutdownFailureEvidenceTest#failedChronicleCloseKeepsExactStopResultIncompleteAndProducesOperatorEvidence`, `ChaosAuditVerdictTest#completeRecordWithFailedPhysicalClosureCannotPassChaos` |
 | R8 | Service retirement races re-registration | One physical instance is never stopped by an obsolete owner once it is live again; admission and the stop claim are atomic; callbacks run outside publication locks | Retirement decision; failed physical stop reported by shutdown | Re-registration claims the instance | **[Implemented]** `HuntServerFailureModesTest#deferredRetirementMustNotStopAnInstanceRegisteredAgain`, `RetirementReregistrationRaceTest#reregistrationCannotRacePastAnAlreadyClaimedRetirementStop`, `ServiceAliasRetirementProbeTest#failedPhysicalStopIsStillReportedByShutdown` |
-| R9 | Replay diverges or cannot identify an input or service | That processor's replay stops with a reason; no live controller side effect | `replayer.stopped(processor)` with position and expected/observed identity | Fix configuration or create a new verified replay context | Stop with reason: **[Implemented]** `ReplayControlAndProvenanceTest#aReplayedControlRequestThatDiffersIsADivergence`, `ReplayIdentityTest#aLaterIncarnationWithNoRecordedStreamIsStoppedLoudly`, `IndependentReviewReplayProbesTest#aRecordedWithdrawalOfAServiceTheReplayedProcessorNeverHeldMustBeReportedAsDivergence`. Structured stop kind: **[Proposed: M2]** |
+| R9 | Replay diverges or cannot identify an input or service | That processor's replay stops with a reason; no live controller side effect | `replayer.stopped(processor)` with position and expected/observed identity | Fix configuration or create a new verified replay context | Stop with reason: **[Implemented]** `ReplayControlAndProvenanceTest#aReplayedControlRequestThatDiffersIsADivergence`, `ReplayIdentityTest#aLaterIncarnationWithNoRecordedStreamIsStoppedLoudly`, `IndependentReviewReplayProbesTest#aRecordedWithdrawalOfAServiceTheReplayedProcessorNeverHeldMustBeReportedAsDivergence`. Structured stop kind (`GroupReplayer.stopKind`): **[Implemented: M2]** `ReplayIdentityTest#aLaterIncarnationWithNoRecordedStreamIsStoppedLoudly`, `ReplayControlAndProvenanceTest#aReplayedControlRequestThatDiffersIsADivergence`, `ReplayRecordingAcceptanceTest#D4_aFailedDispatchIsMarked_andTheReplayStopsThere` |
 | R10 | Audit writer fails or evidence is dropped | Runtime policy per working decision 2 | Incomplete status, `sinkFailures`, manifest `complete: false`; never an invariant PASS | See [Audit failure](#audit-failure) | Evidence side: **[Implemented]** `ControlAuditExportTest#sinkFailureSurvivesExportAndFalseCompleteClaimIsRejected`, `#droppedFallbackWithoutDecisionSequenceGapIsStillIncomplete`. Runtime reaction (DEGRADED, evidence marker): **[Proposed: M3]** |
 | R11 | Process, JVM or host dies | In-memory ownership and futures cannot promise recovery | Only what was durably written: Chronicle capture files, exported audit snapshots, replay stores | Restart from configuration; no implied exactly-once external effects | **[Unsupported]**: no durable control state, no recovery of in-flight requests |
 
@@ -125,9 +126,9 @@ third review. "Status" refers to the containment and evidence columns together; 
 | M3 | `start()` throws for a recorded processor | The failure is a recorded `Failed` entry at the ordinal it consumed | Replay of that stream stops ("the recorded run failed here") | **[Implemented]** `RecordedStartFailureReplaysAsSuccessTest#aRecordedStartFailureMustNotLeaveAStreamThatReplaysAsSuccess`, `RecordedStartupFailureTest#aFailureAfterRecordingAttachesLeavesADurableMarker` |
 | M4 | Legacy name-keyed capture stop reaches a scoped sink | Stop by bare name refuses when the only match is a different generation | Refusal names the protected generation | **[Implemented]** `ChronicleCaptureEdgeTest#retiringAnOldGenerationMustNotStopTheNewGenerationsCapture`, `#aLegacyRouterMustNotSilentlyDowngradeRegistrationScopedStart` (direct embedding only; unreachable through `MongooseServer`) |
 | M5 | Physical detach retry fails after the logical release | Handle and slot retained; listed by `captureCloseFailures()`/`captureCleanupFailures()`; the control table keeps the row | `CleanupPending.failedPhysicalCloses` and `failedCaptureDetaches` | **[Implemented]** `CaptureAsEffectsTest#failedOfflineUninstallRetainsOwnershipForGroupCleanup`, `ChronicleGroupInlineTest#failedDetachRetainsItsResourceAndReportsCleanupFailure` |
-| M6 | A rule performs effects but never replies | The driver's safety net answers `FAILED` | The fallback is classified as a driver reply, distinct from a rule reply | `replyAuthor: DRIVER` marker: **[Implemented]** `IndependentEvidenceMutationTest#structuredDriverFallbackIsRejectedRegardlessOfReasonWording`. Live replies classified without reason text: **[Proposed: M2]** (the harness still matches reason text today) |
+| M6 | A rule performs effects but never replies | The driver's safety net answers `FAILED` | The fallback is classified as a driver reply, distinct from a rule reply | `replyAuthor: DRIVER` marker: **[Implemented]** `IndependentEvidenceMutationTest#structuredDriverFallbackIsRejectedRegardlessOfReasonWording`. Live replies and exports classified by `kind`, never reason text: **[Implemented: M2]** `ControlScenarioHarnessTest` (ledger), `FailureKindEvidenceMutationTest#anUnhealthyKindOnAFallbackReplyIsRejectedWhateverItsWording` |
 | M7 | Status API read off the agent thread | Status views are safe from any thread, or documented agent-only | n/a | **[Implemented]** `ReplayStatusApiConcurrencyTest#completeAndStoppedAreSafeToPollWhileProcessorsAttachAndDetach`, `ReplayStatusPublicationTest`; `controlGroupStatus` is documented weakly consistent |
-| M8 | Group close reclaims captures the control processor left open | Leftover release is a recovery, recorded as such | Fallback record marked as a leftover; the oracle counts leftovers as violations unless the scenario injected the leak | Reclaim and record: **[Implemented]** `CaptureAsEffectsTest#aDeadControlProcessorsGroupStillClosesItsCaptures`. Leftover marker and oracle check: **[Proposed: M2]** (today the records say `offline: true`, which the oracle accepts) |
+| M8 | Group close reclaims captures the control processor left open | Leftover release is a recovery, recorded as such | Fallback record marked as a leftover; the oracle counts leftovers as violations unless the scenario injected the leak | Reclaim and record: **[Implemented]** `CaptureAsEffectsTest#aDeadControlProcessorsGroupStillClosesItsCaptures`. Leftover marker (`leftover: true`, `kind: LEFTOVER_RECOVERED`) and oracle invariant I19: **[Implemented: M2]** same test, `FailureKindEvidenceMutationTest#aLeftoverRecoveryIsRejected` |
 
 ### Rows from the third review
 
@@ -155,7 +156,7 @@ An operator acknowledgement never manufactures successful cleanup. There is no a
 ## Failure taxonomy
 
 One enum, `FailureKind`, shared by `ControlReply`, `StopResult`, replay stop reasons and control-audit records (field
-`kind`). Free text stays beside it as human detail; programs and oracles classify by kind. **[Proposed: M2]**
+`kind`). Free text stays beside it as human detail; programs and oracles classify by kind. **[Implemented: M2]**
 
 | Kind | Meaning | Typical producers |
 | --- | --- | --- |
@@ -170,7 +171,7 @@ One enum, `FailureKind`, shared by `ControlReply`, `StopResult`, replay stop rea
 | `FAILED_SHUTDOWN` | The group or server ended in order with this work outstanding, or a stop did not complete | Close with a request still claimed; `StopResult` incomplete |
 | `QUARANTINED` | A processor was quarantined, or a request addressed one | Isolation, `stopQuarantined` |
 | `DETACHED` | The caller stopped waiting; the outcome is not yet known. Not a cancellation | `StopResult` handed off to a stop thread |
-| `UNVERIFIED` | Cannot be verified from the evidence (incomplete or failed audit). Never a pass | Reserved for M3 (evidence-incomplete marker) |
+| `UNVERIFIED` | Cannot be verified from the evidence (incomplete or failed audit). Never a pass | Reserved for M3 (evidence-incomplete marker); also the kind of a `ControlReply` built with a null outcome |
 | `LEFTOVER_RECOVERED` | A resource the control processor should have released was reclaimed by offline cleanup | `releaseLeftoverCaptures` |
 | `REPLAY_IDENTITY_MISMATCH` | A replay could not match an input, stream, service version or control request | `GroupReplayer` |
 | `REPLAY_STOPPED` | Any other replay stop: recorded failure, delivery timeout, clock divergence | `GroupReplayer` |
@@ -187,6 +188,46 @@ Changes from the reviewer's list, with reasons:
   stable across milestones.
 - **No `NOT_RUNNING` kind.** `ReplyOutcome.NOT_RUNNING` stays the outcome. Its kind says why: `REFUSED_STATE` for an
   orderly close, `FAILED_DEAD` for a dead group.
+
+### Where the kind flows
+
+| Carrier | How | Notes |
+| --- | --- | --- |
+| `ControlReply.kind()` | New record component, never null | Authored where the outcome is decided: rules (`LifecycleRules`, `CaptureRules`, `ServiceRules`), the driver (`ControlDriver`), the server's own refusals (`MongooseServer`) |
+| `ControlEffect.Reply.kind()` | New record component | A rule's reply effect carries it to the driver |
+| `EffectResult.kind()` | New record component | An effect's failure kind (`FAILED_EFFECT`, `QUARANTINED`, `FAILED_DRIVER_FALLBACK` for abandoned effects); a rule copies it into its reply, so no rule reads reason text |
+| `ControlRequest.cancel(FailureKind, String)` | New overload | `cancel(String)` stays and means `REFUSED_ADMISSION` |
+| `ControlDriver.reply(..., FailureKind)`, `failClaimed(FailureKind, String)` | New overloads | The old signatures stay, with `defaultFor(outcome)` and `FAILED_DEAD` |
+| `StopResult.failureKind()` | New derived method | `NONE`, `DETACHED` (handed off) or `FAILED_SHUTDOWN` |
+| `GroupReplayer.stopKind(processor)` | New method beside `stopped(processor)` | `REPLAY_IDENTITY_MISMATCH` or `REPLAY_STOPPED`; null when not stopped |
+| `ReplayRouting.MISMATCH` | New `"mismatch:"` answer prefix beside `"wait:"` | The routing says which service failures are identity failures; the replayer never parses free text |
+| Control audit | Field `kind` on `Reply`, failed `EffectOutcome`, and the `Refused`, `NotRunning`, `Failed`, driver `FAILED`, `Dead`, `Anomaly` (rule threw), `ProcessorQuarantined` and leftover fallback records | Driver replies keep `replyAuthor: DRIVER` and repeat the kind as `failureKind` for 1.0.33-rc1 readers |
+
+The oracle (`ControlInvariants`) and the scenario harness key on the kind:
+
+- **I18** rejects `FAILED_RULE`, `FAILED_DRIVER_FALLBACK`, `FAILED_DEAD` and `QUARANTINED` whatever the reason text.
+  Reason text is read only for a record with no `kind` and no `failureKind`, that is, an export written before the
+  taxonomy.
+- **I19** (new) rejects a leftover recovery, one violation per reclaimed resource.
+- **I20** (new) requires, in an export that carries kinds, every delivered reply to name a kind, `NONE` exactly when
+  `APPLIED`.
+- **I1** derives the start of a release from the `Stop` input (a name-only stop resolved to the generation live under
+  that name) and requested `Release` effects, never from the rule name `stopStarted`.
+- The harness classifies replies by `kind`: a safety-net reply is a failure; a failed stop is explained only by
+  `FAILED_EFFECT` **and** a fault the harness injected into that target (or, for a name-only stop, into a processor of
+  that name); a refused stop must be `REFUSED_STATE`; a failed capture request must be `FAILED_EFFECT`.
+
+### API changes
+
+All additions are source compatible except two record changes:
+
+- **Breaking (record shape):** `ControlReply` and `EffectResult` gained a trailing `kind` component, and
+  `ControlEffect.Reply` likewise. The previous canonical constructors remain as secondary constructors, so `new
+  ControlReply(id, outcome, reason, generation, name)` still compiles. Record deconstruction patterns that list every
+  component, and `equals`, now include `kind`. Two replies equal before may differ by kind.
+- **Behaviour:** `ControlInvariants.isSafetyNetFailure` (test code) now takes a `ControlReply` and reads its kind.
+- Everything else is additive: `FailureKind`, the overloads above, `StopResult.failureKind()`,
+  `GroupReplayer.stopKind`, `ReplayRouting.WAIT` / `MISMATCH`, and the audit `kind` / `leftover` fields.
 
 ## Retry classification per effect
 

@@ -386,7 +386,7 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
                     + " for it to be applied; it still applies");
         }
         if (reply == null) {
-            if (request.cancel("audit " + what + " not applied within " + APPLY_TIMEOUT_SECONDS + "s")) {
+            if (request.cancel(com.telamin.mongoose.control.event.FailureKind.REFUSED_DEADLINE, "audit " + what + " not applied within " + APPLY_TIMEOUT_SECONDS + "s")) {
                 throw new IllegalStateException("audit " + what + " for '" + processorName + "' was not applied on its"
                         + " agent thread within " + APPLY_TIMEOUT_SECONDS + "s before it started; it was cancelled, and"
                         + " nothing changed");

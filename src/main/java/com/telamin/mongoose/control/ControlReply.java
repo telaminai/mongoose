@@ -4,21 +4,37 @@
  */
 package com.telamin.mongoose.control;
 
+import com.telamin.mongoose.control.event.FailureKind;
 import com.telamin.mongoose.control.event.ReplyOutcome;
 
 /**
  * The one final answer to a control request. {@code APPLIED} means the change is complete, not just accepted.
  *
  * @param requestId  the request it answers
+ * @param reason     human-readable detail; never parse it, classify by {@code kind}
  * @param generation the registration it concerns, or -1
+ * @param kind       the structured failure classification ({@link FailureKind#NONE} when applied); never null
  */
-public record ControlReply(long requestId, ReplyOutcome outcome, String reason, long generation, String name) {
+public record ControlReply(long requestId, ReplyOutcome outcome, String reason, long generation, String name,
+                           FailureKind kind) {
+
+    public ControlReply {
+        if (kind == null) kind = FailureKind.defaultFor(outcome);
+    }
+
+    /**
+     * The pre-taxonomy constructor: the kind is the outcome's broadest class ({@link FailureKind#defaultFor}). Engine
+     * code always names the kind.
+     */
+    public ControlReply(long requestId, ReplyOutcome outcome, String reason, long generation, String name) {
+        this(requestId, outcome, reason, generation, name, FailureKind.defaultFor(outcome));
+    }
 
     public boolean applied() {
         return outcome == ReplyOutcome.APPLIED;
     }
 
-    static ControlReply notRunning(long requestId, String why) {
-        return new ControlReply(requestId, ReplyOutcome.NOT_RUNNING, why, -1, null);
+    static ControlReply notRunning(long requestId, FailureKind kind, String why) {
+        return new ControlReply(requestId, ReplyOutcome.NOT_RUNNING, why, -1, null, kind);
     }
 }

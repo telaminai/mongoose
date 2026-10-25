@@ -1300,7 +1300,7 @@ public class MongooseServer implements MongooseServerController {
             } catch (IllegalStateException notQueued) {
                 // a full mailbox or an ended group: refused, the name released by the admission
                 return refusedAdd(processorName, com.telamin.mongoose.control.event.ReplyOutcome.REFUSED,
-                        String.valueOf(notQueued.getMessage()));
+                        com.telamin.mongoose.control.event.FailureKind.REFUSED_ADMISSION, String.valueOf(notQueued.getMessage()));
             }
             // the handle of exactly this add's registration, not whatever answers to the name by the time it is asked for
             var immediate = admission.request().reply().getNow(null);
@@ -1315,8 +1315,13 @@ public class MongooseServer implements MongooseServerController {
 
     private static AddedProcessor refusedAdd(String processorName, com.telamin.mongoose.control.event.ReplyOutcome outcome,
                                              String reason) {
+        return refusedAdd(processorName, outcome, com.telamin.mongoose.control.event.FailureKind.REFUSED_STATE, reason);
+    }
+
+    private static AddedProcessor refusedAdd(String processorName, com.telamin.mongoose.control.event.ReplyOutcome outcome,
+                                             com.telamin.mongoose.control.event.FailureKind kind, String reason) {
         return new AddedProcessor(null, java.util.concurrent.CompletableFuture.completedFuture(
-                new com.telamin.mongoose.control.ControlReply(-1, outcome, reason, -1, processorName)));
+                new com.telamin.mongoose.control.ControlReply(-1, outcome, reason, -1, processorName, kind)));
     }
 
     /** An admitted add: the request sent, and the registration it was admitted under. */
@@ -1367,7 +1372,7 @@ public class MongooseServer implements MongooseServerController {
             // refused admission; the void overload retains its exception contract.
             return new com.telamin.mongoose.control.ControlReply(-1,
                     com.telamin.mongoose.control.event.ReplyOutcome.REFUSED,
-                    String.valueOf(notQueued.getMessage()), -1, processorName);
+                    String.valueOf(notQueued.getMessage()), -1, processorName, com.telamin.mongoose.control.event.FailureKind.REFUSED_ADMISSION);
         }
         return awaitWhereSafe(groupName, request, deadline);
     }
@@ -1379,8 +1384,7 @@ public class MongooseServer implements MongooseServerController {
     private static void refuseIfNotAdmitted(com.telamin.mongoose.control.ControlRequest request, String what) {
         if (request == null) return;
         com.telamin.mongoose.control.ControlReply reply = request.reply().getNow(null);
-        if (reply != null && reply.outcome() == com.telamin.mongoose.control.event.ReplyOutcome.REFUSED
-                && reply.reason() != null && reply.reason().startsWith("not admitted within its deadline")) {
+        if (reply != null && reply.kind() == com.telamin.mongoose.control.event.FailureKind.REFUSED_DEADLINE) {
             throw new IllegalStateException(what + ": " + reply.reason());
         }
     }

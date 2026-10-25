@@ -232,6 +232,8 @@ class ReplayControlAndProvenanceTest {
             String why = s.replayer().stopped(PROCESSOR);
             assertNotNull(why, "detaching the failed processor must preserve its replay refusal");
             assertTrue(why.contains("supplier"), why);
+            assertEquals(com.telamin.mongoose.control.event.FailureKind.REPLAY_IDENTITY_MISMATCH, s.replayer().stopKind(PROCESSOR),
+                    "the detached cursor keeps its stop kind with its reason");
         }
     }
 
@@ -250,6 +252,7 @@ class ReplayControlAndProvenanceTest {
             awaitTrue(() -> s.replayer().complete(), "replay settled");
             assertNotNull(s.replayer().stopped(PROCESSOR), "catching the substitute exception cannot certify success");
             assertTrue(s.replayer().stopped(PROCESSOR).contains("exception cannot be reconstructed"));
+            assertEquals(com.telamin.mongoose.control.event.FailureKind.REPLAY_STOPPED, s.replayer().stopKind(PROCESSOR));
         }
     }
 
@@ -267,6 +270,7 @@ class ReplayControlAndProvenanceTest {
         try (Server s = boot(replay(store, altered), Killer::new)) {
             awaitTrue(() -> s.replayer().stopped(PROCESSOR) != null, "stopped with a reason");
             assertTrue(s.replayer().stopped(PROCESSOR).contains("control request differs"), s.replayer().stopped(PROCESSOR));
+            assertEquals(com.telamin.mongoose.control.event.FailureKind.REPLAY_IDENTITY_MISMATCH, s.replayer().stopKind(PROCESSOR));
             assertTrue(s.running(VICTIM));
         }
     }
@@ -297,6 +301,7 @@ class ReplayControlAndProvenanceTest {
         try (Server s = boot(replay(store, journal), Impostor::new)) {
             awaitTrue(() -> s.replayer().stopped(PROCESSOR) != null, "stopped with a reason");
             assertTrue(s.replayer().stopped(PROCESSOR).contains("not the recorded one"), s.replayer().stopped(PROCESSOR));
+            assertEquals(com.telamin.mongoose.control.event.FailureKind.REPLAY_IDENTITY_MISMATCH, s.replayer().stopKind(PROCESSOR));
         }
         try (Server s = boot(replay(store, journal).withProvenance(false), Impostor::new)) {
             awaitTrue(() -> s.replayer().complete(), "replayed without the check");

@@ -647,7 +647,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             ProcessorRegistration registration = registrations.get(named);
             control.audit().fallback("ProcessorQuarantined", "group", roleName(), "name", named.name(),
                     "generation", registration == null ? -1 : registration.generation(),
-                    "reason", String.valueOf(failure), "automaticRestart", false);
+                    "reason", String.valueOf(failure), "automaticRestart", false, "kind", com.telamin.mongoose.control.event.FailureKind.QUARANTINED);
             reportProcessorFailure(named.name(), "quarantined after generated callback failure; no retry", failure);
         } catch (VirtualMachineError fatal) {
             throw fatal;
@@ -811,11 +811,18 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             case ControlEffect.UninstallCapture e -> uninstallCapture(e);
             case ControlEffect.CloseCapture e -> closeCapture(e);
             case ControlEffect.Reply e -> {
-                boolean delivered = control.reply(e.requestId(), e.outcome(), e.reason(), e.generation(), e.name());
-                yield delivered ? result(e, ControlOutcome.SUCCEEDED, e.outcome().name())
+                boolean delivered = control.reply(e.requestId(), e.outcome(), e.reason(), e.generation(), e.name(), e.kind());
+                // a delivered reply's result carries the reply's own kind, so the Reply record classifies it
+                yield delivered ? new EffectResult(e.opId(), e.requestId(), e.effect(), ControlOutcome.SUCCEEDED,
+                        e.generation(), e.name(), e.outcome().name(), e.kind())
                         : result(e, ControlOutcome.FAILED, "not claimed: answered earlier");
             }
         };
+    }
+
+    private static EffectResult quarantinedResult(ControlEffect e, String reason) {
+        return new EffectResult(e.opId(), e.requestId(), e.effect(), ControlOutcome.FAILED, e.generation(), e.name(), reason,
+                com.telamin.mongoose.control.event.FailureKind.QUARANTINED);
     }
 
     private static EffectResult result(ControlEffect e, ControlOutcome outcome, String reason) {
@@ -892,7 +899,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             }
             String name = namedEventProcessor == null ? effect.name() : namedEventProcessor.name();
             lastStartFailure = t;   // whether it fails the boot or is reported is the control processor's decision
-            return result(effect, name, ControlOutcome.FAILED, String.valueOf(t));
+            boolean isolated = namedEventProcessor != null && quarantined.containsKey(namedEventProcessor);
+            return new EffectResult(effect.opId(), effect.requestId(), effect.effect(), ControlOutcome.FAILED,
+                    effect.generation(), name, String.valueOf(t), isolated ? com.telamin.mongoose.control.event.FailureKind.QUARANTINED : com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT);
         } finally {
             com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
         }
@@ -902,7 +911,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     private EffectResult releaseGeneration(ControlEffect.Release effect) {
         NamedEventProcessor named = processorsByGeneration.get(effect.generation());
         if (named != null && quarantined.containsKey(named)) {
-            return result(effect, ControlOutcome.FAILED, "processor quarantined; lifecycle cleanup requires operator resolution");
+            return quarantinedResult(effect, "processor quarantined; lifecycle cleanup requires operator resolution");
         }
         if (named == null) {
             return result(effect, ControlOutcome.SUCCEEDED, "nothing built");
@@ -917,7 +926,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             }
         }
         if (quarantined.containsKey(named)) {
-            return result(effect, ControlOutcome.FAILED, "processor quarantined; lifecycle cleanup requires operator resolution");
+            return quarantinedResult(effect, "processor quarantined; lifecycle cleanup requires operator resolution");
         }
         processorsByGeneration.remove(effect.generation());
         return result(effect, named.name(), ControlOutcome.SUCCEEDED, stepFailures == 0 ? null : stepFailures + " steps failed");
@@ -1072,7 +1081,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         if (resources == null || handle == null || named == null) {
             return result(effect, ControlOutcome.FAILED, handle == null ? "unknown resource" : "processor gone");
         }
-        if (quarantined.containsKey(named)) return result(effect, ControlOutcome.FAILED, "processor quarantined");
+        if (quarantined.containsKey(named)) return quarantinedResult(effect, "processor quarantined");
         // not framed: swapping the audit listener is already its own audited cycle in the processor (an
         // EventLogControlEvent), and a frame around it would flush to the listener being replaced (review of PR 6, 3)
         try {
@@ -1226,18 +1235,20 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             String detachOp = "group-detach." + id + "." + physicalCleanupOps.incrementAndGet();
             control.audit().fallback("EffectRequested", "group", roleName(), "requestId", -1, "opId", detachOp,
                     "effect", "UninstallCapture", "resourceId", id, "generation", -1, "offline", true,
-                    "reason", "released without the control processor");
+                    "reason", "released without the control processor", "leftover", true,
+                    "kind", com.telamin.mongoose.control.event.FailureKind.LEFTOVER_RECOVERED);
             try {
                 resources.uninstallCapture(handle, null, null);
                 captureDetached(id);
                 control.audit().fallback("EffectOutcome", "group", roleName(), "requestId", -1, "opId", detachOp,
                         "effect", "UninstallCapture", "outcome", "succeeded", "resourceId", id,
-                        "generation", -1, "offline", true);
+                        "generation", -1, "offline", true, "leftover", true, "kind", com.telamin.mongoose.control.event.FailureKind.LEFTOVER_RECOVERED);
             } catch (Throwable t) {
                 captureDetachFailed(id, t);
                 control.audit().fallback("EffectOutcome", "group", roleName(), "requestId", -1, "opId", detachOp,
                         "effect", "UninstallCapture", "outcome", "failed", "resourceId", id,
-                        "generation", -1, "offline", true, "reason", String.valueOf(t));
+                        "generation", -1, "offline", true, "reason", String.valueOf(t), "leftover", true,
+                        "kind", com.telamin.mongoose.control.event.FailureKind.LEFTOVER_RECOVERED);
                 if (t instanceof VirtualMachineError fatal) throw fatal;
                 reportCloseFailure("<capture " + id + ">", "could not be detached", t);
                 continue;
@@ -1246,12 +1257,13 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             captureDetached(id);
             String closeOp = "group-close." + id;
             control.audit().fallback("EffectRequested", "group", roleName(), "requestId", -1, "opId", closeOp,
-                    "effect", "CloseCapture", "resourceId", id, "generation", -1, "offline", true, "causeOp", detachOp);
+                    "effect", "CloseCapture", "resourceId", id, "generation", -1, "offline", true, "causeOp", detachOp,
+                    "leftover", true, "kind", com.telamin.mongoose.control.event.FailureKind.LEFTOVER_RECOVERED);
             CaptureCompletion closed = closeResource(-1, closeOp, id, handle);
             control.audit().fallback("EffectOutcome", "group", roleName(), "requestId", -1, "opId", closeOp,
                     "effect", "CloseCapture", "outcome", closed.kind() == CaptureCompletion.Kind.CLOSED ? "succeeded" : "failed",
                     "resourceId", id, "generation", -1, "offline", true, "causeOp", detachOp,
-                    "reason", closed.reason());
+                    "reason", closed.reason(), "leftover", true, "kind", com.telamin.mongoose.control.event.FailureKind.LEFTOVER_RECOVERED);
         }
     }
 
@@ -1424,7 +1436,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                         // A retained historical Java object may already have been stopped. Only the currently live,
                         // versioned binding can be injected; reconstructing old incarnations needs an isolated registry.
                         if (published.version() != version || svc != published.service() || svc == null) {
-                            return "recorded service " + service + " at version " + version
+                            return com.telamin.mongoose.replay.ReplayRouting.MISMATCH + "recorded service " + service + " at version " + version
                                     + " is unavailable; current published version is " + published.version();
                         }
                     }
@@ -1432,7 +1444,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                         for (Service<?> held : servicesDeliveredTo(flow)) {
                             if (held.serviceName().equals(service)) svc = held;
                         }
-                        if (svc == null) return "recorded withdrawal of service " + service
+                        if (svc == null) return com.telamin.mongoose.replay.ReplayRouting.MISMATCH + "recorded withdrawal of service " + service
                                 + " has no delivered incarnation";
                     }
                     if (svc == null) return "wait:service " + service + " is not registered";

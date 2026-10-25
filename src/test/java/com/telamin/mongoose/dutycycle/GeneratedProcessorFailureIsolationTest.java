@@ -169,7 +169,8 @@ class GeneratedProcessorFailureIsolationTest {
                 var stop = group.removeEventProcessorByName("generated", null, null);
                 group.doWork();
                 assertFalse(stop.reply().join().applied(), "repeated stop cannot pretend damaged lifecycle was released");
-                assertTrue(stop.reply().join().reason().contains("quarantined"));
+                assertEquals(com.telamin.mongoose.control.event.FailureKind.QUARANTINED, stop.reply().join().kind(),
+                        stop.reply().join().toString());
             }
         } finally { group.onClose(); }
         assertEquals(0, flow.tornDown.get());
@@ -231,7 +232,8 @@ class GeneratedProcessorFailureIsolationTest {
                 var stop = group.removeEventProcessorByName("generated", registration, null);
                 group.doWork();
                 assertFalse(stop.reply().join().applied());
-                assertTrue(stop.reply().join().reason().contains("quarantined"));
+                assertEquals(com.telamin.mongoose.control.event.FailureKind.QUARANTINED, stop.reply().join().kind(),
+                        stop.reply().join().toString());
             }
         } finally { group.onClose(); }
         group.cleanupAfterDeath();

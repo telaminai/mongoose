@@ -42,13 +42,21 @@ with one `ControlReply`.
 
 ```java
 package com.telamin.mongoose.control;
-public record ControlReply(long requestId, ReplyOutcome outcome, String reason, long generation, String name) {
+public record ControlReply(long requestId, ReplyOutcome outcome, String reason, long generation, String name,
+                           FailureKind kind) {
     public boolean applied();   // outcome == APPLIED
 }
 
 package com.telamin.mongoose.control.event;
 public enum ReplyOutcome { APPLIED, REFUSED, FAILED, NOT_RUNNING }
+public enum FailureKind { NONE, REFUSED_ADMISSION, REFUSED_STATE, REFUSED_DEADLINE, FAILED_RULE, FAILED_EFFECT,
+    FAILED_DRIVER_FALLBACK, FAILED_DEAD, FAILED_SHUTDOWN, QUARANTINED, DETACHED, UNVERIFIED, LEFTOVER_RECOVERED,
+    REPLAY_IDENTITY_MISMATCH, REPLAY_STOPPED }
 ```
+
+`kind` is never null: `NONE` exactly when the outcome is `APPLIED`. Classify a reply by `outcome` and `kind`; the
+`reason` text is human detail and may change. The meaning of each kind is in the
+[failure-handling design](../design/failure-handling.md#failure-taxonomy). (Issue #77, after 1.0.33-rc1.)
 
 | Outcome | Meaning | Typical `reason` values (from the code) |
 | --- | --- | --- |
@@ -1015,6 +1023,8 @@ failure contract. A standalone scheduler without a group handler cancels its fai
 reports ERROR, preserving its reporting-only API; it cannot isolate routes owned by another container.
 This host policy does not repair the compiler's processing flag or make arbitrary direct graph calls retry-safe.
 
-Driver-authored safety-net FAILED replies carry `replyAuthor: DRIVER` and
-`failureKind: FAILED_DRIVER_FALLBACK`. The validator rejects that marker regardless of reason wording and also
-rejects `ProcessorQuarantined` as evidence of a healthy run. Legacy exports still use reason-text classification.
+Driver-authored safety-net FAILED replies carry `replyAuthor: DRIVER` and a `kind` of `FAILED_RULE` (the control
+processor threw or did not settle) or `FAILED_DRIVER_FALLBACK` (it settled without replying), repeated as
+`failureKind` for 1.0.33-rc1 readers. The validator rejects those kinds, `FAILED_DEAD`, `QUARANTINED` and
+`ProcessorQuarantined` records regardless of reason wording. Only exports whose records carry no kind (written before
+issue #77) still use reason-text classification.

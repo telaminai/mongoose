@@ -882,11 +882,13 @@ final class ChaosWorkload implements AutoCloseable {
             if (error != null) anomalies.add("request completed exceptionally: " + op + " " + error);
             pendingOps.remove(op);
             if (op.what.startsWith("add") && reply != null) checkAddReply(op, reply);
-            if (reply != null && ControlInvariants.isSafetyNetFailure(reply.reason()))
+            // classified by the reply's structured kind (issue #77), never its reason text
+            if (reply != null && ControlInvariants.isSafetyNetFailure(reply))
                 anomalies.add("driver safety net answered a request: " + op + " " + reply);
             if (op.what.equals("stop") && reply != null && reply.outcome() == ReplyOutcome.FAILED
-                    && (reply.reason() == null || (!reply.reason().contains("CHAOS stop failure")
-                    && !reply.reason().contains("CHAOS tearDown failure"))))
+                    && !(injectedLifecycleFailure(op.target)
+                    && (reply.kind() == com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT
+                    || reply.kind() == com.telamin.mongoose.control.event.FailureKind.QUARANTINED)))
                 anomalies.add("stop failed without an injected lifecycle failure: " + op + " " + reply);
             op.reply = reply;
             op.error = error;
@@ -899,6 +901,12 @@ final class ChaosWorkload implements AutoCloseable {
                 anomalies.add("stop answered APPLIED before its processor was torn down: " + t + " " + op);
             }
         });
+    }
+
+    /** A stop of {@code target} can fail only through a lifecycle failure the workload injected (unknown target: any). */
+    private static boolean injectedLifecycleFailure(Instance target) {
+        return target == null || target.kind == Kind.STOP_THROWS || target.kind == Kind.TEARDOWN_THROWS
+                || target.kind == Kind.HANDLER_THROWS;
     }
 
     /** An add's reply agrees with what its processor saw (its start ran on the group's thread before the reply). */

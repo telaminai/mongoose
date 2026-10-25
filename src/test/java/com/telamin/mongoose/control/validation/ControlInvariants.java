@@ -3,6 +3,8 @@ package com.telamin.mongoose.control.validation;
 import com.telamin.mongoose.control.validation.ControlEvidence.Rec;
 import com.telamin.mongoose.control.validation.ControlEvidence.Requested;
 
+import com.telamin.mongoose.control.event.FailureKind;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -56,13 +58,44 @@ public final class ControlInvariants {
         for (Rec record : evidence.records()) {
             if (record.type().equals("Dead") || (record.type().equals("Input") && "Close".equals(record.str("fact"))))
                 terminalRecorded = true;
-            String reason = record.str("reason");
             boolean unexplainedOrphan = record.type().equals("CaptureOrphan")
                     && !(terminalRecorded && "CaptureOpenTimedOut".equals(record.str("fact")));
+            // Classified by the structured kind (issue #77). Reason text is consulted only for a record that carries no
+            // kind at all: an export written before the taxonomy.
+            FailureKind kind = kindOf(record);
+            boolean unhealthyKind = kind != null && (kind.engineSafetyNet() || kind == FailureKind.FAILED_DEAD
+                    || kind == FailureKind.QUARANTINED);
+            boolean legacySafetyNet = kind == null && isLegacySafetyNetReason(record.str("reason"));
             if (record.type().equals("Anomaly") || record.type().equals("Dead") || record.type().equals("ProcessorQuarantined") || record.str("anomaly") != null
-                    || unexplainedOrphan || "FAILED_DRIVER_FALLBACK".equals(record.str("failureKind"))
-                    || isSafetyNetFailure(reason)) {
+                    || unexplainedOrphan || unhealthyKind || legacySafetyNet) {
                 violations.add("I18 engine safety diagnostic: " + record);
+            }
+        }
+        // I19 (issue #77, reviewer finding 9): a resource reclaimed by the group's offline leftover cleanup is a
+        // recovery, never a normal close; it means the control processor failed to release it.
+        Set<String> leftovers = new HashSet<>();
+        for (Rec record : evidence.records()) {
+            boolean leftover = kindOf(record) == FailureKind.LEFTOVER_RECOVERED
+                    || Boolean.TRUE.equals(record.fields().get("leftover"));
+            // one violation per reclaimed resource (its detach and close records share it)
+            String resource = record.num("resourceId") >= 0 ? "resource " + record.num("resourceId") : String.valueOf(record);
+            if (leftover && leftovers.add(resource)) {
+                violations.add("I19 leftover recovered by offline cleanup (" + resource + "): " + record);
+            }
+        }
+        // I20 (issue #77): in an export that carries the taxonomy, every delivered reply names a kind agreeing with its
+        // outcome: APPLIED is NONE, anything else is a failure or refusal kind.
+        boolean taxonomyExport = evidence.records().stream().anyMatch(r -> r.fields().containsKey("kind"));
+        if (taxonomyExport) {
+            for (Rec r : evidence.ofType("Reply")) {
+                if (Boolean.FALSE.equals(r.fields().get("completed"))) continue;
+                FailureKind kind = kindOf(r);
+                boolean applied = "APPLIED".equals(r.str("outcome"));
+                if (kind == null) {
+                    violations.add("I20 reply without a kind: " + r);
+                } else if (applied != (kind == FailureKind.NONE)) {
+                    violations.add("I20 reply kind " + kind + " contradicts outcome " + r.str("outcome") + ": " + r);
+                }
             }
         }
         Map<Long, List<Rec>> replies = new HashMap<>();
@@ -285,14 +318,21 @@ public final class ControlInvariants {
                         + closingFrom + ")");
             }
         }
-        // I1: no InstallCapture for a generation once a decision has moved it to Releasing
+        // I1: no InstallCapture for a generation once its release began. The start of a release is derived from facts,
+        // never rule names (second review, T3): a Stop input bound to the generation, a name-only Stop resolved to the
+        // generation physically started under that name at the time, or a requested Release.
         Map<Long, Long> releasingFrom = new HashMap<>();
-        for (Rec d : evidence.ofType("Decision")) {
-            if ("stopStarted".equals(d.str("rule"))) releasingFrom.putIfAbsent(d.num("generation"), d.seq());
-        }
-        for (Rec input : evidence.ofType("Input")) {
-            if ("Stop".equals(input.str("fact")) && input.num("generation") >= 0)
-                releasingFrom.putIfAbsent(input.num("generation"), input.seq());
+        Map<String, Long> liveByName = new HashMap<>();
+        for (Rec r : evidence.records()) {
+            if ("EffectOutcome".equals(r.type()) && "succeeded".equals(r.str("outcome")) && r.str("name") != null) {
+                if ("BuildAndStart".equals(r.str("effect"))) liveByName.put(r.str("name"), r.num("generation"));
+                else if ("ReleaseName".equals(r.str("effect"))) liveByName.remove(r.str("name"), r.num("generation"));
+            }
+            if ("Input".equals(r.type()) && "Stop".equals(r.str("fact"))) {
+                long generation = r.num("generation");
+                if (generation < 0 && r.str("name") != null) generation = liveByName.getOrDefault(r.str("name"), -1L);
+                if (generation >= 0) releasingFrom.putIfAbsent(generation, r.seq());
+            }
         }
         for (Requested q : requested) {
             if ("Release".equals(q.effect())) releasingFrom.putIfAbsent(q.generation(), q.decisionSeq());
@@ -474,7 +514,22 @@ public final class ControlInvariants {
         return new Result(violations, unverifiable);
     }
 
-    public static boolean isSafetyNetFailure(String reason) {
+    /** A record's structured kind: {@code kind}, or the 1.0.33-rc1 {@code failureKind}; null when it carries none. */
+    public static FailureKind kindOf(Rec record) {
+        FailureKind kind = FailureKind.parse(record.str("kind"));
+        return kind != null ? kind : FailureKind.parse(record.str("failureKind"));
+    }
+
+    /** A reply authored by the driver's safety net because the control processor could not answer (by kind). */
+    public static boolean isSafetyNetFailure(com.telamin.mongoose.control.ControlReply reply) {
+        return reply != null && reply.kind() != null && reply.kind().engineSafetyNet();
+    }
+
+    /**
+     * Legacy classification for exports written before the failure taxonomy (records with no {@code kind}). Never
+     * used for a record that carries a kind, nor for live replies, which always carry one.
+     */
+    static boolean isLegacySafetyNetReason(String reason) {
         return reason != null && (reason.contains("no reply after its effects settled")
                 || reason.contains("effects did not settle") || reason.contains("control processor threw")
                 || reason.equals("abandoned"));

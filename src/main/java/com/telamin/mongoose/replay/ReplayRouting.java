@@ -42,9 +42,16 @@ public interface ReplayRouting {
      * run did at this point. A positive version must identify the currently live registry binding;
      * an unavailable historical incarnation or an unverified configured object cannot substitute for it.
      *
-     * @return null once delivered; {@code "wait:<why>"} while it cannot be yet; otherwise why the replay cannot
-     *         reproduce it (a version no longer available, a callback that failed), which stops the replay
+     * @return null once delivered; {@code "wait:<why>"} while it cannot be yet; {@code "mismatch:<why>"} when the
+     *         recorded service incarnation cannot be identified in this run (stops the replay as
+     *         {@code REPLAY_IDENTITY_MISMATCH}); otherwise why the replay cannot reproduce it (a callback that failed),
+     *         which stops the replay as {@code REPLAY_STOPPED}
      */
+    /** Prefix of a {@link #deliverService} answer that means "not yet": the entry waits. */
+    String WAIT = "wait:";
+    /** Prefix of a {@link #deliverService} answer that means the recorded service identity is unavailable. */
+    String MISMATCH = "mismatch:";
+
     default String deliverService(DataFlow flow, String service, boolean register, long version) {
         return "wait:service delivery is not supported by this group";
     }

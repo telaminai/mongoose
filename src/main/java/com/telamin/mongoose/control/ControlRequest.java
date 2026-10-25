@@ -97,8 +97,13 @@ public final class ControlRequest {
      * waiting). @return false once the group has claimed it: it is being, or has been, applied
      */
     public boolean cancel(String why) {
+        return cancel(com.telamin.mongoose.control.event.FailureKind.REFUSED_ADMISSION, why);
+    }
+
+    /** As {@link #cancel(String)}, classified as {@code kind} (a refusal kind, such as {@code REFUSED_DEADLINE}). */
+    public boolean cancel(com.telamin.mongoose.control.event.FailureKind kind, String why) {
         if (!completeUnclaimed(new ControlReply(requestId, com.telamin.mongoose.control.event.ReplyOutcome.REFUSED, why, -1,
-                null))) {
+                null, kind))) {
             return false;
         }
         runUnapplied();

@@ -24,6 +24,17 @@ import java.util.List;
 public record StopResult(boolean complete, boolean handedOff, String blockedStartup, List<String> groupsRunning,
                          List<String> servicesLeftRunning) {
 
+    /**
+     * The stop's classification in the shared failure taxonomy (issue #77): {@code NONE} when complete,
+     * {@code DETACHED} when handed to a stop thread (the caller is detached from an outcome not yet known), otherwise
+     * {@code FAILED_SHUTDOWN} (the named work did not confirm completion within the deadline).
+     */
+    public com.telamin.mongoose.control.event.FailureKind failureKind() {
+        if (complete) return com.telamin.mongoose.control.event.FailureKind.NONE;
+        return handedOff ? com.telamin.mongoose.control.event.FailureKind.DETACHED
+                : com.telamin.mongoose.control.event.FailureKind.FAILED_SHUTDOWN;
+    }
+
     public static StopResult completed() {
         return new StopResult(true, false, null, List.of(), List.of());
     }

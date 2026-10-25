@@ -152,8 +152,12 @@ class ControlScenarioHarnessTest {
             request.reply().whenComplete((reply, error) -> {
                 count.incrementAndGet();
                 if (error != null || reply == null) { failures.add(request + " exceptional/missing reply: " + error); return; }
-                String reason = reply.reason() == null ? "" : reply.reason();
-                if (ControlInvariants.isSafetyNetFailure(reason)) failures.add(request + " safety-net reply: " + reply);
+                // Classified by the reply's structured kind (issue #77), never by its reason text.
+                com.telamin.mongoose.control.event.FailureKind kind = reply.kind();
+                if (kind == null) { failures.add(request + " reply without a kind: " + reply); return; }
+                if (reply.applied() != (kind == com.telamin.mongoose.control.event.FailureKind.NONE))
+                    failures.add(request + " reply kind contradicts its outcome: " + reply);
+                if (ControlInvariants.isSafetyNetFailure(reply)) failures.add(request + " safety-net reply: " + reply);
                 if (reply.outcome() == com.telamin.mongoose.control.event.ReplyOutcome.NOT_RUNNING && !ending)
                     failures.add(request + " refused as not running without a harness close: " + reply);
                 switch (request.kind()) {
@@ -174,11 +178,14 @@ class ControlScenarioHarnessTest {
                             if (reservations.table.get(target.name) == registration)
                                 failures.add(request + " APPLIED before its name was released");
                         }
+                        // a failed stop is explained only by a failed effect AND a fault this harness injected
                         if (reply.outcome() == com.telamin.mongoose.control.event.ReplyOutcome.FAILED
-                                && !reason.contains("simulated stop failure") && !reason.contains("simulated uninstall failure"))
+                                && !(kind == com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT
+                                && injectedStopFault(target)))
                             failures.add(request + " unexplained failed stop: " + reply);
                         if (reply.outcome() == com.telamin.mongoose.control.event.ReplyOutcome.REFUSED
-                                && !reason.equals("no such processor")) failures.add(request + " unexpected refused stop: " + reply);
+                                && kind != com.telamin.mongoose.control.event.FailureKind.REFUSED_STATE)
+                            failures.add(request + " unexpected refused stop: " + reply);
                     }
                     case RUN, BROADCAST -> {
                         if (!reply.applied() && !(ending && reply.outcome() == com.telamin.mongoose.control.event.ReplyOutcome.NOT_RUNNING))
@@ -193,8 +200,7 @@ class ControlScenarioHarnessTest {
                                 failures.add(request + " APPLIED before capture removal");
                         }
                         if (reply.outcome() == com.telamin.mongoose.control.event.ReplyOutcome.FAILED
-                                && !(reason.startsWith("open failed:") || reason.equals("open timed out")
-                                || reason.startsWith("install failed:") || reason.startsWith("uninstall failed:")))
+                                && kind != com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT)
                             failures.add(request + " unexpected capture failure: " + reply);
                     }
                     default -> { }
@@ -203,9 +209,25 @@ class ControlScenarioHarnessTest {
             return request;
         }
 
+        /**
+         * Whether this harness injected a fault a stop of {@code target} can meet. A name-only stop ({@code target} null)
+         * is resolved by {@link #trackNameStop}, which applies the same rule to the processors of that name.
+         */
+        private boolean injectedStopFault(LedgerProc target) {
+            boolean uninstallFault = captures != null && !captures.failedUninstallResources.isEmpty();
+            return uninstallFault || target == null || target.failStop;
+        }
+
         ControlRequest trackNameStop(ControlRequest request, String name, List<LedgerProc> all) {
             track(request, null, null);
             request.reply().thenAccept(reply -> {
+                // the target is resolved here (third review F3): a failed name-only stop is explained only by a fault
+                // injected into a processor of that name, or an injected uninstall failure
+                if (reply.outcome() == com.telamin.mongoose.control.event.ReplyOutcome.FAILED) {
+                    boolean injected = (captures != null && !captures.failedUninstallResources.isEmpty())
+                            || all.stream().anyMatch(proc -> name.equals(proc.name) && proc.failStop);
+                    if (!injected) failures.add(request + " unexplained failed name-only stop: " + reply);
+                }
                 if (!reply.applied()) return;
                 for (LedgerProc proc : all) {
                     if (!name.equals(proc.name) || proc.starts.get() == 0 || proc.failStart) continue;
