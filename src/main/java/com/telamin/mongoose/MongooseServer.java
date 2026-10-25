@@ -1045,9 +1045,18 @@ public class MongooseServer implements MongooseServerController {
         if (reply == null || reply.applied()) {
             return;
         }
-        // deviation from the design's table (review of PR 3, finding 3): a failed start is isolated and reported, and
-        // the void add returns, as since mongoose#57; callers that need the outcome use addProcessor's reply
+        // REPORT (default, as since mongoose#57): a failed start is isolated and reported, and the void add returns;
+        // THROW (the design's table) makes the outcome an exception. addProcessor's reply carries it either way
         log.warning("event processor '" + processorName + "' in group '" + groupName + "' was not added: " + reply);
+        if (mongooseServerConfig != null
+                && mongooseServerConfig.getAddFailurePolicy() == MongooseServerConfig.AddFailurePolicy.THROW) {
+            if (reply.outcome() == com.telamin.mongoose.control.event.ReplyOutcome.FAILED) {
+                throw new com.telamin.mongoose.dutycycle.ProcessorStartException(groupName, processorName,
+                        new IllegalStateException(reply.reason()));
+            }
+            throw new IllegalStateException("event processor '" + processorName + "' was not added to group '" + groupName
+                    + "': " + reply.outcome() + " (" + reply.reason() + ")");
+        }
     }
 
     /**

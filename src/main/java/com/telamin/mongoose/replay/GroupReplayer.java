@@ -54,6 +54,8 @@ public final class GroupReplayer {
         java.util.Set<String> deferred = java.util.Set.of();
         /** The clock readings the recorded stop took, checked once the replayed stop has run. */
         List<Long> stopReads;
+        /** Control requests the recorded run made before the next input completed: the replayed ones must match. */
+        final java.util.ArrayDeque<ReplayEntry.ControlCall> expectedCalls = new java.util.ArrayDeque<>();
 
         Cursor(String name, DataFlow flow, ReplayClock clock) {
             this.name = name;
@@ -103,6 +105,17 @@ public final class GroupReplayer {
         } catch (Throwable t) {
             failed = "the replay clock could not be installed: " + t;
         }
+        if (failed == null && config.recordProvenance()) {
+            try {
+                Provenance recorded = config.store().provenance(cursor.name);
+                String differs = recorded == null ? null : recorded.differenceFrom(Provenance.of(flow, forIncarnation, 0));
+                if (differs != null) failed = "the replayed processor is not the recorded one: " + differs;
+            } catch (VirtualMachineError e) {
+                throw e;
+            } catch (Throwable t) {
+                failed = "the stream's provenance could not be read: " + t;
+            }
+        }
         if (failed == null) {
             try {
                 if (forIncarnation > 1 && !config.store().has(cursor.name)) {
@@ -124,7 +137,13 @@ public final class GroupReplayer {
     /** A processor that left its group (stopped, mongoose#71, or a failed start, review of #66): its replay cursor and captures are dropped. */
     public void detach(DataFlow flow) {
         for (Cursor c : cursors) {
-            if (c.flow != flow || c.stopReads == null) continue;
+            if (c.flow != flow) continue;
+            if (!c.expectedCalls.isEmpty()) {
+                ended.put(c.name, "the recorded run made control request " + describe(c.expectedCalls.peek())
+                        + " that the replay did not");
+                log.warning("replay of " + c.name + ": " + ended.get(c.name));
+            }
+            if (c.stopReads == null) continue;
             // the replayed stop has run: it must have read the clock as often as the recorded one did
             int taken = c.clock.taken();
             if (taken != c.stopReads.size()) {
@@ -173,11 +192,53 @@ public final class GroupReplayer {
         for (Cursor c : cursors) {
             if (c.flow == flow) cursor = c;
         }
+        if (cursor != null && config.interceptControl() && ControlInterception.isController(service)) {
+            Cursor c = cursor;
+            return captured.computeIfAbsent(flow, f -> new java.util.IdentityHashMap<>())
+                    .computeIfAbsent(service, s -> intercepted(c, s));
+        }
         if (cursor == null || !(service.instance() instanceof com.telamin.fluxtion.runtime.output.MessageSink<?>)) return service;
         String name = cursor.name;
         return captured.computeIfAbsent(flow, f -> new java.util.IdentityHashMap<>()).computeIfAbsent(service,
                 s -> new com.telamin.fluxtion.runtime.service.Service(new CapturingSink(outputs.computeIfAbsent(name,
                         n -> new CopyOnWriteArrayList<>())), s.serviceClass(), s.serviceName()));
+    }
+
+    /**
+     * A replayed processor's control requests are never executed (they would change the live server a second time):
+     * each is matched against the request the recorded run made at this point and answered with its recorded outcome.
+     * A request the recorded run did not make, or made differently, is a divergence: the replay stops, saying so.
+     */
+    private com.telamin.fluxtion.runtime.service.Service<?> intercepted(Cursor cursor,
+                                                                        com.telamin.fluxtion.runtime.service.Service<?> service) {
+        return ControlInterception.wrap(service, (method, args, m, raw) -> {
+            controlRequests.computeIfAbsent(cursor.name, n -> new CopyOnWriteArrayList<>()).add(method + args);
+            ReplayEntry.ControlCall expected = cursor.expectedCalls.poll();
+            if (expected == null) {
+                stop(cursor, "control request " + method + args + " was not made by the recorded run here; not executed");
+                return null;
+            }
+            if (!expected.method().equals(method) || !expected.args().equals(args)) {
+                stop(cursor, "control request differs: recorded " + describe(expected) + ", replayed " + method + args
+                        + "; not executed");
+                return null;
+            }
+            if (expected.outcome().startsWith("failed")) {
+                throw new IllegalStateException("replayed outcome of " + method + ": " + expected.outcome());
+            }
+            return null;
+        });
+    }
+
+    private static String describe(ReplayEntry.ControlCall call) {
+        return call.method() + call.args();
+    }
+
+    private final java.util.Map<String, List<String>> controlRequests = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** The control requests {@code processor} made during the replay, intercepted, in order. */
+    public List<String> controlRequests(String processor) {
+        return List.copyOf(controlRequests.getOrDefault(processor, List.of()));
     }
 
     /** What {@code processor} sent to its sinks during the replay, in order (L2: captured, not delivered). */
@@ -232,8 +293,15 @@ public final class GroupReplayer {
         for (Cursor c : cursors) {
             if (c.done()) continue;
             boolean delivered;
+            ReplayEntry entry = c.entries.get(c.next);
             try {
-                delivered = deliver(c, c.entries.get(c.next));
+                delivered = deliver(c, entry);
+                // an input has been handled: every control request the recorded run made before it must have been made
+                if (delivered && c.stopped == null && !c.expectedCalls.isEmpty()
+                        && !(entry instanceof ReplayEntry.ControlCall) && !(entry instanceof ReplayEntry.Stopped)) {
+                    stop(c, "the recorded run made control request " + describe(c.expectedCalls.peek())
+                            + " here; the replay did not");
+                }
             } catch (VirtualMachineError e) {
                 throw e;
             } catch (Throwable e) {
@@ -325,6 +393,11 @@ public final class GroupReplayer {
             }
             case ReplayEntry.Failed f -> {
                 return stop(c, "the recorded run failed here: " + f.description());
+            }
+            case ReplayEntry.ControlCall cc -> {
+                // made while the recorded run handled the input that follows: the replayed request must match it
+                c.expectedCalls.add(cc);
+                return true;
             }
             case ReplayEntry.Stopped s -> {
                 // the recorded run stopped the processor here: so does the replay, through its group's control processor;

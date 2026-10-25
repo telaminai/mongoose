@@ -162,6 +162,16 @@ public class MongooseServerConfig {
      */
     private long controlWaitMillis = DEFAULT_CONTROL_WAIT_MILLIS;
 
+    /**
+     * What the void {@code addEventProcessor} does, off agent threads, when the add it waited for did not apply.
+     * {@code REPORT} (the default, as since mongoose#57): a failed start is isolated, reported and the call returns.
+     * {@code THROW} (the design's table): a failed start throws {@code ProcessorStartException}; a refused add or a
+     * stopping group throws {@code IllegalStateException}. Either way the outcome is in {@code addProcessor}'s reply.
+     */
+    public enum AddFailurePolicy { REPORT, THROW }
+
+    private AddFailurePolicy addFailurePolicy = AddFailurePolicy.REPORT;
+
     /** Default bound on the startup wait, see {@link #startupTimeoutMillis}. */
     public static final long DEFAULT_STARTUP_TIMEOUT_MILLIS = 60_000;
 
