@@ -1713,7 +1713,8 @@ public class MongooseServer implements MongooseServerController {
         return lifecycleState.get() == LifecycleState.STARTED;
     }
 
-    private boolean isStopRequested() {
+    /** True once a stop has been requested (the server is STOPPING or STOPPED): nothing more is admitted. */
+    public boolean isStopRequested() {
         LifecycleState state = lifecycleState.get();
         return state == LifecycleState.STOPPING || state == LifecycleState.STOPPED;
     }

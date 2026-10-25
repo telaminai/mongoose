@@ -199,6 +199,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         this.idleCyclesCounter = eventFlowManager.getCountersService().agentIdleCyclesCounter(roleName);
         this.control = new ControlDriver(roleName, CONTROL_QUEUE_CAPACITY, this, new ControlAuditSink(controlAuditCapacity()));
         this.control.onOrphanCompletion(this::orphanCompletion);
+        if (mongooseServer != null) this.control.abandonFullWaitWhen(mongooseServer::isStopRequested);
     }
 
     // ============================================================================================ requests

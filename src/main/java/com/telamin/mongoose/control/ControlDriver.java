@@ -66,6 +66,8 @@ public final class ControlDriver {
     private final AtomicLong requestIds = new AtomicLong();
     private volatile Thread agentThread;
     private volatile long fullTimeoutNanos = TimeUnit.SECONDS.toNanos(10);
+    /** When this answers true, a sender waiting on a full mailbox gives up at once (its server is stopping). */
+    private volatile java.util.function.BooleanSupplier abandonFullWait = () -> false;
     private boolean controlWedged;
 
     public ControlDriver(String group, int capacity, EffectAdapter adapter, ControlAuditSink audit) {
@@ -118,6 +120,14 @@ public final class ControlDriver {
                     refuse(request, "mailbox full");
                     throw new IllegalStateException("group " + group + ": " + queueName(request.kind())
                             + " queue is full (" + mailbox.capacity() + ") and cannot drain while its own thread waits on it");
+                }
+                if (abandonFullWait.getAsBoolean()) {
+                    // the server is stopping: a sender may hold its admission lock while it waits here, and the stop's
+                    // admission barrier waits for that lock, so waiting out the full timeout would hold the whole
+                    // shutdown past its deadline (found building the shutdown storm). A stopping server admits nothing anyway
+                    refuse(request, "mailbox full and the server is stopping");
+                    throw new IllegalStateException("group " + group + ": " + queueName(request.kind())
+                            + " queue is full (" + mailbox.capacity() + ") and the server is stopping");
                 }
                 if (System.nanoTime() - deadline > 0) {
                     refuse(request, "mailbox full");
@@ -242,6 +252,11 @@ public final class ControlDriver {
 
     public void setFullTimeout(java.time.Duration timeout) {
         this.fullTimeoutNanos = timeout.toNanos();
+    }
+
+    /** A sender waiting on a full mailbox is refused at once when {@code condition} answers true (the server stops). */
+    public void abandonFullWaitWhen(java.util.function.BooleanSupplier condition) {
+        this.abandonFullWait = condition == null ? () -> false : condition;
     }
 
     public int capacity() {

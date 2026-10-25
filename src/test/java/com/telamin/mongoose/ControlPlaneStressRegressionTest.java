@@ -161,4 +161,41 @@ class ControlPlaneStressRegressionTest {
         assertNotNull(current, "the running processor keeps its name");
         assertSame(handle.generation(), current.generation());
     }
+
+    /**
+     * Found while building the shutdown storm: an add waiting on a full control mailbox holds the server's admission read lock for the
+     * whole full-mailbox wait (10 s by default), and the shutdown's admission barrier takes the write lock before its
+     * deadline starts, so a 500 ms shutdown took as long as the wait. A sender waiting on a full mailbox now gives up
+     * as soon as the server is stopping: the add is refused, and the shutdown keeps its deadline.
+     */
+    @Test
+    void aShutdownIsNotHeldPastItsDeadlineByAnAddWaitingOnAFullMailbox() throws Exception {
+        MongooseServerConfig config = new MongooseServerConfig();
+        config.setShutdownTimeoutMillis(500);
+        config.setShutdownDrainTimeoutMillis(50);
+        server = MongooseServer.bootServer(config, rec -> { });
+        AddedProcessor first = server.addProcessor("first", "g", null, () -> new Proc(false));
+        assertEquals(ReplyOutcome.APPLIED, await(first.reply()).outcome());
+        Proc blocker = holdAndFill();
+        group(server, "g").setControlQueueFullTimeout(Duration.ofSeconds(8));
+        java.util.concurrent.atomic.AtomicReference<CompletionStage<ControlReply>> late = new java.util.concurrent.atomic.AtomicReference<>();
+        Thread adder = new Thread(() -> late.set(server.addProcessor("late", "g", null, () -> new Proc(false)).reply()),
+                "late-adder");
+        adder.start();
+        Thread.sleep(300);                                  // the add is waiting on the full mailbox
+        assertTrue(adder.isAlive(), "precondition: the add waits on the full mailbox");
+        try {
+            long t0 = System.nanoTime();
+            StopResult result = server.shutdown();
+            long ms = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0);
+            assertTrue(ms < 500 + 1_000, "the shutdown kept its 500 ms deadline, took " + ms + " ms: " + result);
+            adder.join(10_000);
+            ControlReply reply = await(late.get());
+            assertTrue(reply.outcome() == ReplyOutcome.REFUSED || reply.outcome() == ReplyOutcome.NOT_RUNNING,
+                    "the waiting add was refused: " + reply);
+        } finally {
+            blocker.release.countDown();
+        }
+        assertTrue(server.shutdown().complete(), "the resumed stop completes once the blocker returns");
+    }
 }
