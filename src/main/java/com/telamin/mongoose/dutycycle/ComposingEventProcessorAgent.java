@@ -231,7 +231,8 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
 
     /**
      * Stop the processor of {@code registration}, bound now. {@code completed} runs once the stop is answered,
-     * including a stop of an add still queued, which cancels it.
+     * including a stop of an add still queued, which cancels it; never for a stop refused unapplied (a full mailbox),
+     * which leaves its processor running.
      *
      * @return the request, whose reply completes once the stop is complete
      */
@@ -239,7 +240,14 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         if (registration != null) admit(registration, name);
         ControlRequest request = new ControlRequest(ControlRequest.Kind.STOP, "stop " + name,
                 id -> stopIntent(id, name, registration), registration);
-        if (completed != null) request.onReply(completed);
+        if (completed != null) {
+            // a stop REFUSED (a full mailbox) never happened: its processor still runs and keeps its name. Releasing it
+            // here let a later add under the name in, which failed in the group, and hid the running processor from
+            // every lookup by name (found by the chaos stress test)
+            request.onReply((ControlReply answer) -> {
+                if (answer.outcome() != ReplyOutcome.REFUSED) completed.run();
+            });
+        }
         return control.send(request);
     }
 

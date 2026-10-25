@@ -1,0 +1,131 @@
+/*
+ * SPDX-FileCopyrightText: © 2025 Gregory Higgins <greg.higgins@v12technology.com>
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
+package com.telamin.mongoose;
+
+import com.telamin.fluxtion.runtime.DataFlow;
+import com.telamin.fluxtion.runtime.input.EventFeed;
+import com.telamin.mongoose.config.MongooseServerConfig;
+import com.telamin.mongoose.control.ControlReply;
+import com.telamin.mongoose.control.event.ReplyOutcome;
+import com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent;
+import com.telamin.mongoose.internal.ComposingEventProcessorAgentRunner;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.time.Duration;
+import java.util.Map;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * Regressions found by the stress and chaos campaign (src/test/java/com/telamin/mongoose/stress), each reduced to a
+ * deterministic reproduction that runs in the normal build.
+ */
+@Timeout(60)
+class ControlPlaneStressRegressionTest {
+
+    private MongooseServer server;
+
+    @AfterEach
+    void stop() {
+        if (server != null) server.shutdown();
+    }
+
+    /** A processor that counts its lifecycle; its start() can be held until released. */
+    static final class Proc implements DataFlow {
+        final CountDownLatch startEntered = new CountDownLatch(1);
+        final CountDownLatch release;
+        final AtomicInteger stops = new AtomicInteger();
+
+        Proc(boolean blockInStart) {
+            this.release = new CountDownLatch(blockInStart ? 1 : 0);
+        }
+
+        @Override public void init() { }
+        @Override public void addEventFeed(EventFeed f) { }
+        @Override public void onEvent(Object e) { }
+        @Override public void tearDown() { }
+
+        @Override
+        public void start() {
+            startEntered.countDown();
+            try {
+                release.await(30, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        @Override
+        public void stop() {
+            stops.incrementAndGet();
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static ComposingEventProcessorAgent group(MongooseServer server, String name) throws Exception {
+        var field = MongooseServer.class.getDeclaredField("composingEventProcessorAgents");
+        field.setAccessible(true);
+        return ((Map<String, ComposingEventProcessorAgentRunner>) field.get(server)).get(name).group();
+    }
+
+    private static ControlReply await(CompletionStage<ControlReply> stage) throws Exception {
+        return stage.toCompletableFuture().get(20, TimeUnit.SECONDS);
+    }
+
+    /** Boot a server with {@code victim} running in group "g", and that group's mailbox-full wait cut to 100 ms. */
+    private ProcessorHandle bootWithVictim(Proc victim) throws Exception {
+        server = MongooseServer.bootServer(new MongooseServerConfig(), rec -> { });
+        AddedProcessor added = server.addProcessor("victim", "g", null, () -> victim);
+        assertEquals(ReplyOutcome.APPLIED, await(added.reply()).outcome());
+        group(server, "g").setControlQueueFullTimeout(Duration.ofMillis(100));
+        return added.handle();
+    }
+
+    /** Hold the group's thread in a start(), then fill its mailbox with stops of a processor that has gone. */
+    private Proc holdAndFill() throws Exception {
+        AddedProcessor gone = server.addProcessor("gone", "g", null, () -> new Proc(false));
+        assertEquals(ReplyOutcome.APPLIED, await(gone.reply()).outcome());
+        assertEquals(ReplyOutcome.APPLIED, await(server.stopProcessor(gone.handle())).outcome());
+        Proc blocker = new Proc(true);
+        server.addProcessor("blocker", "g", null, () -> blocker);
+        assertTrue(blocker.startEntered.await(10, TimeUnit.SECONDS), "the blocker holds the group's thread");
+        int capacity = group(server, "g").control().capacity();
+        for (int i = 0; i < capacity; i++) server.stopProcessor(gone.handle());
+        return blocker;
+    }
+
+    /**
+     * Chaos finding: a stop refused because the group's mailbox was full released the processor's name reservation
+     * (the stop's completion callback ran on every answer, REFUSED included). The processor kept running, the next add
+     * under its name was admitted and failed in the group with "name already in use", and the running processor could
+     * no longer be found by name, so a stop-everything sweep missed it.
+     */
+    @Test
+    void aStopByNameRefusedOnAFullMailbox_keepsTheRunningProcessorsName() throws Exception {
+        Proc victim = new Proc(false);
+        ProcessorHandle handle = bootWithVictim(victim);
+        Proc blocker = holdAndFill();
+        try {
+            server.stopProcessor("g", "victim", 1_000);
+        } catch (IllegalStateException refusedLoudly) {
+            // acceptable: the caller is told the stop was not queued
+        }
+        blocker.release.countDown();
+        assertEquals(0, victim.stops.get());
+        ProcessorHandle current = server.processorHandle("g", "victim");
+        assertNotNull(current, "the running processor keeps its name");
+        assertSame(handle.generation(), current.generation());
+    }
+}

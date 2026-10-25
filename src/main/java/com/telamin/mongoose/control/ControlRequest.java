@@ -37,7 +37,7 @@ public final class ControlRequest {
     private final AtomicInteger state = new AtomicInteger(SENT);
     private final CompletableFuture<ControlReply> reply = new CompletableFuture<>();
     private volatile long requestId = -1;
-    private volatile Runnable onReply;
+    private volatile java.util.function.Consumer<ControlReply> onReply;
     private volatile Runnable onUnapplied;
 
     /**
@@ -77,8 +77,17 @@ public final class ControlRequest {
         return (T) payload;
     }
 
-    /** Run once, on whichever thread completes the reply (legacy stop callbacks). */
+    /** Run once, on whichever thread completes the reply, whatever the answer (legacy stop callbacks). */
     public ControlRequest onReply(Runnable action) {
+        this.onReply = action == null ? null : answer -> action.run();
+        return this;
+    }
+
+    /**
+     * Run once, on whichever thread completes the reply, given the answer before the reply completes: a callback that
+     * must not act on some answers (a stop REFUSED at send never happened) can tell them apart.
+     */
+    public ControlRequest onReply(java.util.function.Consumer<ControlReply> action) {
         this.onReply = action;
         return this;
     }
@@ -142,9 +151,9 @@ public final class ControlRequest {
     }
 
     private void finish(ControlReply answer) {
-        Runnable action = onReply;
+        java.util.function.Consumer<ControlReply> action = onReply;
         try {
-            if (action != null) action.run();
+            if (action != null) action.accept(answer);
         } finally {
             reply.complete(answer);
         }
