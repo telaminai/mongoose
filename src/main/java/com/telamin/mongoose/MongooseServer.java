@@ -1624,7 +1624,8 @@ public class MongooseServer implements MongooseServerController {
      *
      * @param groupName     the processor group containing the processor
      * @param processorName the unique name of the processor to stop
-     * A full mailbox is answered {@code REFUSED} immediately; the processor keeps running.
+     * @throws IllegalStateException if the stop cannot enter a full mailbox before its admission deadline or the
+     *                               group's full-mailbox timeout. Nothing is stopped.
      */
     @Override
     public void stopProcessor(String groupName, String processorName) {

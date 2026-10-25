@@ -65,9 +65,15 @@ class HighVolumeEventStressTest {
     }
 
     @AfterEach
-    void tearDown() {
-        if (publishers != null) publishers.shutdownNow();
-        if (server != null) server.shutdown();
+    void tearDown() throws InterruptedException {
+        try {
+            if (publishers != null) {
+                publishers.shutdownNow();
+                assertTrue(publishers.awaitTermination(5, TimeUnit.SECONDS), "publisher threads did not terminate");
+            }
+        } finally {
+            if (server != null) server.shutdown();
+        }
     }
 
     /** One event: its source, its sequence number in that source (from 0; -1 is a warm-up probe), when it was sent. */
@@ -257,13 +263,15 @@ class HighVolumeEventStressTest {
             Feed feed = rig.feeds().get(s);
             done.add(publishers.submit(() -> {
                 for (long seq = 0; seq < EVENTS_PER_SOURCE; seq++) {
+                    if (Thread.interrupted()) throw new InterruptedException("publisher cancelled");
                     pacer.beforePublish(source, seq);
                     feed.publish(new Tick(source, seq, System.nanoTime()));
                 }
                 return null;
             }));
         }
-        for (Future<?> f : done) f.get(DEADLINE_SECONDS, TimeUnit.SECONDS);
+        long deadline = t0 + TimeUnit.SECONDS.toNanos(DEADLINE_SECONDS);
+        for (Future<?> f : done) f.get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
         return t0;
     }
 
@@ -330,7 +338,7 @@ class HighVolumeEventStressTest {
         Rig rig = boot(false);
         warmUp(rig);
         long t0 = publishAll(rig, (s, seq) -> {
-            while (seq - minProgress(rig, s) >= CREDIT_WINDOW) Thread.onSpinWait();
+            StressSupport.awaitCredit(seq, () -> minProgress(rig, s), CREDIT_WINDOW);
         });
         awaitAccounted(rig);
         report("sustained/direct", rig, t0);
@@ -343,7 +351,7 @@ class HighVolumeEventStressTest {
         Rig rig = boot(true);
         warmUp(rig);
         long t0 = publishAll(rig, (s, seq) -> {
-            while (seq - minProgress(rig, s) >= CREDIT_WINDOW) Thread.onSpinWait();
+            StressSupport.awaitCredit(seq, () -> minProgress(rig, s), CREDIT_WINDOW);
         });
         awaitAccounted(rig);
         report("sustained/agent-hosted", rig, t0);

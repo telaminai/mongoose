@@ -32,6 +32,16 @@ final class StressSupport {
         Logger.getLogger("com.telamin").setLevel(Level.SEVERE);
     }
 
+    /** Wait for a consumer credit without stranding the publisher when its enclosing test cancels it. */
+    static void awaitCredit(long sequence, java.util.function.LongSupplier progress, long window)
+            throws InterruptedException {
+        while (sequence - progress.getAsLong() >= window) {
+            if (Thread.interrupted()) throw new InterruptedException("publisher cancelled while waiting for credit");
+            Thread.onSpinWait();
+        }
+        if (Thread.interrupted()) throw new InterruptedException("publisher cancelled before publishing");
+    }
+
     static long seconds(String property, long defaultSeconds) {
         return Long.getLong(property, defaultSeconds);
     }
