@@ -32,6 +32,7 @@ public interface MongooseServerController {
      * @param idleStrategy  the strategy to use to handle idle cycles; must not be null
      * @param feedConsumer  a supplier function that provides the DataFlow instance; must not be null
      * @throws IllegalArgumentException if any of the parameters are invalid, such as being null or empty
+     * @throws IllegalStateException if the server is stopping
      */
     void addEventProcessor(
             String processorName,
@@ -45,6 +46,7 @@ public interface MongooseServerController {
      * managed by the server.
      *
      * @param serviceName the name of the service to be stopped
+     * @throws IllegalStateException if the server is stopping
      */
     void stopService(String serviceName);
 
@@ -65,6 +67,7 @@ public interface MongooseServerController {
      * service managed by the server.
      *
      * @param serviceName the name of the service to be started
+     * @throws IllegalStateException if the server is stopping
      */
     void startService(String serviceName);
 
@@ -109,6 +112,7 @@ public interface MongooseServerController {
      *                carry a unique service name
      * @throws com.telamin.mongoose.exception.ServiceRegistrationException
      *         if a service with the same name is already registered
+     * @throws IllegalStateException if the server is stopping or this instance's retirement stop is in progress
      */
     void registerService(com.telamin.fluxtion.runtime.service.Service<?> service);
 
@@ -117,6 +121,7 @@ public interface MongooseServerController {
      * server. Convenience for wrapping {@code eventSource} in a
      * {@link com.telamin.fluxtion.runtime.service.Service} and
      * delegating to {@link #registerService}.
+     * @throws IllegalStateException if the server is stopping or this instance's retirement stop is in progress
      */
     <T> void registerEventSource(String sourceName, com.telamin.mongoose.service.EventSource<T> eventSource);
 

@@ -133,8 +133,8 @@ public class MongooseServer implements MongooseServerController {
     private final Set<Service<?>> registeredAgentServices = ConcurrentHashMap.newKeySet();
     /**
      * mongoose#60: processor names taken, per group, reserved atomically when {@link #addEventProcessor} is called (the
-     * group's own map only fills later, on its thread). Released by {@link #stopProcessor}, when building it fails, or when the group drops it after a failed
-     * start ({@link #processorDropped}).
+     * group's own map only fills later, on its thread). Accepted registrations are released by the control plane's
+     * ReleaseName effect after their lifecycle cleanup, or by terminal cleanup after the group has stopped.
      */
     private final ConcurrentHashMap<ProcessorName, ProcessorRegistration> reservedProcessorNames = new ConcurrentHashMap<>();
 
@@ -446,16 +446,12 @@ public class MongooseServer implements MongooseServerController {
     /**
      * A processor group dropped {@code processorName} after its {@code start()} failed (mongoose#57). Called on the
      * group's thread, once the group has released what it holds for the processor; this releases what the server bound
-     * to it by name ({@link #releaseProcessorBindings}) and its name reservation (mongoose#60), so the name can be
-     * added again.
+     * to it by name ({@link #releaseProcessorBindings}). The control plane retains the name reservation until its
+     * subsequent ReleaseName effect, so a callback cannot admit a replacement during Release.
      */
     public void processorDropped(String groupName, String processorName, DataFlow eventProcessor, ProcessorRegistration registration) {
         log.info("processor '" + processorName + "' dropped from group '" + groupName + "' after a failed start");
-        try {
-            releaseProcessorBindings(groupName, processorName, eventProcessor);
-        } finally {
-            if (registration != null) reservedProcessorNames.remove(new ProcessorName(groupName, processorName), registration);
-        }
+        releaseProcessorBindings(groupName, processorName, eventProcessor);
     }
 
     /**
@@ -985,8 +981,12 @@ public class MongooseServer implements MongooseServerController {
             boolean superseded;
             serviceLock.lock();
             try {
-                Service<?> live = registeredServices.get(service.serviceName());
-                superseded = live != null && live.instance() == service.instance();
+                // Ownership belongs to the physical instance, not its previous registry name. While withdrawal
+                // waits for a group, the same object can be registered under another name and delivered again.
+                // Publication and claiming the stop share this lock, so either a live owner wins or subsequent
+                // registration observes retirementStops and is refused until the callback returns.
+                superseded = registeredServices.values().stream()
+                        .anyMatch(live -> live.instance() == service.instance());
                 if (superseded) {
                     // Re-registration won before physical stop was claimed: the live registry owns this instance.
                     stopped = true;
@@ -1448,16 +1448,11 @@ public class MongooseServer implements MongooseServerController {
 
         com.telamin.mongoose.control.ControlRequest request;
         try {
-            request = composingEventProcessorAgentRunner.group().addNamedEventProcessor(() -> {
-                try {
-                    return buildNamedEventProcessor(processorName, feedConsumer, composingEventProcessorAgentRunner, registration);
-                } catch (RuntimeException | Error e) {
-                    reservedProcessorNames.remove(reservation, registration);
-                    throw e;
-                }
-            }, registration, controlCallerMayWait() && (isStarted() || safeToWait(groupName)) ? deadline : System.nanoTime());
+            request = composingEventProcessorAgentRunner.group().addNamedEventProcessor(
+                    () -> buildNamedEventProcessor(processorName, feedConsumer, composingEventProcessorAgentRunner, registration),
+                    registration, controlCallerMayWait() && (isStarted() || safeToWait(groupName)) ? deadline : System.nanoTime());
         } catch (RuntimeException | Error e) {
-            // Rejected before the supplier ran: its own failure cleanup cannot release this reservation.
+            // Rejected before admission: no control-plane ReleaseName effect owns this reservation.
             reservedProcessorNames.remove(reservation, registration);
             throw e;
         }
