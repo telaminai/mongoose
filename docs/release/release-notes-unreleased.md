@@ -11,6 +11,16 @@ an item replaces a 1.0.33 release note, it says so.
 
 ## Behaviour changes
 
+### Generated processor failures are quarantined
+
+A failed generated graph is isolated without retry or automatic restart; healthy processors in its group continue.
+The failed name and instance remain owned, generated lifecycle callbacks are not re-entered, and shutdown reports
+incomplete cleanup. `ControlGroupStatus.quarantinedProcessors()` and the `ProcessorQuarantined` control record
+expose the failure. Opaque dispatchers may require ending the group. Ordinary handwritten processor retry behaviour
+is unchanged. See [containment](../reference/control-plane-contracts.md#generated-processor-failure-containment)
+and the [shutdown runbook](../operations/shutdown-runbook.md).
+
+
 ### Void control methods wait for their outcome
 
 `addEventProcessor`, `stopProcessor(group, name)`, `registerService` and `removeService` now wait, off agent threads,
@@ -162,6 +172,16 @@ applies)`.
   `captureCleanupFailures`, `setCaptureIo`, `setAuditCaptureResources`.
 
 ## Known limits at this point
+
+- The upstream generated processing-flag wedge remains open. Host containment prevents supported hosted paths
+  from treating a normal retry return as recovery; direct graph calls and wrappers hiding the runtime interface
+  still require a client-specific failure contract. Quarantine intentionally needs operator resolution.
+- Standalone legacy capture uses a shared name directory. Failed opens preserve nonempty directories rather than
+  risking deletion of another live recording; partial files can remain for inspection. Server-routed unique session
+  directories have operation-owned failed-open cleanup.
+- New driver safety-net failures have a structured marker; validation of historical exports still partly matches
+  reason text. Custom capture plugins must implement identity and safe offline resource ownership themselves.
+
 
 Review findings on PR #76 that are still open are listed in the PR. Those that affect callers:
 

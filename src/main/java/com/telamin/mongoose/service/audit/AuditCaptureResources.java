@@ -31,7 +31,9 @@ public interface AuditCaptureResources {
     void installCapture(Object resource, String processorName, DataFlow dataFlow);
 
     /**
-     * Restore the configured listener on the processor; {@code dataFlow} is null once the processor has gone. The
+     * Restore the configured listener on a live processor. {@code dataFlow} is null when the processor has gone or
+     * has been quarantined after an execution failure. In that case detach the resource without invoking any saved
+     * processor reference; throw if safe offline detachment is unsupported so ownership remains reported. The
      * resource stops receiving records before this returns.
      */
     void uninstallCapture(Object resource, String processorName, DataFlow dataFlow);

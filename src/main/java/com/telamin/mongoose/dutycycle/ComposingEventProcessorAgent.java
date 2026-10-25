@@ -179,6 +179,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     private Throwable bootFailure;
     /** Why the last BuildAndStart failed, for the boot failure report. Agent thread only. */
     private Throwable lastStartFailure;
+    private ProcessorDispatchException terminalProcessorFailure;
+    /** Dispatch quarantine: generated lifecycle callbacks may drain abandoned events, so never re-enter this graph. */
+    private final Map<NamedEventProcessor, Throwable> quarantined = new ConcurrentHashMap<>();
     /** Guarded steps that failed during the current release. Agent thread only. */
     private int stepFailures;
     /** Audit capture (design "Audit capture"): the physical side, where helpers run, and the resources held by id. */
@@ -243,6 +246,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         this.registeredServices = registeredServices;
         this.schedulerService = new Service<>(scheduler, SchedulerService.class);
         scheduler.setProcessorNames(this::nameOf);
+        scheduler.setProcessorFailureHandler(this::isolateFailedProcessor);
         this.eventsProcessedCounter = eventFlowManager.getCountersService().agentEventsCounter(roleName);
         this.idleCyclesCounter = eventFlowManager.getCountersService().agentIdleCyclesCounter(roleName);
         this.control = new ControlDriver(roleName, CONTROL_QUEUE_CAPACITY, this, new ControlAuditSink(controlAuditCapacity()));
@@ -577,9 +581,13 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                 bootFailure = null;
                 throw new ProcessorStartException(roleName(), name, cause);   // reported once, by the agent's error handler
             }
+            if (terminalProcessorFailure != null) throw terminalProcessorFailure;
             control.running();
             checkQueueReaders();
             super.onStart();
+        } catch (ProcessorDispatchException fatal) {
+            terminateFailedProcessor(fatal);
+            throw fatal;
         } catch (Error fatal) {
             control.markDead("fatal error in onStart: " + fatal);
             throw fatal;
@@ -589,7 +597,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     @Override
     public int doWork() throws Exception {
         try {
+            if (terminalProcessorFailure != null) throw terminalProcessorFailure;
             int work = control.isEmpty() ? 0 : control.drain(DRAIN_MAX, drainBudgetNanos);
+            if (terminalProcessorFailure != null) throw terminalProcessorFailure;
             checkQueueReaders();
             work += super.doWork();
             if (replayer != null) work += replayer.doWork();
@@ -603,10 +613,66 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                 idleCyclesCounter.increment();
             }
             return work;
+        } catch (ProcessorDispatchException fatal) {
+            terminateFailedProcessor(fatal);
+            throw fatal;
         } catch (Error fatal) {
             control.markDead("fatal error in doWork: " + fatal);
             control.failClaimed("group died: " + fatal);    // on the agent thread, which owns what it claimed
             throw fatal;
+        }
+    }
+
+    /** Containment only: lifecycle release is still decided and audited by the control processor. */
+    private void isolateFailedProcessor(DataFlow flow, Throwable failure) {
+        NamedEventProcessor named = registeredEventProcessors.values().stream()
+                .filter(p -> p.eventProcessor() == flow).findFirst().orElse(null);
+        if (named == null) named = processorsByGeneration.values().stream()
+                .filter(p -> p.eventProcessor() == flow).findFirst().orElse(null);
+        if (named == null) {
+            terminalProcessorFailure = new ProcessorDispatchException(flow, "unowned failed subscriber", failure);
+            throw terminalProcessorFailure;
+        }
+        if (quarantined.putIfAbsent(named, failure) != null) return;
+        // A stop may already have removed registry entries before its generated callback failed.
+        // Restore ownership, not execution: the name cannot be reused while cleanup is unresolved.
+        registeredEventProcessors.putIfAbsent(named.name(), named);
+        ReleaseProgress releasing = releasesInProgress.get(named);
+        if (releasing != null && releasing.registration != null) registrations.putIfAbsent(named, releasing.registration);
+        // Fence all reader routes and timers before another event can reach the partially executed graph.
+        try {
+            removeAllSubscriptions(flow);
+            scheduler.cancelTimersOf(flow);
+            if (replayer != null) replayer.detach(flow); // preserve the reason and settle the failed replay cursor
+            ProcessorRegistration registration = registrations.get(named);
+            control.audit().fallback("ProcessorQuarantined", "group", roleName(), "name", named.name(),
+                    "generation", registration == null ? -1 : registration.generation(),
+                    "reason", String.valueOf(failure), "automaticRestart", false);
+            reportProcessorFailure(named.name(), "quarantined after generated callback failure; no retry", failure);
+        } catch (VirtualMachineError fatal) {
+            throw fatal;
+        } catch (Throwable isolationFailure) {
+            terminalProcessorFailure = new ProcessorDispatchException(flow, "failed quarantine", isolationFailure);
+            throw terminalProcessorFailure;
+        }
+    }
+
+    /** Failed graphs remain owned; no callback is invoked to guess whether their partial state recovered. */
+    public Map<String, String> quarantinedProcessors() {
+        Map<String, String> failures = new java.util.LinkedHashMap<>();
+        quarantined.forEach((named, failure) -> failures.put(named.name(), String.valueOf(failure)));
+        return Map.copyOf(failures);
+    }
+
+    /** Agent thread only. Preserve terminal admission/replies even when an error handler permits the JVM to live. */
+    private void terminateFailedProcessor(ProcessorDispatchException failure) {
+        terminalProcessorFailure = failure;
+        try {
+            control.markDead("generated processor execution failed: " + failure.getMessage());
+            control.failClaimed("group died: generated processor execution failed");
+        } finally {
+            // AgentRunner recognises this exception and ends its loop, even with a logging-only error handler.
+            throw failure;
         }
     }
 
@@ -675,11 +741,13 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         control.failClaimed("group died");
         stopAndTearDownProcessors();
         // the dead group's processors are released: so are their names
-        for (ProcessorRegistration registration : registrationsByGeneration.values()) {
+        registrationsByGeneration.entrySet().removeIf(entry -> {
+            ProcessorRegistration registration = entry.getValue();
+            if (quarantined.keySet().stream().anyMatch(named -> registrations.get(named) == registration)) return false;
             registration.releaseName();
-        }
-        registrationsByGeneration.clear();
-        deathCleanupComplete = captureHandles.isEmpty() && captureResourceSlots.get() == 0;
+            return true;
+        });
+        deathCleanupComplete = quarantined.isEmpty() && captureHandles.isEmpty() && captureResourceSlots.get() == 0;
         control.audit().fallback(deathCleanupComplete ? "CleanedUp" : "CleanupPending", "group", roleName(),
                 "processorsLeft", registeredEventProcessors.size(), "captureResourcesLeft", captureResourceSlots.get(),
                 "failedPhysicalCloses", captureCloseFailures().size(),
@@ -699,9 +767,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         }
         for (String name : new ArrayList<>(registeredEventProcessors.keySet())) {
             NamedEventProcessor named = registeredEventProcessors.get(name);
-            if (named != null) release(named, true, false);
+            if (named != null && !quarantined.containsKey(named)) release(named, true, false);
         }
-        processorsByGeneration.clear();
+        processorsByGeneration.entrySet().removeIf(entry -> !quarantined.containsKey(entry.getValue()));
         // As in the normal release effects, close capture resources only after lifecycle callbacks have finished.
         // A fatal callback leaves both the remaining release progress and the resource owned for the next attempt.
         releaseLeftoverCaptures();
@@ -816,6 +884,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             }
             throw fatal;
         } catch (Throwable t) {
+            if (namedEventProcessor != null && ProcessorDispatchException.requiresIsolation(namedEventProcessor.eventProcessor())) {
+                isolateFailedProcessor(namedEventProcessor.eventProcessor(), t);
+            }
             if (recorder != null && namedEventProcessor != null) {
                 recorder.startFailed(namedEventProcessor.eventProcessor(), t);
             }
@@ -829,7 +900,10 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
 
     /** Release everything the group holds for a generation: stopped ({@code stopping}) or dropped after a failed start. */
     private EffectResult releaseGeneration(ControlEffect.Release effect) {
-        NamedEventProcessor named = processorsByGeneration.remove(effect.generation());
+        NamedEventProcessor named = processorsByGeneration.get(effect.generation());
+        if (named != null && quarantined.containsKey(named)) {
+            return result(effect, ControlOutcome.FAILED, "processor quarantined; lifecycle cleanup requires operator resolution");
+        }
         if (named == null) {
             return result(effect, ControlOutcome.SUCCEEDED, "nothing built");
         }
@@ -842,6 +916,10 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                 guarded(named.name(), "failed to tear down a rejected processor", lifecycle::tearDown);
             }
         }
+        if (quarantined.containsKey(named)) {
+            return result(effect, ControlOutcome.FAILED, "processor quarantined; lifecycle cleanup requires operator resolution");
+        }
+        processorsByGeneration.remove(effect.generation());
         return result(effect, named.name(), ControlOutcome.SUCCEEDED, stepFailures == 0 ? null : stepFailures + " steps failed");
     }
 
@@ -994,9 +1072,19 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         if (resources == null || handle == null || named == null) {
             return result(effect, ControlOutcome.FAILED, handle == null ? "unknown resource" : "processor gone");
         }
+        if (quarantined.containsKey(named)) return result(effect, ControlOutcome.FAILED, "processor quarantined");
         // not framed: swapping the audit listener is already its own audited cycle in the processor (an
         // EventLogControlEvent), and a frame around it would flush to the listener being replaced (review of PR 6, 3)
-        resources.installCapture(handle, named.name(), named.eventProcessor());
+        try {
+            resources.installCapture(handle, named.name(), named.eventProcessor());
+        } catch (VirtualMachineError fatal) {
+            throw fatal;
+        } catch (RuntimeException | Error failure) {
+            if (ProcessorDispatchException.requiresIsolation(named.eventProcessor())) {
+                isolateFailedProcessor(named.eventProcessor(), failure);
+            }
+            throw failure;
+        }
         return result(effect, ControlOutcome.SUCCEEDED, null);
     }
 
@@ -1007,12 +1095,14 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             return result(effect, ControlOutcome.FAILED, "unknown resource");
         }
         NamedEventProcessor named = processorsByGeneration.get(effect.generation());
-        DataFlow flow = named == null ? null : named.eventProcessor();
+        DataFlow flow = named == null || quarantined.containsKey(named) ? null : named.eventProcessor();
         try {
             resources.uninstallCapture(handle, effect.name(), flow);
             captureDetached(effect.resourceId());
         } catch (RuntimeException | Error failed) {
             captureDetachFailed(effect.resourceId(), failed);
+            if (failed instanceof VirtualMachineError fatal) throw fatal;
+            if (ProcessorDispatchException.requiresIsolation(flow)) isolateFailedProcessor(flow, failed);
             throw failed;
         }
         return result(effect, ControlOutcome.SUCCEEDED, null);
@@ -1186,14 +1276,17 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     public void subscribe(DataFlow subscriber, EventSubscriptionKey<?> subscriptionKey) {
         Objects.requireNonNull(subscriber, "subscriber is null");
         Objects.requireNonNull(subscriptionKey, "subscriptionKey is null");
+        if (quarantined.keySet().stream().anyMatch(p -> p.eventProcessor() == subscriber))
+            throw new IllegalStateException("processor is quarantined; no new subscriptions");
         log.info("subscribe subscriptionKey:" + subscriptionKey + " subscriber:" + subscriber);
 
         EventQueueToEventProcessor eventQueueToEventProcessor = queueProcessorMap.get(subscriptionKey);
 
         if (eventQueueToEventProcessor == null) {
             eventQueueToEventProcessor = eventFlowManager.getMappingAgent(subscriptionKey, this);
-            if (recorder != null && eventQueueToEventProcessor instanceof EventQueueToEventProcessorAgent agent) {
-                agent.recordWith(recorder);
+            if (eventQueueToEventProcessor instanceof EventQueueToEventProcessorAgent agent) {
+                agent.withProcessorFailureHandler(this::isolateFailedProcessor);
+                if (recorder != null) agent.recordWith(recorder);
             }
             queueProcessorMap.put(subscriptionKey, eventQueueToEventProcessor);
             queueReadersToAdd.add(eventQueueToEventProcessor);
@@ -1366,7 +1459,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     }
 
     public Collection<NamedEventProcessor> registeredEventProcessors() {
-        return registeredEventProcessors.values();
+        return registeredEventProcessors.values().stream().filter(p -> !quarantined.containsKey(p)).toList();
     }
 
     /**
@@ -1433,6 +1526,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         String name = named.name();
         DataFlow eventProcessor = named.eventProcessor();
         while (release.nextStep < 10) {
+            if (quarantined.containsKey(named)) return;
             switch (release.nextStep++) {
                 case 0 -> {
                     if (release.recordStop) guarded(name, "failed to frame its stop", () -> recorder.beforeControl(eventProcessor));
@@ -1444,12 +1538,12 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                 }
                 case 2 -> {
                     if (release.stopping && eventProcessor instanceof Lifecycle lifecycle) {
-                        guarded(name, "failed to stop cleanly, removed from the group", lifecycle::stop);
+                        lifecycleStep(named, "failed to stop cleanly", lifecycle::stop);
                     }
                 }
                 case 3 -> {
                     if (eventProcessor instanceof Lifecycle lifecycle) {
-                        guarded(name, release.stopping ? "failed to tear down, removed from the group"
+                        lifecycleStep(named, release.stopping ? "failed to tear down"
                                 : "failed to tear down after its failed start", lifecycle::tearDown);
                     }
                 }
@@ -1478,6 +1572,21 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             }
         }
         releasesInProgress.remove(named);
+    }
+
+    private void lifecycleStep(NamedEventProcessor named, String what, Runnable step) {
+        try {
+            step.run();
+        } catch (VirtualMachineError fatal) {
+            throw fatal;
+        } catch (Throwable failure) {
+            stepFailures++;
+            if (ProcessorDispatchException.requiresIsolation(named.eventProcessor())) {
+                isolateFailedProcessor(named.eventProcessor(), failure);
+            } else {
+                reportProcessorFailure(named.name(), what + ", removed from the group", failure);
+            }
+        }
     }
 
     private void guarded(String name, String what, Runnable step) {
@@ -1539,6 +1648,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
      */
     private ServiceDelivery deliverService(NamedEventProcessor np, Service<?> svc, boolean register) {
         DataFlow eventProcessor = np.eventProcessor();
+        if (quarantined.containsKey(np)) return new ServiceDelivery(false, "processor quarantined after callback failure");
         // each service once (mongoose#60 item 1): a register the processor already has - it joined after the service
         // was in the registry - is skipped, and a deregister reaches only a processor that was handed the service
         if (register ? !servicesDeliveredTo(eventProcessor).add(svc) : !servicesDeliveredTo(eventProcessor).remove(svc)) {
@@ -1557,6 +1667,11 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         } catch (VirtualMachineError fatal) {
             throw fatal;
         } catch (Throwable t) {
+            if (ProcessorDispatchException.requiresIsolation(eventProcessor)) {
+                isolateFailedProcessor(eventProcessor, new ProcessorDispatchException(eventProcessor,
+                        register ? "service registration" : "service withdrawal", t));
+                return new ServiceDelivery(true, String.valueOf(t));
+            }
             reportProcessorFailure(np.name(), (register ? "failed to register" : "failed to deregister")
                     + " service '" + svc.serviceName() + "'", t);
             return new ServiceDelivery(true, String.valueOf(t));
@@ -1571,7 +1686,8 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     }
 
     public boolean isProcessorRegistered(String processorName) {
-        return registeredEventProcessors.containsKey(processorName);
+        NamedEventProcessor named = registeredEventProcessors.get(processorName);
+        return named != null && !quarantined.containsKey(named);
     }
 
     /**

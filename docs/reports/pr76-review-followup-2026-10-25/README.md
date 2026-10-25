@@ -55,7 +55,7 @@ client's data-processor exception behaviour as an open deployment gate. Mongoose
 ## Second review
 
 [Response to c184e5b](second-review-response.md): the stronger retirement reproduction passes five repetitions.
-The generated-processor wedge remains reproduced outside the guarded control driver and is an **open client
+At this historical commit, the generated-processor wedge could also be masked by the host retry loop: a normal retry return did not prove dispatch occurred. The third-review follow-up adds host containment. The upstream generated execution semantics remain an **open client
 deployment gate**, alongside per-feed loss-policy acceptance. The runnable source mutations and their results
 are preserved with this report. No BLOCK policy or upstream compiler recovery is introduced here.
 
@@ -63,7 +63,7 @@ are preserved with this report. No BLOCK policy or upstream compiler recovery is
 
 | Finding | Change | Regression/evidence |
 | --- | --- | --- |
-| K1, K8: missing replies and invisible claimed requests | Independent request ledger checks every caller reply; safety-net failure, Anomaly and Dead are not healthy PASS; explicit unpublished sweep scenario | `ControlScenarioHarnessTest`, `IndependentEvidenceMutationTest`; no-Reply mutant now fails |
+| K1, K8: missing replies and invisible claimed requests | Independent request ledger checks tracked caller replies (name-only stop release was not independently checked at this historical commit; corrected in the third-review follow-up); safety-net failure, Anomaly and Dead are not healthy PASS; explicit unpublished sweep scenario | `ControlScenarioHarnessTest`, `IndependentEvidenceMutationTest`; no-Reply mutant now fails |
 | K2: premature reply hidden by cleanup flag | Effect request sequence determines whether work preceded the reply; cleanup flag alone cannot excuse it | `IndependentEvidenceMutationTest` premature-reply probes |
 | K3: APPLIED stop without release | At-reply callback/name ledger and semantic start/stop obligations, independent of rule spelling | Renamed-rule immediate-APPLIED mutant now fails |
 | K9: final cleanup masks lifetime leak | Pre-close ownership checks, delayed-open compensation checks, open/install/uninstall fault injection | Stale-open compensation mutant fails before group close; 200-seed harness plus focused cases |
@@ -73,7 +73,7 @@ are preserved with this report. No BLOCK policy or upstream compiler recovery is
 | K10: failed startup missing from replay | Persist startup failure marker, including best-effort fatal-path recording | Original `RecordedStartFailureReplaysAsSuccessTest`, `RecordedStartupFailureTest` |
 | K11: retained detach failure not reported | Retain `CLOSE_FAILED` ownership, combined cleanup diagnostics, explicit retry outcomes | `ChronicleGroupInlineTest`, `CaptureAsEffectsTest`, forced Chronicle failure integration |
 | K12, K13: compatibility/plugin scope | Document sealed variants, binary method changes, CSV forward incompatibility and built-in selector boundary | Release notes and interface contracts; custom router refuses unsupported scoped dispatch |
-| K14: remaining hardening | Same-flow attachment guard; failed-open directory cleanup and cache invalidation; ReleaseName owns failed-start reservation; multiline CONTROL64; stopping javadoc | `CaptureOpenFailureCleanupTest`, `FailedStartNameOwnershipTest`, `CsvControlOutcomeTest`; release notes document replay-retained withdrawals |
+| K14: remaining hardening | Same-flow attachment guard; routed unique-directory failed-open cleanup and cache invalidation (the standalone shared-directory race was still present at this historical commit); ReleaseName owns failed-start reservation; multiline CONTROL64; stopping javadoc | `CaptureOpenFailureCleanupTest`, `FailedStartNameOwnershipTest`, `CsvControlOutcomeTest`; release notes document replay-retained withdrawals |
 
 The original replay reproductions failed before their fixes and pass unchanged. The original capture reproductions
 that expected unsafe outcomes were converted into assertions of the corrected behaviour, retaining their
@@ -81,8 +81,8 @@ interleavings. Probe tests whose old purpose was to confirm a validator hole now
 regression assertions were not relaxed to accept the reviewed defects.
 
 Mutation checks matter here: the old checker accepted the unsafe traces; the strengthened checker rejects them.
-Removing the stop reply now fails 20 of 31 focused/seeded tests; replacing release with an immediate APPLIED reply
-under a renamed rule fails 21 of 31. Omitting stale-open compensation fails its independent pre-close resource
+Removing the stop reply now fails 18 of 37 focused/seeded tests; replacing release with an immediate APPLIED reply
+under a renamed rule fails 19 of 37. Omitting stale-open compensation fails its independent pre-close resource
 ledger. Temporary mutants were restored before committing.
 
 ## Capture and operations migration checklist

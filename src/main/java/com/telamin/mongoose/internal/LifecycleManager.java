@@ -589,6 +589,10 @@ public final class LifecycleManager {
                 Thread.currentThread().interrupt();
                 throw new IllegalStateException("interrupted awaiting physical capture cleanup: " + name, interrupted);
             }
+            if (!processors.quarantinedProcessors().isEmpty()) {
+                throw new IllegalStateException("group " + name + " has quarantined processors with unresolved lifecycle cleanup: "
+                        + processors.quarantinedProcessors());
+            }
             if (processors.captureResourcesHeld() != 0 || processors.captureResourceSlotsInUse() != 0) {
                 throw new IllegalStateException("group " + name + " has " + processors.captureResourceSlotsInUse()
                         + " unresolved physical capture resources; cleanup failures=" + processors.captureCleanupFailures());

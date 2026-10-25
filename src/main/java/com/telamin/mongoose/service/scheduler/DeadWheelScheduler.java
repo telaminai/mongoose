@@ -29,6 +29,7 @@ public class DeadWheelScheduler implements SchedulerService, Agent {
      * processor's timers can be cancelled ({@link #cancelTimersOf}) and a failing callback names its processor.
      */
     protected final Long2ObjectHashMap<DataFlow> timerOwners = new Long2ObjectHashMap<>();
+    private java.util.function.BiConsumer<DataFlow, Throwable> processorFailureHandler;
     private java.util.function.Function<DataFlow, String> processorNames = flow -> null;
     protected final EpochNanoClock clock;
     // Cached as a field so the agent's hot loop doesn't allocate a fresh
@@ -94,6 +95,10 @@ public class DeadWheelScheduler implements SchedulerService, Agent {
         this.processorNames = processorNames == null ? flow -> null : processorNames;
     }
 
+    public void setProcessorFailureHandler(java.util.function.BiConsumer<DataFlow, Throwable> handler) {
+        this.processorFailureHandler = handler;
+    }
+
     @Override
     public int doWork() {
         return timerWheel.poll(milliTime(), onTimerExpiryHandler, 100);
@@ -121,6 +126,16 @@ public class DeadWheelScheduler implements SchedulerService, Agent {
         } catch (VirtualMachineError fatal) {
             throw fatal;
         } catch (Throwable t) {
+            if (com.telamin.mongoose.dutycycle.ProcessorDispatchException.requiresIsolation(owner)) {
+                var failure = new com.telamin.mongoose.dutycycle.ProcessorDispatchException(owner, "timer callback", t);
+                if (processorFailureHandler != null) {
+                    processorFailureHandler.accept(owner, failure);
+                    return true;
+                }
+                // Standalone scheduler has no group ownership: fence its own timers and preserve its
+                // reporting-only API. Mongoose groups always install the full containment handler above.
+                cancelTimersOf(owner);
+            }
             String name = owner == null ? null : processorNames.apply(owner);
             String whose = name != null ? "processor '" + name + "'" : owner != null ? "processor " + owner : "no processor";
             ErrorReporting.report("DeadWheelScheduler", "timer callback of " + whose + " failed: " + t, t,

@@ -936,7 +936,10 @@ the depth gauge. The feed's `queue-drops:<queuePath>` health check becomes `DEGR
 on unsubscribe. With counters disabled it reports `UNKNOWN`; publisher `droppedCount(queueName)` and first-drop
 evidence still work. The first drop of each queue binding emits `QueueDrop` in the group's control fallback audit
 and the publisher's bounded drop audit, with feed, queue, queue path, group, sequence, count and wall-clock time.
-This is a correlation point, not one audit record per lost item or a shared business-event ordering guarantee.
+This is first-ever evidence for the lifetime of the queue binding, not a fresh record for every overload incident.
+These records consume the same bounded group control-audit capacity; repeated subscription churn can exhaust
+that capacity and make the export incomplete. It is a correlation point, not one audit record per lost item
+or a shared business-event ordering guarantee.
 
 `EventSource.SlowConsumerStrategy` (`DISCONNECT`, `EXIT_PROCESS`, `BACKOFF`) and its feed/pipe configuration are
 deprecated because they do not change this publish policy. They do not enable lossless blocking.
@@ -976,3 +979,42 @@ These are deliberate non-guarantees in this build:
   [when a replay stops](#when-a-replay-stops).
 - Provenance compares class names. It does not identify a build, a configuration or a generated-graph fingerprint.
 - The control-audit manifest detects accidental change. It is not a signature.
+
+## Generated processor failure containment
+
+A generated or interpreted Fluxtion processor implementing `InternalEventProcessor` can retain a processing flag,
+queued callbacks, or partial application state after a handler throws. A normal return from a subsequent call is
+not proof of recovery. Mongoose therefore does not retry that graph after a non-VM callback failure on its hosted
+dispatch, replay, service, timer, capture-listener or lifecycle paths.
+
+The group removes that processor from every input reader, cancels its timers, emits an ERROR and a
+`ProcessorQuarantined` control fallback record, and keeps healthy processors running. It retains ownership of the
+failed instance and its name. New capture installation is refused; existing capture is detached without calling
+the failed graph. A plugin unable to detach offline must report failure and retain ownership. Generated `stop()`
+and `tearDown()` are not invoked after quarantine. A generated stop that itself fails must not be followed by
+teardown. Explicit stop replies are FAILED, and shutdown remains incomplete with dependent services retained.
+`controlGroupStatus(group).quarantinedProcessors()` names the affected processors and reasons. Running-processor
+queries exclude them while the name reservation remains held. Failed replay cursors settle with their reason
+preserved. Admin commands addressed to a removed route are refused and queued commands abandoned by reader
+close receive a refusal instead of waiting for a processor that can no longer dispatch them.
+
+There is no automatic restart, flag reset, callback replay, or operator acknowledgement that converts unknown
+cleanup into success. Preserve the audit and application state and use the deployment's incident procedure.
+The failed input may already have produced partial external effects. Healthy subscribers can still receive that
+input once; this is not transactional rollback. An opaque custom dispatcher that cannot identify the failed target
+quarantines all possible generated targets on its reader and terminates the group.
+
+An admin cycle refused before its command action remains a command refusal. The runtime's `runInEventCycle`
+already clears its processing flag in `finally`; a custom override that executes other graph calls before entering
+that bracket must define its own failure contract. A command that ran and then failed still propagates its dispatch
+failure to the host.
+
+Ordinary handwritten `DataFlow` retry/cleanup behaviour is unchanged. The containment marker is the runtime
+interface, not reflection or a guessed flag name; handwritten wrappers hiding a generated graph need their own
+failure contract. A standalone scheduler without a group handler cancels its failed owner's remaining timers and
+reports ERROR, preserving its reporting-only API; it cannot isolate routes owned by another container.
+This host policy does not repair the compiler's processing flag or make arbitrary direct graph calls retry-safe.
+
+Driver-authored safety-net FAILED replies carry `replyAuthor: DRIVER` and
+`failureKind: FAILED_DRIVER_FALLBACK`. The validator rejects that marker regardless of reason wording and also
+rejects `ProcessorQuarantined` as evidence of a healthy run. Legacy exports still use reason-text classification.

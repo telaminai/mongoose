@@ -586,7 +586,8 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
     /**
      * The processor left its group normally (stopped and torn down). Nothing is installed on that instance again:
      * {@code start} is refused until a processor is added under the name, and {@code stop} closes the capture without
-     * touching it. A capture still recording carries on into a processor re-added under the name (MA-5.4).
+     * touching it. A group-owned capture remains owned by its resource handle until that group closes it;
+     * an unmanaged standalone capture ends here and never carries into a replacement.
      */
     @Override
     public void processorStopped(String processorName, DataFlow dataFlow) {
@@ -594,6 +595,9 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
         ProcessorSink sink = sinks.get(processorName);
         if (sink == null || sink.dataFlow != dataFlow) return;
         sink.forget(dataFlow);
+        if (openResources.stream().anyMatch(handle -> handle.sink() == sink && handle.queue() == sink.queue)) {
+            return; // its group owns uninstall/physical close; do not close its queue behind the handle
+        }
         ChronicleQueue released = sink.endRecordingIfGone();
         if (released != null) {
             released.close();
@@ -830,16 +834,24 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
                 return java.util.Objects.requireNonNull(builder.apply(procDir), "capture builder returned null");
             } catch (IOException failed) {
                 RuntimeException failure = new RuntimeException("could not open audit capture under " + cfg.getDirectory(), failed);
-                if (createdDirectory) removeFailedOpenDirectory(procDir, failure);
+                if (createdDirectory) removeFailedOpenDirectory(procDir, failure, uniquePath);
                 throw failure;
             } catch (RuntimeException | Error failed) {
-                if (createdDirectory) removeFailedOpenDirectory(procDir, failed);
+                if (createdDirectory) removeFailedOpenDirectory(procDir, failed, uniquePath);
                 throw failed;
             }
         }
 
         /** Only an exclusively created directory is ours to remove; never erase an existing recording. */
-        private static void removeFailedOpenDirectory(Path directory, Throwable failure) {
+        private static void removeFailedOpenDirectory(Path directory, Throwable failure, boolean exclusive) {
+            // A legacy name directory can be shared with another opener, even if this attempt created it.
+            // Only remove it atomically if empty; never walk/delete somebody else's live or historical files.
+            if (!exclusive) {
+                try { Files.deleteIfExists(directory); }
+                catch (java.nio.file.DirectoryNotEmptyException retained) { /* shared/partial files remain for inspection */ }
+                catch (IOException | RuntimeException cleanupFailed) { failure.addSuppressed(cleanupFailed); }
+                return;
+            }
             try (var entries = Files.walk(directory)) {
                 for (Path entry : entries.sorted(java.util.Comparator.reverseOrder()).toList()) Files.deleteIfExists(entry);
             } catch (IOException | RuntimeException cleanupFailed) {
@@ -890,6 +902,10 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
          * audit entirely, MA-5b), and release the queue, which the caller closes. Null when not recording.
          */
         synchronized ChronicleQueue endRecording() {
+            return endRecording(false);
+        }
+
+        private ChronicleQueue endRecording(boolean reportGeneratedFailure) {
             ChronicleQueue q = queue;
             if (q == null) {
                 return null;
@@ -904,6 +920,9 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
                 try {
                     flow.setAuditLogProcessor(previousListener != null ? previousListener : NoOpLogRecordListener.INSTANCE);
                 } catch (RuntimeException failed) {
+                    if (reportGeneratedFailure && com.telamin.mongoose.dutycycle.ProcessorDispatchException.requiresIsolation(flow)) {
+                        throw failed; // the group must quarantine a graph that may now be wedged
+                    }
                     log.log(Level.WARNING, "audit capture of '" + processorName + "' stopped, but the configured listener"
                             + " could not be restored", failed);
                 }
@@ -946,7 +965,7 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
                 throw new IllegalArgumentException("capture does not belong to this processor instance");
             }
             if (gone) dataFlow = null;
-            endRecording();
+            endRecording(true);
             return true;
         }
 

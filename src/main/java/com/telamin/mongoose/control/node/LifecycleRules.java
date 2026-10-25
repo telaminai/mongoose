@@ -109,6 +109,11 @@ public class LifecycleRules extends EventLogNode {
                 decide("stopStarted", reg.generation, reg.name, "Started", "Releasing", pendingCleanup,
                         requested.toArray(new ControlEffect[0]));
             }
+            case QUARANTINED -> {
+                decide("stopQuarantined", reg.generation, reg.name, "Quarantined", "Quarantined",
+                        reply(req, reg.generation, reg.name, ReplyOutcome.FAILED,
+                                "processor quarantined; lifecycle cleanup requires operator resolution"));
+            }
             case RELEASING -> {
                 ControlEffect reply = reply(req, reg.generation, reg.name, ReplyOutcome.APPLIED, "releasing");
                 decide("stopWhileReleasing", reg.generation, reg.name, "Releasing", "Releasing", reply);
@@ -128,7 +133,7 @@ public class LifecycleRules extends EventLogNode {
     public boolean onClose(CloseIntent intent) {
         long req = intent.requestId();
         state.closing();
-        List<Reg> started = state.started();
+        List<Reg> started = state.closeTargets();
         if (started.isEmpty()) {
             ControlEffect reply = reply(req, -1, null, ReplyOutcome.APPLIED, "nothing running");
             decide("closeEmpty", -1, null, "Running", "Closed", reply);
@@ -221,6 +226,17 @@ public class LifecycleRules extends EventLogNode {
         long req = result.requestId();
         Reg reg = state.registration(result.generation());
         String from = reg == null ? "Releasing" : capital(reg.lifecycle.name());
+        if (!result.succeeded()) {
+            if (reg != null) reg.lifecycle = Lifecycle.QUARANTINED;
+            chain.failure = result.reason();
+            if (chain.kind == ChainKind.CLOSE && --chain.outstanding > 0) {
+                decide("releaseQuarantined", result.generation(), result.name(), from, "Quarantined");
+            } else {
+                decide("releaseQuarantined", result.generation(), result.name(), from, "Quarantined",
+                        reply(req, result.generation(), result.name(), ReplyOutcome.FAILED, result.reason()));
+            }
+            return;
+        }
         if (reg != null && reg.lifecycle != Lifecycle.FAILED) reg.lifecycle = Lifecycle.RELEASED;
         ControlEffect free = new ControlEffect.ReleaseName(state.nextOp(req), req, result.generation(), result.name());
         String to = reg != null && reg.lifecycle == Lifecycle.FAILED ? "Failed" : "Released";

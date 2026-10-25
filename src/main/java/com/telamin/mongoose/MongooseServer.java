@@ -1430,10 +1430,12 @@ public class MongooseServer implements MongooseServerController {
     /** A weakly consistent diagnostic view: fields can advance independently while a group runs. */
     public record ControlGroupStatus(String group, com.telamin.mongoose.control.ControlDriver.GroupState state,
                                      int outstandingRequests, int captureResourcesHeld, int captureResourceSlotsInUse,
-                                     Map<Long, String> captureCloseFailures, Map<Long, String> captureCleanupFailures) {
+                                     Map<Long, String> captureCloseFailures, Map<Long, String> captureCleanupFailures,
+                                     Map<String, String> quarantinedProcessors) {
         public ControlGroupStatus {
             captureCloseFailures = Map.copyOf(captureCloseFailures);
             captureCleanupFailures = Map.copyOf(captureCleanupFailures);
+            quarantinedProcessors = Map.copyOf(quarantinedProcessors);
         }
     }
 
@@ -1444,7 +1446,7 @@ public class MongooseServer implements MongooseServerController {
         var group = runner.group();
         return new ControlGroupStatus(groupName, group.control().state(), group.control().outstanding(),
                 group.captureResourcesHeld(), group.captureResourceSlotsInUse(),
-                group.captureCloseFailures(), group.captureCleanupFailures());
+                group.captureCloseFailures(), group.captureCleanupFailures(), group.quarantinedProcessors());
     }
 
     /** Waiting is safe only off agent/lifecycle threads, on a group whose thread is running. */

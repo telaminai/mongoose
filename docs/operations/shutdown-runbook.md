@@ -56,6 +56,17 @@ Look at the control audit and cleanup diagnostics instead of expecting lifecycle
 Group names alone do not mean the agent thread is alive: a terminated group can still own a failed capture close.
 Do not parse `StopResult.toString()` as a versioned machine protocol; consume the record fields.
 
+## Quarantined processors
+
+`control.group.status <group>` includes `quarantinedProcessors`. A generated callback failure fences data feeds
+and timers for that processor while healthy peers continue. The failed processor keeps its name and unknown
+application resources; its generated stop/teardown callbacks are not safe cleanup mechanisms. Shutdown reports
+incomplete and retains dependencies. Repeated shutdown does not repair a quarantined graph.
+
+Preserve the ERROR, `ProcessorQuarantined` control record, capture files and application progress evidence.
+Use the application's incident policy to reconcile partial external effects and decide process termination or
+replacement. No automatic restart or acknowledgement API clears this ownership.
+
 ## Resume or escalate
 
 Call `shutdown()` again after the blocker can make progress. It rejoins existing helpers and retries failed group

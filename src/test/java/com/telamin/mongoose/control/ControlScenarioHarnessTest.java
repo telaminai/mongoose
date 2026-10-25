@@ -203,6 +203,23 @@ class ControlScenarioHarnessTest {
             return request;
         }
 
+        ControlRequest trackNameStop(ControlRequest request, String name, List<LedgerProc> all) {
+            track(request, null, null);
+            request.reply().thenAccept(reply -> {
+                if (!reply.applied()) return;
+                for (LedgerProc proc : all) {
+                    if (!name.equals(proc.name) || proc.starts.get() == 0 || proc.failStart) continue;
+                    if (proc.stops.get() != 1 || proc.tearDowns.get() != 1)
+                        failures.add(request + " name-only APPLIED before stop/teardown: " + name + "#" + proc.serial);
+                    if (captures != null && captures.installed.containsKey(proc))
+                        failures.add(request + " name-only APPLIED with capture installed: " + name);
+                }
+                if (reservations.table.containsKey(name))
+                    failures.add(request + " name-only APPLIED before name release: " + name);
+            });
+            return request;
+        }
+
         void verify(String context) {
             for (ControlRequest request : sent) {
                 assertTrue(request.reply().isDone(), "caller still awaits " + request + "\n" + context);
@@ -292,7 +309,7 @@ class ControlScenarioHarnessTest {
                     }
                     if (random.nextInt(4) == 0) {
                         // a stop that only names the processor: resolved to whatever answers to the name when applied
-                        requests.track(group.removeEventProcessorByName(name, null, null), null, null);
+                        requests.trackNameStop(group.removeEventProcessorByName(name, null, null), name, all);
                         for (ProcessorRegistration r : everAdmitted) {
                             if (name.equals(r.name())) legitimatelyStopped.add(procOf.get(r));
                         }
@@ -598,6 +615,22 @@ class ControlScenarioHarnessTest {
         reservations.table.remove("p");
         assertThrows(AssertionError.class, () -> ledger.verify("later cleanup cannot erase premature-reply evidence"));
         assertTrue(ledger.failures.stream().anyMatch(f -> f.contains("before stop/teardown")));
+    }
+
+    @Test
+    void nameOnlyStopLedgerRejectsAReplyBeforeReleaseWithoutConsultingAudit() {
+        var reservations = new Reservations();
+        var ledger = new RequestLedger(reservations);
+        var proc = new LedgerProc("p", 1, false, false);
+        reservations.admit("p");
+        proc.start();
+        var request = ledger.trackNameStop(new ControlRequest(ControlRequest.Kind.STOP, "name-only", null, null),
+                "p", List.of(proc));
+        assertTrue(request.claim());
+        request.completeClaimed(new ControlReply(1, com.telamin.mongoose.control.event.ReplyOutcome.APPLIED, "stopped", -1, "p"));
+        proc.stop(); proc.tearDown(); reservations.table.clear();
+        assertThrows(AssertionError.class, () -> ledger.verify("later cleanup must not conceal the early reply"));
+        assertTrue(ledger.failures.stream().anyMatch(f -> f.contains("name-only APPLIED before stop/teardown")));
     }
 
     @Test

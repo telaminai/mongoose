@@ -109,6 +109,19 @@ class IndependentEvidenceMutationTest {
         assertTrue(check(text).violations().stream().anyMatch(v -> v.startsWith("I17 ")));
     }
 
+    @Test
+    void structuredDriverFallbackIsRejectedRegardlessOfReasonWording() {
+        String text = "---\ncontrolFallback: {record: FAILED, fallbackSeq: 1, group: g, requestId: 7, "
+                + "replyAuthor: DRIVER, failureKind: FAILED_DRIVER_FALLBACK, reason: 'wording intentionally unrelated'}\n";
+        assertTrue(check(text).violations().stream().anyMatch(v -> v.startsWith("I18 ")));
+    }
+
+    @Test
+    void quarantinedProcessorCannotProveHealthyExecution() {
+        String text = "---\ncontrolFallback: {record: ProcessorQuarantined, fallbackSeq: 1, group: g, name: p}\n";
+        assertTrue(check(text).violations().stream().anyMatch(v -> v.startsWith("I18 ")));
+    }
+
     /** Positive control: I13 does see a sender-side Refused fallback plus a delivered Reply for one request. */
     @Test
     void refusedFallbackPlusDeliveredReplyIsADoubleReply() {

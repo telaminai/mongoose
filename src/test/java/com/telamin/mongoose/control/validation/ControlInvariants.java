@@ -59,8 +59,9 @@ public final class ControlInvariants {
             String reason = record.str("reason");
             boolean unexplainedOrphan = record.type().equals("CaptureOrphan")
                     && !(terminalRecorded && "CaptureOpenTimedOut".equals(record.str("fact")));
-            if (record.type().equals("Anomaly") || record.type().equals("Dead") || record.str("anomaly") != null
-                    || unexplainedOrphan || isSafetyNetFailure(reason)) {
+            if (record.type().equals("Anomaly") || record.type().equals("Dead") || record.type().equals("ProcessorQuarantined") || record.str("anomaly") != null
+                    || unexplainedOrphan || "FAILED_DRIVER_FALLBACK".equals(record.str("failureKind"))
+                    || isSafetyNetFailure(reason)) {
                 violations.add("I18 engine safety diagnostic: " + record);
             }
         }

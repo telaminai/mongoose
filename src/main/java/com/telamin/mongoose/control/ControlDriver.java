@@ -467,7 +467,8 @@ public final class ControlDriver {
     private void complete(ControlRequest request, ReplyOutcome outcome, String reason) {
         claimed.remove(request.requestId());
         if (request.completeClaimed(new ControlReply(request.requestId(), outcome, reason, -1, null))) {
-            audit.fallback(outcome.name(), "group", group, "requestId", request.requestId(), "reason", reason);
+            audit.fallback(outcome.name(), "group", group, "requestId", request.requestId(), "reason", reason,
+                    "replyAuthor", "DRIVER", "failureKind", "FAILED_DRIVER_FALLBACK");
         }
         outstanding.remove(request);
     }

@@ -19,7 +19,7 @@ import java.util.Map;
 public class ControlState {
 
     /** Lifecycle of one registration, as the control processor has decided it. */
-    public enum Lifecycle { STARTING, STARTED, RELEASING, RELEASED, FAILED }
+    public enum Lifecycle { STARTING, STARTED, RELEASING, RELEASED, FAILED, QUARANTINED }
 
     /** A registration's audit capture sub-state (design "Audit capture"). */
     public enum Capture { OFF, OPENING, RECORDING, CLOSING }
@@ -226,7 +226,7 @@ public class ControlState {
     public Reg registration(String name) {
         if (name == null) return null;
         for (Reg r : registrations.values()) {
-            if (name.equals(r.name) && (r.lifecycle == Lifecycle.STARTED || r.lifecycle == Lifecycle.RELEASING)) return r;
+            if (name.equals(r.name) && (r.lifecycle == Lifecycle.STARTED || r.lifecycle == Lifecycle.RELEASING || r.lifecycle == Lifecycle.QUARANTINED)) return r;
         }
         return null;
     }
@@ -254,6 +254,15 @@ public class ControlState {
 
     public void forget(long generation) {
         registrations.remove(generation);
+    }
+
+    /** Close must report retained quarantines as failed cleanup, not an empty group. */
+    public List<Reg> closeTargets() {
+        List<Reg> out = new ArrayList<>();
+        for (Reg r : registrations.values()) {
+            if (r.lifecycle == Lifecycle.STARTED || r.lifecycle == Lifecycle.QUARANTINED) out.add(r);
+        }
+        return out;
     }
 
     /** Started registrations, in the order their adds were applied. */
