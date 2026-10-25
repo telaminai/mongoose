@@ -38,6 +38,18 @@ Each entry also carries every clock reading the processor made in that cycle, in
 graph raised itself. On replay the processor reads the same instants. An admin command runs as the processor's own
 event cycle, so its entry carries that cycle's readings: a `DefaultEventProcessor` takes one when the cycle opens.
 
+### Stream identity when a processor is replaced
+
+Each name's first built processor records under that name; its replacements use `name#2`, `name#3`, and so on.
+Literal `#` characters in processor names are doubled first: the first `p#2` processor records under `p##2`,
+which is distinct from `p`'s second incarnation (`p#2`). Use `ReplayStreams.key(name, incarnation)` when querying
+streams or replay outputs. This identity is independent of concurrently added processors with other names.
+
+Recordings made before this escaping rule keep working unchanged for names without `#`. For legacy names containing
+`#`, migrate the store's processor keys using the known original names and incarnation numbers. Mongoose refuses an
+unescaped legacy key when the escaped stream is absent; it cannot safely infer whether `p#2` means the literal name
+or `p`'s second incarnation. An already mixed legacy stream cannot be separated without external provenance.
+
 ## Configure it
 
 Replay is off by default. `MongooseServerConfig.builder().replay(...)` takes a `ReplayConfig`:

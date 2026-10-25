@@ -105,7 +105,11 @@ public final class GroupReplayer {
         }
         if (failed == null) {
             try {
-                if (forIncarnation > 1 && !config.store().has(cursor.name)) {
+                String legacyKey = incarnation <= 1 ? name : name + "#" + incarnation;
+                if (!cursor.name.equals(legacyKey) && !config.store().has(cursor.name) && config.store().has(legacyKey)) {
+                    failed = "ambiguous legacy stream key " + legacyKey + ": migrate the processor name's '#' escapes to "
+                            + cursor.name;
+                } else if (forIncarnation > 1 && !config.store().has(cursor.name)) {
                     failed = "no stream was recorded for " + cursor.name;    // loud, never an instantly complete cursor
                 } else {
                     cursor.entries = config.store().entries(cursor.name);
