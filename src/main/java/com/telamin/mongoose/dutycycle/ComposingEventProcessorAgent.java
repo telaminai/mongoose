@@ -521,6 +521,11 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     @Override
     public void onStart() {
         try {
+            // Establish liveness before any callback or logging can fail. Agrona may skip onClose when its error
+            // handler also throws, so even the earliest startup failure must remain visible to the death checker.
+            agentThread = Thread.currentThread();
+            control.starting(agentThread);
+            com.telamin.mongoose.control.AgentThreads.enter(mongooseServer != null ? mongooseServer : this);
             // Best-effort core pinning if configured for this agent group (guard for null during unit tests)
             if (mongooseServer != null) {
                 Integer coreId = mongooseServer.resolveCoreIdForAgentName(roleName());
@@ -529,9 +534,6 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                 }
             }
             log.info("onStart " + roleName());
-            agentThread = Thread.currentThread();
-            com.telamin.mongoose.control.AgentThreads.enter(mongooseServer != null ? mongooseServer : this);
-            control.starting(agentThread);
             // the requests accepted before the group started are its boot requests: by default a failed start among
             // them fails the group's start, so the server's boot fails, rather than boot on without it (review of #66)
             boolean failFast = failsBootOnStartFailure();
