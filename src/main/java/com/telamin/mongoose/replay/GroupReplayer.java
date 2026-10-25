@@ -47,8 +47,8 @@ public final class GroupReplayer {
         volatile List<ReplayEntry> entries = List.of();
         volatile int next;
         volatile String stopped;
-        /** The structured kind of {@link #stopped}. */
-        volatile FailureKind stoppedKind;
+        /** {@link #stopped} with its kind, published together so a reader never pairs a reason with another kind. */
+        volatile StopReason stopReason;
         /** While the current entry cannot be delivered yet: since when (System.nanoTime) and why. */
         long waitingSince;
         String waitingFor;
@@ -179,7 +179,8 @@ public final class GroupReplayer {
             if (c.flow != flow) continue;
             // A control refusal can fail start() and immediately detach this processor, before replay drains any
             // entries. Removing the cursor must not erase the refusal and make the settled replay appear successful.
-            if (c.stopped != null) end(c.name, c.stoppedKind, c.stopped, false);
+            StopReason reason = c.stopReason;
+            if (reason != null) end(c.name, reason.kind(), reason.why(), false);
             if (!c.done()) {
                 end(c.name, FailureKind.REPLAY_STOPPED, "left the group at entry " + c.next + " of " + c.entries.size()
                         + " before its replay completed", false);
@@ -187,7 +188,7 @@ public final class GroupReplayer {
             if (!c.expectedCalls.isEmpty()) {
                 end(c.name, FailureKind.REPLAY_IDENTITY_MISMATCH, "the recorded run made control request " + describe(c.expectedCalls.peek())
                         + " that the replay did not", true);
-                log.warning("replay of " + c.name + ": " + ended.get(c.name));
+                log.warning("replay of " + c.name + ": " + ended.get(c.name).why());
             }
             if (c.stopReads == null) continue;
             // the replayed stop has run: it must have read the clock as often as the recorded one did
@@ -195,7 +196,7 @@ public final class GroupReplayer {
             if (taken != c.stopReads.size()) {
                 end(c.name, FailureKind.REPLAY_STOPPED, "clock divergence in the replayed stop: it read the clock " + taken
                         + " time(s), the recorded one " + c.stopReads.size(), true);
-                log.warning("replay of " + c.name + ": " + ended.get(c.name));
+                log.warning("replay of " + c.name + ": " + ended.get(c.name).why());
             }
         }
         cursors.removeIf(c -> c.flow == flow);
@@ -203,16 +204,16 @@ public final class GroupReplayer {
     }
 
     /** Why a stream that has left the group diverged at its end, by stream name. */
-    private final java.util.Map<String, String> ended = new java.util.concurrent.ConcurrentHashMap<>();
-    /** The structured kind of each {@link #ended} reason, kept in step with it. */
-    private final java.util.Map<String, FailureKind> endedKinds = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Map<String, StopReason> ended = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** A replay stop's kind and reason, as one value. */
+    private record StopReason(FailureKind kind, String why) { }
 
     private void end(String name, FailureKind kind, String why, boolean replace) {
         if (replace) {
-            ended.put(name, why);
-            endedKinds.put(name, kind == null ? FailureKind.REPLAY_STOPPED : kind);
-        } else if (ended.putIfAbsent(name, why) == null) {
-            endedKinds.put(name, kind == null ? FailureKind.REPLAY_STOPPED : kind);
+            ended.put(name, new StopReason(kind == null ? FailureKind.REPLAY_STOPPED : kind, why));
+        } else {
+            ended.putIfAbsent(name, new StopReason(kind == null ? FailureKind.REPLAY_STOPPED : kind, why));
         }
     }
 
@@ -441,7 +442,8 @@ public final class GroupReplayer {
         for (Cursor c : cursors) {
             if (c.name.equals(processor)) return c.stopped;
         }
-        return ended.get(processor);
+        StopReason reason = ended.get(processor);
+        return reason == null ? null : reason.why();
     }
 
     /**
@@ -451,9 +453,13 @@ public final class GroupReplayer {
      */
     public FailureKind stopKind(String processor) {
         for (Cursor c : cursors) {
-            if (c.name.equals(processor)) return c.stopped == null ? null : c.stoppedKind;
+            if (c.name.equals(processor)) {
+                StopReason reason = c.stopReason;
+                return reason == null ? null : reason.kind();
+            }
         }
-        return ended.containsKey(processor) ? endedKinds.getOrDefault(processor, FailureKind.REPLAY_STOPPED) : null;
+        StopReason reason = ended.get(processor);
+        return reason == null ? null : reason.kind();
     }
 
     private boolean deliver(Cursor c, ReplayEntry entry) {
@@ -602,7 +608,7 @@ public final class GroupReplayer {
     }
 
     private boolean stop(Cursor c, FailureKind kind, String why) {
-        c.stoppedKind = kind == null ? FailureKind.REPLAY_STOPPED : kind;
+        c.stopReason = new StopReason(kind == null ? FailureKind.REPLAY_STOPPED : kind, why);
         c.stopped = why;
         log.warning("replay of " + c.name + " stopped at entry " + c.next + ": " + why);
         return true;

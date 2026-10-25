@@ -1360,7 +1360,8 @@ public class MongooseServer implements MongooseServerController {
 
     /**
      * Stop the processor admitted as {@code processorName}, waiting at most {@code waitMillis} for the outcome (admin
-     * commands use 1 s). Returns the reply, or null if it did not come in time or nothing was admitted under the name.
+     * commands use 1 s). Returns the reply, or null if it did not come in time (the stop still applies). A group or
+     * name with nothing admitted is answered {@code REFUSED} with kind {@code REFUSED_STATE} at once (issue #77).
      */
     public com.telamin.mongoose.control.ControlReply stopProcessor(String groupName, String processorName, long waitMillis) {
         long deadline = controlDeadline(waitMillis);
@@ -1373,6 +1374,12 @@ public class MongooseServer implements MongooseServerController {
             return new com.telamin.mongoose.control.ControlReply(-1,
                     com.telamin.mongoose.control.event.ReplyOutcome.REFUSED,
                     String.valueOf(notQueued.getMessage()), -1, processorName, com.telamin.mongoose.control.event.FailureKind.REFUSED_ADMISSION);
+        }
+        if (request == null) {
+            return new com.telamin.mongoose.control.ControlReply(-1,
+                    com.telamin.mongoose.control.event.ReplyOutcome.REFUSED,
+                    composingEventProcessorAgents.containsKey(groupName) ? "no such processor" : "no such group",
+                    -1, processorName, com.telamin.mongoose.control.event.FailureKind.REFUSED_STATE);
         }
         return awaitWhereSafe(groupName, request, deadline);
     }

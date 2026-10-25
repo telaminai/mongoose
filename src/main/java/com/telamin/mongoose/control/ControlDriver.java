@@ -98,6 +98,11 @@ public final class ControlDriver {
     private final AtomicLong requestIds = new AtomicLong();
     private volatile Thread agentThread;
     private volatile long fullTimeoutNanos = TimeUnit.SECONDS.toNanos(10);
+    /**
+     * Set once a rule has thrown. Under Fluxtion 1.1.3 the generated processor itself recovers its execution boundary,
+     * but the rules' state is not rolled back (a decision may be half applied), so the driver never dispatches to it
+     * again: the group is marked dead and later requests are answered {@code FAILED_RULE}.
+     */
     private boolean controlWedged;
 
     public ControlDriver(String group, int capacity, EffectAdapter adapter, ControlAuditSink audit) {
@@ -178,17 +183,17 @@ public final class ControlDriver {
                     // another group's agent thread never backs off: blocking it would stall that group's events
                     refuse(request, FailureKind.REFUSED_ADMISSION, "mailbox full");
                     throw new IllegalStateException("group " + group + ": " + queueName(request.kind())
-                            + " queue is full (" + mailbox.capacity() + ") and an agent thread never waits for it");
+                            + " request refused: mailbox full (capacity " + mailbox.capacity() + "); an agent thread never waits for it");
                 }
                 if (Thread.currentThread() == agentThread) {
                     refuse(request, FailureKind.REFUSED_ADMISSION, "mailbox full");
                     throw new IllegalStateException("group " + group + ": " + queueName(request.kind())
-                            + " queue is full (" + mailbox.capacity() + ") and cannot drain while its own thread waits on it");
+                            + " request refused: mailbox full (capacity " + mailbox.capacity() + "); it cannot drain while its own thread waits on it");
                 }
                 if (System.nanoTime() - deadline > 0) {
                     refuse(request, FailureKind.REFUSED_ADMISSION, "mailbox full");
                     throw new IllegalStateException("group " + group + ": " + queueName(request.kind())
-                            + " queue stayed full (" + mailbox.capacity() + ") for "
+                            + " request refused: mailbox full (capacity " + mailbox.capacity() + ") for "
                             + TimeUnit.NANOSECONDS.toMillis(fullTimeoutNanos) + " ms; is the group's thread running?");
                 }
                 LockSupport.parkNanos(50_000);
@@ -213,8 +218,8 @@ public final class ControlDriver {
         }
         if (!mailbox.offer(request)) {
             refuse(request, FailureKind.REFUSED_ADMISSION, "mailbox full");
-            throw new IllegalStateException("group " + group + ": " + queueName(request.kind()) + " queue is full ("
-                    + mailbox.capacity() + ") and the sender cannot wait for it");
+            throw new IllegalStateException("group " + group + ": " + queueName(request.kind())
+                    + " request refused: mailbox full (capacity " + mailbox.capacity() + "); the sender cannot wait for it");
         }
         if (ended()) {
             refuseTerminal(request);
@@ -390,7 +395,8 @@ public final class ControlDriver {
         try {
             processor.onEvent(input);
         } catch (Throwable t) {
-            // a throw from a rule leaves the generated processor's processing flag set: it cannot dispatch again
+            // a rule threw: the runtime (1.1.3) clears the processing flag, but the rules' state may be half updated,
+            // so this control graph is never dispatched to again
             controlWedged = true;
             audit.fallback("Anomaly", "group", group, "requestId", input.requestId(),
                     "description", "control processor threw during dispatch: " + t, "kind", FailureKind.FAILED_RULE);
@@ -419,8 +425,8 @@ public final class ControlDriver {
             try {
                 processor.batchEnd();
             } catch (Throwable t) {
-                // a rule threw while an outcome was dispatched inside batchEnd: the generated method has no finally,
-                // so the processor's processing flag stays set and it cannot dispatch again
+                // a rule threw while an outcome was dispatched inside batchEnd: as for dispatch, its state may be half
+                // updated, so the graph is never dispatched to again
                 controlWedged = true;
                 audit.fallback("Anomaly", "group", group, "requestId", input.requestId(),
                         "description", "control processor threw during batchEnd: " + t, "kind", FailureKind.FAILED_RULE);
@@ -483,14 +489,16 @@ public final class ControlDriver {
 
     /**
      * The driver answers a claimed request FAILED because the control processor could not (principle 1: the reply has
-     * an identified author). {@code replyAuthor: DRIVER} and {@code kind} classify it; {@code failureKind} repeats the
-     * kind for readers of the 1.0.33-rc1 export format.
+     * an identified author). {@code replyAuthor: DRIVER} names the author and {@code kind} the cause
+     * ({@code FAILED_RULE}, {@code FAILED_DRIVER_FALLBACK}, or {@code FAILED_DEAD} on a fatal error). {@code failureKind}
+     * keeps its 1.0.33-rc1 meaning, "a driver-authored reply", and is always {@code FAILED_DRIVER_FALLBACK}, so an rc1
+     * validator still rejects every driver reply.
      */
     private void complete(ControlRequest request, FailureKind kind, String reason) {
         claimed.remove(request.requestId());
         if (request.completeClaimed(new ControlReply(request.requestId(), ReplyOutcome.FAILED, reason, -1, null, kind))) {
             audit.fallback(ReplyOutcome.FAILED.name(), "group", group, "requestId", request.requestId(), "reason", reason,
-                    "replyAuthor", "DRIVER", "kind", kind, "failureKind", kind);
+                    "replyAuthor", "DRIVER", "kind", kind, "failureKind", FailureKind.FAILED_DRIVER_FALLBACK);
         }
         outstanding.remove(request);
     }
@@ -511,7 +519,8 @@ public final class ControlDriver {
     public void close() {
         GroupState before = state.get();
         if (before == GroupState.CLOSED) return;
-        if (before != GroupState.DEAD) state.set(GroupState.CLOSING);
+        // never overwrite DEAD (or CLOSED) set concurrently by the death path: kinds are derived from this state
+        state.updateAndGet(s -> s == GroupState.DEAD || s == GroupState.CLOSED ? s : GroupState.CLOSING);
         List<ControlRequest> held = new ArrayList<>();
         for (ControlRequest r; (r = mailbox.poll()) != null; ) held.add(r);
         if (!controlWedged && before != GroupState.DEAD) {
@@ -534,8 +543,8 @@ public final class ControlDriver {
             // recorded by the control processor
             for (ControlInput c; !controlWedged && (c = completions.poll()) != null; ) dispatch(c, null);
         }
-        failClaimed(FailureKind.FAILED_SHUTDOWN, "group ended");
-        if (state.get() != GroupState.DEAD) state.set(GroupState.CLOSED);
+        failClaimed(state.get() == GroupState.DEAD ? FailureKind.FAILED_DEAD : FailureKind.FAILED_SHUTDOWN, "group ended");
+        state.updateAndGet(s -> s == GroupState.DEAD ? s : GroupState.CLOSED);
         LIVE.remove(this);
         sweep();
         orphanLeftovers();

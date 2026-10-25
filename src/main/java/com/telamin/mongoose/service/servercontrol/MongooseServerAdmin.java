@@ -392,13 +392,20 @@ public class MongooseServerAdmin implements Lifecycle {
     }
 
     private void stopProcessors(List<String> args, Consumer<String> out, Consumer<String> err) {
-        String arg = args.get(1);
+        // exactly one argument, <group>/<processor>, both parts non-blank: anything else is refused before any stop
+        String arg = args.size() == 2 ? args.get(1) : null;
+        String[] splitArgs = arg == null ? new String[0] : arg.split("/", -1);
+        if (splitArgs.length != 2 || splitArgs[0].isBlank() || splitArgs[1].isBlank()) {
+            err.accept("stop REFUSED (REFUSED_STATE): usage: server.processors.stop <group>/<processor>");
+            return;
+        }
         out.accept("stopping processor:" + arg);
-        String[] splitArgs = arg.split("/");
         if (serverController instanceof com.telamin.mongoose.MongooseServer server) {
-            // the admin transport runs commands inline: wait at most 1 s, then report pending; the stop still applies
+            // the admin transport runs commands inline: wait at most 1 s, then report pending; the stop still applies.
+            // An unknown group or name is answered REFUSED at once, never "pending"
             com.telamin.mongoose.control.ControlReply reply = server.stopProcessor(splitArgs[0], splitArgs[1], 1_000);
-            out.accept(reply == null ? "stop pending (still applies): " + arg : "stop " + reply.outcome() + ": " + reply.reason());
+            out.accept(reply == null ? "stop pending (still applies): " + arg
+                    : "stop " + reply.outcome() + " (" + reply.kind() + "): " + reply.reason());
         } else {
             serverController.stopProcessor(splitArgs[0], splitArgs[1]);
         }

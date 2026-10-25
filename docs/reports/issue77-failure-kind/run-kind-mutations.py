@@ -4,8 +4,11 @@
 Usage: JAVA_HOME=/path/to/jdk21 TMPDIR=/scratch python3 -I run-kind-mutations.py /path/to/mongoose <commit>
 
 Part 1 re-runs the six PR #76 third-review mutants (the "old" mutants, some formerly caught by reason-text matching)
-against the kind-keyed harness and oracle. Part 2 adds mutants that corrupt only the structured FailureKind. Each
-mutant must compile and fail at least one JUnit assertion (failures > 0, errors == 0). Requires offline Maven.
+against the kind-keyed harness and oracle. Part 2 adds mutants that corrupt only the structured FailureKind (round 2
+adds the review-77 F1, F2 and F6 paths). Each mutant must compile and be caught: the run fails with at least one failed
+or errored test. Errors are counted as catches because a behavioural regression can surface as an unexpected
+exception in a test (review 77, F7: the deadline mutant errors in ControlTerminationAndAdmissionTest); compilation
+errors are not catches. Requires offline Maven.
 """
 import json, pathlib, subprocess, sys, tempfile, time, xml.etree.ElementTree as ET
 
@@ -63,6 +66,25 @@ mutations = [
     ("leftover-marker-dropped", [(agent, '"leftover", true,', '', True),
         (agent, 'com.telamin.mongoose.control.event.FailureKind.LEFTOVER_RECOVERED',
          'com.telamin.mongoose.control.event.FailureKind.NONE', True)]),
+    ("capture-rule-drops-effect-kind", [(node + "CaptureRules.java",
+        'answerWaiters(reg, ReplyOutcome.FAILED, result.kind(), "install failed: "',
+        'answerWaiters(reg, ReplyOutcome.FAILED, com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT, "install failed: "', False)]),
+    ("service-rule-drops-effect-kind", [(node + "ServiceRules.java",
+        'if (chain.failure == null) chain.failureKind = result.kind();',
+        'if (chain.failure == null) chain.failureKind = com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT;', False)]),
+    ("detach-retry-marked-leftover", [(agent,
+        'boolean leftover = leftoverCaptures.contains(id) || !captureDetachFailures.contains(id);',
+        'boolean leftover = true;', False)]),
+    ("replay-mismatch-prefix-dropped", [(agent, 'com.telamin.mongoose.replay.ReplayRouting.MISMATCH + ', '', True)]),
+    ("driver-rule-failure-relabelled", [(driver, 'complete(request, FailureKind.FAILED_RULE, "control processor threw: " + t);',
+        'complete(request, FailureKind.FAILED_EFFECT, "control processor threw: " + t);', True)]),
+    ("driver-fallback-relabelled", [(driver,
+        'complete(request, FailureKind.FAILED_DRIVER_FALLBACK, "no reply after its effects settled");',
+        'complete(request, FailureKind.FAILED_EFFECT, "no reply after its effects settled");', False)]),
+    ("stop-result-kinds-swapped", [
+        ("src/main/java/com/telamin/mongoose/StopResult.java",
+         'return handedOff ? com.telamin.mongoose.control.event.FailureKind.DETACHED\n                : com.telamin.mongoose.control.event.FailureKind.FAILED_SHUTDOWN;',
+         'return handedOff ? com.telamin.mongoose.control.event.FailureKind.FAILED_SHUTDOWN\n                : com.telamin.mongoose.control.event.FailureKind.DETACHED;', False)]),
     ("replay-identity-kind-dropped", [(replayer,
         'failed = "no stream was recorded for " + cursor.name;    // loud, never an instantly complete cursor\n'
         '                    failedKind = FailureKind.REPLAY_IDENTITY_MISMATCH;',
@@ -70,8 +92,9 @@ mutations = [
         '                    failedKind = FailureKind.REPLAY_STOPPED;', False)]),
 ]
 tests = ",".join(["ControlScenarioHarnessTest", "IndependentEvidenceMutationTest", "FailureKindEvidenceMutationTest",
-                  "FailureKindFlowTest", "CaptureAsEffectsTest", "GeneratedProcessorFailureIsolationTest",
-                  "ReplayIdentityTest"])
+                  "FailureKindFlowTest", "FailureKindQuarantineTest", "CaptureAsEffectsTest",
+                  "GeneratedProcessorFailureIsolationTest", "ReplayIdentityTest", "IndependentReviewReplayProbesTest",
+                  "ControlTerminationAndAdmissionTest", "BoundedShutdownTest", "Review77ProbesTest"])
 cmd = ["mvn", "-o", "-Dtest=" + tests, "-Dmongoose.harness.seedStart=12001", "-Dmongoose.harness.seedCount=20", "test"]
 results = []
 
@@ -89,7 +112,7 @@ def run(name):
         for key in counts:
             counts[key] += int(xml.attrib.get(key, 0))
         for case in xml.iter("testcase"):
-            if case.find("failure") is not None:
+            if case.find("failure") is not None or case.find("error") is not None:
                 failing.add(case.attrib.get("classname", "").rsplit(".", 1)[-1])
     result = dict(name=name, exitCode=proc.returncode, caughtBy=sorted(failing), **counts)
     results.append(result)
@@ -111,7 +134,8 @@ for name, edits in mutations:
             assert count >= 1 if replace_all else count == 1, (name, relative, "mutation anchor changed", count)
             path.write_text(text.replace(before, after))
         result = run(name)
-        assert result["exitCode"] != 0 and result["failures"] > 0 and result["errors"] == 0, result
+        assert "COMPILATION ERROR" not in (base / (name + ".log")).read_text(), (name, "mutant did not compile")
+        assert result["exitCode"] != 0 and result["failures"] + result["errors"] > 0, result
     finally:
         for path, text in originals.items():
             path.write_text(text)

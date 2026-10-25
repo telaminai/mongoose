@@ -135,6 +135,8 @@ class ControlScenarioHarnessTest {
         final List<ControlRequest> sent = new ArrayList<>();
         final List<String> failures = new ArrayList<>();
         final Map<ControlRequest, AtomicInteger> answers = new IdentityHashMap<>();
+        /** Name-only stops: their failure excuse is resolved by {@link #trackNameStop}, against the incarnations live at send. */
+        final java.util.Set<ControlRequest> nameOnly = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
         final Reservations reservations;
         final CaptureRig.FakeResources captures;
         boolean ending;
@@ -179,7 +181,7 @@ class ControlScenarioHarnessTest {
                                 failures.add(request + " APPLIED before its name was released");
                         }
                         // a failed stop is explained only by a failed effect AND a fault this harness injected
-                        if (reply.outcome() == com.telamin.mongoose.control.event.ReplyOutcome.FAILED
+                        if (reply.outcome() == com.telamin.mongoose.control.event.ReplyOutcome.FAILED && !nameOnly.contains(request)
                                 && !(kind == com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT
                                 && injectedStopFault(target)))
                             failures.add(request + " unexplained failed stop: " + reply);
@@ -210,22 +212,33 @@ class ControlScenarioHarnessTest {
         }
 
         /**
-         * Whether this harness injected a fault a stop of {@code target} can meet. A name-only stop ({@code target} null)
-         * is resolved by {@link #trackNameStop}, which applies the same rule to the processors of that name.
+         * Whether this harness injected a fault into {@code target} itself that its stop can meet: a stop failure, or an
+         * uninstall failure of a capture resource installed on it. A fault elsewhere in the scenario never excuses it
+         * (review 77, F3). An unknown target is never excused.
          */
         private boolean injectedStopFault(LedgerProc target) {
-            boolean uninstallFault = captures != null && !captures.failedUninstallResources.isEmpty();
-            return uninstallFault || target == null || target.failStop;
+            if (target == null) return false;
+            if (target.failStop) return true;
+            if (captures == null) return false;
+            for (CaptureRig.Res r : captures.opened) {
+                if (r.installedOn.contains(target) && captures.failedUninstallResources.contains((long) r.serial)) return true;
+            }
+            return false;
         }
 
         ControlRequest trackNameStop(ControlRequest request, String name, List<LedgerProc> all) {
+            nameOnly.add(request);
+            // the incarnations a name-only stop can address: those of the name running, or admitted and not yet started,
+            // when it was sent (never one already torn down or one whose start failed)
+            List<LedgerProc> liveAtSend = all.stream().filter(proc -> name.equals(proc.name) && !proc.failStart
+                    && proc.tearDowns.get() == 0).toList();
             track(request, null, null);
             request.reply().thenAccept(reply -> {
                 // the target is resolved here (third review F3): a failed name-only stop is explained only by a fault
-                // injected into a processor of that name, or an injected uninstall failure
+                // injected into an incarnation of that name that was live when the stop was sent (review 77, F3)
                 if (reply.outcome() == com.telamin.mongoose.control.event.ReplyOutcome.FAILED) {
-                    boolean injected = (captures != null && !captures.failedUninstallResources.isEmpty())
-                            || all.stream().anyMatch(proc -> name.equals(proc.name) && proc.failStop);
+                    boolean injected = reply.kind() == com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT
+                            && liveAtSend.stream().anyMatch(this::injectedStopFault);
                     if (!injected) failures.add(request + " unexplained failed name-only stop: " + reply);
                 }
                 if (!reply.applied()) return;

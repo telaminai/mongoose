@@ -18,8 +18,10 @@ import com.telamin.mongoose.control.event.ReplyOutcome;
 public record ControlReply(long requestId, ReplyOutcome outcome, String reason, long generation, String name,
                            FailureKind kind) {
 
+    /** Normalised so that {@code kind == NONE} exactly when {@code outcome == APPLIED}. */
     public ControlReply {
-        if (kind == null) kind = FailureKind.defaultFor(outcome);
+        if (outcome == ReplyOutcome.APPLIED) kind = FailureKind.NONE;
+        else if (kind == null || kind == FailureKind.NONE) kind = FailureKind.defaultFor(outcome);
     }
 
     /**

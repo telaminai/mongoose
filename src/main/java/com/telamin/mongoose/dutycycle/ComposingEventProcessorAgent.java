@@ -217,6 +217,11 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     }
     /** Resources whose live detach failed: retry without the instance only after its release. */
     private final java.util.Set<Long> captureDetachFailures = ConcurrentHashMap.newKeySet();
+    /**
+     * Resources first reclaimed by the offline cleanup with no requested uninstall having failed for them: the control
+     * processor never released them. They stay leftovers on later attempts (issue #77, I19).
+     */
+    private final java.util.Set<Long> leftoverCaptures = ConcurrentHashMap.newKeySet();
     private final ConcurrentHashMap<String, com.telamin.mongoose.control.CaptureIo.Cancellable> openTimeouts = new ConcurrentHashMap<>();
     private final AtomicLong captureResourceIds = new AtomicLong();
     private final AtomicLong completionIds = new AtomicLong();
@@ -738,7 +743,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         }
         closed = true;
         if (state == ControlDriver.GroupState.DEAD) control.markDead("cleanup after the agent thread ended");
-        control.failClaimed("group died");
+        control.failClaimed(control.state() == ControlDriver.GroupState.DEAD
+                ? com.telamin.mongoose.control.event.FailureKind.FAILED_DEAD
+                : com.telamin.mongoose.control.event.FailureKind.FAILED_SHUTDOWN, "group died");
         stopAndTearDownProcessors();
         // the dead group's processors are released: so are their names
         registrationsByGeneration.entrySet().removeIf(entry -> {
@@ -790,6 +797,23 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
      */
     @Override
     public EffectResult perform(ControlEffect effect) {
+        try {
+            return performEffect(effect);
+        } catch (VirtualMachineError fatal) {
+            throw fatal;
+        } catch (RuntimeException | Error failure) {
+            // an effect whose failure quarantined its processor (a routed capture install/restore on a generated graph)
+            // is classified QUARANTINED, so the rule's reply says so without reading text
+            NamedEventProcessor named = processorsByGeneration.get(effect.generation());
+            if (named != null && quarantined.containsKey(named)) {
+                return quarantinedResult(effect, failure.getMessage() == null
+                        ? failure.getClass().getSimpleName() : failure.getMessage());
+            }
+            throw failure;
+        }
+    }
+
+    private EffectResult performEffect(ControlEffect effect) {
         return switch (effect) {
             case ControlEffect.BuildAndStart e -> buildAndStart(e);
             case ControlEffect.Release e -> releaseGeneration(e);
@@ -974,6 +998,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             else if (delivery.invoked()) recorder.serviceChanged(flow, name, payload.register(), payload.version());
             else recorder.discardControl(flow);
         }
+        if (delivery.failure() != null && quarantined.containsKey(named)) {
+            return quarantinedResult(effect, delivery.failure());
+        }
         return result(effect, delivery.failure() == null ? ControlOutcome.SUCCEEDED : ControlOutcome.FAILED, delivery.failure());
     }
 
@@ -1144,7 +1171,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                 control.audit().fallback("EffectOutcome", "group", roleName(), "requestId", effect.requestId(),
                         "opId", detachOp, "effect", "UninstallCapture", "resourceId", effect.resourceId(),
                         "generation", effect.generation(), "offline", true, "causeOp", effect.opId(),
-                        "outcome", "failed", "reason", String.valueOf(failed));
+                        "outcome", "failed", "reason", String.valueOf(failed), "kind", com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT);
                 throw failed;
             }
         }
@@ -1206,16 +1233,18 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                 audit.fallback("EffectOutcome", "group", roleName(), "requestId", c.requestId(), "opId", closeOp,
                         "effect", "CloseCapture", "resourceId", c.resourceId(), "causeOp", c.opId(),
                         "outcome", closed.kind() == CaptureCompletion.Kind.CLOSED ? "succeeded" : "failed",
-                        "reason", closed.reason());
+                        "reason", closed.reason(), "kind", closed.kind() == CaptureCompletion.Kind.CLOSED ? null : com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT);
                 audit.fallback("CaptureCompensated", "group", roleName(), "requestId", c.requestId(),
                         "opId", closeOp, "resourceId", c.resourceId(), "causeOp", c.opId(),
                         "closed", closed.kind() == CaptureCompletion.Kind.CLOSED, "reason", closed.reason());
             }
             case CLOSED, CLOSE_FAILED -> audit.fallback("EffectOutcome", "group", roleName(), "requestId", c.requestId(),
                     "opId", c.opId(), "effect", "CloseCapture", "outcome", c.kind() == CaptureCompletion.Kind.CLOSED
-                            ? "succeeded" : "failed", "resourceId", c.resourceId(), "reason", c.reason());
+                            ? "succeeded" : "failed", "resourceId", c.resourceId(), "reason", c.reason(),
+                    "kind", c.kind() == CaptureCompletion.Kind.CLOSED ? null : com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT);
             case OPEN_FAILED -> audit.fallback("EffectOutcome", "group", roleName(), "requestId", c.requestId(),
                     "opId", c.opId(), "effect", "OpenCapture", "outcome", "failed", "stale", true, "reason", c.reason(),
+                    "kind", com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT,
                     "duplicate", control.processor().controlState.pendingOpen(c.opId()) == null ? Boolean.TRUE : null);
             default -> audit.fallback("CaptureOrphan", "group", roleName(), "opId", c.opId(), "fact", c.fact());
         }
@@ -1233,22 +1262,29 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             Object handle = captureHandles.get(id);
             if (handle == null) continue;
             String detachOp = "group-detach." + id + "." + physicalCleanupOps.incrementAndGet();
+            // A handle whose requested uninstall failed is being retried, not recovered: the control processor did ask
+            // for its release. Only a handle with no recorded detach failure is a leftover (review 77, F2).
+            boolean leftover = leftoverCaptures.contains(id) || !captureDetachFailures.contains(id);
+            if (leftover) leftoverCaptures.add(id);
+            Object leftoverMark = leftover ? Boolean.TRUE : null;
+            Object leftoverKind = leftover ? com.telamin.mongoose.control.event.FailureKind.LEFTOVER_RECOVERED : null;
+            Object retryMark = leftover ? null : Boolean.TRUE;
             control.audit().fallback("EffectRequested", "group", roleName(), "requestId", -1, "opId", detachOp,
                     "effect", "UninstallCapture", "resourceId", id, "generation", -1, "offline", true,
-                    "reason", "released without the control processor", "leftover", true,
-                    "kind", com.telamin.mongoose.control.event.FailureKind.LEFTOVER_RECOVERED);
+                    "reason", leftover ? "released without the control processor" : "retrying a requested uninstall that failed",
+                    "leftover", leftoverMark, "retry", retryMark, "kind", leftoverKind);
             try {
                 resources.uninstallCapture(handle, null, null);
                 captureDetached(id);
                 control.audit().fallback("EffectOutcome", "group", roleName(), "requestId", -1, "opId", detachOp,
                         "effect", "UninstallCapture", "outcome", "succeeded", "resourceId", id,
-                        "generation", -1, "offline", true, "leftover", true, "kind", com.telamin.mongoose.control.event.FailureKind.LEFTOVER_RECOVERED);
+                        "generation", -1, "offline", true, "leftover", leftoverMark, "retry", retryMark, "kind", leftoverKind);
             } catch (Throwable t) {
                 captureDetachFailed(id, t);
                 control.audit().fallback("EffectOutcome", "group", roleName(), "requestId", -1, "opId", detachOp,
                         "effect", "UninstallCapture", "outcome", "failed", "resourceId", id,
-                        "generation", -1, "offline", true, "reason", String.valueOf(t), "leftover", true,
-                        "kind", com.telamin.mongoose.control.event.FailureKind.LEFTOVER_RECOVERED);
+                        "generation", -1, "offline", true, "reason", String.valueOf(t), "leftover", leftoverMark,
+                        "retry", retryMark, "kind", leftover ? leftoverKind : com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT);
                 if (t instanceof VirtualMachineError fatal) throw fatal;
                 reportCloseFailure("<capture " + id + ">", "could not be detached", t);
                 continue;
@@ -1258,12 +1294,14 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             String closeOp = "group-close." + id;
             control.audit().fallback("EffectRequested", "group", roleName(), "requestId", -1, "opId", closeOp,
                     "effect", "CloseCapture", "resourceId", id, "generation", -1, "offline", true, "causeOp", detachOp,
-                    "leftover", true, "kind", com.telamin.mongoose.control.event.FailureKind.LEFTOVER_RECOVERED);
+                    "leftover", leftoverMark, "retry", retryMark, "kind", leftoverKind);
             CaptureCompletion closed = closeResource(-1, closeOp, id, handle);
             control.audit().fallback("EffectOutcome", "group", roleName(), "requestId", -1, "opId", closeOp,
                     "effect", "CloseCapture", "outcome", closed.kind() == CaptureCompletion.Kind.CLOSED ? "succeeded" : "failed",
                     "resourceId", id, "generation", -1, "offline", true, "causeOp", detachOp,
-                    "reason", closed.reason(), "leftover", true, "kind", com.telamin.mongoose.control.event.FailureKind.LEFTOVER_RECOVERED);
+                    "reason", closed.reason(), "leftover", leftoverMark, "retry", retryMark,
+                    "kind", leftover ? leftoverKind : closed.kind() == CaptureCompletion.Kind.CLOSED ? null : com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT);
+            leftoverCaptures.remove(id);
         }
     }
 

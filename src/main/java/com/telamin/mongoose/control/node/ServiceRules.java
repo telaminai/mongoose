@@ -88,6 +88,8 @@ public class ServiceRules extends EventLogNode {
         switch (result.effect()) {
             case "DeliverService" -> {
                 if (!result.succeeded()) {
+                    // the first failure's kind classifies the broadcast (a quarantined processor stays QUARANTINED)
+                    if (chain.failure == null) chain.failureKind = result.kind();
                     chain.failure = (chain.failure == null ? "" : chain.failure + "; ") + result.name() + ": "
                             + result.reason();
                 }
@@ -96,13 +98,14 @@ public class ServiceRules extends EventLogNode {
                 }
                 ControlEffect reply = new ControlEffect.Reply(state.nextOp(req), req, -1, null,
                         chain.failure == null ? ReplyOutcome.APPLIED : ReplyOutcome.FAILED,
-                        chain.failure == null ? "delivered" : "delivered with failures: " + chain.failure);
+                        chain.failure == null ? "delivered" : "delivered with failures: " + chain.failure,
+                        chain.failure == null ? com.telamin.mongoose.control.event.FailureKind.NONE : chain.failureKind);
                 decide("broadcastComplete", null, reply);
             }
             case "RunTask" -> {
                 ControlEffect reply = new ControlEffect.Reply(state.nextOp(req), req, -1, null,
                         result.succeeded() ? ReplyOutcome.APPLIED : ReplyOutcome.FAILED,
-                        result.succeeded() ? "ran" : result.reason());
+                        result.succeeded() ? "ran" : result.reason(), result.kind());
                 decide("taskComplete", null, reply);
             }
             default -> {

@@ -37,6 +37,11 @@ public interface ReplayRouting {
         return false;
     }
 
+    /** Prefix of a {@link #deliverService} answer that means "not yet": the entry waits. */
+    String WAIT = "wait:";
+    /** Prefix of a {@link #deliverService} answer that means the recorded service identity is unavailable. */
+    String MISMATCH = "mismatch:";
+
     /**
      * Deliver to, or withdraw from, the replayed processor the service registered as {@code service}, as the recorded
      * run did at this point. A positive version must identify the currently live registry binding;
@@ -47,11 +52,6 @@ public interface ReplayRouting {
      *         {@code REPLAY_IDENTITY_MISMATCH}); otherwise why the replay cannot reproduce it (a callback that failed),
      *         which stops the replay as {@code REPLAY_STOPPED}
      */
-    /** Prefix of a {@link #deliverService} answer that means "not yet": the entry waits. */
-    String WAIT = "wait:";
-    /** Prefix of a {@link #deliverService} answer that means the recorded service identity is unavailable. */
-    String MISMATCH = "mismatch:";
-
     default String deliverService(DataFlow flow, String service, boolean register, long version) {
         return "wait:service delivery is not supported by this group";
     }

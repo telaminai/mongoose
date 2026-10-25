@@ -886,9 +886,8 @@ final class ChaosWorkload implements AutoCloseable {
             if (reply != null && ControlInvariants.isSafetyNetFailure(reply))
                 anomalies.add("driver safety net answered a request: " + op + " " + reply);
             if (op.what.equals("stop") && reply != null && reply.outcome() == ReplyOutcome.FAILED
-                    && !(injectedLifecycleFailure(op.target)
-                    && (reply.kind() == com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT
-                    || reply.kind() == com.telamin.mongoose.control.event.FailureKind.QUARANTINED)))
+                    && !(injectedLifecycleFailure(op)
+                    && reply.kind() == com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT))
                 anomalies.add("stop failed without an injected lifecycle failure: " + op + " " + reply);
             op.reply = reply;
             op.error = error;
@@ -903,10 +902,21 @@ final class ChaosWorkload implements AutoCloseable {
         });
     }
 
-    /** A stop of {@code target} can fail only through a lifecycle failure the workload injected (unknown target: any). */
-    private static boolean injectedLifecycleFailure(Instance target) {
-        return target == null || target.kind == Kind.STOP_THROWS || target.kind == Kind.TEARDOWN_THROWS
-                || target.kind == Kind.HANDLER_THROWS;
+    /**
+     * A stop can fail only through a stop or tearDown failure the workload injected into the processor it stopped (the
+     * same faults the reason-text rule named). Without a recorded target, the stopped incarnation is resolved from the
+     * instances of that group and name that were actually stopped.
+     */
+    private boolean injectedLifecycleFailure(AsyncOp op) {
+        if (op.target != null) return lifecycleFault(op.target);
+        for (Instance i : instances) {
+            if (i.group.equals(op.group) && i.name.equals(op.name) && i.stops.get() > 0 && lifecycleFault(i)) return true;
+        }
+        return false;
+    }
+
+    private static boolean lifecycleFault(Instance i) {
+        return i.kind == Kind.STOP_THROWS || i.kind == Kind.TEARDOWN_THROWS;
     }
 
     /** An add's reply agrees with what its processor saw (its start ran on the group's thread before the reply). */

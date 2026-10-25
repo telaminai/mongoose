@@ -90,6 +90,7 @@ class BoundedShutdownTest {
         StopResult first = s.shutdown();
         long ms = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0);
         assertFalse(first.complete(), "the stop ran out of its deadline: " + first);
+        assertEquals(com.telamin.mongoose.control.event.FailureKind.FAILED_SHUTDOWN, first.failureKind(), "issue #77: a real incomplete stop's kind");
         assertTrue(ms < 5_000, "bounded by the shutdown deadline, took " + ms + " ms");
         assertTrue(first.groupsRunning().contains("slow-group"), "names the group still closing: " + first);
         assertTrue(first.servicesLeftRunning().contains("counting"), "names the services left running: " + first);
@@ -101,6 +102,7 @@ class BoundedShutdownTest {
         slow.release.countDown();
         StopResult second = s.shutdown();
         assertTrue(second.complete(), "the resumed stop completes: " + second);
+        assertEquals(com.telamin.mongoose.control.event.FailureKind.NONE, second.failureKind());
         assertEquals(1, slow.stops.get(), "the resumed stop re-joined the close in progress, not a second close");
         assertEquals(1, service.stops.get(), "services are stopped once the processor groups have closed");
         assertTrue(s.awaitStopped(1, TimeUnit.SECONDS));
@@ -182,6 +184,7 @@ class BoundedShutdownTest {
         assertThrows(IllegalStateException.class, s::start);
         assertTrue(called.await(10, TimeUnit.SECONDS));
         assertTrue(fromHandler.get().handedOff(), "an agent thread cannot wait for the stop: " + fromHandler.get());
+        assertEquals(com.telamin.mongoose.control.event.FailureKind.DETACHED, fromHandler.get().failureKind(), "a handed-off stop detaches its caller");
         assertTrue(s.awaitStopped(10, TimeUnit.SECONDS), "the stop thread completes it");
     }
 }

@@ -179,6 +179,40 @@ class FailureKindFlowTest {
         assertEquals(FailureKind.FAILED_SHUTDOWN, StopResult.incomplete(null, List.of("g"), List.of()).failureKind());
     }
 
+    /** An input no rule handles: the rules settle without replying, so the driver's safety net answers. */
+    private record UnhandledInput(long requestId) implements com.telamin.mongoose.control.event.ControlInput { }
+
+    @Test
+    void aRequestNoRuleAnswersIsAnsweredByTheDriverAsFailedDriverFallback() throws Exception {
+        ControlDriver driver = new ControlDriver("fallback", 8, effect -> null, new ControlAuditSink());
+        ControlRequest orphan = driver.send(new ControlRequest(ControlRequest.Kind.RUN, "unhandled", UnhandledInput::new, null));
+        driver.drain(8, Long.MAX_VALUE);
+        ControlReply reply = reply(orphan);
+        assertEquals(new Expect(ReplyOutcome.FAILED, FailureKind.FAILED_DRIVER_FALLBACK), Expect.of(reply));
+        ControlEvidence evidence = ControlEvidence.parse(driver.audit().exportText(), true);
+        assertTrue(evidence.records().stream().anyMatch(r -> "FAILED".equals(r.type()) && "DRIVER".equals(r.str("replyAuthor"))
+                && ControlInvariants.kindOf(r) == FailureKind.FAILED_DRIVER_FALLBACK), evidence.records().toString());
+        ControlInvariants.Result result = ControlInvariants.check(evidence);
+        assertTrue(result.violations().stream().anyMatch(v -> v.startsWith("I18 ")), result.toString());
+        driver.close();
+    }
+
+    @Test
+    void aRuleThatThrowsIsAnsweredByTheDriverAsFailedRule() throws Exception {
+        // an adapter answering with no outcome makes the outcome recorder throw inside the control processor
+        ControlDriver driver = new ControlDriver("rule-throws", 8, effect -> new com.telamin.mongoose.control.event.EffectResult(
+                effect.opId(), effect.requestId(), effect.effect(), null, effect.generation(), effect.name(), null),
+                new ControlAuditSink());
+        ControlRequest run = driver.send(new ControlRequest(ControlRequest.Kind.RUN, "run", RunIntent::new, (Runnable) () -> { }));
+        driver.drain(8, Long.MAX_VALUE);
+        ControlReply reply = reply(run);
+        assertEquals(new Expect(ReplyOutcome.FAILED, FailureKind.FAILED_RULE), Expect.of(reply));
+        assertEquals(ControlDriver.GroupState.DEAD, driver.state(), "a rule that threw leaves the control graph unusable");
+        ControlInvariants.Result result = ControlInvariants.check(ControlEvidence.parse(driver.audit().exportText(), true));
+        assertTrue(result.violations().stream().anyMatch(v -> v.startsWith("I18 ")), result.toString());
+        driver.close();
+    }
+
     private record Expect(ReplyOutcome outcome, FailureKind kind) {
         static Expect of(ControlReply reply) {
             return new Expect(reply.outcome(), reply.kind());

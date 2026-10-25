@@ -55,6 +55,9 @@ public final class ControlInvariants {
         Map<String, Requested> requestsByOp = new HashMap<>();
         for (Requested request : requested) requestsByOp.putIfAbsent(request.opId(), request);
         boolean terminalRecorded = false;
+        // An export in which any record carries a kind was written with the taxonomy: there, a missing kind is itself a
+        // defect (I20), and reason text is never consulted. Only a pre-taxonomy export falls back to reason text.
+        boolean taxonomyExport = evidence.records().stream().anyMatch(r -> r.fields().containsKey("kind"));
         for (Rec record : evidence.records()) {
             if (record.type().equals("Dead") || (record.type().equals("Input") && "Close".equals(record.str("fact"))))
                 terminalRecorded = true;
@@ -65,9 +68,11 @@ public final class ControlInvariants {
             FailureKind kind = kindOf(record);
             boolean unhealthyKind = kind != null && (kind.engineSafetyNet() || kind == FailureKind.FAILED_DEAD
                     || kind == FailureKind.QUARANTINED);
-            boolean legacySafetyNet = kind == null && isLegacySafetyNetReason(record.str("reason"));
+            boolean legacySafetyNet = !taxonomyExport && kind == null && isLegacySafetyNetReason(record.str("reason"));
+            // a reply the driver authored is never evidence of a healthy run, whatever its kind says
+            boolean driverAuthored = "DRIVER".equals(record.str("replyAuthor"));
             if (record.type().equals("Anomaly") || record.type().equals("Dead") || record.type().equals("ProcessorQuarantined") || record.str("anomaly") != null
-                    || unexplainedOrphan || unhealthyKind || legacySafetyNet) {
+                    || unexplainedOrphan || unhealthyKind || legacySafetyNet || driverAuthored) {
                 violations.add("I18 engine safety diagnostic: " + record);
             }
         }
@@ -84,9 +89,21 @@ public final class ControlInvariants {
             }
         }
         // I20 (issue #77): in an export that carries the taxonomy, every delivered reply names a kind agreeing with its
-        // outcome: APPLIED is NONE, anything else is a failure or refusal kind.
-        boolean taxonomyExport = evidence.records().stream().anyMatch(r -> r.fields().containsKey("kind"));
+        // outcome (APPLIED is NONE, anything else a failure or refusal kind), and so does every reply-bearing fallback
+        // record and every failed effect outcome.
         if (taxonomyExport) {
+            for (Rec r : evidence.records()) {
+                boolean fallbackReply = r.fallback() && FALLBACK_REPLIES.contains(r.type());
+                boolean failedOutcome = "EffectOutcome".equals(r.type()) && "failed".equals(r.str("outcome"));
+                if (!fallbackReply && !failedOutcome) continue;
+                FailureKind kind = kindOf(r);
+                if (kind == null) {
+                    violations.add("I20 " + (fallbackReply ? "fallback reply" : "failed effect outcome")
+                            + " without a kind: " + r);
+                } else if (kind == FailureKind.NONE && !"APPLIED".equals(r.type())) {
+                    violations.add("I20 " + r.type() + " record classified NONE: " + r);
+                }
+            }
             for (Rec r : evidence.ofType("Reply")) {
                 if (Boolean.FALSE.equals(r.fields().get("completed"))) continue;
                 FailureKind kind = kindOf(r);
@@ -322,11 +339,19 @@ public final class ControlInvariants {
         // never rule names (second review, T3): a Stop input bound to the generation, a name-only Stop resolved to the
         // generation physically started under that name at the time, or a requested Release.
         Map<Long, Long> releasingFrom = new HashMap<>();
+        // The name of a generation comes from its Add command input (the caller's fact), not from the engine's outcome
+        // record; only "it started" and "its name was released" are read from effect outcomes, by generation. Those two
+        // legs, and requested Release effects, remain engine-authored evidence (review 77, F8).
         Map<String, Long> liveByName = new HashMap<>();
+        Map<Long, String> namesByGeneration = new HashMap<>();
         for (Rec r : evidence.records()) {
-            if ("EffectOutcome".equals(r.type()) && "succeeded".equals(r.str("outcome")) && r.str("name") != null) {
-                if ("BuildAndStart".equals(r.str("effect"))) liveByName.put(r.str("name"), r.num("generation"));
-                else if ("ReleaseName".equals(r.str("effect"))) liveByName.remove(r.str("name"), r.num("generation"));
+            if ("Input".equals(r.type()) && "Add".equals(r.str("fact")) && r.num("generation") >= 0 && r.str("name") != null) {
+                namesByGeneration.put(r.num("generation"), r.str("name"));
+            }
+            if ("EffectOutcome".equals(r.type()) && "succeeded".equals(r.str("outcome"))) {
+                String name = namesByGeneration.getOrDefault(r.num("generation"), r.str("name"));
+                if (name != null && "BuildAndStart".equals(r.str("effect"))) liveByName.put(name, r.num("generation"));
+                else if (name != null && "ReleaseName".equals(r.str("effect"))) liveByName.remove(name, r.num("generation"));
             }
             if ("Input".equals(r.type()) && "Stop".equals(r.str("fact"))) {
                 long generation = r.num("generation");
