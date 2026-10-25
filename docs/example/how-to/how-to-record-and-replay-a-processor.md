@@ -38,6 +38,30 @@ Each entry also carries every clock reading the processor made in that cycle, in
 graph raised itself. On replay the processor reads the same instants. An admin command runs as the processor's own
 event cycle, so its entry carries that cycle's readings: a `DefaultEventProcessor` takes one when the cycle opens.
 
+Control interception does not execute `addEventProcessor` during replay. Its supplied factory is executable code;
+the recording does not identify the factory's build and configuration sufficiently to reproduce or validate it.
+Replay therefore stops with an explicit unsupported-supplier reason. Calls recorded during normal event handling
+through supported controller methods are matched against the recording without changing the live server.
+
+A failed controller call records its exception as text. Replay refuses to claim a match for that failure: it stops
+with a reconstruction diagnostic, even if the processor catches the substitute exception. Exception types and
+payloads can change the processor's branch and are not reconstructed from arbitrary exception text. Controller calls
+made during processor startup are also not supported by the event-position matching mechanism; they stop replay as
+unmatched calls. Provenance currently compares processor and handler class names; it does not authenticate a build,
+configuration, or generated graph fingerprint.
+
+### Stream identity when a processor is replaced
+
+Each name's first built processor records under that name; its replacements use `name#2`, `name#3`, and so on.
+Literal `#` characters in processor names are doubled first: the first `p#2` processor records under `p##2`,
+which is distinct from `p`'s second incarnation (`p#2`). Use `ReplayStreams.key(name, incarnation)` when querying
+streams or replay outputs. This identity is independent of concurrently added processors with other names.
+
+Recordings made before this escaping rule keep working unchanged for names without `#`. For legacy names containing
+`#`, migrate the store's processor keys using the known original names and incarnation numbers. Mongoose refuses an
+unescaped legacy key when the escaped stream is absent; it cannot safely infer whether `p#2` means the literal name
+or `p`'s second incarnation. An already mixed legacy stream cannot be separated without external provenance.
+
 ## Configure it
 
 Replay is off by default. `MongooseServerConfig.builder().replay(...)` takes a `ReplayConfig`:

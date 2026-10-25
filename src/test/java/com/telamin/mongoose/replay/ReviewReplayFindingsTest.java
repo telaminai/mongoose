@@ -161,7 +161,7 @@ class ReviewReplayFindingsTest {
 
     /** Finding: addEventProcessor is not in ControlInterception.CHANGES, so a replayed processor adds live. */
     @Test
-    void anAddFromAReplayedProcessorIsInterceptedNotExecuted() throws Exception {
+    void anAddFromAReplayedProcessorIsNeverExecuted() throws Exception {
         InMemoryReplayStore store = new InMemoryReplayStore();
         InMemoryEventJournal journal = new InMemoryEventJournal();
         try (Server s = boot(record(store, journal), Spawner::new)) {

@@ -16,8 +16,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Completion isolation (design "Agent threads and replies"): replies are completed on a group's agent thread, inside
- * the control processor's batch, so a caller's continuation must never run there, where it could block the group or
- * re-enter it. The stages handed to callers are completed from this executor instead.
+ * the control processor's batch. The stages handed to callers are completed from this executor instead, so an
+ * already-attached dependent does not run on the completing agent. A synchronous dependent attached after completion
+ * may run on the attaching thread; callers must use asynchronous continuations for blocking work.
  */
 public final class ControlReplies {
 
@@ -41,7 +42,7 @@ public final class ControlReplies {
         });
     }
 
-    /** The request's reply as a stage whose dependents never run on an agent thread. */
+    /** The request's reply as a stage completed off the group's agent thread. */
     public static CompletionStage<ControlReply> isolated(ControlRequest request) {
         return isolated(request, DEFAULT);
     }
@@ -49,20 +50,23 @@ public final class ControlReplies {
     /** As {@link #isolated(ControlRequest)}, completed on {@code executor}; on a fresh thread once it is shut down. */
     public static CompletionStage<ControlReply> isolated(ControlRequest request, Executor executor) {
         CompletableFuture<ControlReply> out = new CompletableFuture<>();
-        Executor safe = task -> {
-            try {
-                executor.execute(task);
-            } catch (RejectedExecutionException shutDown) {
-                Thread t = new Thread(task, "mongoose-control-replies-late");
-                t.setDaemon(true);
-                t.start();
-            }
-        };
+        Executor safe = task -> executeSafely(executor, task);
         request.reply().whenCompleteAsync((reply, error) -> {
             if (error != null) out.completeExceptionally(error);
             else out.complete(reply);
         }, safe);
         return out;
+    }
+
+    /** Dispatch completion or cleanup even if server shutdown already closed the reply executor. */
+    public static void executeSafely(Executor executor, Runnable task) {
+        try {
+            executor.execute(task);
+        } catch (RejectedExecutionException shutDown) {
+            Thread t = new Thread(task, "mongoose-control-replies-late");
+            t.setDaemon(true);
+            t.start();
+        }
     }
 
     /**

@@ -12,10 +12,12 @@ import com.telamin.mongoose.dutycycle.ProcessorRegistration;
  */
 public final class ProcessorHandle {
 
+    private final Object owner;
     private final String group;
     private final ProcessorRegistration registration;
 
-    ProcessorHandle(String group, ProcessorRegistration registration) {
+    ProcessorHandle(Object owner, String group, ProcessorRegistration registration) {
+        this.owner = owner;
         this.group = group;
         this.registration = registration;
     }
@@ -30,6 +32,10 @@ public final class ProcessorHandle {
 
     public long generation() {
         return registration.generation();
+    }
+
+    boolean belongsTo(Object owner) {
+        return this.owner == owner;
     }
 
     ProcessorRegistration registration() {

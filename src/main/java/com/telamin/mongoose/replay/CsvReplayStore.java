@@ -130,7 +130,7 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
 
     @Override
     public boolean holdsRecording() {
-        return torn != null || earlierFormat || entries.values().stream().anyMatch(l -> !l.isEmpty());
+        return torn != null || earlierFormat || !provenance.isEmpty() || entries.values().stream().anyMatch(l -> !l.isEmpty());
     }
 
     @Override

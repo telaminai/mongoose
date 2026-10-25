@@ -385,7 +385,10 @@ class ControlScenarioHarnessTest {
         Path out = group.control().audit().export(Path.of("target/control-audit/export-roundtrip.yaml"));
         String text = Files.readString(out);
         assertTrue(text.startsWith("---\n") && text.endsWith("---\n"), "framed as the analyser frames records");
-        ControlEvidence evidence = ControlEvidence.parse(text, true);
+        ControlAuditExport.Verification completeness = ControlAuditExport.verify(out);
+        assertTrue(completeness.permitsInvariantPass(), completeness.reason());
+        ControlEvidence evidence = ControlEvidence.parse(text, completeness.permitsInvariantPass());
+        assertTrue(ControlInvariants.check(evidence).unverifiable().isEmpty());
         assertTrue(ControlInvariants.check(evidence).ok(), ControlInvariants.check(evidence).toString());
         List<String> rules = evidence.ofType("Decision").stream().map(d -> d.str("rule")).toList();
         assertEquals(List.of("addAdmitted", "started", "stopStarted", "released", "stopComplete", "closeEmpty"), rules);

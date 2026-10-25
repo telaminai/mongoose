@@ -149,12 +149,19 @@ public class MongooseServer implements MongooseServerController {
     private final java.util.concurrent.CountDownLatch stopCompleted = new java.util.concurrent.CountDownLatch(1);
     /** Serialises admission (adds) against shutdown's snapshot: adds read-lock, the stop write-locks once. */
     private final java.util.concurrent.locks.ReentrantReadWriteLock admission = new java.util.concurrent.locks.ReentrantReadWriteLock();
-    private final Object stopAttempt = new Object();
+    private final java.util.concurrent.locks.ReentrantLock stopAttempt = new java.util.concurrent.locks.ReentrantLock();
+    private volatile Thread auditStopThread;
+    private volatile Throwable auditStopFailure;
     /** Design PR 4: service lifecycle is server-owned; registry changes and their broadcasts happen in one order. */
     private final java.util.concurrent.locks.ReentrantLock serviceLock = new java.util.concurrent.locks.ReentrantLock();
-    /** This server's reply stages complete here, never on an agent thread; shut down once the server has stopped. */
+    /** A handle is scoped to this server, since group generations are local counters. */
+    private final Object processorHandleOwner = new Object();
+    /** Reply completion runs off agent threads; late synchronous dependents run on their attaching thread. */
     private final java.util.concurrent.ExecutorService replyExecutor = com.telamin.mongoose.control.ControlReplies.newExecutor();
     private final ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong> serviceVersions = new ConcurrentHashMap<>();
+    /** Removed services remain owned while any processor may still reference them. */
+    private final ConcurrentHashMap<Long, RemovedService> removedServices = new ConcurrentHashMap<>();
+    private final java.util.concurrent.atomic.AtomicLong serviceRemovalIds = new java.util.concurrent.atomic.AtomicLong();
     private volatile StopResult lastStopResult;
     /** Configured pipes — tracked separately from registeredServices because
      *  a pipe is one logical config entry but two service registrations.
@@ -166,7 +173,7 @@ public class MongooseServer implements MongooseServerController {
      * mongoose#60: the server's lifecycle, NEW → STARTING → STARTED → STOPPING → STOPPED. A stop can land in STARTING
      * (it also cleans up after a failed start); start then fails and the server is never marked STARTED.
      */
-    private enum LifecycleState { NEW, STARTING, STARTED, STOPPING, STOPPED }
+    private enum LifecycleState { NEW, STARTING, STARTED, STOPPING, STOPPING_BEFORE_START, STOPPED }
 
     private final java.util.concurrent.atomic.AtomicReference<LifecycleState> lifecycleState =
             new java.util.concurrent.atomic.AtomicReference<>(LifecycleState.NEW);
@@ -650,7 +657,7 @@ public class MongooseServer implements MongooseServerController {
 
     public void registerService(Service<?>... services) {
         for (Service<?> service : services) {
-            Map<String, com.telamin.mongoose.control.ControlRequest> sent;
+            ServiceBroadcast sent;
             java.util.concurrent.locks.Lock read = admitServiceChange();
             if (read == null) {
                 throw new IllegalStateException("server is stopping: service '" + service.serviceName() + "' was not registered");
@@ -668,7 +675,7 @@ public class MongooseServer implements MongooseServerController {
                 serviceLock.lock();     // registry state and broadcast publication in one order
                 try {
                     // removed meanwhile: its deregistration was published, so publishing this would resurrect it
-                    sent = registeredServices.get(service.serviceName()) == service ? sendBroadcast(service, true) : Map.of();
+                    sent = registeredServices.get(service.serviceName()) == service ? sendBroadcast(service, true) : new ServiceBroadcast(Map.of(), List.of());
                 } finally {
                     serviceLock.unlock();
                 }
@@ -742,7 +749,7 @@ public class MongooseServer implements MongooseServerController {
      * is given the registry's services, and the injection into other services already done cannot be undone.
      */
     /** Publish a service transition to every processor group, with its version; called under the service lock. */
-    private Map<String, com.telamin.mongoose.control.ControlRequest> sendBroadcast(Service<?> service, boolean register) {
+    private ServiceBroadcast sendBroadcast(Service<?> service, boolean register) {
         long version = serviceVersions.computeIfAbsent(service.serviceName(), n -> new java.util.concurrent.atomic.AtomicLong())
                 .incrementAndGet();
         List<String> missed = new ArrayList<>();
@@ -753,40 +760,57 @@ public class MongooseServer implements MongooseServerController {
                 sent.put(groupName, runner.group().tryBroadcastService(service, register, version));
             } catch (IllegalStateException notQueued) {
                 missed.add(groupName);
+                // Keep a refusal in the result set: omission must never look like confirmed withdrawal.
+                var refused = new com.telamin.mongoose.control.ControlRequest(
+                        com.telamin.mongoose.control.ControlRequest.Kind.BROADCAST, "missed service broadcast", null, null);
+                refused.cancel("group could not accept service broadcast: " + notQueued.getMessage());
+                sent.put(groupName, refused);
                 log.fine("group " + groupName + " not told of service " + service.serviceName() + ": " + notQueued);
             }
         });
-        if (!missed.isEmpty()) {
-            com.telamin.mongoose.service.error.ErrorReporting.report("MongooseServer",
-                    "service '" + service.serviceName() + "' is " + (register ? "registered" : "removed")
-                            + ", but processor group(s) " + missed + " could not be told (control queue full, group not"
-                            + " draining): their running processors were not " + (register ? "given" : "relieved of")
-                            + " it", null, com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
-        }
-        return sent;
+        return new ServiceBroadcast(sent, List.copyOf(missed));
     }
+
+    private record ServiceBroadcast(Map<String, com.telamin.mongoose.control.ControlRequest> requests,
+                                    List<String> missed) { }
 
     /**
      * Await every group's reply to a broadcast under one deadline, where waiting is safe; never under the lock.
      *
      * @return true when every group confirmed it
      */
-    private boolean awaitBroadcast(Service<?> service, boolean register, Map<String, com.telamin.mongoose.control.ControlRequest> sent) {
+    private boolean awaitBroadcast(Service<?> service, boolean register, ServiceBroadcast broadcast) {
+        // Called after releasing the publication/admission locks: reporting invokes a configurable user handler.
+        if (!broadcast.missed().isEmpty()) {
+            com.telamin.mongoose.service.error.ErrorReporting.report("MongooseServer",
+                    "service '" + service.serviceName() + "' is " + (register ? "registered" : "removed")
+                            + ", but processor group(s) " + broadcast.missed() + " could not be told (control queue full, group not"
+                            + " draining): their running processors were not " + (register ? "given" : "relieved of")
+                            + " it", null, com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
+        }
+        Map<String, com.telamin.mongoose.control.ControlRequest> sent = broadcast.requests();
         // design PR 3: sent to every group first, then awaited together under one deadline, where waiting is safe
         long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(controlWaitMillis());
         boolean all = true;
         for (var entry : sent.entrySet()) {
             String groupName = entry.getKey();
-            if (entry.getValue().reply().isDone()) continue;
+            if (entry.getValue().reply().isDone()) {
+                if (!entry.getValue().reply().join().applied()) all = false;
+                continue;
+            }
             if (!safeToWait(groupName)) {
                 all = false;
                 continue;
             }
             long left = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
-            if (left <= 0 || com.telamin.mongoose.control.ControlReplies.await(entry.getValue(), left) == null) {
+            com.telamin.mongoose.control.ControlReply reply = left <= 0 ? null
+                    : com.telamin.mongoose.control.ControlReplies.await(entry.getValue(), left);
+            if (reply == null) {
                 all = false;
                 log.warning("group " + groupName + " did not confirm service " + service.serviceName()
                         + (register ? " registered" : " removed") + " within the deadline; it still applies");
+            } else if (!reply.applied()) {
+                all = false;
             }
         }
         return all;
@@ -816,7 +840,8 @@ public class MongooseServer implements MongooseServerController {
     public void removeService(String serviceName) {
         log.info("removeService:" + serviceName);
         Service<?> removed;
-        Map<String, com.telamin.mongoose.control.ControlRequest> sent;
+        RemovedService retirement;
+        ServiceBroadcast sent;
         java.util.concurrent.locks.Lock read = admitServiceChange();
         if (read == null) {
             // the stop stops every registered service once; removing it here too would stop it twice, concurrently
@@ -828,6 +853,9 @@ public class MongooseServer implements MongooseServerController {
             try {
                 removed = registeredServices.remove(serviceName);
                 if (removed == null) return;
+                long removalId = serviceRemovalIds.incrementAndGet();
+                retirement = new RemovedService(removalId, removed);
+                removedServices.put(removalId, retirement);
                 sent = sendBroadcast(removed, false);
             } finally {
                 serviceLock.unlock();
@@ -835,45 +863,126 @@ public class MongooseServer implements MongooseServerController {
         } finally {
             read.unlock();
         }
-        // processors unbind before the service stops: wait (bounded, where safe) for the groups to apply it; a caller
-        // that cannot wait, or a group that did not confirm in time, defers the stop until every group has answered
-        // (review of PR 4: stopping it at once would stop it beneath processors still holding it)
+        // A failed or rejected withdrawal retains ownership until shutdown has stopped all processors.
+        // A pending successful withdrawal may release the service sooner, on an ordinary thread.
         if (awaitBroadcast(removed, false, sent)) {
-            stopRemovedService(removed);
+            retirement.stop();
             return;
         }
-        java.util.concurrent.CompletableFuture<?>[] replies = sent.values().stream()
+        java.util.concurrent.CompletableFuture<?>[] replies = sent.requests().values().stream()
                 .map(com.telamin.mongoose.control.ControlRequest::reply).toArray(java.util.concurrent.CompletableFuture[]::new);
-        java.util.concurrent.CompletableFuture.allOf(replies)
-                .orTimeout(REMOVED_SERVICE_STOP_DEFER_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS)
-                .whenCompleteAsync((done, timedOut) -> {
-                    if (timedOut != null) {
-                        log.warning("service '" + serviceName + "' is stopped although not every group confirmed it was"
-                                + " withdrawn within " + REMOVED_SERVICE_STOP_DEFER_MILLIS + " ms");
-                    }
-                    stopRemovedService(removed);
-                }, task -> {
-                    // never lost to the executor's shutdown at server stop (final review, finding 9)
-                    try {
-                        replyExecutor.execute(task);
-                    } catch (java.util.concurrent.RejectedExecutionException shutDown) {
-                        Thread t = new Thread(task, "mongoose-removed-service-stop");
-                        t.setDaemon(true);
-                        t.start();
-                    }
-                });
+        java.util.concurrent.CompletableFuture.allOf(replies).whenComplete((done, failed) -> {
+            if (failed == null && sent.requests().values().stream().allMatch(r -> r.reply().join().applied())) {
+                com.telamin.mongoose.control.ControlReplies.executeSafely(replyExecutor, retirement::stop);
+            } else {
+                log.warning("service '" + serviceName + "' remains owned until shutdown: withdrawal was not confirmed");
+            }
+        });
     }
 
-    /** How long a deferred stop of a removed service waits for every group to confirm the withdrawal. */
-    static final long REMOVED_SERVICE_STOP_DEFER_MILLIS = 60_000;
-
-    private void stopRemovedService(Service<?> removed) {
-        try {
-            removed.stop();
-        } catch (Exception ex) {
-            log.warning("error stopping service '" + removed.serviceName() + "' during remove: " + ex);
+    /**
+     * Internal startup-cancellation hook, used after shutdown has fenced service admission. Stop this exact wrapper:
+     * a removed incarnation is governed by its retirement ledger, and a replacement never inherits its callback.
+     */
+    public void stopStartupService(Service<?> service) {
+        if (registeredServices.get(service.serviceName()) == service) {
+            service.stop();
+            return;
         }
-        flipServiceUp(removed.serviceName(), 0);
+        for (RemovedService removed : removedServices.values()) {
+            if (removed.service == service) {
+                removed.stop();
+                return;
+            }
+        }
+        // No live or retired owner remains: its removal already completed the stop.
+    }
+
+    /**
+     * Internal post-fence cleanup ownership. A start that returned after removal/cancellation may have reacquired
+     * resources. Retain that exact incarnation for one final stop even when its earlier retirement completed.
+     */
+    public Map<String, Service<?>> includeFinalStartupCleanup(Map<String, Service<?>> services, Service<?> owner) {
+        if (services.get(owner.serviceName()) == owner) return services;
+        Map<String, Service<?>> out = new java.util.LinkedHashMap<>(services);
+        RemovedService retired = null;
+        for (var entry : services.entrySet()) {
+            if (entry.getValue().instance() instanceof RemovedService removed && removed.service == owner) {
+                retired = removed;
+                out.remove(entry.getKey());
+            }
+        }
+        RemovedService retirement = retired;
+        var finalCleanup = new com.telamin.fluxtion.runtime.lifecycle.Lifecycle() {
+            public void init() { }
+            public void start() { }
+            public void tearDown() { }
+            public void stop() {
+                if (retirement == null) owner.stop();
+                else retirement.stopAfterStartup();
+            }
+        };
+        String name = "startup-final:" + owner.serviceName();
+        while (out.containsKey(name)) name = "startup-final:" + name;
+        out.put(name, new Service<>(finalCleanup, com.telamin.fluxtion.runtime.lifecycle.Lifecycle.class, name));
+        return out;
+    }
+
+    /** Shutdown includes removed resources, including a stop callback already in progress. */
+    private Map<String, Service<?>> shutdownServices() {
+        return shutdownServices(true);
+    }
+
+    private Map<String, Service<?>> shutdownServices(boolean includeRegistered) {
+        Map<String, Service<?>> services = includeRegistered ? new java.util.LinkedHashMap<>(registeredServices)
+                : new java.util.LinkedHashMap<>();
+        for (RemovedService removed : removedServices.values()) {
+            // The lifecycle manager tracks stops by name; each removed incarnation needs its own identity.
+            String name = "removed[" + removed.id + "]:" + removed.service.serviceName();
+            while (services.containsKey(name)) name = "removed:" + name;
+            services.put(name, new Service<>(removed, com.telamin.fluxtion.runtime.lifecycle.Lifecycle.class, name));
+        }
+        return services;
+    }
+
+    private final class RemovedService implements com.telamin.fluxtion.runtime.lifecycle.Lifecycle {
+        private final long id;
+        private final Service<?> service;
+        private boolean stopped;
+        private Throwable stopFailure;
+
+        private RemovedService(long id, Service<?> service) {
+            this.id = id;
+            this.service = service;
+        }
+
+        @Override public void init() { }
+        @Override public void start() { }
+        @Override public void tearDown() { }
+
+        /** A separate final attempt: the interrupted startup may have acquired resources after the earlier stop. */
+        private synchronized void stopAfterStartup() {
+            stopped = false;
+            stopFailure = null;
+            stop();
+        }
+
+        @Override
+        public synchronized void stop() {
+            // A shutdown helper must also wait for an already-running callback, not merely see that it was claimed.
+            if (stopped) return;
+            if (stopFailure != null) throw new IllegalStateException("removed service stop previously failed", stopFailure);
+            try {
+                service.stop();
+            } catch (Throwable failure) {
+                stopFailure = failure;
+                throw failure;
+            }
+            stopped = true;
+            removedServices.remove(id, this);
+            // An old incarnation's deferred stop must not mark its replacement down.
+            if (!registeredServices.containsKey(service.serviceName())) flipServiceUp(service.serviceName(), 0);
+        }
     }
 
     /**
@@ -1070,8 +1179,10 @@ public class MongooseServer implements MongooseServerController {
 
     /**
      * Add a processor and return its outcome without waiting (design "Agent threads and replies"). Never throws for a
-     * duplicate name or a stopping server: the reply says {@code REFUSED} or {@code NOT_RUNNING}. The stage completes off
-     * every agent thread, so its dependents may block or call back into the server.
+     * duplicate name or a stopping server: the reply says {@code REFUSED} or {@code NOT_RUNNING}. Admitted requests'
+     * stages complete off agent threads; refusals may already be completed. Use asynchronous continuations for
+     * blocking work: a synchronous dependent attached after
+     * completion executes on the attaching thread, as specified by CompletionStage.
      */
     public AddedProcessor addProcessor(
             String processorName, String groupName, IdleStrategy idleStrategy, Supplier<DataFlow> feedConsumer) {
@@ -1092,7 +1203,7 @@ public class MongooseServer implements MongooseServerController {
                         String.valueOf(notQueued.getMessage()));
             }
             // the handle of exactly this add's registration, not whatever answers to the name by the time it is asked for
-            return new AddedProcessor(new ProcessorHandle(groupName, admission.registration()),
+            return new AddedProcessor(new ProcessorHandle(processorHandleOwner, groupName, admission.registration()),
                     com.telamin.mongoose.control.ControlReplies.isolated(admission.request(), replyExecutor));
         } finally {
             if (locked) read.unlock();
@@ -1111,7 +1222,7 @@ public class MongooseServer implements MongooseServerController {
     /** The handle of the processor currently admitted as {@code processorName} in {@code groupName}, or null. */
     public ProcessorHandle processorHandle(String groupName, String processorName) {
         ProcessorRegistration registration = reservedProcessorNames.get(new ProcessorName(groupName, processorName));
-        return registration == null ? null : new ProcessorHandle(groupName, registration);
+        return registration == null ? null : new ProcessorHandle(processorHandleOwner, groupName, registration);
     }
 
     /**
@@ -1119,6 +1230,11 @@ public class MongooseServer implements MongooseServerController {
      * waiting. A handle whose processor has gone is answered {@code APPLIED} ("alreadyStopped").
      */
     public java.util.concurrent.CompletionStage<com.telamin.mongoose.control.ControlReply> stopProcessor(ProcessorHandle handle) {
+        if (!handle.belongsTo(processorHandleOwner)) {
+            return java.util.concurrent.CompletableFuture.completedFuture(new com.telamin.mongoose.control.ControlReply(
+                    -1, com.telamin.mongoose.control.event.ReplyOutcome.REFUSED, "handle belongs to another server",
+                    handle.generation(), handle.name()));
+        }
         var processorAgent = composingEventProcessorAgents.get(handle.group());
         if (processorAgent == null) {
             return java.util.concurrent.CompletableFuture.completedFuture(new com.telamin.mongoose.control.ControlReply(
@@ -1411,13 +1527,17 @@ public class MongooseServer implements MongooseServerController {
     @Override
     public void startService(String serviceName) {
         log.info("start service:" + serviceName);
-        // user code: never under the service lock (review of PR 4)
-        Service<?> service = registeredServices.get(serviceName);
-        if (service == null) return;
-        service.start();
-        // Per Phase 4.5b: up == 1 from startService return → stopService
-        // call; 0 before/after. Built-in "up" check reads this gauge.
-        flipServiceUp(serviceName, 1);
+        java.util.concurrent.locks.Lock read = admitServiceChange();
+        if (read == null) throw new IllegalStateException("server is stopping: service '" + serviceName + "' was not started");
+        try {
+            // The admission barrier owns this in-progress callback when shutdown starts.
+            Service<?> service = registeredServices.get(serviceName);
+            if (service == null) return;
+            service.start();
+            flipServiceUp(serviceName, 1);
+        } finally {
+            read.unlock();
+        }
     }
 
     /**
@@ -1430,10 +1550,16 @@ public class MongooseServer implements MongooseServerController {
     @Override
     public void stopService(String serviceName) {
         log.info("stop service:" + serviceName);
-        Service<?> service = registeredServices.get(serviceName);
-        if (service == null) return;
-        service.stop();
-        flipServiceUp(serviceName, 0);
+        java.util.concurrent.locks.Lock read = admitServiceChange();
+        if (read == null) throw new IllegalStateException("server is stopping: service '" + serviceName + "' was not stopped");
+        try {
+            Service<?> service = registeredServices.get(serviceName);
+            if (service == null) return;
+            service.stop();
+            flipServiceUp(serviceName, 0);
+        } finally {
+            read.unlock();
+        }
     }
 
     /**
@@ -1631,32 +1757,19 @@ public class MongooseServer implements MongooseServerController {
         // a thread that cannot wait for the stop: an agent thread, a startup or stop callback, or one inside an add
         // holding the admission lock (the stop's barrier needs the write lock, and a read lock cannot be upgraded)
         boolean onAgentThread = isServerAgentThread(Thread.currentThread()) || Thread.currentThread() == startupThread
-                || Thread.currentThread() == stopThread || lifecycleManager.isStopHelper(Thread.currentThread())
+                || Thread.currentThread() == stopThread || Thread.currentThread() == auditStopThread
+                || lifecycleManager.isStopHelper(Thread.currentThread())
                 || admission.getReadHoldCount() > 0;
         while (true) {
             LifecycleState state = lifecycleState.get();
             if (state == LifecycleState.NEW) {
-                if (!lifecycleState.compareAndSet(LifecycleState.NEW, LifecycleState.STOPPED)) continue;
-                // groups created for adds that never ran: close them on this thread (as Agrona does for a runner that
-                // never started), so their queued requests are answered NOT_RUNNING without any supplier running
-                log.info("server not started: closing the groups created before start");
-                admission.writeLock().lock();
-                admission.writeLock().unlock();
-                composingEventProcessorAgents.forEach((name, runner) -> {
-                    try {
-                        runner.groupRunner().close();
-                    } catch (Throwable t) {
-                        log.log(java.util.logging.Level.WARNING, "group " + name + " failed to close", t);
-                    }
-                });
-                lastStopResult = StopResult.completed();
-                stopCompleted.countDown();
-                return lastStopResult;
+                if (!lifecycleState.compareAndSet(LifecycleState.NEW, LifecycleState.STOPPING_BEFORE_START)) continue;
+                break;
             }
             if (state == LifecycleState.STOPPED) {
                 return StopResult.completed();
             }
-            if (state == LifecycleState.STOPPING) {
+            if (state == LifecycleState.STOPPING || state == LifecycleState.STOPPING_BEFORE_START) {
                 log.info("server stop already in progress, or incomplete and resumed");
                 // on an ordinary thread: wait for the attempt in progress, then resume it if it ran out
                 if (!onAgentThread) return runOrderedStop();
@@ -1706,7 +1819,8 @@ public class MongooseServer implements MongooseServerController {
 
     private boolean isStopRequested() {
         LifecycleState state = lifecycleState.get();
-        return state == LifecycleState.STOPPING || state == LifecycleState.STOPPED;
+        return state == LifecycleState.STOPPING || state == LifecycleState.STOPPING_BEFORE_START
+                || state == LifecycleState.STOPPED;
     }
 
     /**
@@ -1722,13 +1836,23 @@ public class MongooseServer implements MongooseServerController {
 
     /** One stop attempt at a time; a concurrent caller waits for it, then resumes it if it ran out. */
     private StopResult runOrderedStop() {
-        synchronized (stopAttempt) {
+        long timeoutMillis = mongooseServerConfig == null
+                ? MongooseServerConfig.DEFAULT_SHUTDOWN_TIMEOUT_MILLIS
+                : mongooseServerConfig.getShutdownTimeoutMillis();
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(Math.max(0, timeoutMillis));
+        boolean interrupted = Thread.interrupted();
+        boolean acquired = false;
+        try {
+            acquired = stopAttempt.tryLock(remainingStopNanos(deadline), java.util.concurrent.TimeUnit.NANOSECONDS);
+            if (!acquired) return blockedStop("another shutdown attempt is still running");
             if (lifecycleState.get() == LifecycleState.STOPPED) {
                 return StopResult.completed();
             }
             // admission barrier: an add that passed its STOPPING check before the flip has finished creating its group
             // once this returns, so the snapshot below includes it; every later add sees STOPPING and is refused
-            admission.writeLock().lock();
+            if (!admission.writeLock().tryLock(remainingStopNanos(deadline), java.util.concurrent.TimeUnit.NANOSECONDS)) {
+                return lastStopResult = blockedStop("an admitted operation has not returned");
+            }
             admission.writeLock().unlock();
             stopThread = Thread.currentThread();
             StopResult result;
@@ -1736,12 +1860,13 @@ public class MongooseServer implements MongooseServerController {
                 long drainTimeoutMillis = mongooseServerConfig == null
                         ? MongooseServerConfig.DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS
                         : mongooseServerConfig.getShutdownDrainTimeoutMillis();
-                long shutdownTimeoutMillis = mongooseServerConfig == null
-                        ? MongooseServerConfig.DEFAULT_SHUTDOWN_TIMEOUT_MILLIS
-                        : mongooseServerConfig.getShutdownTimeoutMillis();
-                result = lifecycleManager.stop(true, toGroupRunnerMap(composingEventProcessorAgents),
-                        toGroupRunnerMap(composingServiceAgents), registeredServices, flowManager, drainTimeoutMillis,
-                        shutdownTimeoutMillis);
+                if (lifecycleState.get() == LifecycleState.STOPPING_BEFORE_START) {
+                    result = lifecycleManager.closeBeforeStart(toGroupRunnerMap(composingEventProcessorAgents), shutdownServices(false), deadline);
+                } else {
+                    result = lifecycleManager.stop(true, toGroupRunnerMap(composingEventProcessorAgents),
+                            toGroupRunnerMap(composingServiceAgents), shutdownServices(), flowManager, drainTimeoutMillis,
+                            java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(remainingStopNanos(deadline)));
+                }
             } catch (RuntimeException | Error e) {
                 log.log(java.util.logging.Level.WARNING, "server stop failed; it stays STOPPING and may be resumed", e);
                 result = StopResult.incomplete(null, java.util.List.of("<stop failed: " + e + ">"), java.util.List.of());
@@ -1751,10 +1876,28 @@ public class MongooseServer implements MongooseServerController {
             if (result.complete()) {
                 // the processors have stopped: close every audit capture still recording, so its queue is flushed and
                 // closed rather than left open until the JVM exits
-                try {
-                    auditCaptureService.stopAll();
-                } catch (RuntimeException e) {
-                    log.log(java.util.logging.Level.WARNING, "audit capture could not be stopped at server stop", e);
+                if (auditStopThread == null) {
+                    auditStopThread = new Thread(() -> {
+                        try {
+                            auditCaptureService.stopAll();
+                        } catch (Throwable e) {
+                            auditStopFailure = e;
+                            log.log(java.util.logging.Level.WARNING, "audit capture could not be stopped at server stop", e);
+                        }
+                    }, "mongoose-stop-audit-capture");
+                    auditStopThread.setDaemon(true);
+                    auditStopThread.start();
+                }
+                long left = remainingStopNanos(deadline);
+                if (auditStopThread.isAlive() && left > 0) {
+                    java.util.concurrent.TimeUnit.NANOSECONDS.timedJoin(auditStopThread, left);
+                }
+                if (auditStopThread.isAlive()) {
+                    return lastStopResult = StopResult.incomplete(null, java.util.List.of("<audit capture stopping>"), java.util.List.of());
+                }
+                if (auditStopFailure != null) {
+                    return lastStopResult = StopResult.incomplete(null,
+                            java.util.List.of("<audit capture stop failed: " + auditStopFailure + ">"), java.util.List.of());
                 }
                 lastStopResult = result;            // before the latch: a woken awaitStopped reads this attempt
                 lifecycleState.set(LifecycleState.STOPPED);
@@ -1765,7 +1908,23 @@ public class MongooseServer implements MongooseServerController {
                 lastStopResult = result;
             }
             return result;
+        } catch (InterruptedException e) {
+            interrupted = true;
+            return blockedStop("shutdown wait was interrupted");
+        } finally {
+            if (acquired) stopAttempt.unlock();
+            if (interrupted) Thread.currentThread().interrupt();
         }
+    }
+
+    private static long remainingStopNanos(long deadline) {
+        return Math.max(0, deadline - System.nanoTime());
+    }
+
+    private StopResult blockedStop(String reason) {
+        java.util.List<String> groups = new java.util.ArrayList<>(composingEventProcessorAgents.keySet());
+        groups.addAll(composingServiceAgents.keySet());
+        return StopResult.incomplete(reason, groups, new java.util.ArrayList<>(registeredServices.keySet()));
     }
 
     private void awaitStopCompletedUninterruptibly() {

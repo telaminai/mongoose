@@ -122,7 +122,11 @@ public final class GroupReplayer {
         }
         if (failed == null) {
             try {
-                if (forIncarnation > 1 && !config.store().has(cursor.name)) {
+                String legacyKey = incarnation <= 1 ? name : name + "#" + incarnation;
+                if (!cursor.name.equals(legacyKey) && !config.store().has(cursor.name) && config.store().has(legacyKey)) {
+                    failed = "ambiguous legacy stream key " + legacyKey + ": migrate the processor name's '#' escapes to "
+                            + cursor.name;
+                } else if (forIncarnation > 1 && !config.store().has(cursor.name)) {
                     failed = "no stream was recorded for " + cursor.name;    // loud, never an instantly complete cursor
                 } else {
                     cursor.entries = config.store().entries(cursor.name);
@@ -153,6 +157,9 @@ public final class GroupReplayer {
     public void detach(DataFlow flow) {
         for (Cursor c : cursors) {
             if (c.flow != flow) continue;
+            // A control refusal can fail start() and immediately detach this processor, before replay drains any
+            // entries. Removing the cursor must not erase the refusal and make the settled replay appear successful.
+            if (c.stopped != null) ended.putIfAbsent(c.name, c.stopped);
             if (!c.expectedCalls.isEmpty()) {
                 ended.put(c.name, "the recorded run made control request " + describe(c.expectedCalls.peek())
                         + " that the replay did not");
@@ -234,6 +241,13 @@ public final class GroupReplayer {
                 stop(cursor, "control request " + method + args + " made off the processor's thread; not executed");
                 return null;
             }
+            if ("addEventProcessor".equals(method)) {
+                // A Supplier is executable construction logic, not a stable description of the generated processor.
+                // Until its build identity is recorded, refuse rather than invoke it against the live server.
+                String why = "addEventProcessor supplier cannot be verified from the recording; not executed";
+                stop(cursor, why);
+                throw new UnsupportedOperationException(why);
+            }
             ReplayEntry.ControlCall expected = cursor.expectedCalls.poll();
             if (expected == null) {
                 stop(cursor, "control request " + method + args + " was not made by the recorded run here; not executed");
@@ -245,7 +259,11 @@ public final class GroupReplayer {
                 return null;
             }
             if (expected.outcome().startsWith("failed")) {
-                throw new IllegalStateException("replayed outcome of " + method + ": " + expected.outcome());
+                // Text does not preserve the original throwable's type or payload. A processor may branch on those,
+                // or catch this substitute exception; either way it must not turn an unverifiable replay into success.
+                String why = "recorded control exception cannot be reconstructed for " + method + ": " + expected.outcome();
+                stop(cursor, why);
+                throw new IllegalStateException(why);
             }
             if (ControlInterception.REGISTRY.contains(method)) {
                 return ControlInterception.invoke(m, target, raw);    // the registry the stream names must exist

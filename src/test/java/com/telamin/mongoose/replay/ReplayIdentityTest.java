@@ -211,6 +211,39 @@ class ReplayIdentityTest {
     }
 
     @Test
+    void processorNamesCannotAliasAnIncarnationSuffix() {
+        List<String> names = List.of("p", "p#2", "p#", "p##2", "p#2#3", "p###");
+        java.util.Set<String> keys = new java.util.HashSet<>();
+        InMemoryReplayStore store = new InMemoryReplayStore();
+        for (String name : names) {
+            for (int incarnation = 1; incarnation <= 4; incarnation++) {
+                String key = ReplayStreams.key(name, incarnation);
+                assertTrue(keys.add(key), "aliased stream: " + name + " incarnation " + incarnation + " -> " + key);
+                store.append(key, new ReplayEntry.Stopped(incarnation, List.of()));
+            }
+        }
+        for (String name : names) {
+            for (int incarnation = 1; incarnation <= 4; incarnation++) {
+                assertEquals(List.of(new ReplayEntry.Stopped(incarnation, List.of())),
+                        store.entries(ReplayStreams.key(name, incarnation)));
+            }
+        }
+    }
+
+    @Test
+    void anUnescapedLegacyNameIsRefusedWithAMigrationReason() {
+        InMemoryReplayStore store = new InMemoryReplayStore();
+        store.append("p#2", new ReplayEntry.Stopped(100, List.of()));
+        GroupReplayer replayer = new GroupReplayer(ReplayConfig.replay(Set.of("p#2"), Map.of(), null, store),
+                null, new ReplayScheduler());
+        ConfigAwareEventProcessor flow = new ConfigAwareEventProcessor(new Handler());
+        flow.init();
+        replayer.attach("p#2", flow);
+        assertTrue(replayer.stopped(ReplayStreams.key("p#2", 1)).contains("ambiguous legacy stream key"));
+        assertTrue(replayer.complete());
+    }
+
+    @Test
     void theCsvStoreKeepsStopsAndServiceChanges(@TempDir Path dir) {
         Path file = dir.resolve("store.csv");
         try (CsvReplayStore store = new CsvReplayStore(file, new JavaSerializationCodec())) {

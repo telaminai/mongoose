@@ -43,6 +43,6 @@ public class InMemoryReplayStore implements ReplayStore {
 
     @Override
     public boolean holdsRecording() {
-        return entries.values().stream().anyMatch(l -> !l.isEmpty());
+        return !provenance.isEmpty() || entries.values().stream().anyMatch(l -> !l.isEmpty());
     }
 }

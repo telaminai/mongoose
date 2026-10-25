@@ -150,10 +150,22 @@ public final class ControlAuditSink implements LogRecordListener {
         return out.toString();
     }
 
+    private record ExportSnapshot(byte[] yaml, String manifest) { }
+
+    private synchronized ExportSnapshot exportSnapshot() {
+        byte[] yaml = exportText().getBytes(StandardCharsets.UTF_8);
+        return new ExportSnapshot(yaml, ControlAuditExport.manifest(yaml, total, records.size(), dropped, sinkFailures));
+    }
+
+    /** Export unchanged analyser YAML plus a versioned completeness sidecar from the same locked snapshot. */
     public Path export(Path target) throws IOException {
-        String text = exportText();
+        ExportSnapshot snapshot = exportSnapshot();
         if (target.getParent() != null) Files.createDirectories(target.getParent());
-        Files.writeString(target, text, StandardCharsets.UTF_8);
+        Path manifest = ControlAuditExport.manifestPath(target);
+        // Invalidate any old completeness claim first. Interrupted writes are unknown, never silently complete.
+        Files.deleteIfExists(manifest);
+        Files.write(target, snapshot.yaml());
+        Files.writeString(manifest, snapshot.manifest(), StandardCharsets.UTF_8);
         return target;
     }
 }
