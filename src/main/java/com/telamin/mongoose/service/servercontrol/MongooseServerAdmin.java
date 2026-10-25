@@ -56,6 +56,21 @@ public class MongooseServerAdmin implements Lifecycle {
     private MongooseLatencyService latencyService;
     private MongooseAuditCaptureService auditCapture;
     private MongooseAuditIntrospectionService auditIntrospection;
+    private final java.util.concurrent.atomic.AtomicReference<ControlExportJob> controlExport =
+            new java.util.concurrent.atomic.AtomicReference<>();
+
+    private static final class ControlExportJob {
+        final String id = java.util.UUID.randomUUID().toString();
+        final String group;
+        final java.nio.file.Path directory;
+        volatile String result = "PENDING";
+        volatile boolean finished;
+
+        ControlExportJob(String group, java.nio.file.Path directory) {
+            this.group = group;
+            this.directory = directory;
+        }
+    }
 
     @ServiceRegistered
     public void admin(AdminCommandRegistry registry) {
@@ -119,6 +134,69 @@ public class MongooseServerAdmin implements Lifecycle {
         registry.registerCommand("audit.stop", this::auditStop);
         registry.registerCommand("audit.status", this::auditStatus);
         registry.registerCommand("audit.list", this::auditList);
+        registry.registerCommand("control.audit.export", this::controlAuditExport);
+        registry.registerCommand("control.audit.export.status", this::controlAuditExportStatus);
+    }
+
+    private void controlAuditExport(List<String> args, Consumer<String> out, Consumer<String> err) {
+        if (args.size() != 3) {
+            err.accept("usage: control.audit.export <group> <new-directory>");
+            return;
+        }
+        if (!(serverController instanceof com.telamin.mongoose.MongooseServer server)) {
+            err.accept("control audit export requires a MongooseServer");
+            return;
+        }
+        final ControlExportJob job;
+        try {
+            job = new ControlExportJob(args.get(1), java.nio.file.Path.of(args.get(2)).toAbsolutePath().normalize());
+        } catch (RuntimeException invalid) {
+            err.accept("control audit export: " + invalid);
+            return;
+        }
+        ControlExportJob previous = controlExport.get();
+        if ((previous != null && !previous.finished) || !controlExport.compareAndSet(previous, job)) {
+            err.accept("control audit export already pending; inspect control.audit.export.status");
+            return;
+        }
+        // At most one daemon worker and one retained result per admin instance. Never hold an output callback
+        // beyond this command: transports may release their response as soon as it returns.
+        try {
+            Thread.ofVirtual().name("mongoose-control-audit-export").start(() -> {
+                try {
+                    var audit = server.exportControlAudit(job.group, job.directory);
+                    var verification = com.telamin.mongoose.control.ControlAuditExport.verify(audit);
+                    job.result = (verification.completeness() == com.telamin.mongoose.control.ControlAuditExport.Completeness.UNKNOWN
+                            ? "FAILED" : "EXPORTED") + " completeness=" + verification.completeness()
+                            + " audit=" + audit + " reason=" + verification.reason();
+                } catch (Exception failed) {
+                    job.result = "FAILED " + failed;
+                } finally {
+                    if (job.result.equals("PENDING")) job.result = "FAILED export worker terminated abnormally";
+                    job.finished = true;
+                }
+            });
+        } catch (Throwable failed) {
+            job.result = "FAILED could not start export worker: " + failed;
+            job.finished = true;
+            throw failed;
+        }
+        out.accept("control audit export job=" + job.id + " directory=" + job.directory
+                + "; inspect control.audit.export.status " + job.id);
+    }
+
+    private void controlAuditExportStatus(List<String> args, Consumer<String> out, Consumer<String> err) {
+        if (args.size() > 2) {
+            err.accept("usage: control.audit.export.status [job-id]");
+            return;
+        }
+        ControlExportJob job = controlExport.get();
+        if (job == null || (args.size() == 2 && !job.id.equals(args.get(1)))) {
+            err.accept("unknown control audit export job (only the latest job is retained)");
+            return;
+        }
+        out.accept("control audit export job=" + job.id + " group=" + job.group + " directory=" + job.directory
+                + " " + job.result);
     }
 
     @Override

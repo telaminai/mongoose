@@ -1389,9 +1389,32 @@ public class MongooseServer implements MongooseServerController {
     }
 
     /**
-     * Waiting is safe only off every agent thread, startup and stop callback, on a group whose thread is running: a
-     * group that has not started cannot answer yet, and its outcome surfaces when it starts.
+     * Export a bounded control-audit snapshot and the deployed control graph to a new directory. The parent must
+     * exist; existing destinations are refused. Filesystem I/O runs on the caller, which must not be an agent or
+     * lifecycle callback thread. This does not wait for pending control requests or pause the group. An I/O failure
+     * can leave partial files: callers must verify the manifest and treat the operation as failed.
+     *
+     * @return the audit YAML; its completeness sidecar is beside it
      */
+    public java.nio.file.Path exportControlAudit(String groupName, java.nio.file.Path directory) throws IOException {
+        if (!controlCallerMayWait()) {
+            throw new IllegalStateException("control audit export must run off agent and lifecycle callback threads");
+        }
+        var runner = composingEventProcessorAgents.get(Objects.requireNonNull(groupName, "groupName"));
+        if (runner == null) throw new IllegalArgumentException("unknown processor group: " + groupName);
+        java.nio.file.Path destination = Objects.requireNonNull(directory, "directory").toAbsolutePath().normalize();
+        // A new directory prevents overwriting an earlier investigation or racing two exports into the same files.
+        java.nio.file.Files.createDirectory(destination);
+        java.nio.file.Path audit = runner.group().control().audit().export(destination.resolve("control-audit.yaml"));
+        String graph = "com/telamin/mongoose/control/generated/GroupControlProcessor.graphml";
+        try (var resource = MongooseServer.class.getClassLoader().getResourceAsStream(graph)) {
+            if (resource == null) throw new IOException("missing control processor graph: " + graph);
+            java.nio.file.Files.copy(resource, destination.resolve("GroupControlProcessor.graphml"));
+        }
+        return audit;
+    }
+
+    /** Waiting is safe only off agent/lifecycle threads, on a group whose thread is running. */
     private boolean safeToWait(String groupName) {
         if (!controlCallerMayWait()) return false;
         var runner = composingEventProcessorAgents.get(groupName);
