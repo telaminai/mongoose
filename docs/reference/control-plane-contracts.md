@@ -55,7 +55,10 @@ public enum FailureKind { NONE, REFUSED_ADMISSION, REFUSED_STATE, REFUSED_DEADLI
 ```
 
 `kind` is never null: `NONE` exactly when the outcome is `APPLIED`. Classify a reply by `outcome` and `kind`; the
-`reason` text is human detail and may change. The meaning of each kind is in the
+`reason` text is human detail and may change. `evidence` is `UNVERIFIED` when the reply was made while the group's
+control audit had an unacknowledged write failure (the group is then DEGRADED but still applies every request,
+stops and closes included), otherwise `NONE`. A full mailbox is always refused with reason `mailbox full`; exceptions
+thrown for it say `request refused: mailbox full (capacity N)`. The meaning of each kind is in the
 [failure-handling design](../design/failure-handling.md#failure-taxonomy). (Issue #77, after 1.0.33-rc1.)
 
 | Outcome | Meaning | Typical `reason` values (from the code) |
@@ -330,15 +333,19 @@ admission into the mailbox and waiting for the reply.
 | --- | --- |
 | A `ControlReply` | The stop was answered in time, or refused at admission |
 | `REFUSED`, reason `not admitted within its deadline: mailbox full` | The mailbox stayed full past the deadline |
-| `null` | No such group, nothing admitted under the name, the caller may not wait (agent thread, group not started), or no reply by the deadline. In the last two cases the stop still applies |
+| `REFUSED`, kind `REFUSED_STATE`, reason `no such group` / `no such processor` | Nothing was admitted under that group or name (issue #77; it returned `null` in 1.0.33-rc1) |
+| `null` | The caller may not wait (agent thread, group not started), or no reply by the deadline. The stop still applies |
 
 On an agent thread with a full mailbox this reply-returning form returns `REFUSED`; the void form throws.
 
 ### The admin stop command
 
-`server.processors.stop <group>/<name>` calls `stopProcessor(group, name, 1000)`. It prints `stop <OUTCOME>:
-<reason>`, or `stop pending (still applies): <group>/<name>` when no reply came within one second. On a
-`MongooseServerController` that is not a `MongooseServer`, it calls the void form.
+`server.processors.stop <group>/<name>` calls `stopProcessor(group, name, 1000)`. It prints `stop <OUTCOME> (<KIND>):
+<reason>`, or `stop pending (still applies): <group>/<name>` when no reply came within one second. An unknown group or
+name prints `stop REFUSED (REFUSED_STATE): no such ...`, never `pending`. A missing or malformed argument (not exactly
+one `<group>/<name>` with both parts non-blank) is refused on the error stream with
+`stop REFUSED (REFUSED_STATE): usage: ...` and stops nothing. On a `MongooseServerController` that is not a
+`MongooseServer`, it calls the void form.
 
 ## Services
 
@@ -1024,8 +1031,12 @@ failure contract. A standalone scheduler without a group handler cancels its fai
 reports ERROR, preserving its reporting-only API; it cannot isolate routes owned by another container.
 This host policy does not repair the compiler's processing flag or make arbitrary direct graph calls retry-safe.
 
-Driver-authored safety-net FAILED replies carry `replyAuthor: DRIVER` and a `kind` of `FAILED_RULE` (the control
-processor threw or did not settle) or `FAILED_DRIVER_FALLBACK` (it settled without replying), repeated as
-`failureKind` for 1.0.33-rc1 readers. The validator rejects those kinds, `FAILED_DEAD`, `QUARANTINED` and
-`ProcessorQuarantined` records regardless of reason wording. Only exports whose records carry no kind (written before
-issue #77) still use reason-text classification.
+Driver-authored FAILED replies carry `replyAuthor: DRIVER` (the author) and a `kind` (the cause): `FAILED_RULE` (the
+control processor threw or did not settle), `FAILED_DRIVER_FALLBACK` (it settled without replying) or `FAILED_DEAD`
+(a fatal error while performing effects). `failureKind` keeps its 1.0.33-rc1 meaning, "a driver-authored reply", and
+is always `FAILED_DRIVER_FALLBACK`. The kind alone does not identify the author: a rule's reply can carry
+`FAILED_DRIVER_FALLBACK` after the driver abandoned one of its effects. The validator rejects driver-authored records,
+the kinds `FAILED_RULE`, `FAILED_DRIVER_FALLBACK`, `FAILED_DEAD` and `QUARANTINED`, and `ProcessorQuarantined`
+records, regardless of reason wording. An export in which any record carries a `kind` is judged by kinds only, and a
+reply or failed outcome missing its kind is a violation; only exports with no kinds at all (written before issue #77)
+use reason-text classification.

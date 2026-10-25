@@ -501,6 +501,13 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
     }
 
     @Override
+    public void observeWriteFailures(Object resource, java.util.function.Consumer<String> observer) {
+        CaptureHandle handle = (CaptureHandle) resource;
+        ProcessorSink sink = handle.sink();
+        if (sink != null) sink.writeFailureObserver = observer;
+    }
+
+    @Override
     public void closeCapture(Object resource) {
         CaptureHandle handle = (CaptureHandle) resource;
         if (openResources.remove(handle)) handle.queue().close();
@@ -702,6 +709,9 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
         /** Counted, never swallowed: a destination that fails is a finding, not silence. */
         private long captureFailures;
         private long delegateFailures;
+        /** Write failures in the current recording, and who is told of the first (issue #77, M3: fail open, loudly). */
+        private long sessionCaptureFailures;
+        private volatile java.util.function.Consumer<String> writeFailureObserver;
         private volatile LogRecordListener previousListener;
         private volatile LogRecordListener captureListener;
         private MongooseCounter recordCounter;
@@ -876,6 +886,7 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             DataFlow flow = dataFlow;
             ExcerptAppender a = opened.createAppender();
             this.appender = a;
+            this.sessionCaptureFailures = 0;
             this.startCycle = a.cycle();
             this.recordCounter = counters.counter("audit." + selector() + ".records");
             this.startedAt = Instant.now();
@@ -990,6 +1001,14 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
                 captureFailures++;
                 log.log(Level.WARNING, "audit capture write failed for '" + processorName
                         + "' (" + captureFailures + " so far); the record is counted as received", t);
+                java.util.function.Consumer<String> observer = writeFailureObserver;
+                if (++sessionCaptureFailures == 1 && observer != null) {
+                    try {
+                        observer.accept("audit capture write failed for '" + processorName + "': " + t);
+                    } catch (Throwable observerFailure) {
+                        log.log(Level.WARNING, "audit capture write-failure observer failed", observerFailure);
+                    }
+                }
             }
             LogRecordListener delegate = previousListener;
             if (delegate != null) {

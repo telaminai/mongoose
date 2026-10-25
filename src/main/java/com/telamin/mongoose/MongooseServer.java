@@ -1442,12 +1442,46 @@ public class MongooseServer implements MongooseServerController {
     public record ControlGroupStatus(String group, com.telamin.mongoose.control.ControlDriver.GroupState state,
                                      int outstandingRequests, int captureResourcesHeld, int captureResourceSlotsInUse,
                                      Map<Long, String> captureCloseFailures, Map<Long, String> captureCleanupFailures,
-                                     Map<String, String> quarantinedProcessors) {
+                                     Map<String, String> quarantinedProcessors, boolean controlAuditDegraded,
+                                     long captureWriteFailures) {
         public ControlGroupStatus {
             captureCloseFailures = Map.copyOf(captureCloseFailures);
             captureCleanupFailures = Map.copyOf(captureCleanupFailures);
             quarantinedProcessors = Map.copyOf(quarantinedProcessors);
         }
+    }
+
+    /**
+     * Issue #77, M3: two health checks per processor group, under service {@code group:<name>}. {@code control-audit} is
+     * DEGRADED while the control audit has an unacknowledged write failure (replies are then marked UNVERIFIED);
+     * {@code audit-capture} is DEGRADED once a capture failed to write, close or detach (the processor keeps running).
+     */
+    private void registerEvidenceHealth(String groupName, ComposingEventProcessorAgent group) {
+        Service<?> healthSvc = registeredServices.get(com.telamin.mongoose.service.health.MongooseHealthService.SERVICE_NAME);
+        if (healthSvc == null) return;
+        var health = (com.telamin.mongoose.service.health.MongooseHealthService) healthSvc.instance();
+        health.registerCheck("group:" + groupName, "control-audit", ctx -> group.control().audit().evidenceDegraded()
+                ? com.telamin.mongoose.service.health.HealthStatus.degraded("control audit write failed ("
+                + group.control().audit().firstSinkFailure() + "); replies are UNVERIFIED until the evidence is exported")
+                : com.telamin.mongoose.service.health.HealthStatus.up());
+        health.registerCheck("group:" + groupName, "audit-capture", ctx -> {
+            long writes = group.captureWriteFailures();
+            int closes = group.captureCloseFailures().size();
+            int cleanups = group.captureCleanupFailures().size();
+            return writes + closes + cleanups == 0 ? com.telamin.mongoose.service.health.HealthStatus.up()
+                    : com.telamin.mongoose.service.health.HealthStatus.degraded("capture failures: writes=" + writes
+                    + " closes=" + closes + " cleanups=" + cleanups + " (processors keep running)");
+        });
+    }
+
+    /**
+     * Acknowledge a group's control-audit write failure without exporting (exporting acknowledges what it exported).
+     * Later replies are no longer marked UNVERIFIED; the gap stays recorded and the export stays incomplete.
+     */
+    public void acknowledgeControlAuditGap(String groupName) {
+        var runner = composingEventProcessorAgents.get(Objects.requireNonNull(groupName, "groupName"));
+        if (runner == null) throw new IllegalArgumentException("unknown processor group: " + groupName);
+        runner.group().control().audit().acknowledgeEvidenceGap();
     }
 
     /** Non-blocking counters and failure snapshots; does not enter the group's mailbox or wait for its thread. */
@@ -1457,7 +1491,8 @@ public class MongooseServer implements MongooseServerController {
         var group = runner.group();
         return new ControlGroupStatus(groupName, group.control().state(), group.control().outstanding(),
                 group.captureResourcesHeld(), group.captureResourceSlotsInUse(),
-                group.captureCloseFailures(), group.captureCleanupFailures(), group.quarantinedProcessors());
+                group.captureCloseFailures(), group.captureCleanupFailures(), group.quarantinedProcessors(),
+                group.control().audit().evidenceDegraded(), group.captureWriteFailures());
     }
 
     /** Waiting is safe only off agent/lifecycle threads, on a group whose thread is running. */
@@ -1536,6 +1571,7 @@ public class MongooseServer implements MongooseServerController {
                     }
                     // a sender waiting on this group's full mailbox leaves as soon as the server stops (FM-2)
                     group.control().abandonWhen(this::isStopRequested);
+                    registerEvidenceHealth(groupName, group);
                     return new ComposingEventProcessorAgentRunner(group, groupRunner, idleStrategyOverride);
                 });
 

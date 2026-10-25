@@ -149,6 +149,9 @@ class ControlScenarioHarnessTest {
 
         ControlRequest track(ControlRequest request, ProcessorRegistration registration, LedgerProc target) {
             sent.add(request);
+            // injected uninstall failures already seen on the target when the request was sent: only a failure injected
+            // after this point can explain this request's failure (review 77, F3)
+            final int uninstallFailuresAtSend = captures == null || target == null ? 0 : captures.uninstallFailuresOn(target);
             AtomicInteger count = new AtomicInteger();
             answers.put(request, count);
             request.reply().whenComplete((reply, error) -> {
@@ -183,7 +186,7 @@ class ControlScenarioHarnessTest {
                         // a failed stop is explained only by a failed effect AND a fault this harness injected
                         if (reply.outcome() == com.telamin.mongoose.control.event.ReplyOutcome.FAILED && !nameOnly.contains(request)
                                 && !(kind == com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT
-                                && injectedStopFault(target)))
+                                && injectedStopFault(target, uninstallFailuresAtSend)))
                             failures.add(request + " unexplained failed stop: " + reply);
                         if (reply.outcome() == com.telamin.mongoose.control.event.ReplyOutcome.REFUSED
                                 && kind != com.telamin.mongoose.control.event.FailureKind.REFUSED_STATE)
@@ -212,18 +215,15 @@ class ControlScenarioHarnessTest {
         }
 
         /**
-         * Whether this harness injected a fault into {@code target} itself that its stop can meet: a stop failure, or an
-         * uninstall failure of a capture resource installed on it. A fault elsewhere in the scenario never excuses it
-         * (review 77, F3). An unknown target is never excused.
+         * Whether this harness injected, while this request was outstanding, a fault into {@code target} itself that can
+         * fail its stop: an uninstall failure of a capture resource installed on it. (An injected stop() or tearDown()
+         * failure does not fail a stop: the release reports the failed step and the stop is APPLIED.) A fault elsewhere
+         * in the scenario, or one injected before the request was sent, never excuses it (review 77, F3). An unknown
+         * target is never excused.
          */
-        private boolean injectedStopFault(LedgerProc target) {
-            if (target == null) return false;
-            if (target.failStop) return true;
-            if (captures == null) return false;
-            for (CaptureRig.Res r : captures.opened) {
-                if (r.installedOn.contains(target) && captures.failedUninstallResources.contains((long) r.serial)) return true;
-            }
-            return false;
+        private boolean injectedStopFault(LedgerProc target, int uninstallFailuresAtSend) {
+            if (target == null || captures == null) return false;
+            return captures.uninstallFailuresOn(target) > uninstallFailuresAtSend;
         }
 
         ControlRequest trackNameStop(ControlRequest request, String name, List<LedgerProc> all) {
@@ -232,13 +232,15 @@ class ControlScenarioHarnessTest {
             // when it was sent (never one already torn down or one whose start failed)
             List<LedgerProc> liveAtSend = all.stream().filter(proc -> name.equals(proc.name) && !proc.failStart
                     && proc.tearDowns.get() == 0).toList();
+            Map<LedgerProc, Integer> failuresAtSend = new IdentityHashMap<>();
+            for (LedgerProc proc : liveAtSend) failuresAtSend.put(proc, captures == null ? 0 : captures.uninstallFailuresOn(proc));
             track(request, null, null);
             request.reply().thenAccept(reply -> {
                 // the target is resolved here (third review F3): a failed name-only stop is explained only by a fault
                 // injected into an incarnation of that name that was live when the stop was sent (review 77, F3)
                 if (reply.outcome() == com.telamin.mongoose.control.event.ReplyOutcome.FAILED) {
                     boolean injected = reply.kind() == com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT
-                            && liveAtSend.stream().anyMatch(this::injectedStopFault);
+                            && liveAtSend.stream().anyMatch(proc -> injectedStopFault(proc, failuresAtSend.get(proc)));
                     if (!injected) failures.add(request + " unexplained failed name-only stop: " + reply);
                 }
                 if (!reply.applied()) return;

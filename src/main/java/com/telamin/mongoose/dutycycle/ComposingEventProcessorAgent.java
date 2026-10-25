@@ -1113,6 +1113,10 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         // EventLogControlEvent), and a frame around it would flush to the listener being replaced (review of PR 6, 3)
         try {
             resources.installCapture(handle, named.name(), named.eventProcessor());
+            long resourceId = effect.resourceId();
+            String processorName = named.name();
+            long generation = effect.generation();
+            resources.observeWriteFailures(handle, failure -> captureWriteFailed(resourceId, generation, processorName, failure));
         } catch (VirtualMachineError fatal) {
             throw fatal;
         } catch (RuntimeException | Error failure) {
@@ -1303,6 +1307,25 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                     "kind", leftover ? leftoverKind : closed.kind() == CaptureCompletion.Kind.CLOSED ? null : com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT);
             leftoverCaptures.remove(id);
         }
+    }
+
+    private final java.util.concurrent.atomic.AtomicLong captureWriteFailures = new java.util.concurrent.atomic.AtomicLong();
+
+    /**
+     * Fail open (issue #77, M3): a capture's record writes failed. The processor keeps running and nothing is retried;
+     * the failure is a control-audit record and raises the group's audit-capture health. Called once per recording, on
+     * the thread that wrote; never throws.
+     */
+    private void captureWriteFailed(long resourceId, long generation, String processorName, String failure) {
+        captureWriteFailures.incrementAndGet();
+        control.audit().fallback("CaptureWriteFailed", "group", roleName(), "resourceId", resourceId,
+                "generation", generation, "name", processorName, "reason", failure, "processorStopped", false,
+                "kind", com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT);
+    }
+
+    /** Recordings whose capture writes failed (fail open): the processor kept running. */
+    public long captureWriteFailures() {
+        return captureWriteFailures.get();
     }
 
     /** Capture resources the group still holds (opened and not handed to the closer): for tests and the stop result. */

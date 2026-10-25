@@ -16,12 +16,23 @@ import com.telamin.mongoose.control.event.ReplyOutcome;
  * @param kind       the structured failure classification ({@link FailureKind#NONE} when applied); never null
  */
 public record ControlReply(long requestId, ReplyOutcome outcome, String reason, long generation, String name,
-                           FailureKind kind) {
+                           FailureKind kind, FailureKind evidence) {
 
-    /** Normalised so that {@code kind == NONE} exactly when {@code outcome == APPLIED}. */
+    /**
+     * Normalised so that {@code kind == NONE} exactly when {@code outcome == APPLIED}, and {@code evidence} is
+     * {@code UNVERIFIED} (the group's control audit had an unacknowledged write failure when the reply was made) or
+     * {@code NONE}.
+     */
     public ControlReply {
         if (outcome == ReplyOutcome.APPLIED) kind = FailureKind.NONE;
         else if (kind == null || kind == FailureKind.NONE) kind = FailureKind.defaultFor(outcome);
+        evidence = evidence == FailureKind.UNVERIFIED ? FailureKind.UNVERIFIED : FailureKind.NONE;
+    }
+
+    /** A reply with recorded evidence ({@code evidence = NONE}). */
+    public ControlReply(long requestId, ReplyOutcome outcome, String reason, long generation, String name,
+                        FailureKind kind) {
+        this(requestId, outcome, reason, generation, name, kind, FailureKind.NONE);
     }
 
     /**
@@ -34,6 +45,16 @@ public record ControlReply(long requestId, ReplyOutcome outcome, String reason, 
 
     public boolean applied() {
         return outcome == ReplyOutcome.APPLIED;
+    }
+
+    /** False when the reply was made while the group's control audit was degraded: its evidence may be missing. */
+    public boolean evidenceVerified() {
+        return evidence == FailureKind.NONE;
+    }
+
+    /** This reply marked as made without verifiable evidence. */
+    public ControlReply unverified() {
+        return new ControlReply(requestId, outcome, reason, generation, name, kind, FailureKind.UNVERIFIED);
     }
 
     static ControlReply notRunning(long requestId, FailureKind kind, String why) {

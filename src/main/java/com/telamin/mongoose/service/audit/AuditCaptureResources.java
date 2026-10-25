@@ -44,6 +44,14 @@ public interface AuditCaptureResources {
      */
     default void processorReleased(AuditCaptureIdentity identity, DataFlow flow) { }
 
+    /**
+     * Fail open (issue #77, M3): a capture whose record writes fail never stops the processor, but must not fail silently.
+     * The group calls this after a successful install; the implementation calls {@code observer} (with a description)
+     * at the first write failure of that recording, on whatever thread wrote, and must catch anything it throws. The
+     * default observes nothing, for implementations that cannot fail a write.
+     */
+    default void observeWriteFailures(Object resource, java.util.function.Consumer<String> observer) { }
+
     /** Flush and close the resource. */
     void closeCapture(Object resource) throws Exception;
 }

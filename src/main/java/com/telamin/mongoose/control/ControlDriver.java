@@ -165,8 +165,8 @@ public final class ControlDriver {
                     return request;
                 }
                 if (abandonWhen.getAsBoolean()) {
-                    if (request.completeUnclaimed(ControlReply.notRunning(request.requestId(), FailureKind.REFUSED_STATE,
-                            "server is stopping"))) {
+                    if (request.completeUnclaimed(marked(ControlReply.notRunning(request.requestId(), FailureKind.REFUSED_STATE,
+                            "server is stopping")))) {
                         request.runUnapplied();
                         audit.fallback("NotRunning", "group", group, "requestId", request.requestId(),
                                 "request", request.description(), "reason", "server is stopping",
@@ -298,7 +298,7 @@ public final class ControlDriver {
     private void refuseTerminal(ControlRequest request) {
         GroupState now = state.get();
         FailureKind kind = terminalKind(now);
-        if (request.completeUnclaimed(ControlReply.notRunning(request.requestId(), kind, "group " + group + " is " + now))) {
+        if (request.completeUnclaimed(marked(ControlReply.notRunning(request.requestId(), kind, "group " + group + " is " + now)))) {
             request.runUnapplied();
             audit.fallback("NotRunning", "group", group, "requestId", request.requestId(), "request", request.description(),
                     "kind", kind);
@@ -312,7 +312,7 @@ public final class ControlDriver {
     }
 
     private void refuse(ControlRequest request, FailureKind kind, String why) {
-        if (request.completeUnclaimed(new ControlReply(request.requestId(), ReplyOutcome.REFUSED, why, -1, null, kind))) {
+        if (request.completeUnclaimed(marked(new ControlReply(request.requestId(), ReplyOutcome.REFUSED, why, -1, null, kind)))) {
             request.runUnapplied();
             audit.fallback("Refused", "group", group, "requestId", request.requestId(), "reason", why, "kind", kind);
         }
@@ -482,7 +482,7 @@ public final class ControlDriver {
                          FailureKind kind) {
         ControlRequest request = claimed.remove(requestId);
         if (request == null) return false;
-        boolean delivered = request.completeClaimed(new ControlReply(requestId, outcome, reason, generation, name, kind));
+        boolean delivered = request.completeClaimed(marked(new ControlReply(requestId, outcome, reason, generation, name, kind)));
         outstanding.remove(request);
         return delivered;
     }
@@ -496,11 +496,19 @@ public final class ControlDriver {
      */
     private void complete(ControlRequest request, FailureKind kind, String reason) {
         claimed.remove(request.requestId());
-        if (request.completeClaimed(new ControlReply(request.requestId(), ReplyOutcome.FAILED, reason, -1, null, kind))) {
+        if (request.completeClaimed(marked(new ControlReply(request.requestId(), ReplyOutcome.FAILED, reason, -1, null, kind)))) {
             audit.fallback(ReplyOutcome.FAILED.name(), "group", group, "requestId", request.requestId(), "reason", reason,
                     "replyAuthor", "DRIVER", "kind", kind, "failureKind", FailureKind.FAILED_DRIVER_FALLBACK);
         }
         outstanding.remove(request);
+    }
+
+    /**
+     * Fail closed on evidence (issue #77, M3): while the group's control audit has an unacknowledged write failure,
+     * every reply is marked {@code evidence = UNVERIFIED}. Nothing is refused because of it.
+     */
+    private ControlReply marked(ControlReply reply) {
+        return audit.evidenceDegraded() ? reply.unverified() : reply;
     }
 
     /** The request being applied with this id, for the group's effects to find their payload. */
@@ -590,7 +598,7 @@ public final class ControlDriver {
             if (r.isClaimed()) continue;
             GroupState now = state.get();
             FailureKind kind = terminalKind(now);
-            if (r.completeUnclaimed(ControlReply.notRunning(r.requestId(), kind, "group " + group + " is " + now))) {
+            if (r.completeUnclaimed(marked(ControlReply.notRunning(r.requestId(), kind, "group " + group + " is " + now)))) {
                 r.runUnapplied();
                 audit.fallback("NotRunning", "group", group, "requestId", r.requestId(), "request", r.description(),
                         "kind", kind);
@@ -619,7 +627,7 @@ public final class ControlDriver {
         VirtualMachineError fatal = null;
         for (ControlRequest r : pending) {
             try {
-                if (r.completeClaimed(new ControlReply(r.requestId(), ReplyOutcome.FAILED, why, -1, null, kind))) {
+                if (r.completeClaimed(marked(new ControlReply(r.requestId(), ReplyOutcome.FAILED, why, -1, null, kind)))) {
                     audit.fallback("Failed", "group", group, "requestId", r.requestId(), "reason", why, "kind", kind);
                 }
             } catch (Throwable callbackFailure) {

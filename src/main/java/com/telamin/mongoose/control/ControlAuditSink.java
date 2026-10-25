@@ -37,6 +37,8 @@ public final class ControlAuditSink implements LogRecordListener {
     private long sinkFailures;
     private String firstSinkFailure;
     private long fallbackSeq;
+    /** Sink failures an operator has acknowledged, by exporting the evidence or explicitly (issue #77, M3). */
+    private long acknowledgedSinkFailures;
 
     public ControlAuditSink() {
         this(DEFAULT_CAPACITY);
@@ -52,9 +54,37 @@ public final class ControlAuditSink implements LogRecordListener {
         try {
             add(withoutRawEventText(logRecord.asCharSequence().toString()));
         } catch (RuntimeException e) {
+            boolean wasDegraded = evidenceDegraded();
             sinkFailures++;
             if (firstSinkFailure == null) firstSinkFailure = e.toString();
+            if (!wasDegraded) {
+                // fail closed (issue #77, working decision 2): from here every reply is marked UNVERIFIED until the
+                // evidence is exported or acknowledged. Written to the fallback stream, which needs no conversion
+                fallback("EvidenceDegraded", "kind", "UNVERIFIED", "sinkFailures", sinkFailures, "reason", e.toString());
+            }
         }
+    }
+
+    /**
+     * The control audit failed to write a record that no operator has acknowledged yet: the group is DEGRADED and its
+     * replies carry {@code evidence = UNVERIFIED}. It keeps accepting every request, stops and closes included.
+     */
+    public synchronized boolean evidenceDegraded() {
+        return sinkFailures > acknowledgedSinkFailures;
+    }
+
+    /**
+     * Acknowledge the gap: replies are no longer marked once the operator has taken the evidence as it is. The gap stays
+     * recorded ({@link #isComplete()} remains false and an export says so); acknowledgement never makes evidence whole.
+     */
+    public synchronized void acknowledgeEvidenceGap() {
+        acknowledge(sinkFailures, "acknowledged");
+    }
+
+    private void acknowledge(long upTo, String how) {
+        if (upTo <= acknowledgedSinkFailures) return;
+        acknowledgedSinkFailures = upTo;
+        fallback("EvidenceAcknowledged", "sinkFailures", upTo, "how", how);
     }
 
     /**
@@ -150,11 +180,12 @@ public final class ControlAuditSink implements LogRecordListener {
         return out.toString();
     }
 
-    private record ExportSnapshot(byte[] yaml, String manifest) { }
+    private record ExportSnapshot(byte[] yaml, String manifest, long sinkFailures) { }
 
     private synchronized ExportSnapshot exportSnapshot() {
         byte[] yaml = exportText().getBytes(StandardCharsets.UTF_8);
-        return new ExportSnapshot(yaml, ControlAuditExport.manifest(yaml, total, records.size(), dropped, sinkFailures));
+        return new ExportSnapshot(yaml, ControlAuditExport.manifest(yaml, total, records.size(), dropped, sinkFailures),
+                sinkFailures);
     }
 
     /** Export unchanged analyser YAML plus a versioned completeness sidecar from the same locked snapshot. */
@@ -166,6 +197,10 @@ public final class ControlAuditSink implements LogRecordListener {
         Files.deleteIfExists(manifest);
         Files.write(target, snapshot.yaml());
         Files.writeString(manifest, snapshot.manifest(), StandardCharsets.UTF_8);
+        // the exported pair records the failures it contains: those are acknowledged, later ones are not
+        synchronized (this) {
+            acknowledge(snapshot.sinkFailures(), "exported");
+        }
         return target;
     }
 }

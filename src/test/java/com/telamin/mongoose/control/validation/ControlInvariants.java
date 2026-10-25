@@ -76,6 +76,14 @@ public final class ControlInvariants {
                 violations.add("I18 engine safety diagnostic: " + record);
             }
         }
+        // I21 (issue #77, M3): a span in which the control audit failed to write is unverifiable, never a pass, even
+        // after the gap is acknowledged: acknowledgement ends the reply marking, it does not make the evidence whole
+        for (Rec record : evidence.records()) {
+            if ("EvidenceDegraded".equals(record.type())) {
+                unverifiable.add("I21 control audit failed to write (" + record.str("reason")
+                        + "): records after fallbackSeq " + record.num("fallbackSeq") + " may be missing");
+            }
+        }
         // I19 (issue #77, reviewer finding 9): a resource reclaimed by the group's offline leftover cleanup is a
         // recovery, never a normal close; it means the control processor failed to release it.
         Set<String> leftovers = new HashSet<>();

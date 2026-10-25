@@ -3,21 +3,21 @@
 Design for [issue #77](https://github.com/telaminai/mongoose/issues/77). It turns the failure catalogue from PR #76's
 reviews into one model, so that later changes are checked against stated rules instead of rediscovered by review.
 
-**Status.** This is a design document on branch `feature/77-failure-model`, based on `feature/control-plane` at
-`dfbfdd9` (Mongoose 1.0.33-rc1 candidate, Fluxtion runtime 1.1.2 / compiler 1.0.79). It is meant for review after
-PR #76 ships. It does not approve the release and does not widen it.
+**Status.** This is a design document on branch `feature/77-failure-model`, first written against
+`feature/control-plane` at `dfbfdd9` and since merged with `72b6fd4` (Mongoose 1.0.33-rc1 candidate, Fluxtion runtime
+1.1.3 / compiler 1.0.80). It is meant for review after PR #76 ships. It does not approve the release and does not widen it.
 
 Every guarantee carries one of three status marks:
 
 | Mark | Meaning |
 | --- | --- |
 | **[Implemented]** | True at the base commit. The cited test exists at the base commit and passes in the full suite (1013 tests, 0 failures, 14 skipped at `dfbfdd9`). |
-| **[Implemented: M2]** | True on this branch after milestone 2. The cited test was added or changed on this branch and passes in its full suite. |
+| **[Implemented: M2]** / **[Implemented: M3]** | True on this branch after that milestone (M2 includes the round-2 review fixes). The cited test was added or changed on this branch and passes in its full suite. |
 | **[Proposed: Mn]** | Agreed direction, implemented on this branch in milestone *n* (see [Milestones](#milestones)). It is not true until that milestone lands. |
 | **[Unsupported]** | A deliberate non-guarantee. Callers must not rely on it. |
 
-Decisions marked **working decision, owner to confirm** are recommendations from the reviewer response to #77. The
-product owner has not formally confirmed them.
+Decisions marked **working decision, owner to confirm** are recommendations from the reviewer response to #77 that
+the product owner has not formally confirmed. Decisions marked **owner confirmed** were confirmed after the M2 review.
 
 Related documents: [control-plane contracts](../reference/control-plane-contracts.md),
 [capture resource identity](capture-resource-identity.md), [shutdown runbook](../operations/shutdown-runbook.md),
@@ -49,7 +49,7 @@ These are the seven principles from the #78 catalogue, folded into #77, with the
 
 | # | Principle | Status |
 | --- | --- | --- |
-| P1 | **Every request ends.** It ends with exactly one reply, within its deadline, including across death, close and shutdown. *Amendment:* the reply has an **identified author**: a rule, the driver's safety net, or the shutdown/death path. | One reply: **[Implemented]** (`ControlTerminalAdmissionTest`, `ControlScenarioHarnessTest#terminalSweepAnswersEveryIndependentlyRetainedUnpublishedRequest`, `ControlTerminationAndAdmissionTest#errorHandlerDeathCompletesClaimsWithoutAnotherSenderAndAllowsReentrantCompletion`). Author: a driver-authored reply is marked `replyAuthor: DRIVER` in the audit **[Implemented]** (`IndependentEvidenceMutationTest#structuredDriverFallbackIsRejectedRegardlessOfReasonWording`); every reply's `kind` names its author class: `FAILED_RULE` / `FAILED_DRIVER_FALLBACK` are the driver's safety net, `FAILED_DEAD` / `FAILED_SHUTDOWN` the death or close path, any other kind a rule or the sender **[Implemented: M2]** (`FailureKindFlowTest`, `ControlScenarioHarnessTest`). |
+| P1 | **Every request ends.** It ends with exactly one reply, within its deadline, including across death, close and shutdown. *Amendment:* the reply has an **identified author**: a rule, the driver's safety net, or the shutdown/death path. | One reply: **[Implemented]** (`ControlTerminalAdmissionTest`, `ControlScenarioHarnessTest#terminalSweepAnswersEveryIndependentlyRetainedUnpublishedRequest`, `ControlTerminationAndAdmissionTest#errorHandlerDeathCompletesClaimsWithoutAnotherSenderAndAllowsReentrantCompletion`). Author: the author is carried by `replyAuthor: DRIVER` on driver-authored records **[Implemented]** (`IndependentEvidenceMutationTest#structuredDriverFallbackIsRejectedRegardlessOfReasonWording`, `FailureKindFlowTest#aRequestNoRuleAnswersIsAnsweredByTheDriverAsFailedDriverFallback`). The `kind` says the cause, not the author: a rule's reply can carry `FAILED_DRIVER_FALLBACK` after an abandoned effect, and the driver also writes `FAILED_DEAD`. A rule-authored `Reply` record carries no author field; an author on every record is **[Proposed: M4]**. |
 | P2 | **Ownership is explicit and exact.** Every resource, name and service instance has one owner, identified by (group, generation) or by the instance. Ownership passes only on a confirmed release. An unconfirmed release keeps ownership until shutdown, which reports it. | **[Implemented]** for processors, names, captures and services (rows R7, R8, M1, M4 below). |
 | P3 | **Physical work outlives logical decisions.** A logical timeout or cancellation never releases what a physical operation holds. Bounds are permits held until the physical operation returns. | **[Implemented]** (row R6). |
 | P4 | **One deadline per call.** It is computed at entry and spent on admission, locks and reply together. No unbounded wait on an agent thread, and no wait under a lock the stop path needs. | **[Implemented]** (row R2). |
@@ -114,7 +114,7 @@ third review. "Status" refers to the containment and evidence columns together; 
 | R7 | Physical close throws | Ownership and the resource slot are retained; closure is never inferred | Resource ID, operation, failure, `captureCloseFailures()`, `StopResult` incomplete; invariant I4 reports it unverifiable | Adapter-specific verified recovery; no generic automatic retry | **[Implemented]** `CaptureAsEffectsTest#aCloseThatFailsIsRecordedAndCountedOnce`, `CapturePhysicalShutdownTest#failedPhysicalCloseKeepsShutdownIncompleteWithoutRepeatingCallback`, `ChronicleShutdownFailureEvidenceTest#failedChronicleCloseKeepsExactStopResultIncompleteAndProducesOperatorEvidence`, `ChaosAuditVerdictTest#completeRecordWithFailedPhysicalClosureCannotPassChaos` |
 | R8 | Service retirement races re-registration | One physical instance is never stopped by an obsolete owner once it is live again; admission and the stop claim are atomic; callbacks run outside publication locks | Retirement decision; failed physical stop reported by shutdown | Re-registration claims the instance | **[Implemented]** `HuntServerFailureModesTest#deferredRetirementMustNotStopAnInstanceRegisteredAgain`, `RetirementReregistrationRaceTest#reregistrationCannotRacePastAnAlreadyClaimedRetirementStop`, `ServiceAliasRetirementProbeTest#failedPhysicalStopIsStillReportedByShutdown` |
 | R9 | Replay diverges or cannot identify an input or service | That processor's replay stops with a reason; no live controller side effect | `replayer.stopped(processor)` with position and expected/observed identity | Fix configuration or create a new verified replay context | Stop with reason: **[Implemented]** `ReplayControlAndProvenanceTest#aReplayedControlRequestThatDiffersIsADivergence`, `ReplayIdentityTest#aLaterIncarnationWithNoRecordedStreamIsStoppedLoudly`, `IndependentReviewReplayProbesTest#aRecordedWithdrawalOfAServiceTheReplayedProcessorNeverHeldMustBeReportedAsDivergence`. Structured stop kind (`GroupReplayer.stopKind`): **[Implemented: M2]** `ReplayIdentityTest#aLaterIncarnationWithNoRecordedStreamIsStoppedLoudly`, `ReplayControlAndProvenanceTest#aReplayedControlRequestThatDiffersIsADivergence`, `ReplayRecordingAcceptanceTest#D4_aFailedDispatchIsMarked_andTheReplayStopsThere` |
-| R10 | Audit writer fails or evidence is dropped | Runtime policy per working decision 2 | Incomplete status, `sinkFailures`, manifest `complete: false`; never an invariant PASS | See [Audit failure](#audit-failure) | Evidence side: **[Implemented]** `ControlAuditExportTest#sinkFailureSurvivesExportAndFalseCompleteClaimIsRejected`, `#droppedFallbackWithoutDecisionSequenceGapIsStillIncomplete`. Runtime reaction (DEGRADED, evidence marker): **[Proposed: M3]** |
+| R10 | Audit writer fails or evidence is dropped | Runtime policy per working decision 2 | Incomplete status, `sinkFailures`, manifest `complete: false`; never an invariant PASS | See [Audit failure](#audit-failure) | Evidence side: **[Implemented]** `ControlAuditExportTest#sinkFailureSurvivesExportAndFalseCompleteClaimIsRejected`, `#droppedFallbackWithoutDecisionSequenceGapIsStillIncomplete`. Runtime reaction (DEGRADED, `evidence = UNVERIFIED`, I21): **[Implemented: M3]** `AuditFailurePolicyTest` |
 | R11 | Process, JVM or host dies | In-memory ownership and futures cannot promise recovery | Only what was durably written: Chronicle capture files, exported audit snapshots, replay stores | Restart from configuration; no implied exactly-once external effects | **[Unsupported]**: no durable control state, no recovery of in-flight requests |
 
 ### Rows the reviewer added
@@ -126,9 +126,9 @@ third review. "Status" refers to the containment and evidence columns together; 
 | M3 | `start()` throws for a recorded processor | The failure is a recorded `Failed` entry at the ordinal it consumed | Replay of that stream stops ("the recorded run failed here") | **[Implemented]** `RecordedStartFailureReplaysAsSuccessTest#aRecordedStartFailureMustNotLeaveAStreamThatReplaysAsSuccess`, `RecordedStartupFailureTest#aFailureAfterRecordingAttachesLeavesADurableMarker` |
 | M4 | Legacy name-keyed capture stop reaches a scoped sink | Stop by bare name refuses when the only match is a different generation | Refusal names the protected generation | **[Implemented]** `ChronicleCaptureEdgeTest#retiringAnOldGenerationMustNotStopTheNewGenerationsCapture`, `#aLegacyRouterMustNotSilentlyDowngradeRegistrationScopedStart` (direct embedding only; unreachable through `MongooseServer`) |
 | M5 | Physical detach retry fails after the logical release | Handle and slot retained; listed by `captureCloseFailures()`/`captureCleanupFailures()`; the control table keeps the row | `CleanupPending.failedPhysicalCloses` and `failedCaptureDetaches` | **[Implemented]** `CaptureAsEffectsTest#failedOfflineUninstallRetainsOwnershipForGroupCleanup`, `ChronicleGroupInlineTest#failedDetachRetainsItsResourceAndReportsCleanupFailure` |
-| M6 | A rule performs effects but never replies | The driver's safety net answers `FAILED` | The fallback is classified as a driver reply, distinct from a rule reply | `replyAuthor: DRIVER` marker: **[Implemented]** `IndependentEvidenceMutationTest#structuredDriverFallbackIsRejectedRegardlessOfReasonWording`. Live replies and exports classified by `kind`, never reason text: **[Implemented: M2]** `ControlScenarioHarnessTest` (ledger), `FailureKindEvidenceMutationTest#anUnhealthyKindOnAFallbackReplyIsRejectedWhateverItsWording` |
+| M6 | A rule performs effects but never replies | The driver's safety net answers `FAILED` | The fallback is classified as a driver reply, distinct from a rule reply | `replyAuthor: DRIVER` marker: **[Implemented]** `IndependentEvidenceMutationTest#structuredDriverFallbackIsRejectedRegardlessOfReasonWording`. Live replies and exports classified by `kind`, never reason text: **[Implemented: M2]** `ControlScenarioHarnessTest` (ledger), `FailureKindEvidenceMutationTest#anUnhealthyKindOnAFallbackReplyIsRejectedWhateverItsWording`, `FailureKindFlowTest#aRequestNoRuleAnswersIsAnsweredByTheDriverAsFailedDriverFallback`, `#aRuleThatThrowsIsAnsweredByTheDriverAsFailedRule` |
 | M7 | Status API read off the agent thread | Status views are safe from any thread, or documented agent-only | n/a | **[Implemented]** `ReplayStatusApiConcurrencyTest#completeAndStoppedAreSafeToPollWhileProcessorsAttachAndDetach`, `ReplayStatusPublicationTest`; `controlGroupStatus` is documented weakly consistent |
-| M8 | Group close reclaims captures the control processor left open | Leftover release is a recovery, recorded as such | Fallback record marked as a leftover; the oracle counts leftovers as violations unless the scenario injected the leak | Reclaim and record: **[Implemented]** `CaptureAsEffectsTest#aDeadControlProcessorsGroupStillClosesItsCaptures`. Leftover marker (`leftover: true`, `kind: LEFTOVER_RECOVERED`) and oracle invariant I19: **[Implemented: M2]** same test, `FailureKindEvidenceMutationTest#aLeftoverRecoveryIsRejected` |
+| M8 | Group close reclaims captures the control processor left open | Leftover release is a recovery, recorded as such. A handle whose *requested* uninstall failed is a retry, not a leftover | Offline records marked `leftover: true`, `kind: LEFTOVER_RECOVERED`, or `retry: true` for a retried requested uninstall. The oracle (I19) counts every leftover as a violation; there is no per-scenario exemption | Reclaim and record: **[Implemented]** `CaptureAsEffectsTest#aDeadControlProcessorsGroupStillClosesItsCaptures`. Leftover vs retry marking and I19: **[Implemented: M2]** same test, `Review77ProbesTest#injectedPhysicalDetachFailureRetriedAtCloseIsNotAnEngineLeftover`, `FailureKindEvidenceMutationTest#aLeftoverRecoveryIsRejected` |
 
 ### Rows from the third review
 
@@ -138,6 +138,15 @@ third review. "Status" refers to the containment and evidence columns together; 
 | T2 | Standalone failed open deletes a concurrent opener's live recording | A failed build removes only the directory it freshly created | **[Implemented]** `StandaloneFailedOpenDeletesConcurrentRecordingTest#failedOpenRemovesTheDirectoryAConcurrentStartIsRecordingInto`, `CaptureOpenFailureCleanupTest#failedStandaloneBuildNeverDeletesExistingHistory` |
 | T3 | Name-only stops were not checked by the caller-side ledger | The harness resolves the target when the reply arrives | **[Implemented]** `ControlScenarioHarnessTest#nameOnlyStopLedgerRejectsAReplyBeforeReleaseWithoutConsultingAudit` |
 
+### Rows from the admin-web validation (svc-admin-web against rc1)
+
+| # | Trigger | Containment and evidence | Status |
+| --- | --- | --- | --- |
+| A1 | A fatal error reaches a group's Agrona error handler | `GlobalErrorHandler` (used by `bootServer`) calls `System.exit(-1)`: one group's fatal error ends the JVM, contradicting containment. Proposed: keep the process alive, mark the group `DEAD`, report it (health, `StopResult`), and make exit an explicit opt-in | **[Proposed: M4]** (behaviour unchanged on this branch; it changes what a fatal error means for every deployment and needs its own tests) |
+| A2 | `server.processors.stop` with a missing or malformed argument, or an unknown group or name | Argument validated before any stop; unknown group or name answered `REFUSED` (`REFUSED_STATE`) instead of an index error or "pending" | **[Implemented: M2]** `AdminStopCommandValidationTest#malformedAndUnknownStopsAreRefusedNeverPending` |
+| A3 | Two wordings for one refusal (`mailbox full` in replies and docs, `queue stayed full` / `queue is full` in exceptions) | Every refusal and exception says `mailbox full` | **[Implemented: M2]** (wording only) |
+| A4 | `control.group.status` exists only as `toString()` | A JSON form for the UI, with typed fields | **[Proposed: M4]**, with the typed `StopResult` |
+
 ## Terminal-state contract
 
 What each terminal state promises, and who settles it. The settling order is: the agent thread before it exits, then
@@ -146,7 +155,7 @@ the post-join backstop, then shutdown.
 | State | Outstanding requests | Resources | Names and services | Who settles | Status |
 | --- | --- | --- | --- | --- | --- |
 | **Dead** (agent thread ended abnormally, or the control processor threw) | Claimed: answered `FAILED` by the agent before it exits, or by the post-join backstop. Unclaimed: swept `NOT_RUNNING`. New: refused at admission | Captures stay owned. `releaseLeftoverCaptures` runs after the join and records each release in the fallback stream. Failures stay listed | Processor names stay reserved until death cleanup releases them. Quarantined processors keep theirs until shutdown, which reports them | Agent, then post-join backstop (`cleanupAfterDeath`), then shutdown | **[Implemented]** rows R4, M5, M8. Names held by a dead group reported in `StopResult`: groups are listed in `groupsRunning`; a per-name listing is **[Proposed: M4]** |
-| **Closed** (orderly) | None outstanding by construction (terminal admission). A request still claimed at close is answered `FAILED` ("group ended"). A late completion is handed to the orphan handler exactly once | All closed, or listed as failed (`captureCloseFailures`) | Released, except quarantined processors | The agent thread in `onClose` | **[Implemented]** `ControlTerminalAdmissionTest#requestsQueuedAtCloseAreAnsweredByTheRulesWithoutStartingAnything`, `ControlTerminationAndAdmissionTest#completionRacingCloseIsDispatchedOrOrphanedExactlyOnce`, `CaptureShutdownRetryTest#aClosedGroupRetainsFailedCaptureCleanupAndTheNextStopResumesIt` |
+| **Closed** (orderly) | None outstanding by construction (terminal admission). A request still claimed at close is answered `FAILED` ("group ended", kind `FAILED_SHUTDOWN`, or `FAILED_DEAD` if the group died first); this backstop is not reached by any non-defective path and has no test. A late completion is handed to the orphan handler exactly once | All closed, or listed as failed (`captureCloseFailures`) | Released, except quarantined processors | The agent thread in `onClose` | **[Implemented]** `ControlTerminalAdmissionTest#requestsQueuedAtCloseAreAnsweredByTheRulesWithoutStartingAnything`, `ControlTerminationAndAdmissionTest#completionRacingCloseIsDispatchedOrOrphanedExactlyOnce`, `CaptureShutdownRetryTest#aClosedGroupRetainsFailedCaptureCleanupAndTheNextStopResumesIt` |
 | **Stopped** (one processor) | Replies in flight complete normally | Its captures are uninstalled before release and closed after it, or listed | The name is released on confirmed teardown, never on a refusal or a failed start before its release callback | The agent thread | **[Implemented]** `ProcessorStopReleaseTest`, `FailedStartNameOwnershipTest#failedStartKeepsItsNameThroughTheReleaseCallback`, `IntegrationReleaseRegressionTest#aDropCannotFreeANewerReservationUnderTheSameName` |
 | **Quarantined** (one generated processor) | Later stops of it are answered `FAILED` ("processor quarantined") | Existing capture is detached without calling the graph; new installs refused; generated `stop()`/`tearDown()` never invoked | Instance and name retained until shutdown; shutdown stays incomplete and keeps dependent services | Nobody automatically. The operator, per the [shutdown runbook](../operations/shutdown-runbook.md#quarantined-processors) | **[Implemented]** `GeneratedProcessorFailureIsolationTest#generatedStopFailureCannotReenterTearDownOrReleaseItsName`, `#captureAfterQuarantineRefusesInstallAndDetachesWithoutCallingTheGraph`, `#groupReplayFailureCannotReenterGeneratedLifecycleOnShutdown` |
 
@@ -167,11 +176,11 @@ One enum, `FailureKind`, shared by `ControlReply`, `StopResult`, replay stop rea
 | `FAILED_RULE` | The control processor itself failed (a rule threw, effects did not settle, wedged); the driver answered | `ControlDriver` safety net. Engine defect |
 | `FAILED_EFFECT` | A requested effect failed: start, release, capture open/install/uninstall, delivery | Rules, from the effect result |
 | `FAILED_DRIVER_FALLBACK` | The rules settled without replying, or an effect was abandoned; the driver authored the outcome | `ControlDriver` safety net. Engine defect |
-| `FAILED_DEAD` | The group died; accepted work was answered by the death path | `markDead`, `failClaimed`, sweeps of a dead group |
-| `FAILED_SHUTDOWN` | The group or server ended in order with this work outstanding, or a stop did not complete | Close with a request still claimed; `StopResult` incomplete |
+| `FAILED_DEAD` | The group died; accepted work was answered by the death path | `markDead`, `failClaimed`, sweeps of a dead group, and the driver (`replyAuthor: DRIVER`) on a fatal error while performing effects |
+| `FAILED_SHUTDOWN` | The group or server ended in order with this work outstanding, or a stop did not complete | `StopResult` incomplete (`BoundedShutdownTest`); a reply only as the close backstop for a request still claimed, which no non-defective path reaches (the rules answer queued work at close), so it has no engine test |
 | `QUARANTINED` | A processor was quarantined, or a request addressed one | Isolation, `stopQuarantined` |
 | `DETACHED` | The caller stopped waiting; the outcome is not yet known. Not a cancellation | `StopResult` handed off to a stop thread |
-| `UNVERIFIED` | Cannot be verified from the evidence (incomplete or failed audit). Never a pass | Reserved for M3 (evidence-incomplete marker); also the kind of a `ControlReply` built with a null outcome |
+| `UNVERIFIED` | Cannot be verified from the evidence (incomplete or failed audit). Never a pass | `ControlReply.evidence` while the control audit is degraded (M3), and the `EvidenceDegraded` record; also the kind of a `ControlReply` built with a null outcome |
 | `LEFTOVER_RECOVERED` | A resource the control processor should have released was reclaimed by offline cleanup | `releaseLeftoverCaptures` |
 | `REPLAY_IDENTITY_MISMATCH` | A replay could not match an input, stream, service version or control request | `GroupReplayer` |
 | `REPLAY_STOPPED` | Any other replay stop: recorded failure, delivery timeout, clock divergence | `GroupReplayer` |
@@ -195,34 +204,47 @@ Changes from the reviewer's list, with reasons:
 | --- | --- | --- |
 | `ControlReply.kind()` | New record component, never null | Authored where the outcome is decided: rules (`LifecycleRules`, `CaptureRules`, `ServiceRules`), the driver (`ControlDriver`), the server's own refusals (`MongooseServer`) |
 | `ControlEffect.Reply.kind()` | New record component | A rule's reply effect carries it to the driver |
-| `EffectResult.kind()` | New record component | An effect's failure kind (`FAILED_EFFECT`, `QUARANTINED`, `FAILED_DRIVER_FALLBACK` for abandoned effects); a rule copies it into its reply, so no rule reads reason text |
+| `EffectResult.kind()` | New record component | An effect's failure kind (`FAILED_EFFECT`, `QUARANTINED`, `FAILED_DRIVER_FALLBACK` for abandoned effects); every rule node (`LifecycleRules`, `CaptureRules`, `ServiceRules`) copies it into its reply, so no rule reads reason text. The agent classifies an effect whose failure quarantined its processor, or a delivery to a quarantined one, as `QUARANTINED` (`FailureKindQuarantineTest`) |
 | `ControlRequest.cancel(FailureKind, String)` | New overload | `cancel(String)` stays and means `REFUSED_ADMISSION` |
 | `ControlDriver.reply(..., FailureKind)`, `failClaimed(FailureKind, String)` | New overloads | The old signatures stay, with `defaultFor(outcome)` and `FAILED_DEAD` |
 | `StopResult.failureKind()` | New derived method | `NONE`, `DETACHED` (handed off) or `FAILED_SHUTDOWN` |
 | `GroupReplayer.stopKind(processor)` | New method beside `stopped(processor)` | `REPLAY_IDENTITY_MISMATCH` or `REPLAY_STOPPED`; null when not stopped |
-| `ReplayRouting.MISMATCH` | New `"mismatch:"` answer prefix beside `"wait:"` | The routing says which service failures are identity failures; the replayer never parses free text |
-| Control audit | Field `kind` on `Reply`, failed `EffectOutcome`, and the `Refused`, `NotRunning`, `Failed`, driver `FAILED`, `Dead`, `Anomaly` (rule threw), `ProcessorQuarantined` and leftover fallback records | Driver replies keep `replyAuthor: DRIVER` and repeat the kind as `failureKind` for 1.0.33-rc1 readers |
+| `ReplayRouting.MISMATCH` | New `"mismatch:"` answer prefix beside `"wait:"` | The routing says which service failures are identity failures. This is still a text protocol through a public SPI (as `"wait:"` already was); a typed answer is **[Proposed: M4]** |
+| Control audit | Field `kind` on `Reply`, every failed `EffectOutcome` (rule and fallback), and the `Refused`, `NotRunning`, `Failed`, driver `FAILED`, `Dead`, `Anomaly` (rule threw), `ProcessorQuarantined`, `CaptureWriteFailed` and leftover fallback records | Driver replies keep `replyAuthor: DRIVER`; `failureKind` keeps its 1.0.33-rc1 meaning and is always `FAILED_DRIVER_FALLBACK` on a driver reply, whatever the new `kind` says, so an rc1 validator still rejects every driver reply |
 
 The oracle (`ControlInvariants`) and the scenario harness key on the kind:
 
-- **I18** rejects `FAILED_RULE`, `FAILED_DRIVER_FALLBACK`, `FAILED_DEAD` and `QUARANTINED` whatever the reason text.
-  Reason text is read only for a record with no `kind` and no `failureKind`, that is, an export written before the
-  taxonomy.
-- **I19** (new) rejects a leftover recovery, one violation per reclaimed resource.
-- **I20** (new) requires, in an export that carries kinds, every delivered reply to name a kind, `NONE` exactly when
-  `APPLIED`.
-- **I1** derives the start of a release from the `Stop` input (a name-only stop resolved to the generation live under
-  that name) and requested `Release` effects, never from the rule name `stopStarted`.
+- **I18** rejects driver-authored records (`replyAuthor: DRIVER`) and the kinds `FAILED_RULE`,
+  `FAILED_DRIVER_FALLBACK`, `FAILED_DEAD` and `QUARANTINED`, whatever the reason text. The choice is **per export**: an
+  export in which any record carries a `kind` is judged by kinds only; reason text is read only in an export with no
+  kinds at all (written before the taxonomy).
+- **I19** (new) rejects a leftover recovery, one violation per reclaimed resource. Retries of a requested uninstall are
+  marked `retry`, not leftover.
+- **I20** (new) requires, in a taxonomy export, every delivered reply, every reply-bearing fallback record and every
+  failed effect outcome to name a kind; a reply's kind is `NONE` exactly when `APPLIED`.
+- **I21** (new, M3) reports every span after an `EvidenceDegraded` record unverifiable, so it can never PASS.
+- **I1** derives the start of a release from the `Stop` input and requested `Release` effects, never from the rule
+  name `stopStarted`. A name-only stop is resolved to the generation live under that name: the name comes from the
+  `Add` input, but "started" and "name released" are read from engine-written `BuildAndStart` / `ReleaseName`
+  outcomes, and the `Release` leg is engine-authored too. I1 is therefore not independent of the engine's outcome
+  records.
 - The harness classifies replies by `kind`: a safety-net reply is a failure; a failed stop is explained only by
-  `FAILED_EFFECT` **and** a fault the harness injected into that target (or, for a name-only stop, into a processor of
-  that name); a refused stop must be `REFUSED_STATE`; a failed capture request must be `FAILED_EFFECT`.
+  `FAILED_EFFECT` **and** an uninstall failure injected into a capture on that target while the request was
+  outstanding (for a name-only stop, on an incarnation of the name live when it was sent). An injected `stop()` failure
+  never excuses a failed stop: the release reports the step and the stop is `APPLIED`. A refused stop must be
+  `REFUSED_STATE`; a failed capture request must be `FAILED_EFFECT`. The chaos workload excuses a failed stop only for
+  a stopped instance with an injected stop or tearDown failure. `run-f3-escape-check.py` replays the reviewer's
+  spurious-failure mutant over 200 seeds at `dfbfdd9` and on this branch and fails if any seed caught by the old
+  reason-text rule escapes.
 
 ### API changes
 
-All additions are source compatible except two record changes:
+All additions are source compatible except record-shape changes (owner confirmed: shipped in a minor version,
+documented in the [unreleased release notes](../release/release-notes-unreleased.md) and the
+[client migration checklist](../release/client-migration-1.0.33.md)):
 
-- **Breaking (record shape):** `ControlReply` and `EffectResult` gained a trailing `kind` component, and
-  `ControlEffect.Reply` likewise. The previous canonical constructors remain as secondary constructors, so `new
+- **Breaking (record shape):** `ControlReply` gained trailing `kind` and `evidence` components; `EffectResult` and
+  `ControlEffect.Reply` gained `kind`; `ControlGroupStatus` gained `controlAuditDegraded` and `captureWriteFailures`. The previous canonical constructors remain as secondary constructors, so `new
   ControlReply(id, outcome, reason, generation, name)` still compiles. Record deconstruction patterns that list every
   component, and `equals`, now include `kind`. Two replies equal before may differ by kind.
 - **Behaviour:** `ControlInvariants.isSafetyNetFailure` (test code) now takes a `ControlReply` and reads its kind.
@@ -246,7 +268,7 @@ explicit policy, may re-issue the effect; it does not mean the engine re-issues 
 | `FailBoot`, `ReportFailure` | Retry-safe | Reporting only; a repeat duplicates a report | No |
 | `OpenCapture` | Unknown side effects | Creates physical files and queues; a re-issue creates a new resource | No |
 | `InstallCapture` | Retry-safe after a verified failure | Swaps a listener on the agent thread | No. A failed install is compensated (resource closed) |
-| `UninstallCapture` | Retry-safe | Restores the configured listener | **Yes, bounded:** a failed live uninstall is retried once after the release, and offline at group close (`CaptureAsEffectsTest#failedUninstallDuringProcessorStopIsRetriedAfterRelease`, `#failedOfflineUninstallRetainsOwnershipForGroupCleanup`) |
+| `UninstallCapture` | Retry-safe | Restores the configured listener | **Yes, not bounded:** a failed live uninstall is retried once after the release, offline at group close, and again on **every resumed `shutdown()`** (`cleanupAfterDeath` → `releaseLeftoverCaptures`) until it succeeds. Each retry is recorded `retry: true` (`CaptureAsEffectsTest#failedUninstallDuringProcessorStopIsRetriedAfterRelease`, `#failedOfflineUninstallRetainsOwnershipForGroupCleanup`, `CaptureShutdownRetryTest`). A bound is **[Proposed: M6]** |
 | `CloseCapture` | Unknown side effects | Backend partial effects unknown | No. A failed close is retained and listed |
 
 The classification is written here and in the contracts **[Implemented as documentation]**. Recording it on each
@@ -270,7 +292,8 @@ That is dispatch retry, not control-effect retry, and it is not applied to gener
 
 ## Supervision and callback failure
 
-**Working decision 1, owner to confirm: isolate the processor, keep the group, no automatic restart.**
+**Working decision 1, owner to confirm: isolate the processor, keep the group, no automatic restart.** (The
+downstream policy comment on #77 already keeps quarantine with no automatic retry or restart.)
 
 - A generated processor whose callback throws is quarantined: removed from every input reader, timers cancelled,
   instance and name retained, health and ERROR raised. The group keeps running the others. **[Implemented]** (row R3).
@@ -279,22 +302,26 @@ That is dispatch retry, not control-effect retry, and it is not applied to gener
 - Any future opt-in recovery needs an application contract for idempotency, state restoration and reconciliation of
   external effects. **[Unsupported]** in this release.
 
-**Working decision 3, owner to confirm: a dead group is left for the operator in this release.**
+**Decision 3, owner confirmed: a dead group is left for the operator in this release.**
 
 - No supervisor restarts a dead group. **[Implemented]** (no restart path exists).
 - Names and services it held stay reserved; `StopResult` lists the group and `controlGroupStatus` reports its state
-  and cleanup failures. **[Implemented]** for groups; reporting each reserved name and service per dead group is
-  **[Proposed: M4]**.
+  and cleanup failures. **[Implemented]** for groups. The names and services held per dead group go into a **typed
+  `StopResult` replacement** (for example `HeldName(group, name, generation, reason)`), shipped in the same minor
+  release as the `ControlReply` shape change so clients migrate once. An "additive" record field would itself be a
+  shape break. **[Proposed: M4]**.
 
 ## Audit failure
 
-**Working decision 2, owner to confirm: fail closed for the lifecycle control audit, fail open for Chronicle data
-capture.**
+**Decision 2, owner confirmed (with the reviewer's correction): fail closed for the lifecycle control audit, fail open
+for Chronicle data capture.** A DEGRADED group **always accepts stop and close** (refusing them would turn an audit
+fault into an outage and remove the operator's main remedy; refusal of other requests could become an opt-in policy
+later). Its replies are marked `UNVERIFIED` until the evidence is exported or acknowledged.
 
 | Audit | Policy | Today | Status |
 | --- | --- | --- | --- |
-| Control audit (`ControlAuditSink`) | Fail closed. A sink failure marks the group `DEGRADED`; every later control reply carries an evidence-incomplete marker (`UNVERIFIED`); the oracle reports the span unverifiable, never PASS | `sinkFailures` is counted and `isComplete()` turns false; the oracle reports evidence-dependent invariants unverifiable. Group health and reply marker are absent | Evidence side **[Implemented]** (`ControlAuditExportTest#sinkFailureSurvivesExportAndFalseCompleteClaimIsRejected`); DEGRADED and marker **[Proposed: M3]** |
-| Chronicle data capture | Fail open. Never stops the processor; raises health and a control audit record | A capture failure fails the capture effect, not the processor. An install/restore failure on a generated graph quarantines that graph (it may be wedged) | A failed capture effect fails the capture request, not the processor **[Implemented]** (`CaptureAsEffectsTest#anOpenThatFailsIsAnsweredFailedAndHoldsNothing`, `#anInstallThatFailsIsCompensated`); quarantine of a generated graph on a routed install/restore failure **[Implemented]** (`GeneratedProcessorFailureIsolationTest#routedChronicleInstallFailureQuarantinesGeneratedGraph`); dedicated health check **[Proposed: M3]** |
+| Control audit (`ControlAuditSink`) | Fail closed. A sink write failure marks the group DEGRADED (`evidenceDegraded()`, `controlGroupStatus(..).controlAuditDegraded()`, health check `group:<name>/control-audit`) and writes one `EvidenceDegraded` fallback record per degraded span. Every later reply carries `evidence = UNVERIFIED`; every request is still applied, stops and closes included. Exporting (`exportControlAudit`, admin `control.audit.export`) acknowledges the failures it exported; `acknowledgeControlAuditGap` / admin `control.audit.acknowledge` acknowledges without exporting. Either writes `EvidenceAcknowledged`; neither makes the evidence whole (`isComplete()` stays false, I21 still reports the span unverifiable) | Evidence side **[Implemented]** (`ControlAuditExportTest#sinkFailureSurvivesExportAndFalseCompleteClaimIsRejected`). DEGRADED, marker, health, acknowledgement, I21 **[Implemented: M3]** (`AuditFailurePolicyTest#theSinkDegradesOnceAndOnlyExportOrAcknowledgementEndsTheMarking`, `#aDegradedGroupAcceptsStopAndCloseAndMarksEveryReplyUnverified`, `#serverHealthAndStatusReportTheDegradedControlAudit`, control `#aHealthyGroupsTraceStillVerifies`). Ring overflow (dropped oldest records) keeps its existing meaning (export incomplete) and does not degrade the group, because the newest records, those of current replies, are kept |
+| Chronicle data capture | Fail open. A record write failure is counted and logged and never stops the processor or the capture; the first failure of each recording calls the group's observer (`AuditCaptureResources.observeWriteFailures`, a new default SPI method), which writes a `CaptureWriteFailed` control-audit record (`processorStopped: false`, kind `FAILED_EFFECT`) and raises the health check `group:<name>/audit-capture` (also raised by failed closes and detaches). It does not degrade the control audit | A failed capture effect fails the capture request, not the processor **[Implemented]** (`CaptureAsEffectsTest#anOpenThatFailsIsAnsweredFailedAndHoldsNothing`, `#anInstallThatFailsIsCompensated`); quarantine of a generated graph on a routed install/restore failure **[Implemented]** (`GeneratedProcessorFailureIsolationTest#routedChronicleInstallFailureQuarantinesGeneratedGraph`). Write-failure record, counter and health **[Implemented: M3]** (`AuditFailurePolicyTest#aCaptureWriteFailureNeverStopsTheProcessorButIsRecordedAndRaisesHealth`, through a fake resource). The Chronicle implementation's observer call has no test against a real failing queue |
 
 Policy execution never depends on the failed sink: fallback records and replies are written by the group, not by the
 audit listener **[Implemented]** (`ControlAuditSink` fallback stream).
@@ -306,8 +333,8 @@ The seams exist; they are test-internal today.
 | Seam | Where | Status |
 | --- | --- | --- |
 | `CaptureIo` (open, close, timer) | public interface in `com.telamin.mongoose.control`; set per group with `setCaptureIo` | Public **[Implemented]**; supported-API commitment **[Proposed: M5]** |
-| `AuditCaptureResources` fakes (`CaptureRig.FakeResources`, `ManualIo`) | `src/test` only | **[Proposed: M5]**: move to `com.telamin.mongoose.testing`, versioned with the engine |
-| `ControlDriver.registerUnpublished` (sender paused before publishing) | package-private test seam | **[Proposed: M5]** |
+| `AuditCaptureResources` fakes (`CaptureRig.FakeResources`, `ManualIo`) | `src/test` only | **[Proposed: M5]**, owner confirmed: a separate `mongoose-testing` artifact (test scope), versioned with the engine; `CaptureIo` stays in main as an SPI |
+| `ControlDriver.registerUnpublished` (sender paused before publishing) | package-private test seam | Stays internal; not published (owner confirmed) |
 | Processor fault doubles (throwing start/stop/teardown/handler) | per test class (`LedgerProc`, chaos `Instance.Kind`) | **[Proposed: M5]** |
 
 Every matrix row above has at least one test that injects its fault. M5 makes those injection points a supported API
@@ -315,8 +342,8 @@ so downstream code can run the same scenarios.
 
 ## Fluxtion-level concerns
 
-The three Fluxtion concerns from #77 are **resolved by Fluxtion runtime 1.1.3 / compiler 1.0.80**, which PR #76 is
-adopting on `feature/control-plane` (this branch's base still builds on 1.1.2 / 1.0.79):
+The three Fluxtion concerns from #77 are **resolved by Fluxtion runtime 1.1.3 / compiler 1.0.80**, adopted by PR #76
+on `feature/control-plane` (`72b6fd4`, merged into this branch):
 
 | Concern | Resolution |
 | --- | --- |
@@ -325,8 +352,9 @@ adopting on `feature/control-plane` (this branch's base still builds on 1.1.2 / 
 | One audit record per node per cycle | The failed cycle's record is closed and the next cycle gets its own. The control rules still write one `Decision` per node per cycle by design |
 
 Mongoose keeps its host-side policy regardless of the runtime fix: quarantine, no retry, because clearing the flag is
-not a transaction. The control driver's wedge guards (`controlWedged`) remain until the regenerated control processor
-is qualified on 1.1.3.
+not a transaction. The same applies to the control processor: under 1.1.3 a throwing rule no longer wedges it, but its
+rules' state is not rolled back, so the driver still stops dispatching to it (`controlWedged`), marks the group `DEAD`
+and answers `FAILED_RULE` (`FailureKindFlowTest#aRuleThatThrowsIsAnsweredByTheDriverAsFailedRule`) **[Implemented: M2]**.
 
 ## Milestones
 
@@ -334,16 +362,21 @@ is qualified on 1.1.3.
 | --- | --- |
 | M1 | This document |
 | M2 | `FailureKind` on replies, effect results, `StopResult`, replay stops and audit records; oracle and harness keyed on kind; leftover marker |
-| M3 | Audit fail-closed: group `DEGRADED` on control-audit failure, `UNVERIFIED` marker on later replies; Chronicle capture health |
-| M4 | Terminal-state reporting: names and services held by dead groups and quarantined processors listed in `StopResult` and status |
-| M5 | Fault-injection test API under `com.telamin.mongoose.testing` |
+| M3 | Audit fail-closed: group `DEGRADED` on control-audit failure, `UNVERIFIED` marker on later replies, acknowledgement; capture fail-open record and health (done) |
+| M4 | Typed `StopResult` replacement listing names and services held by dead groups and quarantined processors; JSON group status; reply author on every record; typed replay-routing answer; fatal errors mark the group `DEAD` instead of exiting the JVM (opt-in exit) |
+| M5 | Fault-injection test API in a separate `mongoose-testing` artifact |
 | M6 | Oracle vacuity reporting (absence is not evidence); retry classification recorded on `ControlEffect` and checked |
 
 ## Open questions for the owner
 
-1. Confirm working decisions 1 to 3 (callback failure, audit failure, dead group).
-2. Should a `DEGRADED` group (M3) keep accepting control requests, or refuse lifecycle changes until the operator
-   exports the evidence?
-3. Is a per-name listing of reserved names in `StopResult` (M4) an additive field, or should it wait for a typed
-   `StopResult` replacing the raw-string `groupsRunning`?
-4. Should the fault-injection API (M5) ship in the main artifact or a separate `mongoose-testing` artifact?
+Answered after the M2 review (owner confirmed): a DEGRADED group always accepts stop and close; held names go into a
+typed `StopResult` replacement in the same release as the `ControlReply` break; M5 ships as a separate test-scope
+`mongoose-testing` artifact with `CaptureIo` kept in main as an SPI; record-shape breaks go in a minor version,
+documented.
+
+Still open:
+
+1. Confirm working decision 1 (callback failure: isolate, no automatic restart) formally.
+2. Should refusal of non-stop requests by a DEGRADED group become an opt-in policy, and under what name?
+3. A1: is a process exit on a fatal group error ever wanted by default (for example when a process manager restarts
+   the JVM), or always opt-in?
