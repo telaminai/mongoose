@@ -538,7 +538,9 @@ agent thread.
 | Interrupted while waiting | `IllegalStateException`; the request still applies |
 
 The admin commands `audit.start <name>` and `audit.stop <name>` call these methods and print the exception message
-on failure.
+on failure. `audit.start` prints `audit: RECORDING <name>` once `start` returns. If the admin command runs on an agent
+thread, `start` returns before the capture is installed, so that line means "requested", not "recording". Check with
+`audit.status`.
 
 ### The open in-flight limit
 
