@@ -107,7 +107,10 @@ final class CaptureRig {
     static final class Res {
         final int serial;
         final String processor;
+        /** Close attempts: exactly one per resource, whether or not it succeeded. */
         int closes;
+        /** Attempts that failed: closes - closeFailures succeeded. */
+        int closeFailures;
         final List<DataFlow> installedOn = new ArrayList<>();
 
         Res(int serial, String processor) {
@@ -173,7 +176,10 @@ final class CaptureRig {
             Res r = (Res) resource;
             if (installed.containsValue(r)) findings.add(r + " closed while installed");
             r.closes++;
-            if (failCloses) throw new IllegalStateException("simulated close failure of " + r);
+            if (failCloses) {
+                r.closeFailures++;
+                throw new IllegalStateException("simulated close failure of " + r);
+            }
         }
 
         /** Every resource opened has been closed exactly once and nothing is installed. */

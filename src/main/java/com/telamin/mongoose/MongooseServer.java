@@ -1252,9 +1252,14 @@ public class MongooseServer implements MongooseServerController {
      * commands use 1 s). Returns the reply, or null if it did not come in time or nothing was admitted under the name.
      */
     public com.telamin.mongoose.control.ControlReply stopProcessor(String groupName, String processorName, long waitMillis) {
-        com.telamin.mongoose.control.ControlRequest request = sendStop(groupName, processorName);
-        if (request == null || !safeToWait(groupName)) return null;
-        return com.telamin.mongoose.control.ControlReplies.await(request, waitMillis);
+        // one deadline for admission and the reply (follow-up review, finding 7)
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(Math.max(0, waitMillis));
+        com.telamin.mongoose.control.ControlRequest request = sendStop(groupName, processorName, deadline);
+        if (request == null) return null;
+        if (request.reply().isDone()) return request.reply().getNow(null);     // refused at admission
+        if (!safeToWait(groupName)) return null;
+        long left = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+        return left <= 0 ? null : com.telamin.mongoose.control.ControlReplies.await(request, left);
     }
 
     /** How long a void control method waits for its outcome before detaching (the request still applies). */
@@ -1506,6 +1511,10 @@ public class MongooseServer implements MongooseServerController {
 
     /** Send a stop bound, now, to the registration admitted under the name; null when nothing is admitted. */
     private com.telamin.mongoose.control.ControlRequest sendStop(String groupName, String processorName) {
+        return sendStop(groupName, processorName, Long.MAX_VALUE);
+    }
+
+    private com.telamin.mongoose.control.ControlRequest sendStop(String groupName, String processorName, long admitByNanos) {
         var processorAgent = composingEventProcessorAgents.get(groupName);
         if (processorAgent == null) return null;
         ProcessorName reservation = new ProcessorName(groupName, processorName);
@@ -1514,7 +1523,7 @@ public class MongooseServer implements MongooseServerController {
         // A stop belongs to this accepted add, including before its supplier runs. The name is released by the control
         // processor's ReleaseName effect when the stop is applied (the registration's own releaser), never by the reply:
         // a stop refused for a full mailbox is replied too, and its processor keeps running (final review, finding 4)
-        return processorAgent.group().removeEventProcessorByName(processorName, registration, null);
+        return processorAgent.group().removeEventProcessorByName(processorName, registration, null, admitByNanos);
     }
 
     /**

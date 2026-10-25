@@ -42,7 +42,7 @@ public final class ControlInvariants {
         List<String> violations = new ArrayList<>();
         List<String> unverifiable = new ArrayList<>();
         if (!evidence.complete()) {
-            unverifiable.add("I2, I3, I10: the record is incomplete (dropped or failed writes)");
+            unverifiable.add("I2, I3, I4, I10, I11: the record is incomplete (dropped or failed writes)");
         }
         Map<Long, List<Rec>> replies = new HashMap<>();
         for (Rec r : evidence.records()) {
@@ -51,7 +51,7 @@ public final class ControlInvariants {
                 replies.computeIfAbsent(r.requestId(), k -> new ArrayList<>()).add(r);
             }
         }
-        // I11: nothing happens for a request after its reply: the reply comes only once every effect it depends on has
+        // I15 (not in the design table): nothing happens for a request after its reply: the reply comes only once every effect it depends on has
         // its final outcome
         Map<Long, Long> replySeq = new HashMap<>();
         for (Rec r : evidence.ofType("Reply")) {
@@ -61,7 +61,7 @@ public final class ControlInvariants {
             if (r.fallback() || r.type().equals("Reply") || Boolean.TRUE.equals(r.fields().get("cleanup"))) continue;
             Long at = replySeq.get(r.requestId());
             if (at != null && r.seq() > at && !"Input".equals(r.type())) {
-                violations.add("I11 request " + r.requestId() + " has a " + r.type() + " (seq " + r.seq()
+                violations.add("I15 request " + r.requestId() + " has a " + r.type() + " (seq " + r.seq()
                         + ") after its reply (seq " + at + "): " + r);
             }
         }
@@ -110,7 +110,7 @@ public final class ControlInvariants {
                 }
             }
         }
-        // I12: the effects one decision requested get their outcomes in the order they were requested (a close releases
+        // I16 (not in the design table): the effects one decision requested get their outcomes in the order they were requested (a close releases
         // in add order)
         Map<Long, List<Requested>> byDecision = new HashMap<>();
         for (Requested q : requested) byDecision.computeIfAbsent(q.decisionSeq(), k -> new ArrayList<>()).add(q);
@@ -121,7 +121,7 @@ public final class ControlInvariants {
                         .mapToLong(Rec::seq).min().orElse(-1);
                 if (at < 0) continue;
                 if (at < last) {
-                    violations.add("I12 effect " + q.opId() + " " + q.effect() + " got its outcome (seq " + at
+                    violations.add("I16 effect " + q.opId() + " " + q.effect() + " got its outcome (seq " + at
                             + ") before an effect requested ahead of it in the same decision");
                 }
                 last = Math.max(last, at);
@@ -214,12 +214,78 @@ public final class ControlInvariants {
             if (c > 1) violations.add("I4 resource " + resource + " closed " + c + " times");
             if (c == 0 && evidence.complete()) violations.add("I4 resource " + resource + " opened and never closed");
         });
-        // I14: a duplicate completion has no effect
+        // I14: a duplicate completion has no effect: it installs nothing, and never closes a resource accepted as opened
+        // (only the duplicate's own extra resource, which no decision accepted, may be closed)
         for (Rec d : evidence.ofType("Decision")) {
-            if ("captureDuplicate".equals(d.str("rule")) || "captureCloseUnknown".equals(d.str("rule"))) {
+            String rule = d.str("rule");
+            if ("captureDuplicate".equals(rule) || "captureCloseUnknown".equals(rule) || "captureUnknown".equals(rule)) {
                 String effects = d.str("effects");
                 if (effects != null && effects.contains("InstallCapture")) {
                     violations.add("I14 duplicate completion (seq " + d.seq() + ") installed a capture: " + effects);
+                }
+                if (effects != null && effects.contains("CloseCapture") && opened.containsKey(d.num("resourceId"))) {
+                    violations.add("I14 duplicate completion (seq " + d.seq() + ") closed resource " + d.num("resourceId")
+                            + ", which was accepted as opened");
+                }
+            }
+        }
+        // I11: resource accounting. In seq order, a resource accepted as opened is never closed before it is opened, nor
+        // closed more often than it was opened; with a complete record, opened - closed - live = 0 at the end means none
+        // is left live (checked as I4's "never closed")
+        java.util.List<Rec> ordered = new java.util.ArrayList<>(evidence.records());
+        ordered.removeIf(Rec::fallback);
+        ordered.sort(java.util.Comparator.comparingLong(Rec::seq));
+        Map<Long, Integer> openedSoFar = new HashMap<>();
+        Map<Long, Integer> closedSoFar = new HashMap<>();
+        for (Rec r : ordered) {
+            String rule = r.str("rule");
+            if ("Decision".equals(r.type()) && ("captureOpened".equals(rule) || "captureOpenedStale".equals(rule))) {
+                openedSoFar.merge(r.num("resourceId"), 1, Integer::sum);
+            }
+            boolean close = "EffectOutcome".equals(r.type()) && "CloseCapture".equals(r.str("effect"))
+                    && !"pending".equals(r.str("outcome")) && !Boolean.TRUE.equals(r.fields().get("duplicate"))
+                    && r.num("resourceId") >= 0 && opened.containsKey(r.num("resourceId"));
+            if (close) {
+                long id = r.num("resourceId");
+                int c = closedSoFar.merge(id, 1, Integer::sum);
+                if (c > openedSoFar.getOrDefault(id, 0)) {
+                    violations.add("I11 resource " + id + " closed (seq " + r.seq() + ") more often than opened so far");
+                }
+            }
+        }
+        // I12: ownership. An installed capture belongs to exactly one Started, unreleased generation: never installed on a
+        // generation not started or already released, never over another capture installed on it, and uninstalled before
+        // its generation is released
+        java.util.Set<Long> startedGens = new java.util.HashSet<>();
+        java.util.Set<Long> releasedGens = new java.util.HashSet<>();
+        Map<Long, Integer> installedOn = new HashMap<>();
+        java.util.Set<Long> failedUninstall = new java.util.HashSet<>();
+        for (Rec r : ordered) {
+            String rule = r.str("rule");
+            long gen = r.num("generation");
+            if ("Decision".equals(r.type()) && "started".equals(rule)) startedGens.add(gen);
+            if ("EffectOutcome".equals(r.type()) && "UninstallCapture".equals(r.str("effect"))
+                    && "failed".equals(r.str("outcome"))) {
+                failedUninstall.add(gen);
+            }
+            if ("Decision".equals(r.type()) && ("released".equals(rule) || "releasedWithErrors".equals(rule))) {
+                // a recorded failed uninstall explains a capture that outlives its release (it is retried after)
+                if (installedOn.getOrDefault(gen, 0) > 0 && !failedUninstall.contains(gen)) {
+                    violations.add("I12 generation " + gen + " released (seq " + r.seq() + ") with a capture still installed");
+                }
+                releasedGens.add(gen);
+            }
+            if ("EffectOutcome".equals(r.type()) && "succeeded".equals(r.str("outcome"))) {
+                if ("InstallCapture".equals(r.str("effect"))) {
+                    if (!startedGens.contains(gen) || releasedGens.contains(gen)) {
+                        violations.add("I12 capture installed (seq " + r.seq() + ") on generation " + gen
+                                + ", which is not a Started, unreleased registration");
+                    }
+                    if (installedOn.merge(gen, 1, Integer::sum) > 1) {
+                        violations.add("I12 a second capture installed (seq " + r.seq() + ") on generation " + gen);
+                    }
+                } else if ("UninstallCapture".equals(r.str("effect"))) {
+                    installedOn.merge(gen, -1, Integer::sum);
                 }
             }
         }

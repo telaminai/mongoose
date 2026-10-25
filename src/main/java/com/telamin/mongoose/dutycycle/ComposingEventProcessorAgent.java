@@ -174,6 +174,12 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     private volatile com.telamin.mongoose.service.audit.AuditCaptureResources captureResources;
     private volatile com.telamin.mongoose.control.CaptureIo captureIo = com.telamin.mongoose.control.CaptureIo.shared();
     private volatile long captureOpenTimeoutMillis = 30_000;
+    /**
+     * Physical opens a helper is still performing, bounded (follow-up review, finding 2): a timed-out open settles its
+     * request, but its helper may still be blocked opening, so its permit is returned only when the helper returns.
+     */
+    private volatile int captureOpenLimit = 8;
+    private final java.util.concurrent.atomic.AtomicInteger opensInFlight = new java.util.concurrent.atomic.AtomicInteger();
     private final ConcurrentHashMap<Long, Object> captureHandles = new ConcurrentHashMap<>();
     /** Resources whose live detach failed: retry without the instance only after its release. */
     private final java.util.Set<Long> captureDetachFailures = ConcurrentHashMap.newKeySet();
@@ -247,6 +253,12 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
      * @return the request, whose reply completes once the stop is complete
      */
     public ControlRequest removeEventProcessorByName(String name, ProcessorRegistration registration, Runnable completed) {
+        return removeEventProcessorByName(name, registration, completed, Long.MAX_VALUE);
+    }
+
+    /** As above, admitted by {@code admitByNanos} or answered {@code REFUSED}: one deadline for admission and reply. */
+    public ControlRequest removeEventProcessorByName(String name, ProcessorRegistration registration, Runnable completed,
+                                                     long admitByNanos) {
         if (registration != null) admit(registration, name);
         ControlRequest request = new ControlRequest(ControlRequest.Kind.STOP, "stop " + name,
                 id -> stopIntent(id, name, registration), registration);
@@ -257,7 +269,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                 if (reply.applied()) completed.run();
             });
         }
-        return control.send(request);
+        return control.send(request, admitByNanos);
     }
 
     private void admit(ProcessorRegistration registration, String name) {
@@ -323,6 +335,17 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     /** Where opens, closes and open timeouts run; the shared helper threads by default. */
     public void setCaptureIo(com.telamin.mongoose.control.CaptureIo io) {
         this.captureIo = Objects.requireNonNull(io, "io is null");
+    }
+
+    /** At most this many physical opens in flight per group (8 by default); an audit start beyond it is refused. */
+    public void setCaptureOpenLimit(int limit) {
+        if (limit < 1) throw new IllegalArgumentException("limit must be positive: " + limit);
+        this.captureOpenLimit = limit;
+    }
+
+    /** Physical opens a helper is still performing, whatever their requests' state. */
+    public int captureOpensInFlight() {
+        return opensInFlight.get();
     }
 
     /** How long an open may take before its audit start is answered Failed; 30 s by default. */
@@ -450,6 +473,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             return work;
         } catch (Error fatal) {
             control.markDead("fatal error in doWork: " + fatal);
+            control.failClaimed("group died: " + fatal);    // on the agent thread, which owns what it claimed
             throw fatal;
         }
     }
@@ -734,6 +758,11 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         long root = effect.requestId();
         String op = effect.opId();
         String name = effect.name();
+        if (opensInFlight.incrementAndGet() > captureOpenLimit) {
+            int inFlight = opensInFlight.decrementAndGet();
+            return result(effect, ControlOutcome.FAILED, inFlight + " physical capture opens are still in flight (limit "
+                    + captureOpenLimit + "): a helper has not returned");
+        }
         var io = captureIo;
         var timeout = io.schedule(() -> {
             openTimeouts.remove(op);
@@ -755,9 +784,14 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                 }
                 var pendingTimeout = openTimeouts.remove(op);
                 if (pendingTimeout != null) pendingTimeout.cancel();
-                control.complete(done);
+                try {
+                    control.complete(done);
+                } finally {
+                    opensInFlight.decrementAndGet();    // the physical operation has finished, whatever its request did
+                }
             });
         } catch (RuntimeException rejected) {
+            opensInFlight.decrementAndGet();
             var pendingTimeout = openTimeouts.remove(op);
             if (pendingTimeout != null) pendingTimeout.cancel();
             return result(effect, ControlOutcome.FAILED, "the open could not be handed to a helper: " + rejected);
@@ -851,6 +885,14 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                         "duplicate", settled ? Boolean.TRUE : null);
                 audit.fallback("CaptureCompensated", "group", roleName(), "opId", c.opId(), "resourceId", c.resourceId(),
                         "closed", closed != null && closed.kind() == CaptureCompletion.Kind.CLOSED);
+                // the compensating close's own outcome, with the physical failure's reason when it failed: an attempted
+                // close is not a successful one (follow-up review, finding 8)
+                if (closed != null) {
+                    audit.fallback("EffectOutcome", "group", roleName(), "requestId", c.requestId(),
+                            "opId", "orphan-close." + c.resourceId(), "effect", "CloseCapture",
+                            "outcome", closed.kind() == CaptureCompletion.Kind.CLOSED ? "succeeded" : "failed",
+                            "resourceId", c.resourceId(), "reason", closed.reason());
+                }
             }
             case CLOSED, CLOSE_FAILED -> audit.fallback("EffectOutcome", "group", roleName(), "requestId", c.requestId(),
                     "opId", c.opId(), "effect", "CloseCapture", "outcome", c.kind() == CaptureCompletion.Kind.CLOSED
