@@ -113,25 +113,16 @@ public final class PoolTracker<T extends PoolAware> {
     }
 
     /**
-     * Return to pool now if and only if the reference count is zero. The last {@link #releaseReference()} already
-     * returns the object, so this is only needed for an object whose count reached zero without a release (none does
-     * through the framework); it is kept for callers that pair it with a release.
-     * This method will not modify the reference count.
-     * <p>
-     * This method is idempotent and safe under concurrent calls:
-     * only the first successful CAS on 'returned' will perform the release.
+     * Compatibility no-op. The release that removes the last reference already returns the object to its pool.
+     * Callers may still pair this method with {@link #releaseReference()}, including after the object has been
+     * acquired again, but this call must never claim ownership of that later acquisition.
+     *
+     * <p>In particular, checking for a zero count here and then claiming a return with a separate CAS is unsafe:
+     * another release may return and reactivate the object between the check and the CAS. Only the release that
+     * actually changes the count to zero owns the return operation.
      */
     public void returnToPool() {
-        // If already returned, nothing to do
-        if (returned.get()) {
-            return;
-        }
         ensureInitialised();
-        if (refCount.get() == 0) {
-            doReturnOnce();
-        } else {
-            // noop: will be returned by the holder that releases the last reference\
-        }
     }
 
     private void doReturnOnce() {

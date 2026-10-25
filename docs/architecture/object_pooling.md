@@ -10,7 +10,7 @@ a deeper understanding of reference counting, pooling queues, partitions, and in
 - PoolTracker: manages reference counting for a pooled object and coordinates return to the originating pool.
     - acquireReference(): increment the reference count.
     - releaseReference(): decrement the reference count; the release that takes it to zero returns the object to its pool. The count never goes negative: a release with no reference held, while the object is out of the pool, throws IllegalStateException; a late release after the return is a no-op.
-    - returnToPool(): return the object to its pool if the reference count is zero. The method is idempotent and concurrency-safe; with the last release already returning the object it is rarely needed.
+    - returnToPool(): compatibility no-op. The last release owns the return; this optional legacy call never changes a later borrower's ownership.
 - ObjectPool<T extends PoolAware>: creates and recycles instances of T. When an instance is acquired, its PoolTracker is initialised with the originating pool and the reset hook, and ref count is set. When returned, an optional reset hook is invoked and the instance is placed on the pool’s free list.
 - ObjectPools: a shared registry mapping a class to a single ObjectPool instance. Provides convenient getOrCreate overloads to configure capacity and partitions.
 
@@ -52,7 +52,7 @@ flowchart TB
 - Acquire: pool.acquire() returns a pooled instance. Internally, if a free instance is available it is used; otherwise, the pool may create a new instance up to capacity. The instance’s tracker.init(...) sets refCount to 1 and clears the returned flag.
 - Additional references: any component that intends to hold a reference (e.g., a queue, cache, or consumer) must call acquireReference() and later releaseReference().
 - Origin release: no action is required by the sender. The reference acquire() handed out passes to the publisher on publish; the publisher holds it until every target queue holds its own reference, then releases it.
-- Returning to pool: the release that takes the count to zero returns the instance, exactly once per cycle. returnToPool() is safe to call multiple times and from multiple threads and returns the instance only at zero.
+- Returning to pool: the release that takes the count to zero returns the instance, exactly once per cycle. returnToPool() is retained as a safe no-op for legacy callers; it never attempts a second return, including after another thread has acquired the instance again.
 - Exhaustion: at capacity, acquire() waits (spin, then yield) until an instance is returned and never returns null. A leaked reference therefore shows as a publisher waiting in acquire() for good once the pool has run dry.
 - Reset: an optional reset hook is invoked just before an instance is placed on the free list, allowing the caller to clear state.
 
@@ -66,7 +66,7 @@ flowchart TB
 
 - Multi-producer/multi-consumer: the pool’s free list is MPMC with partitioning to reduce cache contention.
 - Reference counting is maintained via atomics in PoolTracker; it is safe under concurrent acquire/release/return operations.
-- Early return: calling returnToPool() before the count reaches zero is a safe no-op; final return occurs when the last holder releases.
+- Legacy return: returnToPool() is always a no-op; final return occurs when the last holder releases.
 
 ## Configuration notes
 
