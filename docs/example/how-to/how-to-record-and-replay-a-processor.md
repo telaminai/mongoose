@@ -45,10 +45,21 @@ through supported controller methods are matched against the recording without c
 
 A failed controller call records its exception as text. Replay refuses to claim a match for that failure: it stops
 with a reconstruction diagnostic, even if the processor catches the substitute exception. Exception types and
-payloads can change the processor's branch and are not reconstructed from arbitrary exception text. Controller calls
-made during processor startup are also not supported by the event-position matching mechanism; they stop replay as
-unmatched calls. Provenance currently compares processor and handler class names; it does not authenticate a build,
-configuration, or generated graph fingerprint.
+payloads can change the processor's branch and are not reconstructed from arbitrary exception text. Leading
+recorded controller calls are matched during processor startup. Provenance currently compares processor and handler
+class names; it does not authenticate a build, configuration, or generated graph fingerprint.
+
+Replay also refuses `registerService`, `registerEventSource`, and `removeService`, even when they match recorded
+requests. They would change the registry and resources shared with unreplayed processors. Reconstructing these
+requests requires a separate replay registry; Mongoose does not execute them against the live server.
+
+Service-change entries represent callbacks that actually ran, excluding broadcasts skipped because the processor
+already received that service while being built. A failed callback records a failure marker; a replay callback that
+throws stops replay. For positive service versions, replay requires the exact published version and current service
+wrapper. It waits for a later version that has not arrived and refuses a historical or unidentified incarnation;
+it never substitutes the latest service object for an older one. Unversioned legacy changes retain their existing
+configuration-based lookup. Earlier recordings containing skipped callbacks cannot be repaired without additional
+provenance.
 
 ### Stream identity when a processor is replaced
 

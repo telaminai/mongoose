@@ -163,6 +163,14 @@ public final class GroupRecorder {
         append(r, new ReplayEntry.ServiceChanged(service, register, version, r.clock.instant(reads), reads));
     }
 
+    /** A lifecycle/service callback failed: do not turn its partial effects into a successful replay input. */
+    public void controlFailed(DataFlow flow, String action, String reason) {
+        Recorded r = byFlow.get(flow);
+        if (r == null || r.broken != null) return;
+        List<Long> reads = r.clock.captured();
+        append(r, new ReplayEntry.Failed(action, reason, r.clock.instant(reads)));
+    }
+
     /** A ReplayRecord input: pin a recorded processor's clock to its instant; false when {@code flow} is not recorded. */
     public boolean pinSyntheticTime(DataFlow flow, long time) {
         Recorded r = byFlow.get(flow);

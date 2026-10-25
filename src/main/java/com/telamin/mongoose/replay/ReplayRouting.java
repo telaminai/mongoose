@@ -39,7 +39,9 @@ public interface ReplayRouting {
 
     /**
      * Deliver to, or withdraw from, the replayed processor the service registered as {@code service}, as the recorded
-     * run did at this point. @return false while a service to deliver is not registered yet
+     * run did at this point. A positive version must identify the exact service incarnation being delivered.
+     * @return false while a later required registry version has not arrived
+     * @throws IllegalStateException if the recorded incarnation cannot be identified or its callback fails
      */
     default boolean deliverService(DataFlow flow, String service, boolean register, long version) {
         return false;

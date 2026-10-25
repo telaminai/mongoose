@@ -318,6 +318,12 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     }
 
     private ControlRequest broadcastRequest(Service<?> service, boolean register, long version) {
+        if (version > 0) {
+            // Publication exists even when no processor currently receives a DeliverService effect. Keep the exact
+            // wrapper with its version, rather than combining a version with a later registry lookup during replay.
+            publishedServices.compute(service.serviceName(), (name, previous) -> previous == null || version > previous.version()
+                    ? new PublishedService(version, register ? service : null) : previous);
+        }
         return new ControlRequest(ControlRequest.Kind.BROADCAST,
                 (register ? "register " : "deregister ") + service.serviceName(),
                 id -> new BroadcastIntent(id, service.serviceName(), register, version),
@@ -382,7 +388,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     /** Per name, the processors built in this group: a replay stream's key. Agent thread only. */
     private final Map<String, AtomicInteger> builtOrdinals = new HashMap<>();
     /** Per service, the registry version of the last broadcast applied here. Agent thread only. */
-    private final Map<String, Long> lastServiceVersions = new HashMap<>();
+    /** Latest published registry binding per name; a removed incarnation does not retain its service object. */
+    private record PublishedService(long version, Service<?> service) { }
+    private final ConcurrentHashMap<String, PublishedService> publishedServices = new ConcurrentHashMap<>();
 
     /** What an add needs to perform its effects: never seen by the control processor. */
     private record AddPayload(Supplier<NamedEventProcessor> init, ProcessorRegistration registration) { }
@@ -732,18 +740,21 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         // the services a server registers while it boots (its feeds among them) are configuration, delivered live and
         // never recorded; a service change is what was sent once the server had started
         boolean runtimeChange = payload.runtime();
-        if (payload.version() > 0) lastServiceVersions.put(payload.service().serviceName(), payload.version());
         if (replayer != null && (runtimeChange && replayer.suppressesLiveServices(flow)
                 || replayer.suppressesLiveService(flow, payload.service().serviceName()))) {
             // replayed from a stream that records its service changes: delivered where the recorded run had it
             return result(effect, ControlOutcome.SUCCEEDED, "replayed: delivered in position");
         }
         if (runtimeChange && recorder != null) recorder.beforeControl(flow);
-        String failure = deliverService(named, payload.service(), payload.register());
-        if (runtimeChange && recorder != null) {
-            recorder.serviceChanged(flow, payload.service().serviceName(), payload.register(), payload.version());
+        ServiceDelivery delivery = deliverService(named, payload.service(), payload.register());
+        if (runtimeChange && recorder != null && delivery.invoked()) {
+            if (delivery.failure() == null) {
+                recorder.serviceChanged(flow, payload.service().serviceName(), payload.register(), payload.version());
+            } else {
+                recorder.controlFailed(flow, "service " + payload.service().serviceName(), delivery.failure());
+            }
         }
-        return result(effect, failure == null ? ControlOutcome.SUCCEEDED : ControlOutcome.FAILED, failure);
+        return result(effect, delivery.failure() == null ? ControlOutcome.SUCCEEDED : ControlOutcome.FAILED, delivery.failure());
     }
 
     private EffectResult runTask(ControlEffect.RunTask effect) {
@@ -1102,22 +1113,35 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
 
             @Override
             public boolean deliverService(DataFlow flow, String service, boolean register, long version) {
-                Long live = lastServiceVersions.get(service);
-                if (version > 0 && live != null && live != version) {
-                    log.warning("replay delivers service " + service + " recorded at version " + version
-                            + " where this run's registry is at version " + live);
-                }
                 for (NamedEventProcessor np : registeredEventProcessors.values()) {
                     if (np.eventProcessor() != flow) continue;
                     Service<?> svc = register ? registeredServices.get(service) : null;
+                    if (register && version > 0) {
+                        PublishedService published = publishedServices.get(service);
+                        if (published == null && svc == null) return false; // a future publication can identify it
+                        if (published == null) {
+                            throw new IllegalStateException("no registry binding identifies recorded service " + service
+                                    + " at version " + version);
+                        }
+                        if (published.version() < version) return false; // its registration may still arrive
+                        if (published.version() != version || svc != published.service() || svc == null) {
+                            throw new IllegalStateException("recorded service " + service + " at version " + version
+                                    + " is unavailable; current published version is " + published.version());
+                        }
+                    }
                     if (!register) {
                         for (Service<?> held : servicesDeliveredTo(flow)) {
                             if (held.serviceName().equals(service)) svc = held;
                         }
-                        if (svc == null) return true;     // nothing to withdraw
+                        if (svc == null) throw new IllegalStateException("recorded withdrawal of service " + service
+                                + " has no delivered incarnation");
                     }
                     if (svc == null) return false;        // not registered yet in this run: wait for it
-                    ComposingEventProcessorAgent.this.deliverService(np, svc, register);
+                    ServiceDelivery delivery = ComposingEventProcessorAgent.this.deliverService(np, svc, register);
+                    if (!delivery.invoked() || delivery.failure() != null) {
+                        throw new IllegalStateException("recorded service callback for " + service + " was not delivered: "
+                                + (delivery.failure() == null ? "already held" : delivery.failure()));
+                    }
                     return true;
                 }
                 return false;
@@ -1291,6 +1315,8 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         return replayer == null ? service : replayer.serviceFor(eventProcessor, service);
     }
 
+    private record ServiceDelivery(boolean invoked, String failure) { }
+
     /**
      * Hand one processor a service (de)registration. A processor that throws is reported and keeps running; the
      * broadcast still reaches every other processor in the group (mongoose#57).
@@ -1299,14 +1325,14 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
      * delivered: a later broadcast of the same service is not offered to that processor again, and a later deregister
      * of it does reach the processor. Likewise a {@code deRegisterService} that throws counts as done.
      *
-     * @return null when delivered (or already held), else why it failed
+     * @return whether the callback ran, and its failure if it threw; a skipped broadcast is not a processor input
      */
-    private String deliverService(NamedEventProcessor np, Service<?> svc, boolean register) {
+    private ServiceDelivery deliverService(NamedEventProcessor np, Service<?> svc, boolean register) {
         DataFlow eventProcessor = np.eventProcessor();
         // each service once (mongoose#60 item 1): a register the processor already has - it joined after the service
         // was in the registry - is skipped, and a deregister reaches only a processor that was handed the service
         if (register ? !servicesDeliveredTo(eventProcessor).add(svc) : !servicesDeliveredTo(eventProcessor).remove(svc)) {
-            return null;
+            return new ServiceDelivery(false, null);
         }
         com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(eventProcessor);
         try {
@@ -1317,13 +1343,13 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             } else {
                 eventProcessor.deRegisterService(serviceFor(eventProcessor, svc));
             }
-            return null;
+            return new ServiceDelivery(true, null);
         } catch (VirtualMachineError fatal) {
             throw fatal;
         } catch (Throwable t) {
             reportProcessorFailure(np.name(), (register ? "failed to register" : "failed to deregister")
                     + " service '" + svc.serviceName() + "'", t);
-            return String.valueOf(t);
+            return new ServiceDelivery(true, String.valueOf(t));
         } finally {
             com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
         }
