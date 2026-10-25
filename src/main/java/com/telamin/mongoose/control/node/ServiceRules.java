@@ -94,7 +94,8 @@ public class ServiceRules extends EventLogNode {
                 if (--chain.outstanding > 0) {
                     return true;
                 }
-                ControlEffect reply = new ControlEffect.Reply(state.nextOp(req), req, -1, null, ReplyOutcome.APPLIED,
+                ControlEffect reply = new ControlEffect.Reply(state.nextOp(req), req, -1, null,
+                        chain.failure == null ? ReplyOutcome.APPLIED : ReplyOutcome.FAILED,
                         chain.failure == null ? "delivered" : "delivered with failures: " + chain.failure);
                 decide("broadcastComplete", null, reply);
             }
