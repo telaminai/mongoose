@@ -877,7 +877,12 @@ public class MongooseServer implements MongooseServerController {
 
     /** Shutdown includes removed resources, including a stop callback already in progress. */
     private Map<String, Service<?>> shutdownServices() {
-        Map<String, Service<?>> services = new java.util.LinkedHashMap<>(registeredServices);
+        return shutdownServices(true);
+    }
+
+    private Map<String, Service<?>> shutdownServices(boolean includeRegistered) {
+        Map<String, Service<?>> services = includeRegistered ? new java.util.LinkedHashMap<>(registeredServices)
+                : new java.util.LinkedHashMap<>();
         for (RemovedService removed : removedServices.values()) {
             // The lifecycle manager tracks stops by name; each removed incarnation needs its own identity.
             String name = "removed[" + removed.id + "]:" + removed.service.serviceName();
@@ -891,6 +896,7 @@ public class MongooseServer implements MongooseServerController {
         private final long id;
         private final Service<?> service;
         private boolean stopped;
+        private Throwable stopFailure;
 
         private RemovedService(long id, Service<?> service) {
             this.id = id;
@@ -905,7 +911,13 @@ public class MongooseServer implements MongooseServerController {
         public synchronized void stop() {
             // A shutdown helper must also wait for an already-running callback, not merely see that it was claimed.
             if (stopped) return;
-            service.stop();
+            if (stopFailure != null) throw new IllegalStateException("removed service stop previously failed", stopFailure);
+            try {
+                service.stop();
+            } catch (Throwable failure) {
+                stopFailure = failure;
+                throw failure;
+            }
             stopped = true;
             removedServices.remove(id, this);
             // An old incarnation's deferred stop must not mark its replacement down.
@@ -1444,13 +1456,17 @@ public class MongooseServer implements MongooseServerController {
     @Override
     public void startService(String serviceName) {
         log.info("start service:" + serviceName);
-        // user code: never under the service lock (review of PR 4)
-        Service<?> service = registeredServices.get(serviceName);
-        if (service == null) return;
-        service.start();
-        // Per Phase 4.5b: up == 1 from startService return → stopService
-        // call; 0 before/after. Built-in "up" check reads this gauge.
-        flipServiceUp(serviceName, 1);
+        java.util.concurrent.locks.Lock read = admitServiceChange();
+        if (read == null) throw new IllegalStateException("server is stopping: service '" + serviceName + "' was not started");
+        try {
+            // The admission barrier owns this in-progress callback when shutdown starts.
+            Service<?> service = registeredServices.get(serviceName);
+            if (service == null) return;
+            service.start();
+            flipServiceUp(serviceName, 1);
+        } finally {
+            read.unlock();
+        }
     }
 
     /**
@@ -1463,10 +1479,16 @@ public class MongooseServer implements MongooseServerController {
     @Override
     public void stopService(String serviceName) {
         log.info("stop service:" + serviceName);
-        Service<?> service = registeredServices.get(serviceName);
-        if (service == null) return;
-        service.stop();
-        flipServiceUp(serviceName, 0);
+        java.util.concurrent.locks.Lock read = admitServiceChange();
+        if (read == null) throw new IllegalStateException("server is stopping: service '" + serviceName + "' was not stopped");
+        try {
+            Service<?> service = registeredServices.get(serviceName);
+            if (service == null) return;
+            service.stop();
+            flipServiceUp(serviceName, 0);
+        } finally {
+            read.unlock();
+        }
     }
 
     /**
@@ -1768,7 +1790,7 @@ public class MongooseServer implements MongooseServerController {
                         ? MongooseServerConfig.DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS
                         : mongooseServerConfig.getShutdownDrainTimeoutMillis();
                 if (lifecycleState.get() == LifecycleState.STOPPING_BEFORE_START) {
-                    result = lifecycleManager.closeBeforeStart(toGroupRunnerMap(composingEventProcessorAgents), deadline);
+                    result = lifecycleManager.closeBeforeStart(toGroupRunnerMap(composingEventProcessorAgents), shutdownServices(false), deadline);
                 } else {
                     result = lifecycleManager.stop(true, toGroupRunnerMap(composingEventProcessorAgents),
                             toGroupRunnerMap(composingServiceAgents), shutdownServices(), flowManager, drainTimeoutMillis,

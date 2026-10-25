@@ -87,6 +87,57 @@ class IndependentServiceReviewTest {
             assertEquals(1,svc.stops.get(),"shutdown must not stop the removed service a second time");
         } finally { release.countDown(); removal.join(5000); s.stop(); }
     }
+    @Test void beforeStartShutdownStillOwnsAnInProgressRemoval() throws Exception {
+        var cfg=new MongooseServerConfig(); cfg.setShutdownTimeoutMillis(50);
+        var s=new MongooseServer(cfg);
+        var untouched=new Svc(); s.registerService(new Service<>(untouched,Svc.class,"never-started"));
+        var entered=new CountDownLatch(1); var release=new CountDownLatch(1);
+        var removed=new Svc() {
+            @Override public void stop() {
+                super.stop(); entered.countDown();
+                try { release.await(); } catch(InterruptedException e) { Thread.currentThread().interrupt(); }
+            }
+        };
+        var removal=new Thread(()->s.removeService("review-service"));
+        try {
+            s.registerService(new Service<>(removed,Svc.class,"review-service"));
+            removal.start(); assertTrue(entered.await(5,TimeUnit.SECONDS));
+            assertFalse(s.shutdown().complete(),"pre-start removal still owns a running callback");
+            release.countDown(); removal.join(5000);
+            assertTrue(s.shutdown().complete());
+            assertEquals(1,removed.stops.get());
+            assertEquals(0,untouched.stops.get(),"ordinary never-started services are not stopped");
+        } finally { release.countDown(); removal.join(5000); s.stop(); }
+    }
+    @Test void failedRemovalIsNotInvokedAgainAtShutdown() {
+        assertRemovalFailureIsNotRetried(true);
+    }
+    @Test void failedPreStartRemovalIsNotInvokedAgainAtShutdown() {
+        assertRemovalFailureIsNotRetried(false);
+    }
+    private void assertRemovalFailureIsNotRetried(boolean start) {
+        var s=start ? started() : new MongooseServer(new MongooseServerConfig());
+        var svc=new Svc() {
+            @Override public void stop() { super.stop(); throw new IllegalStateException("cannot stop"); }
+        };
+        s.registerService(new Service<>(svc,Svc.class,"review-service"));
+        assertThrows(IllegalStateException.class,()->s.removeService("review-service"));
+        assertFalse(s.shutdown().complete(),"failed retirement remains reported");
+        assertFalse(s.shutdown().complete(),"repeat shutdown preserves failure without retrying user code");
+        assertEquals(1,svc.stops.get());
+    }
+    @Test void explicitServiceLifecycleCallsAreRefusedAfterShutdown() {
+        var s=new MongooseServer(new MongooseServerConfig());
+        var starts=new AtomicInteger();
+        var svc=new Svc() { @Override public void start() { starts.incrementAndGet(); } };
+        s.registerService(new Service<>(svc,Svc.class,"review-service")); s.init(); s.start();
+        assertTrue(s.shutdown().complete());
+        int startsAfterShutdown=starts.get(); int stopsAfterShutdown=svc.stops.get();
+        assertThrows(IllegalStateException.class,()->s.startService("review-service"));
+        assertThrows(IllegalStateException.class,()->s.stopService("review-service"));
+        assertEquals(startsAfterShutdown,starts.get());
+        assertEquals(stopsAfterShutdown,svc.stops.get());
+    }
     @Test void failedWithdrawalMustNotStopStillReferencedService() {
         var s=started();
         try {

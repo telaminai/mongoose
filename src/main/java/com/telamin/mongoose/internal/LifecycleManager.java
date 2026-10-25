@@ -299,10 +299,14 @@ public final class LifecycleManager {
 
     /** Never-started groups still need terminal replies; close them on tracked helpers within the same deadline. */
     public synchronized com.telamin.mongoose.StopResult closeBeforeStart(
-            ConcurrentHashMap<String, ? extends GroupRunner> groups, long deadline) {
+            ConcurrentHashMap<String, ? extends GroupRunner> groups, Map<String, Service<?>> removedServices, long deadline) {
         java.util.List<String> running = closeAll("unstarted processor agent", "processor:", groups, deadline);
-        return running.isEmpty() ? com.telamin.mongoose.StopResult.completed()
-                : com.telamin.mongoose.StopResult.incomplete(null, running, java.util.List.of());
+        if (!running.isEmpty()) {
+            return com.telamin.mongoose.StopResult.incomplete(null, running, servicesNotStopped(removedServices));
+        }
+        java.util.List<String> servicesLeft = stopServices(removedServices, deadline);
+        return servicesLeft.isEmpty() ? com.telamin.mongoose.StopResult.completed()
+                : com.telamin.mongoose.StopResult.incomplete(null, running, servicesLeft);
     }
 
     private com.telamin.mongoose.StopResult stopPhases(ConcurrentHashMap<String, ? extends GroupRunner> composingEventProcessorAgents,
@@ -428,6 +432,17 @@ public final class LifecycleManager {
             return com.telamin.mongoose.StopResult.incomplete(null, running, services);
         }
         log.info("stopping registered services");
+        java.util.List<String> servicesLeft = stopServices(registeredServices, deadline);
+        if (!servicesLeft.isEmpty()) {
+            log.warning("stop incomplete: services still stopping " + servicesLeft);
+            return com.telamin.mongoose.StopResult.incomplete(null, running, servicesLeft);
+        }
+        progress.complete = true;
+        return com.telamin.mongoose.StopResult.completed();
+    }
+
+    /** Stop owned resources on tracked helpers; both started and pre-start shutdown share failure/deadline handling. */
+    private java.util.List<String> stopServices(Map<String, Service<?>> registeredServices, long deadline) {
         java.util.List<String> servicesLeft = new java.util.ArrayList<>();
         for (Service<?> service : registeredServices.values()) {
             if (service.instance() instanceof LifeCycleEventSource || progress.servicesStopped.contains(service.serviceName())) {
@@ -443,12 +458,7 @@ public final class LifecycleManager {
                 servicesLeft.add(service.serviceName());
             }
         }
-        if (!servicesLeft.isEmpty()) {
-            log.warning("stop incomplete: services still stopping " + servicesLeft);
-            return com.telamin.mongoose.StopResult.incomplete(null, running, servicesLeft);
-        }
-        progress.complete = true;
-        return com.telamin.mongoose.StopResult.completed();
+        return servicesLeft;
     }
 
     /** Close each group not yet closed from its own helper thread; @return the groups still closing at the deadline. */
