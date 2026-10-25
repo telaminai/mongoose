@@ -304,6 +304,108 @@ class CaptureAsEffectsTest {
                 .filter(r -> r.fallback() && "CaptureCompensated".equals(r.type())).count() >= 1);
     }
 
+    /** Review of PR 5, finding 2: a failed uninstall never closes a resource that may still be receiving records. */
+    @Test
+    void aFailedUninstallKeepsTheCaptureAndAnswersFailed() throws Exception {
+        Proc p = new Proc("p");
+        ProcessorRegistration reg = add("p", p);
+        group.auditStart("p", reg);
+        work();
+        io.runOpen();
+        work();
+        resources.failUninstalls = true;
+        ControlRequest failed = group.auditStop("p", reg);
+        work();
+        assertEquals(ReplyOutcome.FAILED, failed.reply().getNow(null).outcome());
+        assertEquals(resources.opened.get(0), resources.installed.get(p), "still installed");
+        assertTrue(io.closes.isEmpty(), "and not handed to the closer");
+        resources.failUninstalls = false;
+        ControlRequest stopped = group.auditStop("p", reg);
+        work();
+        assertEquals(ReplyOutcome.APPLIED, stopped.reply().getNow(null).outcome(), "a later stop succeeds");
+        io.runClose();
+        work();
+        closeAndCheck("capture-uninstall-failed");
+    }
+
+    @Test
+    void aCloseThatFailsIsRecordedAndCountedOnce() throws Exception {
+        resources.failCloses = true;
+        Proc p = new Proc("p");
+        ProcessorRegistration reg = add("p", p);
+        group.auditStart("p", reg);
+        work();
+        io.runOpen();
+        work();
+        group.auditStop("p", reg);
+        work();
+        io.runClose();
+        work();
+        ControlEvidence evidence = closeAndCheck("capture-close-failed");
+        assertTrue(rules(evidence).contains("captureCloseFailed"), rules(evidence).toString());
+    }
+
+    @Test
+    void anOpenTheHelperRefusesIsAnsweredFailed() throws Exception {
+        io.rejectNextOpen = true;
+        Proc p = new Proc("p");
+        ProcessorRegistration reg = add("p", p);
+        ControlRequest start = group.auditStart("p", reg);
+        work();
+        ControlReply reply = start.reply().getNow(null);
+        assertEquals(ReplyOutcome.FAILED, reply.outcome());
+        assertTrue(reply.reason().contains("could not be handed to a helper"), reply.reason());
+        ControlEvidence evidence = closeAndCheck("capture-open-refused");
+        assertTrue(rules(evidence).contains("captureOpenNotStarted"), rules(evidence).toString());
+    }
+
+    @Test
+    void aCloserThatRefusesIsReplacedByAnInlineClose() throws Exception {
+        Proc p = new Proc("p");
+        ProcessorRegistration reg = add("p", p);
+        group.auditStart("p", reg);
+        work();
+        io.runOpen();
+        work();
+        io.rejectNextClose = true;
+        group.auditStop("p", reg);
+        work();
+        assertEquals(1, resources.opened.get(0).closes, "closed inline");
+        closeAndCheck("capture-closer-refused");
+    }
+
+    /** Review of PR 5, finding 1: a dead control processor's group still closes its installed captures. */
+    @Test
+    void aDeadControlProcessorsGroupStillClosesItsCaptures() throws Exception {
+        Proc p = new Proc("p");
+        ProcessorRegistration reg = add("p", p);
+        group.auditStart("p", reg);
+        work();
+        io.runOpen();
+        work();
+        group.control().markDead("simulated: the control processor died");
+        group.onClose();
+        assertEquals(1, resources.opened.get(0).closes, "closed by the group, without the control processor");
+        assertTrue(resources.installed.isEmpty());
+        assertEquals("", resources.leaks());
+        assertEquals(0, group.captureResourcesHeld());
+        assertTrue(group.control().audit().records().stream()
+                .anyMatch(r -> r.contains("released without the control processor")), "recorded in the fallback stream");
+    }
+
+    /** Review of PR 5, finding 4: a decision that answers a command at once is not cleanup. */
+    @Test
+    void aCommandAnsweredAtOnceIsNotMarkedCleanup() throws Exception {
+        Proc p = new Proc("p");
+        ProcessorRegistration reg = add("p", p);
+        group.auditStop("p", reg);
+        work();
+        ControlEvidence evidence = closeAndCheck("capture-immediate-reply");
+        var decision = evidence.ofType("Decision").stream().filter(d -> "auditStopNotRecording".equals(d.str("rule")))
+                .findFirst().orElseThrow();
+        assertNull(decision.fields().get("cleanup"), decision.toString());
+    }
+
     @Test
     void anAuditStartForAProcessorThatIsNotRunningIsRefused() throws Exception {
         ControlRequest start = group.auditStart("ghost", null);

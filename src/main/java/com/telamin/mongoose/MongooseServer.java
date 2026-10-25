@@ -465,6 +465,10 @@ public class MongooseServer implements MongooseServerController {
         // routed capture (design "Audit capture"): the group's control processor already uninstalled the capture and
         // handed it to the closer as part of the stop; the service only forgets the instance (and, unrouted, stops)
         auditCaptureService.processorStopped(processorName, eventProcessor);
+        if (!(auditCaptureService instanceof com.telamin.mongoose.service.audit.AuditCaptureResources)) {
+            // a capture service no group routes: stopped here, as before (review of PR 5, finding 5)
+            auditCaptureService.stop(processorName);
+        }
     }
 
     /**
@@ -1284,7 +1288,12 @@ public class MongooseServer implements MongooseServerController {
                 composingEventProcessorAgentRunner.group()::runOnAgentThread);
         if (auditCaptureConfig != null && auditCaptureConfig.getAutoStart() != null
                 && auditCaptureConfig.getAutoStart().contains(processorName)) {
-            auditCaptureService.start(processorName);
+            try {
+                auditCaptureService.start(processorName);     // on the group's thread: sent, applied after the add
+            } catch (RuntimeException notSent) {
+                // a capture that cannot be started is not a reason to fail the processor's add (review of PR 5, finding 6)
+                log.warning("audit-capture autoStart for '" + processorName + "' was not sent: " + notSent);
+            }
         }
         if (isStarted()) {
             log.info("init event processor in already started server processor:'" + eventProcessor + "'");

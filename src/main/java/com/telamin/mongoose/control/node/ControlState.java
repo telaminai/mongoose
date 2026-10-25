@@ -36,6 +36,8 @@ public class ControlState {
         public String captureOp;
         /** The installed (or closing) resource, while RECORDING or CLOSING. */
         public long captureResource = -1;
+        /** The close of the capture last handed to the closer, while it is outstanding. */
+        public String captureCloseOp;
         /** The audit-start requests waiting on the open in progress: answered together when it settles. */
         public final List<Long> captureWaiters = new ArrayList<>();
 
@@ -125,8 +127,16 @@ public class ControlState {
     /** Effects requested after their root's reply: their outcomes are cleanup, not part of the request. */
     private transient java.util.Set<String> cleanupOps = new java.util.HashSet<>();
 
+    /** True while recording a cycle caused by an effect outcome or a completion, not by a command. */
+    private transient boolean outcomeCycle;
+
+    public boolean isOutcomeCycle() {
+        return outcomeCycle;
+    }
+
     /** Begin recording a command or completion cycle. */
     public void beginInput(long requestId) {
+        this.outcomeCycle = false;
         this.requestId = requestId;
         this.rootId = requestId;
         this.causeSeq = -1;
@@ -136,6 +146,7 @@ public class ControlState {
 
     /** Begin recording a cycle caused by an effect outcome. */
     public void beginOutcome(long requestId, String opId) {
+        this.outcomeCycle = true;
         this.requestId = requestId;
         this.rootId = requestId;
         this.causeOp = opId;
@@ -346,22 +357,6 @@ public class ControlState {
         return forget ? cleanupOps.remove(opId) : cleanupOps.contains(opId);
     }
 
-    /**
-     * Write records on behalf of another request (an audit start answered by a stop that cancels its open): its
-     * identity for the duration of {@code body}, then this cycle's again.
-     */
-    public void asRequest(long otherRequestId, Runnable body) {
-        long savedRequest = requestId;
-        long savedRoot = rootId;
-        requestId = otherRequestId;
-        rootId = otherRequestId;
-        try {
-            body.run();
-        } finally {
-            requestId = savedRequest;
-            rootId = savedRoot;
-        }
-    }
 
     /** The request waits on an asynchronous effect's completion, so settling its effects does not answer it. */
     public boolean awaitsCompletion(long requestId) {

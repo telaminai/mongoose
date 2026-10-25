@@ -236,7 +236,7 @@ class ControlScenarioHarnessTest {
                 } else if (op == 12) {
                     // a helper or the timer acts: an open completes (in order or overtaking), a close completes, an
                     // open times out, or an open delivers its completion again
-                    int which = random.nextInt(5);
+                    int which = random.nextInt(8);
                     boolean acted = switch (which) {
                         case 0 -> io.runOpen();
                         case 1 -> io.runLatestOpen();
@@ -246,9 +246,13 @@ class ControlScenarioHarnessTest {
                             io.fireTimeout(random.nextInt(io.timeouts.size()));
                             yield true;
                         }
-                        default -> io.rerunOpen(random.nextInt(8));
+                        case 4 -> io.rerunOpen(random.nextInt(8));
+                        case 5 -> io.rejectNextOpen = true;         // the opener pool refuses the next open
+                        case 6 -> io.rejectNextClose = true;        // the closer refuses: the group closes inline
+                        default -> captures.failCloses = !captures.failCloses;
                     };
-                    script.add("io " + new String[]{"open", "latest open", "close", "timeout", "duplicate open"}[which]
+                    script.add("io " + new String[]{"open", "latest open", "close", "timeout", "duplicate open",
+                            "reject next open", "reject next close", "toggle close failures"}[which]
                             + (acted ? "" : " (nothing)"));
                 } else if (started && !closed) {
                     int cycles = 1 + random.nextInt(3);

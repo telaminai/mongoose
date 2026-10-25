@@ -238,7 +238,15 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             throw new IllegalArgumentException("no processor named '" + processorName
                     + "' attached to the audit-capture service");
         }
-        if (!routed.safeToWait(processorName)) return;     // an agent thread, or a group not running yet: it applies later
+        if (!routed.safeToWait(processorName)) {
+            // an agent thread, or a group not running yet: it applies later; its outcome is logged, never lost
+            request.reply().whenComplete((r, e) -> {
+                if (e != null || r == null || !r.applied()) {
+                    log.warning("audit " + what + " for '" + processorName + "' was not applied: " + (e != null ? e : r));
+                }
+            });
+            return;
+        }
         com.telamin.mongoose.control.ControlReply reply =
                 com.telamin.mongoose.control.ControlReplies.await(request, TimeUnit.SECONDS.toMillis(APPLY_TIMEOUT_SECONDS));
         if (reply == null) {
@@ -256,6 +264,11 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
         }
         switch (reply.outcome()) {
             case APPLIED -> { }
+            case NOT_RUNNING -> {
+                // the group has ended, and closed its captures as it did: nothing records the processor any more
+                if (start) throw new IllegalStateException("audit start for '" + processorName + "' refused: its group"
+                        + " is not running (" + reply.reason() + ")");
+            }
             case REFUSED -> {
                 if ("no such processor".equals(reply.reason())) {
                     throw new IllegalArgumentException("audit " + what + " for '" + processorName
@@ -370,6 +383,7 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             // routed: every group closed its captures as it closed; close any resource a closer had not reached
             for (CaptureHandle handle : openResources.toArray(new CaptureHandle[0])) {
                 try {
+                    handle.sink().forgetAll();      // the processors have stopped: no instance is touched
                     handle.sink().endRecordingOf(handle.queue());
                     closeCapture(handle);
                 } catch (RuntimeException e) {
@@ -572,13 +586,20 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             if (q == null) {
                 return null;
             }
-            DataFlow flow = dataFlow;
-            if (flow != null) {
-                flow.setAuditLogProcessor(previousListener != null ? previousListener : NoOpLogRecordListener.INSTANCE);
-            }
+            // stop recording first, so a restore that throws can never leave the sink half-recording into a queue that is
+            // about to close (review of PR 5, finding 2): the capture listener, if it stays installed, writes nothing
             this.appender = null;
             this.captureListener = null;
             this.queue = null;
+            DataFlow flow = dataFlow;
+            if (flow != null) {
+                try {
+                    flow.setAuditLogProcessor(previousListener != null ? previousListener : NoOpLogRecordListener.INSTANCE);
+                } catch (RuntimeException failed) {
+                    log.log(Level.WARNING, "audit capture of '" + processorName + "' stopped, but the configured listener"
+                            + " could not be restored", failed);
+                }
+            }
             return q;
         }
 

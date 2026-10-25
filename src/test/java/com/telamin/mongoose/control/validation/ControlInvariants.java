@@ -144,8 +144,10 @@ public final class ControlInvariants {
         for (Rec reply : evidence.ofType("Reply")) {
             if (!"APPLIED".equals(reply.str("outcome"))) continue;
             for (Rec o : evidence.ofType("EffectOutcome")) {
-                if (o.requestId() == reply.requestId() && o.seq() < reply.seq() && "failed".equals(o.str("outcome"))
-                        && !"DeliverService".equals(o.str("effect"))) {
+                // a fallback record has no seq to order by; a failed physical close is recorded and never blocks a reply
+                if (o.requestId() == reply.requestId() && !o.fallback() && o.seq() < reply.seq()
+                        && "failed".equals(o.str("outcome")) && !"DeliverService".equals(o.str("effect"))
+                        && !"CloseCapture".equals(o.str("effect"))) {
                     violations.add("I8 request " + reply.requestId() + " replied APPLIED after a failed "
                             + o.str("effect") + " (" + o.str("opId") + ")");
                 }

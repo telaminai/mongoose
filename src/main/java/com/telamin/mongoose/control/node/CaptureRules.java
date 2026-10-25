@@ -71,8 +71,10 @@ public class CaptureRules extends EventLogNode {
         }
         Reg reg = intent.bound() ? state.registration(intent.generation()) : state.registration(intent.name());
         if (reg == null || reg.lifecycle != Lifecycle.STARTED) {
-            decide("auditStartUnknown", intent.generation(), intent.name(), null, null, null,
-                    reply(req, intent.generation(), intent.name(), ReplyOutcome.REFUSED, "no such processor"));
+            boolean starting = reg != null && reg.lifecycle == Lifecycle.STARTING;
+            decide(starting ? "auditStartNotStarted" : "auditStartUnknown", intent.generation(), intent.name(), null,
+                    null, null, reply(req, intent.generation(), intent.name(), ReplyOutcome.REFUSED,
+                            starting ? "not started yet" : "no such processor"));
             return true;
         }
         switch (reg.capture) {
@@ -129,7 +131,7 @@ public class CaptureRules extends EventLogNode {
                 decide("auditStopCancelsOpen", reg.generation, reg.name, "Opening", "Off", note("pendingCleanup", open),
                         requested.toArray(new ControlEffect[0]));
             }
-            case CLOSING -> decide("auditStopWhileClosing", reg.generation, reg.name, "Closing", "Closing", null,
+            case CLOSING -> decide("auditStopWhileCaptureClosing", reg.generation, reg.name, "Closing", "Closing", null,
                     reply(req, reg.generation, reg.name, ReplyOutcome.APPLIED, "closing"));
             default -> {
                 state.openChain(req, ChainKind.AUDIT_STOP);
@@ -163,14 +165,19 @@ public class CaptureRules extends EventLogNode {
                 String close = state.nextOp(req);
                 state.retain(req);
                 out.add(tracked(new ControlEffect.CloseCapture(close, req, reg.generation, reg.name, reg.captureResource)));
+                reg.captureCloseOp = close;
                 pendingCleanup.add(close);
             }
             case OPENING -> {
                 pendingCleanup.add(reg.captureOp);
                 out.addAll(cancelOpen(reg, "generation " + reg.generation + " released before the capture opened"));
             }
+            case CLOSING -> {
+                // its close is already with the closer: outstanding, and the stop does not wait for it
+                if (reg.captureCloseOp != null) pendingCleanup.add(reg.captureCloseOp);
+            }
             default -> {
-                // OFF, or CLOSING: its close is already with the closer
+                // OFF
             }
         }
         return out;
@@ -279,6 +286,7 @@ public class CaptureRules extends EventLogNode {
             reg.capture = Capture.OFF;
             reg.captureResource = -1;
         }
+        if (reg != null && c.opId().equals(reg.captureCloseOp)) reg.captureCloseOp = null;
         // a failed physical close is recorded and counted, and never blocks anything
         decideCompletion(ok ? "captureClosed" : "captureCloseFailed", r.owner, reg == null ? null : reg.name,
                 c.resourceId(), note("cleared", c.opId()));
@@ -355,10 +363,21 @@ public class CaptureRules extends EventLogNode {
                 if (chain == null || chain.kind != ChainKind.AUDIT_STOP) {
                     return false;   // part of a release: its close was requested with it
                 }
+                if (!result.succeeded()) {
+                    // still installed: never close a resource that may be receiving records (review of PR 5, finding 2)
+                    Reg reg = state.registration(result.generation());
+                    Resource r = state.resource(res);
+                    if (reg != null && reg.captureResource == res) reg.capture = Capture.RECORDING;
+                    if (r != null) r.state = ResourceState.INSTALLED;
+                    decide("captureUninstallFailed", result.generation(), result.name(), "Closing", "Recording", null,
+                            reply(req, result.generation(), result.name(), ReplyOutcome.FAILED,
+                                    "uninstall failed: " + result.reason()));
+                    return true;
+                }
                 ControlEffect close = closeEffect(req, result.generation(), result.name(), res);
-                ControlEffect answer = reply(req, result.generation(), result.name(),
-                        result.succeeded() ? ReplyOutcome.APPLIED : ReplyOutcome.FAILED,
-                        result.succeeded() ? "stopped" : "uninstall failed: " + result.reason());
+                Reg owner = state.registration(result.generation());
+                if (owner != null) owner.captureCloseOp = close.opId();
+                ControlEffect answer = reply(req, result.generation(), result.name(), ReplyOutcome.APPLIED, "stopped");
                 decide("captureUninstalled", result.generation(), result.name(), "Closing", "Closing", null, close, answer);
                 return true;
             }
@@ -440,7 +459,8 @@ public class CaptureRules extends EventLogNode {
      * it, so invariant I11 does not apply to it. Null otherwise, so the field is left out.
      */
     private Boolean cleanup() {
-        return state.chain(state.requestId()) == null ? Boolean.TRUE : null;
+        // a command's own decision is never cleanup, even when it answers at once with no chain (review of PR 5, 4)
+        return state.isOutcomeCycle() && state.chain(state.requestId()) == null ? Boolean.TRUE : null;
     }
 
     static String effectList(ControlEffect... requested) {

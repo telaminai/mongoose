@@ -497,6 +497,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
      * that throws is reported and the others are still stopped; a {@link VirtualMachineError} is rethrown.
      */
     private void stopAndTearDownProcessors() {
+        releaseLeftoverCaptures();
         for (String name : new ArrayList<>(registeredEventProcessors.keySet())) {
             NamedEventProcessor named = registeredEventProcessors.remove(name);
             registrations.remove(named);
@@ -705,8 +706,11 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         String op = effect.opId();
         String name = effect.name();
         var io = captureIo;
-        var timeout = io.schedule(() -> control.complete(new CaptureCompletion(root, op, completionIds.incrementAndGet(),
-                CaptureCompletion.Kind.TIMED_OUT, -1, null)), captureOpenTimeoutMillis);
+        var timeout = io.schedule(() -> {
+            openTimeouts.remove(op);
+            control.complete(new CaptureCompletion(root, op, completionIds.incrementAndGet(),
+                    CaptureCompletion.Kind.TIMED_OUT, -1, null));
+        }, captureOpenTimeoutMillis);
         openTimeouts.put(op, timeout);
         try {
             io.open(() -> {
@@ -808,6 +812,33 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             case OPEN_FAILED -> audit.fallback("EffectOutcome", "group", roleName(), "requestId", c.requestId(),
                     "opId", c.opId(), "effect", "OpenCapture", "outcome", "failed", "stale", true, "reason", c.reason());
             default -> audit.fallback("CaptureOrphan", "group", roleName(), "opId", c.opId(), "fact", c.fact());
+        }
+    }
+
+    /**
+     * Captures a dead or wedged control processor could not release (review of PR 5, finding 1): each is uninstalled,
+     * touching no processor instance, and closed here, once, and recorded in the fallback stream. Nothing else would
+     * close them, and an operator's audit stop to a group that has ended is answered NOT_RUNNING.
+     */
+    private void releaseLeftoverCaptures() {
+        var resources = captureResources;
+        if (resources == null) return;
+        for (Long id : new ArrayList<>(captureHandles.keySet())) {
+            Object handle = captureHandles.remove(id);
+            if (handle == null) continue;
+            boolean closed = false;
+            try {
+                resources.uninstallCapture(handle, null, null);
+                resources.closeCapture(handle);
+                closed = true;
+            } catch (VirtualMachineError fatal) {
+                throw fatal;
+            } catch (Throwable t) {
+                reportCloseFailure("<capture " + id + ">", "could not be closed", t);
+            }
+            control.audit().fallback("EffectOutcome", "group", roleName(), "opId", "group-close." + id,
+                    "effect", "CloseCapture", "outcome", closed ? "succeeded" : "failed", "resourceId", id,
+                    "reason", "released without the control processor");
         }
     }
 

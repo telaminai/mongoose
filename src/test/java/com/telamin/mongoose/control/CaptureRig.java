@@ -20,6 +20,10 @@ final class CaptureRig {
     /** Runs nothing until asked: the test decides when each open completes, so late and duplicate completions are exact. */
     static final class ManualIo implements CaptureIo {
         final Deque<Runnable> opens = new ArrayDeque<>();
+        /** Refuse the next open handed over, as a helper pool that is shut down would. */
+        boolean rejectNextOpen;
+        /** Refuse the next close handed over: the group then closes inline. */
+        boolean rejectNextClose;
         final Deque<Runnable> closes = new ArrayDeque<>();
         final List<Runnable> timeouts = new ArrayList<>();
         final List<Boolean> timeoutCancelled = new ArrayList<>();
@@ -27,11 +31,19 @@ final class CaptureRig {
 
         @Override
         public void open(Runnable task) {
+            if (rejectNextOpen) {
+                rejectNextOpen = false;
+                throw new java.util.concurrent.RejectedExecutionException("simulated: the opener pool is shut down");
+            }
             opens.add(task);
         }
 
         @Override
         public void close(Runnable task) {
+            if (rejectNextClose) {
+                rejectNextClose = false;
+                throw new java.util.concurrent.RejectedExecutionException("simulated: the closer is shut down");
+            }
             closes.add(task);
         }
 
@@ -119,6 +131,12 @@ final class CaptureRig {
         boolean failCloses;
         /** Whether an instance is running: installing on one that is not is a finding. */
         java.util.function.Predicate<DataFlow> running = flow -> true;
+        /**
+         * Ledger violations, recorded rather than thrown: the group catches whatever an effect throws and turns it into
+         * a failed effect, so a thrown AssertionError would be compensated and never fail a test (review of PR 5, 3).
+         */
+        final List<String> findings = new ArrayList<>();
+        boolean failUninstalls;
 
         @Override
         public Object openCapture(String processorName) {
@@ -132,15 +150,16 @@ final class CaptureRig {
         public void installCapture(Object resource, String processorName, DataFlow dataFlow) {
             if (failInstalls) throw new IllegalStateException("simulated install failure");
             Res r = (Res) resource;
-            if (r.closes > 0) throw new AssertionError(r + " installed after it was closed");
-            if (!running.test(dataFlow)) throw new AssertionError(r + " installed on " + dataFlow + ", which is not running");
+            if (r.closes > 0) findings.add(r + " installed after it was closed");
+            if (!running.test(dataFlow)) findings.add(r + " installed on " + dataFlow + ", which is not running");
             Res other = installed.put(dataFlow, r);
-            if (other != null) throw new AssertionError(r + " installed over " + other + " on " + dataFlow);
+            if (other != null) findings.add(r + " installed over " + other + " on " + dataFlow);
             r.installedOn.add(dataFlow);
         }
 
         @Override
         public void uninstallCapture(Object resource, String processorName, DataFlow dataFlow) {
+            if (failUninstalls) throw new IllegalStateException("simulated uninstall failure");
             Res r = (Res) resource;
             if (dataFlow != null) installed.remove(dataFlow, r);
             else installed.values().removeIf(x -> x == r);
@@ -149,6 +168,7 @@ final class CaptureRig {
         @Override
         public void closeCapture(Object resource) {
             Res r = (Res) resource;
+            if (installed.containsValue(r)) findings.add(r + " closed while installed");
             r.closes++;
             if (failCloses) throw new IllegalStateException("simulated close failure of " + r);
         }
@@ -160,6 +180,7 @@ final class CaptureRig {
                 if (r.closes != 1) b.append(r).append(" closed ").append(r.closes).append(" times; ");
             }
             if (!installed.isEmpty()) b.append("still installed: ").append(installed.values());
+            if (!findings.isEmpty()) b.append("findings: ").append(findings);
             return b.toString();
         }
     }
