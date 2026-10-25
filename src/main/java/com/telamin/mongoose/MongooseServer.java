@@ -147,6 +147,10 @@ public class MongooseServer implements MongooseServerController {
     private final Set<String> nonEventSourceAgentGroups = ConcurrentHashMap.newKeySet();
     /** Released once the ordered shutdown has finished. */
     private final java.util.concurrent.CountDownLatch stopCompleted = new java.util.concurrent.CountDownLatch(1);
+    /** Serialises admission (adds) against shutdown's snapshot: adds read-lock, the stop write-locks once. */
+    private final java.util.concurrent.locks.ReentrantReadWriteLock admission = new java.util.concurrent.locks.ReentrantReadWriteLock();
+    private final Object stopAttempt = new Object();
+    private volatile StopResult lastStopResult;
     /** Configured pipes — tracked separately from registeredServices because
      *  a pipe is one logical config entry but two service registrations.
      *  Order-preserving so the admin surface lists pipes in declaration order. */
@@ -878,6 +882,28 @@ public class MongooseServer implements MongooseServerController {
             String groupName,
             IdleStrategy idleStrategy,
             Supplier<DataFlow> feedConsumer) throws IllegalArgumentException {
+        // admission against shutdown (design "Bounded shutdown"): agent threads never wait for the lock
+        java.util.concurrent.locks.Lock read = admission.readLock();
+        boolean locked = isServerAgentThread(Thread.currentThread()) ? read.tryLock() : lockUninterruptibly(read);
+        if (!locked || isStopRequested()) {
+            if (locked) read.unlock();
+            throw new IllegalStateException("server is stopping: event processor '" + processorName + "' was not added to group '"
+                    + groupName + "'");
+        }
+        try {
+            admitEventProcessor(processorName, groupName, idleStrategy, feedConsumer);
+        } finally {
+            read.unlock();
+        }
+    }
+
+    private static boolean lockUninterruptibly(java.util.concurrent.locks.Lock lock) {
+        lock.lock();
+        return true;
+    }
+
+    private void admitEventProcessor(String processorName, String groupName, IdleStrategy idleStrategy,
+                                     Supplier<DataFlow> feedConsumer) {
         IdleStrategy idleStrategyOverride = mongooseServerConfig.getIdleStrategyOrDefault(groupName, idleStrategy);
         ComposingEventProcessorAgentRunner composingEventProcessorAgentRunner = composingEventProcessorAgents.computeIfAbsent(
                 groupName,
@@ -938,6 +964,11 @@ public class MongooseServer implements MongooseServerController {
 
         if (isStarted() && composingEventProcessorAgentRunner.groupRunner().thread() == null) {
             log.info("staring event processor group:'" + groupName + "' for running server");
+            if (isStopRequested()) {
+                // a stop began after the admission check: the group is closed by the stop without its thread starting,
+                // and its queued add is refused without running its supplier
+                return;
+            }
             // two adds racing to a new group both get here; only one may start its thread
             lifecycleManager.startOnce(composingEventProcessorAgentRunner.groupRunner());
         }
@@ -1267,20 +1298,48 @@ public class MongooseServer implements MongooseServerController {
      * thread to wait for it to finish.
      */
     public void stop() {
+        shutdown();
+    }
+
+    /**
+     * Stop the server, as {@link #stop()}, and say what the stop achieved (design "Bounded shutdown"). The whole stop
+     * is bounded by {@link MongooseServerConfig#getShutdownTimeoutMillis()}. A stop that runs out returns an incomplete
+     * result naming what is still running, leaves the services a running processor group may use running, and the server
+     * stays STOPPING; calling stop again resumes it. Called on one of the server's own threads, the stop is handed to a
+     * {@code mongoose-server-stop} thread and the result says so.
+     */
+    public StopResult shutdown() {
+        // a thread that cannot wait for the stop: an agent thread, a startup or stop callback, or one inside an add
+        // holding the admission lock (the stop's barrier needs the write lock, and a read lock cannot be upgraded)
         boolean onAgentThread = isServerAgentThread(Thread.currentThread()) || Thread.currentThread() == startupThread
-                || Thread.currentThread() == stopThread;
+                || Thread.currentThread() == stopThread || lifecycleManager.isStopHelper(Thread.currentThread())
+                || admission.getReadHoldCount() > 0;
         while (true) {
             LifecycleState state = lifecycleState.get();
             if (state == LifecycleState.NEW) {
-                log.info("server not started, nothing to stop");
-                return;
+                if (!lifecycleState.compareAndSet(LifecycleState.NEW, LifecycleState.STOPPED)) continue;
+                // groups created for adds that never ran: close them on this thread (as Agrona does for a runner that
+                // never started), so their queued requests are answered NOT_RUNNING without any supplier running
+                log.info("server not started: closing the groups created before start");
+                admission.writeLock().lock();
+                admission.writeLock().unlock();
+                composingEventProcessorAgents.forEach((name, runner) -> {
+                    try {
+                        runner.groupRunner().close();
+                    } catch (Throwable t) {
+                        log.log(java.util.logging.Level.WARNING, "group " + name + " failed to close", t);
+                    }
+                });
+                stopCompleted.countDown();
+                return StopResult.completed();
             }
-            if (state == LifecycleState.STOPPING || state == LifecycleState.STOPPED) {
-                log.info("server stop already in progress or done");
-                if (!onAgentThread) {
-                    awaitStopCompletedUninterruptibly();
-                }
-                return;
+            if (state == LifecycleState.STOPPED) {
+                return StopResult.completed();
+            }
+            if (state == LifecycleState.STOPPING) {
+                log.info("server stop already in progress, or incomplete and resumed");
+                // on an ordinary thread: wait for the attempt in progress, then resume it if it ran out
+                return onAgentThread ? StopResult.handedOffToStopThread() : runOrderedStop();
             }
             // STARTING (a start in progress, or one that failed) or STARTED
             if (lifecycleState.compareAndSet(state, LifecycleState.STOPPING)) {
@@ -1293,9 +1352,14 @@ public class MongooseServer implements MongooseServerController {
             Thread stopper = new Thread(this::runOrderedStop, "mongoose-server-stop");
             stopper.setDaemon(false);
             stopper.start();
-            return;
+            return StopResult.handedOffToStopThread();
         }
-        runOrderedStop();
+        return runOrderedStop();
+    }
+
+    /** The result of the last stop attempt, or null if none has run. */
+    public StopResult lastStopResult() {
+        return lastStopResult;
     }
 
     /** True once {@link #start()} has completed and until {@link #stop()} begins. */
@@ -1312,31 +1376,56 @@ public class MongooseServer implements MongooseServerController {
      * Wait, at most {@code timeout}, for a stop to finish: useful after a {@link #stop()} that was called on an agent
      * thread and so returned before the server had stopped.
      *
-     * @return true once the ordered shutdown has finished, false if it has not (or no stop was requested) in time
+     * @return true once the ordered shutdown has completed, false if it has not (or no stop was requested) in time;
+     *         an incomplete stop leaves this false until a later stop completes
      */
     public boolean awaitStopped(long timeout, java.util.concurrent.TimeUnit unit) throws InterruptedException {
         return stopCompleted.await(timeout, unit);
     }
 
-    private void runOrderedStop() {
-        stopThread = Thread.currentThread();
-        try {
-            long drainTimeoutMillis = mongooseServerConfig == null
-                    ? MongooseServerConfig.DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS
-                    : mongooseServerConfig.getShutdownDrainTimeoutMillis();
-            lifecycleManager.stop(true, toGroupRunnerMap(composingEventProcessorAgents), toGroupRunnerMap(composingServiceAgents),
-                    registeredServices, flowManager, drainTimeoutMillis);
-        } finally {
-            // the processors have stopped: close every audit capture still recording, so its queue is flushed and
-            // closed rather than left open until the JVM exits
-            try {
-                auditCaptureService.stopAll();
-            } catch (RuntimeException e) {
-                log.log(java.util.logging.Level.WARNING, "audit capture could not be stopped at server stop", e);
+    /** One stop attempt at a time; a concurrent caller waits for it, then resumes it if it ran out. */
+    private StopResult runOrderedStop() {
+        synchronized (stopAttempt) {
+            if (lifecycleState.get() == LifecycleState.STOPPED) {
+                return StopResult.completed();
             }
-            lifecycleState.set(LifecycleState.STOPPED);
-            stopCompleted.countDown();
-            stopThread = null;
+            // admission barrier: an add that passed its STOPPING check before the flip has finished creating its group
+            // once this returns, so the snapshot below includes it; every later add sees STOPPING and is refused
+            admission.writeLock().lock();
+            admission.writeLock().unlock();
+            stopThread = Thread.currentThread();
+            StopResult result;
+            try {
+                long drainTimeoutMillis = mongooseServerConfig == null
+                        ? MongooseServerConfig.DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS
+                        : mongooseServerConfig.getShutdownDrainTimeoutMillis();
+                long shutdownTimeoutMillis = mongooseServerConfig == null
+                        ? MongooseServerConfig.DEFAULT_SHUTDOWN_TIMEOUT_MILLIS
+                        : mongooseServerConfig.getShutdownTimeoutMillis();
+                result = lifecycleManager.stop(true, toGroupRunnerMap(composingEventProcessorAgents),
+                        toGroupRunnerMap(composingServiceAgents), registeredServices, flowManager, drainTimeoutMillis,
+                        shutdownTimeoutMillis);
+            } catch (RuntimeException | Error e) {
+                log.log(java.util.logging.Level.WARNING, "server stop failed; it stays STOPPING and may be resumed", e);
+                result = StopResult.incomplete(null, java.util.List.of("<stop failed: " + e + ">"), java.util.List.of());
+            } finally {
+                stopThread = null;
+            }
+            if (result.complete()) {
+                // the processors have stopped: close every audit capture still recording, so its queue is flushed and
+                // closed rather than left open until the JVM exits
+                try {
+                    auditCaptureService.stopAll();
+                } catch (RuntimeException e) {
+                    log.log(java.util.logging.Level.WARNING, "audit capture could not be stopped at server stop", e);
+                }
+                lifecycleState.set(LifecycleState.STOPPED);
+                stopCompleted.countDown();
+            } else {
+                log.warning("server stop incomplete: " + result);
+            }
+            lastStopResult = result;
+            return result;
         }
     }
 

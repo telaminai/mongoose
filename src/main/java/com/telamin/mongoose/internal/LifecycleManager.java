@@ -25,8 +25,15 @@ public final class LifecycleManager {
 
     private final MongooseServer server;
     private final java.util.concurrent.atomic.AtomicBoolean stopped = new java.util.concurrent.atomic.AtomicBoolean();
-    /** Serialises startup effects with shutdown, never used on an event-delivery path. */
-    private final Object startupLock = new Object();
+    /**
+     * Serialises startup effects with shutdown, never used on an event-delivery path. A {@code Lock}, not a monitor, so
+     * a stop can wait for an in-progress startup step with a deadline ({@code tryLock}) instead of forever.
+     */
+    private final java.util.concurrent.locks.ReentrantLock startupLock = new java.util.concurrent.locks.ReentrantLock();
+    /** Progress of the ordered stop, so a stop that ran out of its deadline resumes where it left off. */
+    private final StopProgress progress = new StopProgress();
+    /** The helper threads a stop closes groups and stops services on: a stop called from one cannot wait for itself. */
+    private final Set<Thread> stopHelpers = ConcurrentHashMap.newKeySet();
     /** A stop may first ask an in-progress synchronous startup callback to return. */
     private volatile Runnable cancelStartup;
     /**
@@ -151,7 +158,8 @@ public final class LifecycleManager {
     }
 
     private void startStep(Runnable effect, Runnable cancel) {
-        synchronized (startupLock) {
+        startupLock.lock();
+        try {
             requireStarting();
             cancelStartup = cancel;
             try {
@@ -162,6 +170,8 @@ public final class LifecycleManager {
             } finally {
                 cancelStartup = null;
             }
+        } finally {
+            startupLock.unlock();
         }
     }
 
@@ -221,105 +231,218 @@ public final class LifecycleManager {
                 .toList();
     }
 
+    /** Which phases of the ordered stop have finished, and the close helpers still running. Guarded by {@code this}. */
+    private static final class StopProgress {
+        boolean fenced;
+        boolean feedsStopped;
+        boolean drained;
+        final java.util.Set<String> closed = new java.util.HashSet<>();
+        final java.util.Map<String, Thread> helpers = new java.util.LinkedHashMap<>();
+        final java.util.Set<String> servicesStopped = new java.util.HashSet<>();
+        boolean complete;
+    }
+
     /**
-     * The ordered shutdown (mongoose#56), run once: a second call, or one racing the first, is a no-op.
+     * The ordered shutdown (mongoose#56, design "Bounded shutdown"), bounded end to end by {@code shutdownTimeoutMillis}:
+     * each phase gets what is left of it.
      * <ol>
+     *   <li>fence startup: ask an in-progress startup step to return and wait for it, with the deadline;</li>
      *   <li>stop the feeds: close the agent groups that host only event sources, and take the event sources off the
-     *   groups that also host other services (those keep running), so no feed publishes any more; then stop and tear
-     *   down every event source;</li>
-     *   <li>drain: wait, at most {@code drainTimeoutMillis}, for the events already queued to processors to be
-     *   delivered (processor groups still run);</li>
-     *   <li>close each processor group: on its own thread the group stops and tears down its processors;</li>
-     *   <li>close every remaining service agent group, shared ones included, and stop the registered services.</li>
+     *   groups that also host other services (those keep running); then stop and tear down every event source;</li>
+     *   <li>drain: wait for the events already queued to processors to be delivered (processor groups still run);</li>
+     *   <li>close each processor group from its own helper thread, joining each with the deadline, because
+     *   {@code AgentRunner.close()} itself retries until the runner closes;</li>
+     *   <li>only when every processor group has closed: close the remaining service agent groups the same way, then
+     *   stop the registered services, each on a helper thread with the deadline.</li>
      * </ol>
+     * A stop that runs out returns an incomplete {@link com.telamin.mongoose.StopResult} naming what is still running;
+     * calling it again resumes from the first unfinished phase and re-joins the helpers already started, never starting
+     * a second close of the same group. Services are never stopped while a processor group still runs: broadcasts reach
+     * every group, so any running processor may hold any service.
      */
-    public void stop(boolean started,
+    public synchronized com.telamin.mongoose.StopResult stop(boolean started,
                      ConcurrentHashMap<String, ? extends GroupRunner> composingEventProcessorAgents,
                      ConcurrentHashMap<String, ? extends GroupRunner> composingServiceAgents,
                      Map<String, Service<?>> registeredServices,
                      EventFlowManager flowManager,
-                     long drainTimeoutMillis) {
+                     long drainTimeoutMillis,
+                     long shutdownTimeoutMillis) {
         log.info("stopping server");
         if (!started) {
             log.info("server not started, nothing to stop");
-            return;
+            return com.telamin.mongoose.StopResult.completed();
         }
-        if (!stopped.compareAndSet(false, true)) {
+        if (progress.complete) {
             log.info("server already stopped");
-            return;
+            return com.telamin.mongoose.StopResult.completed();
         }
-        // Signal outside startupLock: a callback may need stop() to unblock. Once it returns, take the fence before
-        // the final cleanup, so a callback finishing late cannot reopen a resource after that resource was closed.
-        // Only this in-progress callback may receive stop twice: cancellation, then the ordered final stop below.
-        Runnable cancel = cancelStartup;
-        if (cancel != null) {
-            try {
-                cancel.run();
-            } catch (Throwable t) {
-                log.log(java.util.logging.Level.WARNING, "in-progress startup could not be cancelled", t);
-            }
-        }
-        synchronized (startupLock) {
-            // The last synchronous startup effect has returned, and all later ones see stopped == true.
-        }
-        log.info("stopping feeds");
-        // a group hosting only feeds closes; one that also hosts other services keeps running them, and only its feeds
-        // are taken off its thread: processors may still use those services while they drain and stop
-        Set<String> closedServiceGroups = new java.util.HashSet<>();
-        composingServiceAgents.forEach((k, v) -> {
-            if (!v.hostsEventSource()) {
-                return;
-            }
-            if (v.hostsOnlyEventSources()) {
-                closeGroup("event source agent", k, v);
-                closedServiceGroups.add(k);
-            } else {
-                log.info("removing the event sources from shared service agent " + k);
+        stopped.set(true);
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(Math.max(0, shutdownTimeoutMillis));
+
+        // 1. fence startup. Signal outside the lock: a callback may need stop() to unblock. Once it returns, holding the
+        // lock means the last synchronous startup effect has returned, and all later ones see stopped == true
+        if (!progress.fenced) {
+            Runnable cancel = cancelStartup;
+            if (cancel != null) {
                 try {
-                    if (!v.removeEventSources(EVENT_SOURCE_REMOVAL_TIMEOUT_MILLIS)) {
-                        log.warning("event sources in service agent " + k + " not removed after "
-                                + EVENT_SOURCE_REMOVAL_TIMEOUT_MILLIS + "ms, stopping them anyway");
-                    }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-            }
-        });
-        flowManager.stop();
-
-        log.info("draining queued events, at most " + drainTimeoutMillis + "ms");
-        try {
-            if (!flowManager.awaitQueuesDrained(drainTimeoutMillis)) {
-                log.warning("shutdown drain timed out after " + drainTimeoutMillis + "ms, dropping "
-                        + flowManager.pendingQueuedEvents() + " queued events");
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.warning("shutdown drain interrupted, dropping " + flowManager.pendingQueuedEvents() + " queued events");
-        }
-
-        log.info("stopping event processor agents");
-        composingEventProcessorAgents.forEach((k, v) -> closeGroup("event processor agent", k, v));
-
-        log.info("stopping agent hosted services");
-        composingServiceAgents.forEach((k, v) -> {
-            if (!closedServiceGroups.contains(k)) {
-                closeGroup("service agent", k, v);
-            }
-        });
-        log.info("stopping registered services");
-        for (Service<?> service : registeredServices.values()) {
-            if (!(service.instance() instanceof LifeCycleEventSource)) {
-                try {
-                    service.stop();
+                    cancel.run();
                 } catch (Throwable t) {
-                    log.log(java.util.logging.Level.WARNING, "service " + service.serviceName() + " failed to stop", t);
+                    log.log(java.util.logging.Level.WARNING, "in-progress startup could not be cancelled", t);
                 }
             }
+            boolean fenced = false;
+            try {
+                fenced = startupLock.tryLock(remainingMillis(deadline), java.util.concurrent.TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            if (!fenced) {
+                String blocked = "a synchronous startup step did not return within the shutdown deadline";
+                log.warning("stop incomplete: " + blocked);
+                return com.telamin.mongoose.StopResult.incomplete(blocked, java.util.List.of(), java.util.List.of());
+            }
+            startupLock.unlock();
+            progress.fenced = true;
         }
+
+        // 2. stop the feeds
+        if (!progress.feedsStopped) {
+            log.info("stopping feeds");
+            composingServiceAgents.forEach((k, v) -> {
+                if (!v.hostsEventSource()) {
+                    return;
+                }
+                if (v.hostsOnlyEventSources()) {
+                    closeGroup("event source agent", k, v);
+                    progress.closed.add("service:" + k);
+                } else {
+                    log.info("removing the event sources from shared service agent " + k);
+                    try {
+                        long bound = Math.min(EVENT_SOURCE_REMOVAL_TIMEOUT_MILLIS, remainingMillis(deadline));
+                        if (!v.removeEventSources(bound)) {
+                            log.warning("event sources in service agent " + k + " not removed after "
+                                    + bound + "ms, stopping them anyway");
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            });
+            flowManager.stop();
+            progress.feedsStopped = true;
+        }
+
+        // 3. drain
+        if (!progress.drained) {
+            long bound = Math.min(drainTimeoutMillis, remainingMillis(deadline));
+            log.info("draining queued events, at most " + bound + "ms");
+            try {
+                if (!flowManager.awaitQueuesDrained(bound)) {
+                    log.warning("shutdown drain timed out after " + bound + "ms, dropping "
+                            + flowManager.pendingQueuedEvents() + " queued events");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warning("shutdown drain interrupted, dropping " + flowManager.pendingQueuedEvents() + " queued events");
+            }
+            progress.drained = true;
+        }
+
+        // 4. close processor groups, each from a tracked helper, joined with the deadline
+        log.info("stopping event processor agents");
+        java.util.List<String> running = closeAll("event processor agent", "processor:", composingEventProcessorAgents, deadline);
+        if (!running.isEmpty()) {
+            java.util.List<String> services = new java.util.ArrayList<>(registeredServices.keySet());
+            log.warning("stop incomplete: processor group(s) " + running + " did not close within the shutdown deadline;"
+                    + " services left running for them: " + services);
+            return com.telamin.mongoose.StopResult.incomplete(null, running, services);
+        }
+
+        // 5. service groups, then services
+        log.info("stopping agent hosted services");
+        running = closeAll("service agent", "service:", composingServiceAgents, deadline);
+        log.info("stopping registered services");
+        java.util.List<String> servicesLeft = new java.util.ArrayList<>();
+        for (Service<?> service : registeredServices.values()) {
+            if (service.instance() instanceof LifeCycleEventSource || progress.servicesStopped.contains(service.serviceName())) {
+                continue;
+            }
+            String helperName = "service-stop:" + service.serviceName();
+            Thread helper = progress.helpers.computeIfAbsent(helperName, k -> {
+                Thread t = new Thread(() -> {
+                    try {
+                        service.stop();
+                    } catch (Throwable t1) {
+                        log.log(java.util.logging.Level.WARNING, "service " + service.serviceName() + " failed to stop", t1);
+                    }
+                }, "mongoose-stop-" + service.serviceName());
+                t.setDaemon(true);
+                stopHelpers.add(t);
+                t.start();
+                return t;
+            });
+            if (join(helper, deadline)) {
+                progress.helpers.remove(helperName);
+                progress.servicesStopped.add(service.serviceName());
+            } else {
+                servicesLeft.add(service.serviceName());
+            }
+        }
+        if (!running.isEmpty() || !servicesLeft.isEmpty()) {
+            log.warning("stop incomplete: groups still closing " + running + ", services still stopping " + servicesLeft);
+            return com.telamin.mongoose.StopResult.incomplete(null, running, servicesLeft);
+        }
+        progress.complete = true;
+        return com.telamin.mongoose.StopResult.completed();
     }
 
-    /** Close a group's runner, which waits for its thread to run onClose; an unstarted group closes on this thread. */
+    /** Close each group not yet closed from its own helper thread; @return the groups still closing at the deadline. */
+    private java.util.List<String> closeAll(String kind, String prefix, ConcurrentHashMap<String, ? extends GroupRunner> groups,
+                                            long deadline) {
+        groups.forEach((k, v) -> {
+            String key = prefix + k;
+            if (progress.closed.contains(key) || progress.helpers.containsKey(key)) return;
+            Thread helper = new Thread(() -> closeGroup(kind, k, v), "mongoose-stop-" + k);
+            helper.setDaemon(true);
+            stopHelpers.add(helper);
+            progress.helpers.put(key, helper);
+            helper.start();
+        });
+        java.util.List<String> running = new java.util.ArrayList<>();
+        for (String k : groups.keySet()) {
+            String key = prefix + k;
+            Thread helper = progress.helpers.get(key);
+            if (helper == null) continue;
+            if (join(helper, deadline)) {
+                progress.helpers.remove(key);
+                progress.closed.add(key);
+            } else {
+                running.add(k);
+            }
+        }
+        return running;
+    }
+
+    /** True for a thread a stop runs its closes and service stops on. */
+    public boolean isStopHelper(Thread thread) {
+        return stopHelpers.contains(thread);
+    }
+
+    private boolean join(Thread helper, long deadline) {
+        try {
+            helper.join(Math.max(1, remainingMillis(deadline)));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        if (helper.isAlive()) return false;
+        stopHelpers.remove(helper);
+        return true;
+    }
+
+    private static long remainingMillis(long deadline) {
+        return Math.max(0, java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()));
+    }
+
     private static void closeGroup(String kind, String name, GroupRunner group) {
         log.info("stopping composing " + kind + " " + name);
         try {

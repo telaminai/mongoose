@@ -142,6 +142,16 @@ public class MongooseServerConfig {
      */
     private long shutdownDrainTimeoutMillis = DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS;
 
+    /** Default end-to-end bound on {@code MongooseServer.stop()}, see {@link #shutdownTimeoutMillis}. */
+    public static final long DEFAULT_SHUTDOWN_TIMEOUT_MILLIS = 30_000;
+
+    /**
+     * Design "Bounded shutdown": the end-to-end deadline across every phase of {@code MongooseServer.stop()}. A stop
+     * that runs out reports what is still running instead of claiming success, leaves the services a running processor
+     * group may use running, stays STOPPING, and resumes when stop is called again.
+     */
+    private long shutdownTimeoutMillis = DEFAULT_SHUTDOWN_TIMEOUT_MILLIS;
+
     /** Default bound on the startup wait, see {@link #startupTimeoutMillis}. */
     public static final long DEFAULT_STARTUP_TIMEOUT_MILLIS = 60_000;
 
@@ -505,6 +515,7 @@ public class MongooseServerConfig {
         private final Map<CallBackType, Supplier<EventToInvokeStrategy>> eventInvokeStrategies = new HashMap<>();
         private ReplayConfig replay;
         private long shutdownDrainTimeoutMillis = DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS;
+        private long shutdownTimeoutMillis = DEFAULT_SHUTDOWN_TIMEOUT_MILLIS;
         private long startupTimeoutMillis = DEFAULT_STARTUP_TIMEOUT_MILLIS;
         private boolean isolateProcessorStartFailuresAtBoot;
 
@@ -630,6 +641,16 @@ public class MongooseServerConfig {
         }
 
         /**
+         * The end-to-end deadline of {@code MongooseServer.stop()} (default
+         * {@value MongooseServerConfig#DEFAULT_SHUTDOWN_TIMEOUT_MILLIS} ms). See
+         * {@link MongooseServerConfig#getShutdownTimeoutMillis()}.
+         */
+        public Builder shutdownTimeoutMillis(long shutdownTimeoutMillis) {
+            this.shutdownTimeoutMillis = shutdownTimeoutMillis;
+            return this;
+        }
+
+        /**
          * How long {@code MongooseServer.start()} waits for every agent group to become active before it fails, naming
          * the groups that did not (default {@value MongooseServerConfig#DEFAULT_STARTUP_TIMEOUT_MILLIS} ms). See
          * {@link MongooseServerConfig#getStartupTimeoutMillis()}.
@@ -711,6 +732,7 @@ public class MongooseServerConfig {
             if (!eventInvokeStrategies.isEmpty()) cfg.setEventInvokeStrategies(new HashMap<>(eventInvokeStrategies));
             if (replay != null) cfg.setReplay(replay);
             cfg.setShutdownDrainTimeoutMillis(shutdownDrainTimeoutMillis);
+            cfg.setShutdownTimeoutMillis(shutdownTimeoutMillis);
             cfg.setStartupTimeoutMillis(startupTimeoutMillis);
             return cfg;
         }
