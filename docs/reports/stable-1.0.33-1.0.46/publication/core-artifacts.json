@@ -1,0 +1,11 @@
+{
+  "version": "1.0.33",
+  "commit": "9cba720fca901e9de56a118899fd54ab37a8979e",
+  "workflow": "https://github.com/telaminai/mongoose/actions/runs/40242660473",
+  "cleanCache": true,
+  "emptySettings": true,
+  "sha256": {
+    "mongoose-1.0.33.pom": "379cf9089ff7cf9a61bedea887f33a85f713262318e97de2c92e2e2879eb54da",
+    "mongoose-1.0.33.jar": "b17c17cdf0813062539d55a52b9e03e037466dfc9d26ab4b5d6b5dee65ec600e"
+  }
+}

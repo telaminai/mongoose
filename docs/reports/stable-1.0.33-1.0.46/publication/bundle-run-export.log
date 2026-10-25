@@ -1,0 +1,9 @@
+server audit-analyser-bundle is up (/private/tmp/mongoose-stable-starter-check/bundle-registry/audit-analyser-bundle)
+exported logs/audit-marketProcessor.yaml (processor marketProcessor, audit file id: capture-17723044774160164573)
+open each with the Fluxtion Audit Log Analyser — see README.md
+  logs/audit-marketProcessor.yaml: 6 records
+settled: record counts unchanged for 5 s — a quiescence heuristic, not proof the feed finished; if your feed pauses longer, set SETTLE_QUIET_SECONDS or EXPECT_RECORDS
+stopped server pid 62297 — Chronicle capture closed and the registry entry was removed
+events: marketProcessor processed 5 of 5 feed rows
+server: no WARNING or SEVERE in its output
+done: exports written; server stopped cleanly

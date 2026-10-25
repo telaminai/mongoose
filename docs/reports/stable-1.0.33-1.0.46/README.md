@@ -15,5 +15,5 @@ and stable-tag publication configuration. The RC's stress, mutation and ten-minu
 remain recorded under their original SHA in ../pr76-rc1-4924645; they are not new stable-commit runs.
 
 Both RCs were publicly resolved and both fixed starter projects passed live capture and shutdown
-against the published RC artifacts. Stable artifact resolution and release workflow links will be
-added after publication. Client migration remains independently gated.
+against the published RC artifacts. Stable artifact resolution and live starter checks have passed; see [publication evidence](publication/README.md).
+Client migration remains independently gated.

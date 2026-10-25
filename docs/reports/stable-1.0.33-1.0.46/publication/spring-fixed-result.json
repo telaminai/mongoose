@@ -1,0 +1,37 @@
+{
+  "status": "PASS",
+  "expectedRows": [
+    [
+      "AAPL",
+      195.3,
+      1200
+    ],
+    [
+      "MSFT",
+      410.1,
+      800
+    ],
+    [
+      "GOOG",
+      155.75,
+      1500
+    ],
+    [
+      "AMZN",
+      178.22,
+      640
+    ],
+    [
+      "NVDA",
+      905.6,
+      2100
+    ]
+  ],
+  "core": "9cba720fca901e9de56a118899fd54ab37a8979e",
+  "plugins": "56d8cb2202bfb28274b6d5fc74e048ce4ea095d4",
+  "publishedArtifactProof": true,
+  "verifiedRows": 5,
+  "auditSha256": "b63b87fa5b225350edc7ca6151d9cf8d357ca5104a5d71523ce2cbd3de54b52f",
+  "cleanStop": true,
+  "exitCode": 143
+}

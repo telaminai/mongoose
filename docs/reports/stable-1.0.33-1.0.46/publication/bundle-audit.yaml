@@ -1,0 +1,70 @@
+eventLogRecord: 
+    eventTime: -1
+    logTime: 1792970361196
+    groupingId: null
+    event: EventLogControlEvent
+    eventToString: EventLogConfig{level=null, logRecordProcessor=com.telamin.mongoose.internal.ChronicleAuditCaptureService$ProcessorSink$$Lambda/0x0000008001402930@77a6150c, sourceId=null, groupId=null}
+    thread: processor-agent
+    nodeLogs: 
+    endTime: 1792970361196
+---
+eventLogRecord: 
+    eventTime: 1792970361208
+    logTime: 1792970361208
+    groupingId: null
+    event: PriceEvent
+    eventToString: PriceEvent{symbol=AAPL, price=195.3, volume=1200}
+    thread: processor-agent
+    nodeLogs: 
+        - rootNode: { thread: processor-agent, method: onPriceEvent, annotation: OnEventHandler, handledEvent: com.example.myapp.event.PriceEvent, receivedEvent: PriceEvent{symbol=AAPL, price=195.3, volume=1200}, price: 195.3, volume: 1200}
+        - riskCheck: { thread: processor-agent, method: onRiskCheck, annotation: OnTrigger, triggerFired: true}
+    endTime: 1792970361209
+---
+eventLogRecord: 
+    eventTime: 1792970361210
+    logTime: 1792970361210
+    groupingId: null
+    event: PriceEvent
+    eventToString: PriceEvent{symbol=MSFT, price=410.1, volume=800}
+    thread: processor-agent
+    nodeLogs: 
+        - rootNode: { thread: processor-agent, method: onPriceEvent, annotation: OnEventHandler, handledEvent: com.example.myapp.event.PriceEvent, receivedEvent: PriceEvent{symbol=MSFT, price=410.1, volume=800}, price: 410.1, volume: 800}
+        - riskCheck: { thread: processor-agent, method: onRiskCheck, annotation: OnTrigger, triggerFired: true}
+    endTime: 1792970361210
+---
+eventLogRecord: 
+    eventTime: 1792970361210
+    logTime: 1792970361210
+    groupingId: null
+    event: PriceEvent
+    eventToString: PriceEvent{symbol=GOOG, price=155.75, volume=1500}
+    thread: processor-agent
+    nodeLogs: 
+        - rootNode: { thread: processor-agent, method: onPriceEvent, annotation: OnEventHandler, handledEvent: com.example.myapp.event.PriceEvent, receivedEvent: PriceEvent{symbol=GOOG, price=155.75, volume=1500}, price: 155.75, volume: 1500}
+        - riskCheck: { thread: processor-agent, method: onRiskCheck, annotation: OnTrigger, triggerFired: true}
+    endTime: 1792970361210
+---
+eventLogRecord: 
+    eventTime: 1792970361211
+    logTime: 1792970361211
+    groupingId: null
+    event: PriceEvent
+    eventToString: PriceEvent{symbol=AMZN, price=178.22, volume=640}
+    thread: processor-agent
+    nodeLogs: 
+        - rootNode: { thread: processor-agent, method: onPriceEvent, annotation: OnEventHandler, handledEvent: com.example.myapp.event.PriceEvent, receivedEvent: PriceEvent{symbol=AMZN, price=178.22, volume=640}, price: 178.22, volume: 640}
+        - riskCheck: { thread: processor-agent, method: onRiskCheck, annotation: OnTrigger, triggerFired: true}
+    endTime: 1792970361211
+---
+eventLogRecord: 
+    eventTime: 1792970361211
+    logTime: 1792970361211
+    groupingId: null
+    event: PriceEvent
+    eventToString: PriceEvent{symbol=NVDA, price=905.6, volume=2100}
+    thread: processor-agent
+    nodeLogs: 
+        - rootNode: { thread: processor-agent, method: onPriceEvent, annotation: OnEventHandler, handledEvent: com.example.myapp.event.PriceEvent, receivedEvent: PriceEvent{symbol=NVDA, price=905.6, volume=2100}, price: 905.6, volume: 2100}
+        - riskCheck: { thread: processor-agent, method: onRiskCheck, annotation: OnTrigger, triggerFired: true}
+    endTime: 1792970361211
+---

@@ -1,0 +1,138 @@
+[INFO] Scanning for projects...
+[INFO] 
+[INFO] -------------< release.verification:mongoose-rc-consumer >--------------
+[INFO] Building mongoose-rc-consumer 1
+[INFO]   from plugins-consumer.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- dependency:3.8.1:resolve (default-cli) @ mongoose-rc-consumer ---
+[INFO] Can't extract module name from javac-9-dev-r3297-1-shaded.jar: javac.9.dev.r3297.1.shaded: Invalid module name: '9' is not a Java identifier
+[INFO] 
+[INFO] The following files have been resolved:
+[INFO]    com.telamin:svc-admin-rest:jar:1.0.46:compile -- module svc.admin.rest (auto)
+[INFO]    io.javalin:javalin:jar:6.3.0:compile -- module io.javalin
+[INFO]    org.slf4j:slf4j-api:jar:2.0.16:compile -- module org.slf4j
+[INFO]    org.eclipse.jetty:jetty-server:jar:11.0.23:compile -- module org.eclipse.jetty.server
+[INFO]    org.eclipse.jetty:jetty-http:jar:11.0.23:compile -- module org.eclipse.jetty.http
+[INFO]    org.eclipse.jetty:jetty-util:jar:11.0.23:compile -- module org.eclipse.jetty.util
+[INFO]    org.eclipse.jetty:jetty-io:jar:11.0.23:compile -- module org.eclipse.jetty.io
+[INFO]    org.eclipse.jetty.toolchain:jetty-jakarta-servlet-api:jar:5.0.2:compile -- module jetty.servlet.api
+[INFO]    org.eclipse.jetty.websocket:websocket-jetty-server:jar:11.0.23:compile -- module org.eclipse.jetty.websocket.jetty.server
+[INFO]    org.eclipse.jetty:jetty-servlet:jar:11.0.23:compile -- module org.eclipse.jetty.servlet
+[INFO]    org.eclipse.jetty:jetty-security:jar:11.0.23:compile -- module org.eclipse.jetty.security
+[INFO]    org.eclipse.jetty:jetty-webapp:jar:11.0.23:compile -- module org.eclipse.jetty.webapp
+[INFO]    org.eclipse.jetty:jetty-xml:jar:11.0.23:compile -- module org.eclipse.jetty.xml
+[INFO]    org.eclipse.jetty.websocket:websocket-jetty-api:jar:11.0.23:compile -- module org.eclipse.jetty.websocket.jetty.api
+[INFO]    org.eclipse.jetty.websocket:websocket-jetty-common:jar:11.0.23:compile -- module org.eclipse.jetty.websocket.jetty.common
+[INFO]    org.eclipse.jetty.websocket:websocket-core-common:jar:11.0.23:compile -- module org.eclipse.jetty.websocket.core.common
+[INFO]    org.eclipse.jetty.websocket:websocket-servlet:jar:11.0.23:compile -- module org.eclipse.jetty.websocket.servlet
+[INFO]    org.eclipse.jetty.websocket:websocket-core-server:jar:11.0.23:compile -- module org.eclipse.jetty.websocket.core.server
+[INFO]    org.jetbrains.kotlin:kotlin-stdlib-jdk8:jar:1.9.25:compile -- module kotlin.stdlib.jdk8
+[INFO]    org.jetbrains.kotlin:kotlin-stdlib:jar:1.9.25:compile -- module kotlin.stdlib
+[INFO]    org.jetbrains:annotations:jar:13.0:compile -- module annotations (auto)
+[INFO]    org.jetbrains.kotlin:kotlin-stdlib-jdk7:jar:1.9.25:compile -- module kotlin.stdlib.jdk7
+[INFO]    com.fasterxml.jackson.core:jackson-databind:jar:2.18.2:compile -- module com.fasterxml.jackson.databind
+[INFO]    com.fasterxml.jackson.core:jackson-annotations:jar:2.18.2:compile -- module com.fasterxml.jackson.annotation
+[INFO]    com.fasterxml.jackson.core:jackson-core:jar:2.18.2:compile -- module com.fasterxml.jackson.core
+[INFO]    com.telamin:mongoose:jar:1.0.33:compile -- module mongoose (auto)
+[INFO]    com.telamin.fluxtion:fluxtion-runtime:jar:1.1.3:compile -- module fluxtion.runtime (auto)
+[INFO]    org.yaml:snakeyaml:jar:2.5:compile -- module org.yaml.snakeyaml
+[INFO]    org.hdrhistogram:HdrHistogram:jar:2.2.2:compile -- module HdrHistogram (auto)
+[INFO]    org.apache.logging.log4j:log4j-api:jar:2.24.3:compile -- module org.apache.logging.log4j
+[INFO]    org.apache.logging.log4j:log4j-core:jar:2.24.3:compile -- module org.apache.logging.log4j.core
+[INFO]    org.apache.logging.log4j:log4j-jul:jar:2.24.3:compile -- module org.apache.logging.log4j.jul
+[INFO]    com.telamin:svc-admin-telnet:jar:1.0.46:compile -- module svc.admin.telnet (auto)
+[INFO]    org.jline:jline:jar:3.27.1:compile -- module org.jline [auto]
+[INFO]    com.telamin:svc-admin-web:jar:1.0.46:compile -- module svc.admin.web (auto)
+[INFO]    com.telamin:svc-micrometer:jar:1.0.46:compile -- module svc.micrometer (auto)
+[INFO]    io.micrometer:micrometer-core:jar:1.13.6:compile -- module micrometer.core [auto]
+[INFO]    io.micrometer:micrometer-commons:jar:1.13.6:compile -- module micrometer.commons [auto]
+[INFO]    io.micrometer:micrometer-observation:jar:1.13.6:compile -- module micrometer.observation [auto]
+[INFO]    org.latencyutils:LatencyUtils:jar:2.0.3:runtime -- module LatencyUtils (auto)
+[INFO]    com.telamin:svc-cache:jar:1.0.46:compile -- module svc.cache (auto)
+[INFO]    com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:jar:2.18.2:compile -- module com.fasterxml.jackson.dataformat.yaml
+[INFO]    com.telamin:svc-jdbc:jar:1.0.46:compile -- module svc.jdbc (auto)
+[INFO]    com.zaxxer:HikariCP:jar:5.1.0:compile -- module com.zaxxer.hikari
+[INFO]    com.telamin:svc-loader-yaml:jar:1.0.46:compile -- module svc.loader.yaml (auto)
+[INFO]    com.telamin.fluxtion:fluxtion-builder:jar:1.0.80:compile -- module fluxtion.builder (auto)
+[INFO]    com.telamin.fluxtion:fluxtion-builder-api:jar:1.1.3:compile -- module fluxtion.builder.api (auto)
+[INFO]    org.slf4j:slf4j-simple:jar:2.0.17:compile -- module org.slf4j.simple
+[INFO]    org.jgrapht:jgrapht-core:jar:1.5.2:compile -- module org.jgrapht.core
+[INFO]    org.jheaps:jheaps:jar:0.14:compile -- module org.jheaps [auto]
+[INFO]    org.apfloat:apfloat:jar:1.10.1:compile -- module org.apfloat [auto]
+[INFO]    org.jgrapht:jgrapht-ext:jar:1.5.2:compile -- module org.jgrapht.ext
+[INFO]    com.github.vlsi.mxgraph:jgraphx:jar:4.2.2:compile -- module com.github.vlsi.mxgraph.jgraphx [auto]
+[INFO]    org.jgrapht:jgrapht-io:jar:1.5.2:compile -- module org.jgrapht.io
+[INFO]    org.antlr:antlr4-runtime:jar:4.12.0:compile -- module org.antlr.antlr4.runtime [auto]
+[INFO]    org.tinyjee.jgraphx:jgraphx:jar:2.0.0.1:compile -- module jgraphx (auto)
+[INFO]    org.reflections:reflections:jar:0.10.2:compile -- module org.reflections [auto]
+[INFO]    org.javassist:javassist:jar:3.28.0-GA:compile -- module javassist (auto)
+[INFO]    com.google.code.findbugs:jsr305:jar:3.0.2:compile -- module jsr305 (auto)
+[INFO]    io.github.classgraph:classgraph:jar:4.8.157:compile -- module io.github.classgraph
+[INFO]    com.googlecode.gentyref:gentyref:jar:1.2.0:compile -- module gentyref (auto)
+[INFO]    org.apache.commons:commons-text:jar:1.14.0:compile -- module org.apache.commons.text
+[INFO]    org.apache.commons:commons-lang3:jar:3.18.0:compile -- module org.apache.commons.lang3
+[INFO]    com.google.guava:guava:jar:33.4.0-jre:compile -- module com.google.common [auto]
+[INFO]    com.google.guava:failureaccess:jar:1.0.2:compile -- module com.google.common.util.concurrent.internal [auto]
+[INFO]    com.google.guava:listenablefuture:jar:9999.0-empty-to-avoid-conflict-with-guava:compile -- module listenablefuture (auto)
+[INFO]    org.checkerframework:checker-qual:jar:3.43.0:compile -- module org.checkerframework.checker.qual
+[INFO]    com.google.errorprone:error_prone_annotations:jar:2.36.0:compile -- module com.google.errorprone.annotations
+[INFO]    com.google.j2objc:j2objc-annotations:jar:3.0.0:compile -- module com.google.j2objc.annotations
+[INFO]    com.google.googlejavaformat:google-java-format:jar:1.3:compile -- module google.java.format (auto)
+[INFO]    com.google.errorprone:javac:jar:9-dev-r3297-1-shaded:compile
+[INFO]    com.intellij:annotations:jar:12.0:compile -- module annotations (auto)
+[INFO]    com.fluxtion.csv-compiler:csv-compiler:jar:0.2.0:compile -- module csv.compiler (auto)
+[INFO]    com.google.auto.service:auto-service-annotations:jar:1.0.1:compile -- module com.google.auto.service [auto]
+[INFO]    commons-io:commons-io:jar:2.20.0:compile -- module org.apache.commons.io
+[INFO]    com.github.javaparser:javaparser-core:jar:3.26.2:compile -- module com.github.javaparser.core [auto]
+[INFO]    com.telamin:svc-loader-spring:jar:1.0.46:compile -- module svc.loader.spring (auto)
+[INFO]    com.telamin:svc-loader-feed:jar:1.0.46:compile -- module svc.loader.feed (auto)
+[INFO]    com.telamin:svc-loader-sink:jar:1.0.46:compile -- module svc.loader.sink (auto)
+[INFO]    com.telamin:connector-aeron:jar:1.0.46:compile -- module connector.aeron (auto)
+[INFO]    io.aeron:aeron-client:jar:1.48.0:compile -- module io.aeron.client [auto]
+[INFO]    org.agrona:agrona:jar:2.2.1:compile -- module org.agrona [auto]
+[INFO]    io.aeron:aeron-annotations:jar:1.48.0:runtime -- module io.aeron.annotations [auto]
+[INFO]    io.aeron:aeron-driver:jar:1.48.0:compile -- module io.aeron.driver [auto]
+[INFO]    io.aeron:aeron-archive:jar:1.48.0:compile -- module io.aeron.archive [auto]
+[INFO]    com.telamin:connector-chronicle:jar:1.0.46:compile -- module connector.chronicle (auto)
+[INFO]    net.openhft:chronicle-queue:jar:5.27ea0:compile -- module chronicle.queue (auto)
+[INFO]    net.openhft:chronicle-core:jar:2.27ea0:compile -- module chronicle.core [auto]
+[INFO]    net.openhft:chronicle-analytics:jar:2.27ea0:compile -- module chronicle.analytics [auto]
+[INFO]    net.openhft:chronicle-bytes:jar:2.27ea0:compile -- module chronicle.bytes [auto]
+[INFO]    net.openhft:chronicle-wire:jar:2.27ea0:compile -- module chronicle.wire (auto)
+[INFO]    net.openhft:compiler:jar:2.27ea0:compile -- module net.openhft.compiler [auto]
+[INFO]    net.openhft:chronicle-threads:jar:2.27ea0:compile -- module chronicle.threads (auto)
+[INFO]    commons-cli:commons-cli:jar:1.5.0:compile -- module commons.cli (auto)
+[INFO]    net.openhft:chronicle-map:jar:3.27ea0:compile -- module chronicle.map [auto]
+[INFO]    net.openhft:affinity:jar:3.27ea0:compile -- module affinity (auto)
+[INFO]    net.openhft:posix:jar:2.27ea0:compile -- module posix (auto)
+[INFO]    com.github.jnr:jnr-ffi:jar:2.2.15:compile -- module org.jnrproject.ffi [auto]
+[INFO]    com.github.jnr:jffi:jar:1.3.12:compile -- module org.jnrproject.jffi [auto]
+[INFO]    com.github.jnr:jffi:jar:native:1.3.12:runtime -- module org.jnrproject.jffi.nativelibs [auto]
+[INFO]    org.ow2.asm:asm:jar:9.2:compile -- module org.objectweb.asm
+[INFO]    com.github.jnr:jnr-a64asm:jar:1.0.0:compile -- module jnr.a64asm (auto)
+[INFO]    com.github.jnr:jnr-x86asm:jar:1.0.2:compile -- module jnr.x86asm (auto)
+[INFO]    com.github.jnr:jnr-constants:jar:0.10.4:compile -- module org.jnrproject.constants [auto]
+[INFO]    net.openhft:chronicle-values:jar:2.27ea0:compile -- module chronicle.values (auto)
+[INFO]    com.squareup:javapoet:jar:1.13.0:compile -- module com.squareup.javapoet [auto]
+[INFO]    net.openhft:chronicle-algorithms:jar:2.27ea0:compile -- module chronicle.algorithms (auto)
+[INFO]    net.java.dev.jna:jna:jar:5.8.0:compile -- module com.sun.jna [auto]
+[INFO]    net.java.dev.jna:jna-platform:jar:5.8.0:compile -- module com.sun.jna.platform [auto]
+[INFO]    com.telamin:connector-file:jar:1.0.46:compile -- module connector.file (auto)
+[INFO]    com.telamin:connector-kafka:jar:1.0.46:compile -- module connector.kafka (auto)
+[INFO]    org.apache.kafka:kafka-clients:jar:3.9.0:compile -- module kafka.clients (auto)
+[INFO]    com.github.luben:zstd-jni:jar:1.5.6-4:runtime -- module com.github.luben.zstd_jni
+[INFO]    org.lz4:lz4-java:jar:1.8.0:runtime -- module org.lz4.java [auto]
+[INFO]    org.xerial.snappy:snappy-java:jar:1.1.10.5:runtime -- module snappy.java (auto)
+[INFO]    com.telamin:connector-multicast:jar:1.0.46:compile -- module connector.multicast (auto)
+[INFO]    com.telamin:lib-jsonserialiser:jar:1.0.46:compile -- module lib.jsonserialiser (auto)
+[INFO]    com.telamin:lib-fanout:jar:1.0.46:compile -- module lib.fanout (auto)
+[INFO]    com.telamin:mongoose-test-support:jar:1.0.46:compile -- module mongoose.test.support (auto)
+[INFO]    com.telamin:config-schema-gen:jar:1.0.46:compile -- module config.schema.gen (auto)
+[INFO] 
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD SUCCESS
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  01:14 min
+[INFO] Finished at: 2026-10-25T23:16:30Z
+[INFO] ------------------------------------------------------------------------

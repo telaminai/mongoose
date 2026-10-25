@@ -1,0 +1,9 @@
+{
+  "status": "PASS",
+  "core": "1.0.33",
+  "plugins": "1.0.46",
+  "publishedArtifactProof": true,
+  "verifiedRows": 5,
+  "cleanStop": true,
+  "auditSha256": "9e7089d8c7bc1b4825899318e250b2558bfaeeff7e46be68764a18242f3903d4"
+}

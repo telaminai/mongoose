@@ -1,0 +1,474 @@
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer bootServer
+INFO: booting server loading config from reader
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer bootServer
+INFO: successfully loaded config from reader
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer bootServer
+INFO: booting fluxtion server
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.internal.AgronaCountersService <init>
+INFO: AgronaCountersService initialised: bufferKb=256, maxCounters=2048
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer reserveServiceName
+INFO: registerService:Service(serviceClass=interface com.telamin.mongoose.service.counters.MongooseCountersService, serviceName=com.telamin.mongoose.service.counters.MongooseCountersService, instance=com.telamin.mongoose.internal.AgronaCountersService@265adfad)
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer reserveServiceName
+INFO: registerService:Service(serviceClass=interface com.telamin.mongoose.service.counters.MongooseLatencyService, serviceName=com.telamin.mongoose.service.counters.MongooseLatencyService, instance=com.telamin.mongoose.internal.HdrLatencyService@5a755cc1)
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer reserveServiceName
+INFO: registerService:Service(serviceClass=interface com.telamin.mongoose.service.audit.MongooseAuditCaptureService, serviceName=com.telamin.mongoose.service.audit.MongooseAuditCaptureService, instance=com.telamin.mongoose.internal.ChronicleAuditCaptureService@2bd08376)
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer reserveServiceName
+INFO: registerService:Service(serviceClass=interface com.telamin.mongoose.service.audit.MongooseAuditIntrospectionService, serviceName=com.telamin.mongoose.service.audit.MongooseAuditIntrospectionService, instance=com.telamin.mongoose.internal.DirAuditIntrospectionService@13330ac6)
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer reserveServiceName
+INFO: registerService:Service(serviceClass=interface com.telamin.mongoose.service.health.MongooseHealthService, serviceName=com.telamin.mongoose.service.health.MongooseHealthService, instance=com.telamin.mongoose.internal.DefaultMongooseHealth@3c7c886c)
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer reserveServiceName
+INFO: registerService:Service(serviceClass=interface com.telamin.mongoose.service.introspection.MongooseIntrospectionService, serviceName=com.telamin.mongoose.service.introspection.MongooseIntrospectionService, instance=com.telamin.mongoose.internal.DefaultMongooseIntrospection@676cf48)
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer reserveServiceName
+INFO: registerService:Service(serviceClass=interface com.telamin.mongoose.service.servercontrol.MongooseServerController, serviceName=com.telamin.mongoose.service.servercontrol.MongooseServerController, instance=com.telamin.mongoose.MongooseServer@42039326)
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer reserveServiceName
+INFO: registerService:Service(serviceClass=interface com.telamin.mongoose.service.pool.ObjectPoolsRegistry, serviceName=com.telamin.mongoose.pool.ObjectPoolsRegistry, instance=com.telamin.mongoose.service.pool.impl.GlobalObjectPool@403f0a22)
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer registerWorkerServiceAdmitted
+INFO: registerWorkerService:ServiceAgent[agentGroup=feeds-agent, idleStrategy=null, exportedService=Service(serviceClass=interface com.telamin.fluxtion.runtime.input.NamedFeed, serviceName=input, instance=com.example.myapp.CaptureReadyFileEventSource@40317ba2), delegate=com.example.myapp.CaptureReadyFileEventSource@40317ba2] agentGroup:feeds-agent idleStrategy:SleepingMillisIdleStrategy{alias=sleep-ms, sleepPeriodMs=1}
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.dutycycle.ComposingServiceAgent registerServer
+INFO: registerServer toCallStartupCompleteList size:1
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer reserveServiceName
+INFO: registerService:Service(serviceClass=interface com.telamin.fluxtion.runtime.output.MessageSink, serviceName=output, instance=com.telamin.mongoose.connector.file.FileMessageSink@302f7971)
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer reserveServiceName
+INFO: registerService:Service(serviceClass=interface com.telamin.mongoose.service.admin.AdminCommandRegistry, serviceName=adminCommandRegistry, instance=com.telamin.mongoose.service.admin.impl.AdminCommandProcessor@6853425f)
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer adminClient
+INFO: adminCommandRegistry registered:adminCommandRegistry
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer reserveServiceName
+INFO: registerService:Service(serviceClass=class com.telamin.mongoose.service.servercontrol.MongooseServerAdmin, serviceName=serverAdmin, instance=com.telamin.mongoose.service.servercontrol.MongooseServerAdmin@352c1b98)
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.servercontrol.MongooseServerAdmin auditCaptureService
+INFO: Audit capture service available for admin commands: com.telamin.mongoose.internal.ChronicleAuditCaptureService@2bd08376
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.servercontrol.MongooseServerAdmin server
+INFO: Server command registry
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.servercontrol.MongooseServerAdmin admin
+INFO: Admin command registry
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.servercontrol.MongooseServerAdmin latencyService
+INFO: Latency service available for admin toggle: com.telamin.mongoose.internal.HdrLatencyService@5a755cc1
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.servercontrol.MongooseServerAdmin auditIntrospectionService
+INFO: Audit introspection service available for admin commands: com.telamin.mongoose.internal.DirAuditIntrospectionService@13330ac6
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer reserveServiceName
+INFO: registerService:Service(serviceClass=class com.telamin.mongoose.plugin.svc.adminweb.WebAdminService, serviceName=adminWebService, instance=com.telamin.mongoose.plugin.svc.adminweb.WebAdminService@21129f1f)
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.internal.LifecycleManager init
+INFO: init
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.servercontrol.MongooseServerAdmin init
+INFO: Fluxtion Server admin init
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.admin.impl.AdminCommandProcessor init
+INFO: init
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.servercontrol.MongooseServerAdmin auditIntrospectionService
+INFO: Audit introspection service available for admin commands: com.telamin.mongoose.internal.DirAuditIntrospectionService@13330ac6
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.servercontrol.MongooseServerAdmin auditCaptureService
+INFO: Audit capture service available for admin commands: com.telamin.mongoose.internal.ChronicleAuditCaptureService@2bd08376
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.servercontrol.MongooseServerAdmin latencyService
+INFO: Latency service available for admin toggle: com.telamin.mongoose.internal.HdrLatencyService@5a755cc1
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.servercontrol.MongooseServerAdmin server
+INFO: Server command registry
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.servercontrol.MongooseServerAdmin auditIntrospectionService
+INFO: Audit introspection service available for admin commands: com.telamin.mongoose.internal.DirAuditIntrospectionService@13330ac6
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.servercontrol.MongooseServerAdmin auditCaptureService
+INFO: Audit capture service available for admin commands: com.telamin.mongoose.internal.ChronicleAuditCaptureService@2bd08376
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.servercontrol.MongooseServerAdmin latencyService
+INFO: Latency service available for admin toggle: com.telamin.mongoose.internal.HdrLatencyService@5a755cc1
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.servercontrol.MongooseServerAdmin server
+INFO: Server command registry
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.servercontrol.MongooseServerAdmin auditIntrospectionService
+INFO: Audit introspection service available for admin commands: com.telamin.mongoose.internal.DirAuditIntrospectionService@13330ac6
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.servercontrol.MongooseServerAdmin auditCaptureService
+INFO: Audit capture service available for admin commands: com.telamin.mongoose.internal.ChronicleAuditCaptureService@2bd08376
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.servercontrol.MongooseServerAdmin latencyService
+INFO: Latency service available for admin toggle: com.telamin.mongoose.internal.HdrLatencyService@5a755cc1
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.servercontrol.MongooseServerAdmin server
+INFO: Server command registry
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.servercontrol.MongooseServerAdmin auditIntrospectionService
+INFO: Audit introspection service available for admin commands: com.telamin.mongoose.internal.DirAuditIntrospectionService@13330ac6
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.servercontrol.MongooseServerAdmin auditCaptureService
+INFO: Audit capture service available for admin commands: com.telamin.mongoose.internal.ChronicleAuditCaptureService@2bd08376
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.servercontrol.MongooseServerAdmin latencyService
+INFO: Latency service available for admin toggle: com.telamin.mongoose.internal.HdrLatencyService@5a755cc1
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer adminClient
+INFO: adminCommandRegistry registered:adminCommandRegistry
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.servercontrol.MongooseServerAdmin server
+INFO: Server command registry
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.internal.LifecycleManager start
+INFO: start
+[main] INFO io.javalin.Javalin - Starting Javalin ...
+[main] INFO org.eclipse.jetty.server.Server - jetty-11.0.23; built: 2024-08-14T01:40:17.906Z; git: 6fcf5ccaebd7ca13a0cb96c96adca699a24080a0; jvm 21.0.9+10-LTS
+[main] INFO org.eclipse.jetty.server.session.DefaultSessionIdManager - Session workerName=node0
+[main] INFO org.eclipse.jetty.server.handler.ContextHandler - Started o.e.j.s.ServletContextHandler@294bdeb4{/,null,AVAILABLE}
+[main] INFO org.eclipse.jetty.server.AbstractConnector - Started ServerConnector@65ef722a{HTTP/1.1, (http/1.1)}{127.0.0.1:8181}
+[main] INFO org.eclipse.jetty.server.Server - Started Server@1af1347d{STARTING}[11.0.23,sto=0] @375ms
+[main] INFO io.javalin.Javalin - 
+       __                  ___           _____
+      / /___ __   ______ _/ (_)___      / ___/
+ __  / / __ `/ | / / __ `/ / / __ \    / __ \
+/ /_/ / /_/ /| |/ / /_/ / / / / / /   / /_/ /
+\____/\__,_/ |___/\__,_/_/_/_/ /_/    \____/
+
+       https://javalin.io/documentation
+
+[main] INFO io.javalin.Javalin - Javalin started in 53ms \o/
+[main] INFO io.javalin.Javalin - Static file handler added: StaticFileConfig(hostedPath=/, directory=/web, location=CLASSPATH, precompress=false, aliasCheck=null, headers={Cache-Control=max-age=0}, skipFileFunction=Function1<jakarta.servlet.http.HttpServletRequest, java.lang.Boolean>, mimeTypes={}). File system location: 'jar:file:/private/tmp/mongoose-stable-starter-check/fluxtion-spring-mongoose-fixed/fluxtion-spring-mongoose/target/fluxtion-spring-mongoose-1.0.0-SNAPSHOT.jar!/web'
+[main] INFO io.javalin.Javalin - Listening on http://127.0.0.1:8181/
+[main] INFO io.javalin.Javalin - You are running Javalin 6.3.0 (released August 22, 2024. Your Javalin version is 794 days old. Consider checking for a newer version.).
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.servercontrol.MongooseServerAdmin start
+INFO: Fluxtion Server admin started
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.internal.LifecycleManager start
+INFO: start flowManager
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.admin.impl.AdminCommandProcessor start
+INFO: start
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.internal.LifecycleManager start
+INFO: start agent hosted services
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.internal.LifecycleManager lambda$start$5
+INFO: starting composing service agent feeds-agent
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.internal.LifecycleManager start
+INFO: waiting for agent hosted services to start
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.dutycycle.ComposingServiceAgent onStart
+INFO: onStart toStartList size:1
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer reserveServiceName
+INFO: registerService:Service(serviceClass=interface com.telamin.fluxtion.runtime.input.NamedFeed, serviceName=input, instance=com.example.myapp.CaptureReadyFileEventSource@40317ba2)
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.connector.file.FileEventSource start
+INFO: start FileEventSource input file:data/input.txt
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.connector.file.FileEventSource start
+INFO: tail:true once:false, commitRead:false latestRead:false readStrategy:EARLIEST
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.connector.file.FileEventSource onStart
+INFO: agent onStart FileEventSource input file:data/input.txt
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.internal.LifecycleManager start
+INFO: start event processor agent workers
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.internal.LifecycleManager lambda$start$6
+INFO: starting composing event processor agent processor-agent
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.internal.LifecycleManager start
+INFO: waiting for event processor agents to start
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent onStart
+INFO: onStart processor-agent
+eventLogRecord: 
+    eventTime: -1
+    logTime: 1792970368913
+    groupingId: null
+    event: EventLogControlEvent
+    eventToString: EventLogConfig{level=null, logRecordProcessor=com.example.myapp.builder.MarketProcessorSupplier$$Lambda/0x00000080012f9008@3143fb7a, sourceId=null, groupId=null}
+    thread: processor-agent
+    nodeLogs: 
+    endTime: 1792970368913
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: -1
+    logTime: 1792970368913
+    groupingId: null
+    event: EventLogControlEvent
+    eventToString: EventLogConfig{level=null, logRecordProcessor=com.telamin.mongoose.MongooseServer$$Lambda/0x0000008001005510@6226d8f8, sourceId=null, groupId=null}
+    thread: processor-agent
+    nodeLogs: 
+    endTime: 1792970368913
+updating event log config:EventLogConfig{level=INFO, logRecordProcessor=null, sourceId=null, groupId=null}
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: -1
+    logTime: 1792970368914
+    groupingId: null
+    event: EventLogControlEvent
+    eventToString: EventLogConfig{level=INFO, logRecordProcessor=null, sourceId=null, groupId=null}
+    thread: processor-agent
+    nodeLogs: 
+    endTime: 1792970368914
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: 1792970368914
+    logTime: 1792970368914
+    groupingId: null
+    event: LifecycleEvent
+    eventToString: Init
+    thread: processor-agent
+    nodeLogs: 
+    endTime: 1792970368914
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: -1
+    logTime: 1792970368914
+    groupingId: null
+    event: EventLogControlEvent
+    eventToString: EventLogConfig{level=null, logRecordProcessor=com.telamin.mongoose.MongooseServer$$Lambda/0x0000008001005510@6226d8f8, sourceId=null, groupId=null}
+    thread: processor-agent
+    nodeLogs: 
+    endTime: 1792970368914
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: -1
+    logTime: 1792970368916
+    groupingId: null
+    event: ExportFunctionAuditEvent
+    eventToString: @Override
+public void registerService(com.telamin.fluxtion.runtime.service.Service<?> arg0)
+    thread: processor-agent
+    nodeLogs: 
+    endTime: 1792970368916
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: -1
+    logTime: 1792970368917
+    groupingId: null
+    event: ExportFunctionAuditEvent
+    eventToString: @Override
+public void registerService(com.telamin.fluxtion.runtime.service.Service<?> arg0)
+    thread: processor-agent
+    nodeLogs: 
+    endTime: 1792970368917
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: -1
+    logTime: 1792970368917
+    groupingId: null
+    event: ExportFunctionAuditEvent
+    eventToString: @Override
+public void registerService(com.telamin.fluxtion.runtime.service.Service<?> arg0)
+    thread: processor-agent
+    nodeLogs: 
+    endTime: 1792970368917
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: -1
+    logTime: 1792970368917
+    groupingId: null
+    event: ExportFunctionAuditEvent
+    eventToString: @Override
+public void registerService(com.telamin.fluxtion.runtime.service.Service<?> arg0)
+    thread: processor-agent
+    nodeLogs: 
+    endTime: 1792970368917
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: -1
+    logTime: 1792970368917
+    groupingId: null
+    event: ExportFunctionAuditEvent
+    eventToString: @Override
+public void registerService(com.telamin.fluxtion.runtime.service.Service<?> arg0)
+    thread: processor-agent
+    nodeLogs: 
+    endTime: 1792970368917
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: -1
+    logTime: 1792970368917
+    groupingId: null
+    event: ExportFunctionAuditEvent
+    eventToString: @Override
+public void registerService(com.telamin.fluxtion.runtime.service.Service<?> arg0)
+    thread: processor-agent
+    nodeLogs: 
+    endTime: 1792970368917
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: -1
+    logTime: 1792970368917
+    groupingId: null
+    event: ExportFunctionAuditEvent
+    eventToString: @Override
+public void registerService(com.telamin.fluxtion.runtime.service.Service<?> arg0)
+    thread: processor-agent
+    nodeLogs: 
+    endTime: 1792970368917
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: -1
+    logTime: 1792970368917
+    groupingId: null
+    event: ExportFunctionAuditEvent
+    eventToString: @Override
+public void registerService(com.telamin.fluxtion.runtime.service.Service<?> arg0)
+    thread: processor-agent
+    nodeLogs: 
+    endTime: 1792970368917
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.extension.AbstractEventSourceService registerSubscriber
+INFO: registerSubscriber for broadcast receive com.example.myapp.generated.MarketProcessor@1222da02
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.service.extension.AbstractEventSourceService subscribe
+INFO: adding subscription for service 'input' to 'com.example.myapp.generated.MarketProcessor@1222da02'
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: -1
+    logTime: 1792970368917
+    groupingId: null
+    event: ExportFunctionAuditEvent
+    eventToString: @Override
+public void registerService(com.telamin.fluxtion.runtime.service.Service<?> arg0)
+    thread: processor-agent
+    nodeLogs: 
+    endTime: 1792970368918
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: -1
+    logTime: 1792970368918
+    groupingId: null
+    event: ExportFunctionAuditEvent
+    eventToString: @Override
+public void registerService(com.telamin.fluxtion.runtime.service.Service<?> arg0)
+    thread: processor-agent
+    nodeLogs: 
+    endTime: 1792970368918
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: -1
+    logTime: 1792970368918
+    groupingId: null
+    event: ExportFunctionAuditEvent
+    eventToString: @Override
+public void registerService(com.telamin.fluxtion.runtime.service.Service<?> arg0)
+    thread: processor-agent
+    nodeLogs: 
+    endTime: 1792970368918
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: -1
+    logTime: 1792970368918
+    groupingId: null
+    event: ExportFunctionAuditEvent
+    eventToString: @Override
+public void registerService(com.telamin.fluxtion.runtime.service.Service<?> arg0)
+    thread: processor-agent
+    nodeLogs: 
+    endTime: 1792970368918
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: -1
+    logTime: 1792970368921
+    groupingId: null
+    event: ExportFunctionAuditEvent
+    eventToString: @Override
+public void registerService(com.telamin.fluxtion.runtime.service.Service<?> arg0)
+    thread: processor-agent
+    nodeLogs: 
+    endTime: 1792970368921
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: -1
+    logTime: 1792970368921
+    groupingId: null
+    event: ExportFunctionAuditEvent
+    eventToString: @Override
+public void registerService(com.telamin.fluxtion.runtime.service.Service<?> arg0)
+    thread: processor-agent
+    nodeLogs: 
+    endTime: 1792970368921
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent registerSubscriber
+INFO: registerSubscriber:com.example.myapp.generated.MarketProcessor@1222da02 processor-agent
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent subscribe
+INFO: subscribe subscriptionKey:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=input], callBackType=com.telamin.mongoose.service.CallBackType$OnEventCallBack@36060e] subscriber:com.example.myapp.generated.MarketProcessor@1222da02
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent subscribe
+INFO: added new subscribe subscriptionKey:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=input], callBackType=com.telamin.mongoose.service.CallBackType$OnEventCallBack@36060e] subscriber:com.example.myapp.generated.MarketProcessor@1222da02
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.dutycycle.EventQueueToEventProcessorAgent registerProcessor
+INFO: registerProcessor: com.example.myapp.generated.MarketProcessor@1222da02
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.dutycycle.EventQueueToEventProcessorAgent registerProcessor
+INFO: listener count:1
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: 1792970368924
+    logTime: 1792970368924
+    groupingId: null
+    event: LifecycleEvent
+    eventToString: Start
+    thread: processor-agent
+    nodeLogs: 
+    endTime: 1792970368924
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: 1792970368924
+    logTime: 1792970368924
+    groupingId: null
+    event: LifecycleEvent
+    eventToString: StartComplete
+    thread: processor-agent
+    nodeLogs: 
+    endTime: 1792970368924
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.dutycycle.EventQueueToEventProcessorAgent onStart
+INFO: start
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.internal.LifecycleManager start
+INFO: calling startup complete on services
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.internal.LifecycleManager start
+INFO: calling startup complete on agent hosted services
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.dutycycle.ComposingServiceAgent startComplete
+INFO: startComplete toCallStartupCompleteList size:1
+Oct 25, 2026 11:19:28 PM com.telamin.mongoose.connector.file.FileEventSource startComplete
+INFO: startComplete FileEventSource input file:data/input.txt
+[mongoose-capture-open-1] INFO net.openhft.chronicle.core.Jvm - Chronicle core loaded from file:/private/tmp/mongoose-stable-starter-check/fluxtion-spring-mongoose-fixed/fluxtion-spring-mongoose/target/fluxtion-spring-mongoose-1.0.0-SNAPSHOT.jar
+[mongoose-capture-open-1] INFO net.openhft.chronicle.bytes.internal.ChunkedMappedFile - Took 2 ms to add mapping for ./audit/capture-1404131460207036339/metadata.cq4t
+[mongoose-capture-open-1] INFO net.openhft.chronicle.threads.DiskSpaceMonitor - Took 1.438 ms to pollDiskSpace for /private/tmp/mongoose-stable-starter-check/fluxtion-spring-mongoose-fixed/fluxtion-spring-mongoose/./audit/capture-1404131460207036339
+[mongoose-capture-open-1] INFO net.openhft.chronicle.core.internal.announcer.InternalAnnouncer - Running under OpenJDK Runtime Environment 21.0.9+10-LTS with 10 processors reported.
+[mongoose-capture-open-1] INFO net.openhft.chronicle.core.internal.announcer.InternalAnnouncer - Leave your e-mail to get information about the latest releases and patches at https://chronicle.software/release-notes/
+[mongoose-capture-open-1] INFO net.openhft.chronicle.core.internal.announcer.InternalAnnouncer - Process id: 62328 :: Chronicle Queue (5.27ea0)
+[mongoose-capture-open-1] INFO net.openhft.chronicle.core.internal.announcer.InternalAnnouncer - Analytics: Chronicle Queue reports usage statistics. Learn more or turn off: https://github.com/OpenHFT/Chronicle-Queue/blob/ea/DISCLAIMER.adoc
+Oct 25, 2026 11:19:29 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: -1
+    logTime: 1792970369088
+    groupingId: null
+    event: EventLogControlEvent
+    eventToString: EventLogConfig{level=null, logRecordProcessor=com.telamin.mongoose.internal.ChronicleAuditCaptureService$ProcessorSink$$Lambda/0x000000800142d1d0@2483cf66, sourceId=null, groupId=null}
+    thread: processor-agent
+    nodeLogs: 
+    endTime: 1792970369088
+Oct 25, 2026 11:19:29 PM com.telamin.mongoose.internal.ChronicleAuditCaptureService installCapture
+INFO: audit-capture STARTED for processor 'processor-agent/marketProcessor' at /private/tmp/mongoose-stable-starter-check/fluxtion-spring-mongoose-fixed/fluxtion-spring-mongoose/./audit/capture-1404131460207036339
+Mongoose server started from config/server-config.yml
+Oct 25, 2026 11:19:29 PM com.telamin.mongoose.connector.file.FileEventSource connectReader
+INFO: Found previous offset, trying to skip to file offset 0
+Oct 25, 2026 11:19:29 PM com.telamin.mongoose.connector.file.FileEventSource connectReader
+INFO: Skipped to offset 0
+Oct 25, 2026 11:19:29 PM com.telamin.mongoose.connector.file.FileEventSource connectReader
+INFO: Opened data/input.txt for reading
+Oct 25, 2026 11:19:29 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: 1792970369100
+    logTime: 1792970369100
+    groupingId: null
+    event: PriceEvent
+    eventToString: PriceEvent{symbol=AAPL, price=195.3, volume=1200}
+    thread: processor-agent
+    nodeLogs: 
+        - rootNode: { thread: processor-agent, method: onPriceEvent, annotation: OnEventHandler, handledEvent: com.example.myapp.event.PriceEvent, receivedEvent: PriceEvent{symbol=AAPL, price=195.3, volume=1200}, price: 195.3, volume: 1200}
+        - riskCheck: { thread: processor-agent, method: onRiskCheck, annotation: OnTrigger, triggerFired: true}
+    endTime: 1792970369100
+Oct 25, 2026 11:19:29 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: 1792970369101
+    logTime: 1792970369101
+    groupingId: null
+    event: PriceEvent
+    eventToString: PriceEvent{symbol=MSFT, price=410.1, volume=800}
+    thread: processor-agent
+    nodeLogs: 
+        - rootNode: { thread: processor-agent, method: onPriceEvent, annotation: OnEventHandler, handledEvent: com.example.myapp.event.PriceEvent, receivedEvent: PriceEvent{symbol=MSFT, price=410.1, volume=800}, price: 410.1, volume: 800}
+        - riskCheck: { thread: processor-agent, method: onRiskCheck, annotation: OnTrigger, triggerFired: true}
+    endTime: 1792970369101
+Oct 25, 2026 11:19:29 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: 1792970369101
+    logTime: 1792970369101
+    groupingId: null
+    event: PriceEvent
+    eventToString: PriceEvent{symbol=GOOG, price=155.75, volume=1500}
+    thread: processor-agent
+    nodeLogs: 
+        - rootNode: { thread: processor-agent, method: onPriceEvent, annotation: OnEventHandler, handledEvent: com.example.myapp.event.PriceEvent, receivedEvent: PriceEvent{symbol=GOOG, price=155.75, volume=1500}, price: 155.75, volume: 1500}
+        - riskCheck: { thread: processor-agent, method: onRiskCheck, annotation: OnTrigger, triggerFired: true}
+    endTime: 1792970369101
+Oct 25, 2026 11:19:29 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: 1792970369101
+    logTime: 1792970369101
+    groupingId: null
+    event: PriceEvent
+    eventToString: PriceEvent{symbol=AMZN, price=178.22, volume=640}
+    thread: processor-agent
+    nodeLogs: 
+        - rootNode: { thread: processor-agent, method: onPriceEvent, annotation: OnEventHandler, handledEvent: com.example.myapp.event.PriceEvent, receivedEvent: PriceEvent{symbol=AMZN, price=178.22, volume=640}, price: 178.22, volume: 640}
+        - riskCheck: { thread: processor-agent, method: onRiskCheck, annotation: OnTrigger, triggerFired: true}
+    endTime: 1792970369101
+Oct 25, 2026 11:19:29 PM com.telamin.mongoose.MongooseServer lambda$static$0
+INFO: eventLogRecord: 
+    eventTime: 1792970369101
+    logTime: 1792970369101
+    groupingId: null
+    event: PriceEvent
+    eventToString: PriceEvent{symbol=NVDA, price=905.6, volume=2100}
+    thread: processor-agent
+    nodeLogs: 
+        - rootNode: { thread: processor-agent, method: onPriceEvent, annotation: OnEventHandler, handledEvent: com.example.myapp.event.PriceEvent, receivedEvent: PriceEvent{symbol=NVDA, price=905.6, volume=2100}, price: 905.6, volume: 2100}
+        - riskCheck: { thread: processor-agent, method: onRiskCheck, annotation: OnTrigger, triggerFired: true}
+    endTime: 1792970369101
+stopping Mongoose server...
