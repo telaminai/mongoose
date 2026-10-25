@@ -38,6 +38,14 @@ Operational guidance for running Mongoose Server in production. Tailor values to
 - Apply backpressure via publishers or drop/shape non‑critical traffic where acceptable.
 - Consider lowering batch sizes to reduce latency tails during incidents.
 
+**Current publisher limit:** `EventToQueuePublisher` retries a full destination queue for about 10 ms, then drops
+that queue's copy and increments its drop count. This is a delivery loss, not reliable blocking back-pressure.
+One queued copy can feed several processors, so missed processor deliveries can exceed the queue-copy drop count.
+The wait holds the feed's publication lock; one stalled subscriber can therefore delay other subscribers.
+Monitor drops and pace sources within consumer capacity when loss is unacceptable. The explicit overflow-policy
+design is tracked in [#77](https://github.com/telaminai/mongoose/issues/77); the control-plane changes do not change
+this existing policy. A successful bounded-load delivery test does not establish losslessness under overload.
+
 ## Failure handling
 - Startup failures: fail fast if critical services or feeds do not initialize.
 - Runtime errors in handlers: log with context; consider circuit breakers for flaky integrations.

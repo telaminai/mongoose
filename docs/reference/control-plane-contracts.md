@@ -566,6 +566,13 @@ one group addresses that processor. A name admitted in **several** groups is amb
 `IllegalArgumentException` naming the groups, and you address one as `group/name`. A processor never inherits a capture
 recording another processor of the same name in a different group.
 
+Encode each component with `AuditCaptureIdentity.selector(group, name)` when it contains `/`, `%` or other special
+characters. The same selection rules apply to `isRecording` and `currentSink`; `currentSinks` uses qualified keys.
+The built-in Chronicle service pins each resource to its group, name and registration generation. Each recording
+session has a fresh `capture-*` directory and capture id, with a `.mongoose-capture.properties` identity sidecar;
+the display selector is not a filesystem path. Replacement generations and late closes cannot share a queue.
+Historical discovery still reads the old standalone layout. See [capture resource identity](../design/capture-resource-identity.md).
+
 ### Open and resource limits
 
 Each group allows at most **8** physical opens in flight by default. An open that timed out still holds its permit
@@ -585,7 +592,8 @@ configuration key. See [configuration keys](#configuration-keys).
 
 ### Deprecated: attach(..., Executor) and stopAll()
 
-- `attach(DataFlow, String, LogRecordListener, Executor)` is deprecated. The server still calls it, but with routing
+- `attach(DataFlow, String, LogRecordListener, Executor)` is deprecated. The server now calls `attachScoped`, whose
+  compatibility default delegates to the old method. With routing
   in place the group installs and uninstalls captures itself. The executor is used only by a capture service that no
   server routes.
 - `stopAll()` is deprecated. Each group closes its captures as it closes. The server calls `stopAll()` only after
@@ -597,6 +605,7 @@ configuration key. See [configuration keys](#configuration-keys).
 ```java
 public interface AuditCaptureResources {
     Object openCapture(String processorName) throws Exception;                  // on an I/O helper
+    default Object openCaptureScoped(AuditCaptureIdentity identity) throws Exception; // delegates to old API
     void installCapture(Object resource, String processorName, DataFlow flow);   // on the group's agent thread
     void uninstallCapture(Object resource, String processorName, DataFlow flow); // on the group's agent thread
     void closeCapture(Object resource) throws Exception;                         // on the closer, once per resource
@@ -605,7 +614,9 @@ public interface AuditCaptureResources {
 
 The group decides and an `AuditCaptureResources` only acts. The contract for an implementation:
 
-- `openCapture` must close anything it created before it throws.
+- `openCapture` / `openCaptureScoped` must close anything created before throwing. The group calls the scoped form;
+  implementations that inherit the compatibility default still receive bare names. A custom backend must implement
+  scoped ownership before claiming isolation between same-named processors in different groups.
 - `installCapture` puts the capture in front of the listener the server configured on the processor.
 - `uninstallCapture` restores that listener. `flow` is `null` once the processor has gone. The resource must stop
   receiving records before this returns, because the group may close it straight after.
@@ -745,6 +756,10 @@ Compare `outputs(processor)` or the audit logs.
 
 Each group's control processor writes an analyser-readable record of every decision, through Fluxtion's audit log.
 Records are kept in memory, per group, in a bounded ring (`ControlAuditSink`, 10 000 records by default).
+Set the JVM property `-Dmongoose.control.auditCapacity=400000` before groups are constructed to size each ring
+for a longer investigation. Missing, malformed or nonpositive values use the default. Larger rings retain more
+heap; overflow still marks the evidence incomplete and cannot authorize an invariant PASS. This property changes
+control-history retention, not data-processor audit capture or the event queue capacity.
 
 | Record | Written | Key fields |
 | --- | --- | --- |
@@ -834,6 +849,7 @@ outcomes per `opId`, and `topology` and `source` name the rule node that decided
 | Capture open limit | 8 | Physical capture opens in flight per group | Per group only: `ComposingEventProcessorAgent.setCaptureOpenLimit(int)`. Not a server key |
 | Capture resource limit | 1024 | Open, installed, closing or failed-close resource slots per group | Per group only: `ComposingEventProcessorAgent.setCaptureResourceLimit(int)`. Not a server key |
 | Full-mailbox timeout | 10 s | How long a producer backs off on a full group mailbox, off agent threads | Per group only: `ComposingEventProcessorAgent.setControlQueueFullTimeout(Duration)` |
+| `mongoose.control.auditCapacity` | `10000` records | Retained control audit records per group, read at construction | JVM system property (`-D`), not a YAML key |
 
 `controlWaitMillis` and `addFailurePolicy` have no builder method in this build. Set them on the config object or in
 YAML.
