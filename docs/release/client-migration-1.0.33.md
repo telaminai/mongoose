@@ -16,7 +16,7 @@ These are deployment gates, not reasons to claim that an unpublished candidate h
 
 References: [migration disposition](../reports/pr76-review-followup-2026-10-25/migration-disposition.md),
 [control contracts](../reference/control-plane-contracts.md), [capture identity](../design/capture-resource-identity.md),
-[shutdown runbook](../operations/shutdown-runbook.md), [release notes](release-notes-1.0.33-rc1.md),
+[shutdown runbook](../operations/shutdown-runbook.md), [release notes](release-notes-1.0.33.md),
 [failure design #77](https://github.com/telaminai/mongoose/issues/77).
 
 The upstream fixes are [runtime #47](https://github.com/telaminai/fluxtion/pull/47) and
