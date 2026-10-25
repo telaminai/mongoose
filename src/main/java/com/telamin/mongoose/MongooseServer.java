@@ -156,6 +156,8 @@ public class MongooseServer implements MongooseServerController {
     private final java.util.concurrent.locks.ReentrantLock serviceLock = new java.util.concurrent.locks.ReentrantLock();
     /** Identity claims held only during a retirement's physical stop; guarded by serviceLock with name admission. */
     private final Map<Object, Integer> retirementStops = new java.util.IdentityHashMap<>();
+    /** Pending alias withdrawals share the physical instance's final stop; guarded by serviceLock. */
+    private final Map<Object, ServiceRetirement> serviceRetirements = new java.util.IdentityHashMap<>();
     /** A handle is scoped to this server, since group generations are local counters. */
     private final Object processorHandleOwner = new Object();
     /** Reply completion runs off agent threads; late synchronous dependents run on their attaching thread. */
@@ -859,7 +861,10 @@ public class MongooseServer implements MongooseServerController {
                 removed = registeredServices.remove(serviceName);
                 if (removed == null) return;
                 long removalId = serviceRemovalIds.incrementAndGet();
-                retirement = new RemovedService(removalId, removed);
+                ServiceRetirement owner = serviceRetirements.computeIfAbsent(removed.instance(),
+                        instance -> new ServiceRetirement(removed));
+                retirement = new RemovedService(removalId, removed, owner);
+                owner.aliases.add(retirement);
                 removedServices.put(removalId, retirement);
                 sent = sendBroadcast(removed, false);
             } finally {
@@ -871,14 +876,14 @@ public class MongooseServer implements MongooseServerController {
         // A failed or rejected withdrawal retains ownership until shutdown has stopped all processors.
         // A pending successful withdrawal may release the service sooner, on an ordinary thread.
         if (awaitBroadcast(removed, false, sent)) {
-            retirement.stop();
+            retirement.withdrawalConfirmed();
             return;
         }
         java.util.concurrent.CompletableFuture<?>[] replies = sent.requests().values().stream()
                 .map(com.telamin.mongoose.control.ControlRequest::reply).toArray(java.util.concurrent.CompletableFuture[]::new);
         java.util.concurrent.CompletableFuture.allOf(replies).whenComplete((done, failed) -> {
             if (failed == null && sent.requests().values().stream().allMatch(r -> r.reply().join().applied())) {
-                com.telamin.mongoose.control.ControlReplies.executeSafely(replyExecutor, retirement::stop);
+                com.telamin.mongoose.control.ControlReplies.executeSafely(replyExecutor, retirement::withdrawalConfirmed);
             } else {
                 log.warning("service '" + serviceName + "' remains owned until shutdown: withdrawal was not confirmed");
             }
@@ -908,12 +913,11 @@ public class MongooseServer implements MongooseServerController {
      * resources. Retain that exact incarnation for one final stop even when its earlier retirement completed.
      */
     public Map<String, Service<?>> includeFinalStartupCleanup(Map<String, Service<?>> services, Service<?> owner) {
-        Service<?> live = services.get(owner.serviceName());
-        if (live != null && live.instance() == owner.instance()) return services;
+        if (services.values().stream().anyMatch(live -> live.instance() == owner.instance())) return services;
         Map<String, Service<?>> out = new java.util.LinkedHashMap<>(services);
         RemovedService retired = null;
         for (var entry : services.entrySet()) {
-            if (entry.getValue().instance() instanceof RemovedService removed && removed.service == owner) {
+            if (entry.getValue().instance() instanceof RemovedService removed && removed.service.instance() == owner.instance()) {
                 retired = removed;
                 out.remove(entry.getKey());
             }
@@ -940,8 +944,13 @@ public class MongooseServer implements MongooseServerController {
     }
 
     private Map<String, Service<?>> shutdownServices(boolean includeRegistered) {
-        Map<String, Service<?>> services = includeRegistered ? new java.util.LinkedHashMap<>(registeredServices)
-                : new java.util.LinkedHashMap<>();
+        Map<String, Service<?>> services = new java.util.LinkedHashMap<>();
+        if (includeRegistered) {
+            Set<Object> physical = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+            registeredServices.forEach((name, service) -> {
+                if (physical.add(service.instance())) services.put(name, service);
+            });
+        }
         for (RemovedService removed : removedServices.values()) {
             // The lifecycle manager tracks stops by name; each removed incarnation needs its own identity.
             String name = "removed[" + removed.id + "]:" + removed.service.serviceName();
@@ -954,73 +963,99 @@ public class MongooseServer implements MongooseServerController {
     private final class RemovedService implements com.telamin.fluxtion.runtime.lifecycle.Lifecycle {
         private final long id;
         private final Service<?> service;
-        private boolean stopped;
-        private Throwable stopFailure;
+        private final ServiceRetirement owner;
+        /** Guarded by serviceLock; a live alias can supersede only a confirmed withdrawal. */
+        private boolean confirmed;
+        private volatile boolean stopped;
 
-        private RemovedService(long id, Service<?> service) {
+        private RemovedService(long id, Service<?> service, ServiceRetirement owner) {
             this.id = id;
             this.service = service;
+            this.owner = owner;
         }
 
         @Override public void init() { }
         @Override public void start() { }
         @Override public void tearDown() { }
 
-        /** A separate final attempt: the interrupted startup may have acquired resources after the earlier stop. */
-        private synchronized void stopAfterStartup() {
-            stopped = false;
-            stopFailure = null;
-            stop();
-        }
+        private void withdrawalConfirmed() { owner.stop(this, false, false); }
 
-        @Override
-        public synchronized void stop() {
-            // A shutdown helper must also wait for an already-running callback, not merely see that it was claimed.
-            if (stopped) return;
+        /** A separate final attempt: interrupted startup may acquire resources after its earlier stop. */
+        private void stopAfterStartup() { owner.stop(this, true, true); }
+
+        /** Called by shutdown only after the processor/service groups have released their references. */
+        @Override public void stop() { owner.stop(this, true, false); }
+    }
+
+    /** One callback owner across all names of the same physical service, including delayed withdrawals. */
+    private final class ServiceRetirement {
+        private final Service<?> service;
+        /** Membership and alias confirmation are guarded by serviceLock, including admission of another removal. */
+        private final Set<RemovedService> aliases = new java.util.LinkedHashSet<>();
+        private boolean stopped;
+        private Throwable stopFailure;
+
+        private ServiceRetirement(Service<?> service) { this.service = service; }
+
+        // The shared monitor lets every shutdown alias wait for the SAME running callback. No user callback runs
+        // under serviceLock, and no path obtains this monitor while holding serviceLock.
+        private synchronized void stop(RemovedService request, boolean shutdown, boolean afterStartup) {
+            if (afterStartup) {
+                stopped = false;
+                stopFailure = null;
+                request.stopped = false;
+            }
+            if (request.stopped || stopped) return;
             if (stopFailure != null) throw new IllegalStateException("removed service stop previously failed", stopFailure);
-            boolean superseded;
             serviceLock.lock();
             try {
-                // Ownership belongs to the physical instance, not its previous registry name. While withdrawal
-                // waits for a group, the same object can be registered under another name and delivered again.
-                // Publication and claiming the stop share this lock, so either a live owner wins or subsequent
-                // registration observes retirementStops and is refused until the callback returns.
-                superseded = registeredServices.values().stream()
-                        .anyMatch(live -> live.instance() == service.instance());
-                if (superseded) {
-                    // Re-registration won before physical stop was claimed: the live registry owns this instance.
-                    stopped = true;
-                    removedServices.remove(id, this);
-                } else {
-                    // Name admission uses this same lock. Once claimed, re-registering this exact instance is refused
-                    // until the callback returns, including registration under another name. Other instances proceed.
-                    retirementStops.merge(service.instance(), 1, Integer::sum);
+                request.confirmed = true;
+                boolean live = registeredServices.values().stream()
+                        .anyMatch(binding -> binding.instance() == service.instance());
+                if (live) {
+                    // The registry owns this instance again. Preserve any other unconfirmed withdrawal: that alias
+                    // can still be held after the live name is subsequently removed.
+                    for (var iterator = aliases.iterator(); iterator.hasNext();) {
+                        RemovedService alias = iterator.next();
+                        if (shutdown || alias.confirmed) {
+                            alias.stopped = true;
+                            removedServices.remove(alias.id, alias);
+                            iterator.remove();
+                        }
+                    }
+                    if (aliases.isEmpty()) serviceRetirements.remove(service.instance(), this);
+                    return;
                 }
+                if (!shutdown && aliases.stream().anyMatch(alias -> !alias.confirmed)) return;
+                retirementStops.merge(service.instance(), 1, Integer::sum);
             } finally {
                 serviceLock.unlock();
             }
-            if (superseded) {
-                log.info("retirement of service '" + service.serviceName() + "' superseded: the same instance is registered"
-                        + " again, and is not stopped");
-                return;
-            }
             try {
                 service.stop();
+                stopped = true;
             } catch (Throwable failure) {
                 stopFailure = failure;
                 throw failure;
             } finally {
                 serviceLock.lock();
                 try {
+                    if (stopped) {
+                        for (RemovedService alias : aliases) {
+                            alias.stopped = true;
+                            removedServices.remove(alias.id, alias);
+                        }
+                        serviceRetirements.remove(service.instance(), this);
+                    }
                     retirementStops.computeIfPresent(service.instance(), (instance, count) -> count == 1 ? null : count - 1);
                 } finally {
                     serviceLock.unlock();
                 }
             }
-            stopped = true;
-            removedServices.remove(id, this);
-            // An old incarnation's deferred stop must not mark its replacement down.
-            if (!registeredServices.containsKey(service.serviceName())) flipServiceUp(service.serviceName(), 0);
+            // An old incarnation's deferred stop must not mark a replacement down.
+            for (RemovedService alias : aliases) {
+                if (!registeredServices.containsKey(alias.service.serviceName())) flipServiceUp(alias.service.serviceName(), 0);
+            }
         }
     }
 
