@@ -21,6 +21,12 @@ an item replaces a 1.0.33 release note, it says so.
 
 ## Behaviour changes
 
+### Admin registry construction preserves processor context
+
+The admin registry's built-in commands can now be constructed inside a processor callback before the registry's
+event-flow service is injected. Construction preserves the caller's processor context and keeps these built-ins
+direct; processor-owned commands registered after injection keep their existing dispatch semantics.
+
 ### Generated processor failures are quarantined
 
 A failed generated graph is isolated without retry or automatic restart; healthy processors in its group continue.
