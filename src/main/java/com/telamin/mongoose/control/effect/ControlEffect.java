@@ -11,7 +11,8 @@ package com.telamin.mongoose.control.effect;
  */
 public sealed interface ControlEffect permits ControlEffect.BuildAndStart, ControlEffect.Release,
         ControlEffect.ReleaseName, ControlEffect.CancelRegistration, ControlEffect.DeliverService, ControlEffect.RunTask,
-        ControlEffect.Reply, ControlEffect.FailBoot, ControlEffect.ReportFailure {
+        ControlEffect.Reply, ControlEffect.FailBoot, ControlEffect.ReportFailure, ControlEffect.OpenCapture,
+        ControlEffect.InstallCapture, ControlEffect.UninstallCapture, ControlEffect.CloseCapture {
 
     String opId();
 
@@ -44,6 +45,18 @@ public sealed interface ControlEffect permits ControlEffect.BuildAndStart, Contr
 
     /** A failure the group reports through {@code ErrorReporting} and carries on. */
     record ReportFailure(String opId, long requestId, long generation, String name, String what) implements ControlEffect { }
+
+    /** Open a capture off the group's thread; answered pending, then by a {@code CaptureOpened} or failed completion. */
+    record OpenCapture(String opId, long requestId, long generation, String name) implements ControlEffect { }
+
+    /** Install an open capture on the processor, on the group's thread. */
+    record InstallCapture(String opId, long requestId, long generation, String name, long resourceId) implements ControlEffect { }
+
+    /** Restore the processor's configured audit listener, on the group's thread; the resource is then closed. */
+    record UninstallCapture(String opId, long requestId, long generation, String name, long resourceId) implements ControlEffect { }
+
+    /** Hand a capture resource to the closer; answered pending, then by a {@code CaptureClosed} completion. */
+    record CloseCapture(String opId, long requestId, long generation, String name, long resourceId) implements ControlEffect { }
 
     record Reply(String opId, long requestId, long generation, String name,
                  com.telamin.mongoose.control.event.ReplyOutcome outcome, String reason) implements ControlEffect { }

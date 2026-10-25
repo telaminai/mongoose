@@ -85,7 +85,11 @@ public interface MongooseAuditCaptureService {
      * transport's thread, and change the processor's audit sink through {@code onAgentThread}, so the processor is only
      * ever driven from its own thread. They return once the change has been applied there, and are refused with an
      * {@link IllegalStateException}, changing nothing, when it cannot be applied in time.
+     *
+     * @deprecated a server routes capture through each processor group's control processor (design "Audit capture"),
+     * which installs and uninstalls on the group's thread itself; the executor is used only by a service no server routes
      */
+    @Deprecated
     default void attach(DataFlow dataFlow, String processorName, LogRecordListener configuredListener,
                         java.util.concurrent.Executor onAgentThread) {
         attach(dataFlow, processorName, configuredListener);
@@ -137,7 +141,11 @@ public interface MongooseAuditCaptureService {
     /**
      * Halt every live capture, flushing and closing each sink. The server calls it once its processors have stopped,
      * at the end of {@code stop()}. Default: nothing to stop.
+     *
+     * @deprecated each processor group closes its captures as it closes (design "Audit capture"); this only closes what
+     * a closer had not reached when the server stopped
      */
+    @Deprecated
     default void stopAll() {
     }
 

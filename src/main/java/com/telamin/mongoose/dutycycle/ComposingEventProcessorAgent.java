@@ -18,7 +18,10 @@ import com.telamin.mongoose.control.ControlRequest;
 import com.telamin.mongoose.control.effect.ControlEffect;
 import com.telamin.mongoose.control.effect.EffectAdapter;
 import com.telamin.mongoose.control.event.AddIntent;
+import com.telamin.mongoose.control.event.AuditStartIntent;
+import com.telamin.mongoose.control.event.AuditStopIntent;
 import com.telamin.mongoose.control.event.BroadcastIntent;
+import com.telamin.mongoose.control.event.CaptureCompletion;
 import com.telamin.mongoose.control.event.ControlOutcome;
 import com.telamin.mongoose.control.event.EffectResult;
 import com.telamin.mongoose.control.event.ReplyOutcome;
@@ -147,6 +150,14 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     private Throwable lastStartFailure;
     /** Guarded steps that failed during the current release. Agent thread only. */
     private int stepFailures;
+    /** Audit capture (design "Audit capture"): the physical side, where helpers run, and the resources held by id. */
+    private volatile com.telamin.mongoose.service.audit.AuditCaptureResources captureResources;
+    private volatile com.telamin.mongoose.control.CaptureIo captureIo = com.telamin.mongoose.control.CaptureIo.shared();
+    private volatile long captureOpenTimeoutMillis = 30_000;
+    private final ConcurrentHashMap<Long, Object> captureHandles = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, com.telamin.mongoose.control.CaptureIo.Cancellable> openTimeouts = new ConcurrentHashMap<>();
+    private final AtomicLong captureResourceIds = new AtomicLong();
+    private final AtomicLong completionIds = new AtomicLong();
 
     public ComposingEventProcessorAgent(String roleName,
                                         EventFlowManager eventFlowManager,
@@ -176,6 +187,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         this.eventsProcessedCounter = eventFlowManager.getCountersService().agentEventsCounter(roleName);
         this.idleCyclesCounter = eventFlowManager.getCountersService().agentIdleCyclesCounter(roleName);
         this.control = new ControlDriver(roleName, CONTROL_QUEUE_CAPACITY, this, new ControlAuditSink());
+        this.control.onOrphanCompletion(this::orphanCompletion);
     }
 
     // ============================================================================================ requests
@@ -269,6 +281,40 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         return new ControlRequest(ControlRequest.Kind.BROADCAST,
                 (register ? "register " : "deregister ") + service.serviceName(),
                 id -> new BroadcastIntent(id, service.serviceName(), register, version), new BroadcastPayload(service, register));
+    }
+
+    // ------------------------------------------------------------------ audit capture
+
+    /** Where this group's captures are opened, installed and closed; null leaves audit capture refused. */
+    public void setAuditCaptureResources(com.telamin.mongoose.service.audit.AuditCaptureResources resources) {
+        this.captureResources = resources;
+    }
+
+    /** Where opens, closes and open timeouts run; the shared helper threads by default. */
+    public void setCaptureIo(com.telamin.mongoose.control.CaptureIo io) {
+        this.captureIo = Objects.requireNonNull(io, "io is null");
+    }
+
+    /** How long an open may take before its audit start is answered Failed; 30 s by default. */
+    public void setCaptureOpenTimeout(java.time.Duration timeout) {
+        this.captureOpenTimeoutMillis = timeout.toMillis();
+    }
+
+    /**
+     * Begin capturing a processor's audit: {@code registration}'s generation if given, else whichever processor answers
+     * to {@code name} when the request is applied. The reply comes once the capture records, or not.
+     */
+    public ControlRequest auditStart(String name, ProcessorRegistration registration) {
+        return control.send(new ControlRequest(ControlRequest.Kind.CAPTURE, "audit start " + name,
+                id -> registration == null ? new AuditStartIntent(id, -1, name, false)
+                        : new AuditStartIntent(id, registration.generation(), name, true), null));
+    }
+
+    /** End a processor's audit capture; the reply comes once it is uninstalled (its resource is closed after). */
+    public ControlRequest auditStop(String name, ProcessorRegistration registration) {
+        return control.send(new ControlRequest(ControlRequest.Kind.CAPTURE, "audit stop " + name,
+                id -> registration == null ? new AuditStopIntent(id, -1, name, false)
+                        : new AuditStopIntent(id, registration.generation(), name, true), null));
     }
 
     /** What an add needs to perform its effects: never seen by the control processor. */
@@ -498,6 +544,10 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                 reportProcessorFailure(e.name() == null ? "<not built>" : e.name(), e.what(), lastStartFailure);
                 yield result(e, ControlOutcome.SUCCEEDED, null);
             }
+            case ControlEffect.OpenCapture e -> openCapture(e);
+            case ControlEffect.InstallCapture e -> installCapture(e);
+            case ControlEffect.UninstallCapture e -> uninstallCapture(e);
+            case ControlEffect.CloseCapture e -> closeCapture(e);
             case ControlEffect.Reply e -> {
                 boolean delivered = control.reply(e.requestId(), e.outcome(), e.reason(), e.generation(), e.name());
                 yield delivered ? result(e, ControlOutcome.SUCCEEDED, e.outcome().name())
@@ -621,6 +671,123 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         }
         task.run();
         return result(effect, ControlOutcome.SUCCEEDED, null);
+    }
+
+    // ------------------------------------------------------------------ audit capture effects
+
+    /** Hand the open to a helper with a timeout; answered pending, then by exactly one completion from the helper. */
+    private EffectResult openCapture(ControlEffect.OpenCapture effect) {
+        var resources = captureResources;
+        if (resources == null) {
+            return result(effect, ControlOutcome.FAILED, "audit capture is not enabled");
+        }
+        long root = effect.requestId();
+        String op = effect.opId();
+        String name = effect.name();
+        var io = captureIo;
+        var timeout = io.schedule(() -> control.complete(new CaptureCompletion(root, op, completionIds.incrementAndGet(),
+                CaptureCompletion.Kind.TIMED_OUT, -1, null)), captureOpenTimeoutMillis);
+        openTimeouts.put(op, timeout);
+        try {
+            io.open(() -> {
+                CaptureCompletion done;
+                try {
+                    Object handle = resources.openCapture(name);
+                    long id = captureResourceIds.incrementAndGet();
+                    captureHandles.put(id, handle);
+                    done = new CaptureCompletion(root, op, completionIds.incrementAndGet(), CaptureCompletion.Kind.OPENED, id, null);
+                } catch (Throwable t) {
+                    done = new CaptureCompletion(root, op, completionIds.incrementAndGet(), CaptureCompletion.Kind.OPEN_FAILED,
+                            -1, String.valueOf(t));
+                }
+                var pendingTimeout = openTimeouts.remove(op);
+                if (pendingTimeout != null) pendingTimeout.cancel();
+                control.complete(done);
+            });
+        } catch (RuntimeException rejected) {
+            var pendingTimeout = openTimeouts.remove(op);
+            if (pendingTimeout != null) pendingTimeout.cancel();
+            return result(effect, ControlOutcome.FAILED, "the open could not be handed to a helper: " + rejected);
+        }
+        return result(effect, ControlOutcome.PENDING, null);
+    }
+
+    private EffectResult installCapture(ControlEffect.InstallCapture effect) {
+        var resources = captureResources;
+        Object handle = captureHandles.get(effect.resourceId());
+        NamedEventProcessor named = processorsByGeneration.get(effect.generation());
+        if (resources == null || handle == null || named == null) {
+            return result(effect, ControlOutcome.FAILED, handle == null ? "unknown resource" : "processor gone");
+        }
+        resources.installCapture(handle, named.name(), named.eventProcessor());
+        return result(effect, ControlOutcome.SUCCEEDED, null);
+    }
+
+    private EffectResult uninstallCapture(ControlEffect.UninstallCapture effect) {
+        var resources = captureResources;
+        Object handle = captureHandles.get(effect.resourceId());
+        if (resources == null || handle == null) {
+            return result(effect, ControlOutcome.FAILED, "unknown resource");
+        }
+        NamedEventProcessor named = processorsByGeneration.get(effect.generation());
+        resources.uninstallCapture(handle, effect.name(), named == null ? null : named.eventProcessor());
+        return result(effect, ControlOutcome.SUCCEEDED, null);
+    }
+
+    /** Hand the resource to the closer, which closes it exactly once: whoever removes it from the table closes it. */
+    private EffectResult closeCapture(ControlEffect.CloseCapture effect) {
+        Object handle = captureHandles.remove(effect.resourceId());
+        if (handle == null) {
+            return result(effect, ControlOutcome.FAILED, "unknown resource");
+        }
+        Runnable close = () -> control.complete(closeResource(effect.requestId(), effect.opId(), effect.resourceId(), handle));
+        try {
+            captureIo.close(close);
+        } catch (RuntimeException rejected) {
+            close.run();        // the closer would not take it: close here rather than leak it
+        }
+        return result(effect, ControlOutcome.PENDING, null);
+    }
+
+    private CaptureCompletion closeResource(long root, String op, long resourceId, Object handle) {
+        try {
+            captureResources.closeCapture(handle);
+            return new CaptureCompletion(root, op, completionIds.incrementAndGet(), CaptureCompletion.Kind.CLOSED, resourceId, null);
+        } catch (Throwable t) {
+            return new CaptureCompletion(root, op, completionIds.incrementAndGet(), CaptureCompletion.Kind.CLOSE_FAILED,
+                    resourceId, String.valueOf(t));
+        }
+    }
+
+    /**
+     * A completion that reached the group after it ended: no control processor will see it. An open that completed is
+     * closed here (nothing else holds it); a close is only recorded. Both go to the fallback stream.
+     */
+    private void orphanCompletion(com.telamin.mongoose.control.event.ControlInput input) {
+        if (!(input instanceof CaptureCompletion c)) return;
+        ControlAuditSink audit = control.audit();
+        switch (c.kind()) {
+            case OPENED -> {
+                Object handle = captureHandles.remove(c.resourceId());
+                CaptureCompletion closed = handle == null ? null : closeResource(c.requestId(), c.opId(), c.resourceId(), handle);
+                // the open's final outcome, then the compensating close: as the control processor would have recorded
+                audit.fallback("EffectOutcome", "group", roleName(), "requestId", c.requestId(), "opId", c.opId(),
+                        "effect", "OpenCapture", "outcome", "succeeded", "stale", true, "resourceId", c.resourceId());
+                audit.fallback("CaptureCompensated", "group", roleName(), "opId", c.opId(), "resourceId", c.resourceId(),
+                        "closed", closed != null && closed.kind() == CaptureCompletion.Kind.CLOSED);
+            }
+            case CLOSED, CLOSE_FAILED -> audit.fallback("EffectOutcome", "group", roleName(), "requestId", c.requestId(),
+                    "opId", c.opId(), "effect", "CloseCapture", "outcome", c.kind() == CaptureCompletion.Kind.CLOSED
+                            ? "succeeded" : "failed", "resourceId", c.resourceId(), "reason", c.reason());
+            case OPEN_FAILED -> audit.fallback("EffectOutcome", "group", roleName(), "requestId", c.requestId(),
+                    "opId", c.opId(), "effect", "OpenCapture", "outcome", "failed", "stale", true, "reason", c.reason());
+            default -> audit.fallback("CaptureOrphan", "group", roleName(), "opId", c.opId(), "fact", c.fact());
+        }
+    }
+
+    /** Capture resources the group still holds (opened and not handed to the closer): for tests and the stop result. */
+    public int captureResourcesHeld() {
+        return captureHandles.size();
     }
 
     // ============================================================================================ queries

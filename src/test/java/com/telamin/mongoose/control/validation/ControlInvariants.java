@@ -18,7 +18,8 @@ import java.util.Set;
  */
 public final class ControlInvariants {
 
-    private static final Set<String> COMMAND_FACTS = Set.of("Add", "Stop", "Register", "Deregister", "Run", "Close");
+    private static final Set<String> COMMAND_FACTS = Set.of("Add", "Stop", "Register", "Deregister", "Run", "Close",
+            "AuditStart", "AuditStop");
     /** Fallback records that answer a request (written by the group when it completes one outside the processor). */
     private static final Set<String> FALLBACK_REPLIES = Set.of("NotRunning", "Refused", "Failed", "APPLIED", "NOT_RUNNING",
             "REFUSED", "FAILED");
@@ -57,7 +58,7 @@ public final class ControlInvariants {
             if (!Boolean.FALSE.equals(r.fields().get("completed"))) replySeq.putIfAbsent(r.requestId(), r.seq());
         }
         for (Rec r : evidence.records()) {
-            if (r.fallback() || r.type().equals("Reply")) continue;
+            if (r.fallback() || r.type().equals("Reply") || Boolean.TRUE.equals(r.fields().get("cleanup"))) continue;
             Long at = replySeq.get(r.requestId());
             if (at != null && r.seq() > at && !"Input".equals(r.type())) {
                 violations.add("I11 request " + r.requestId() + " has a " + r.type() + " (seq " + r.seq()
@@ -95,7 +96,8 @@ public final class ControlInvariants {
         List<Requested> requested = evidence.requested();
         for (Requested q : requested) {
             List<Rec> found = outcomes.getOrDefault(q.opId(), List.of()).stream()
-                    .filter(o -> !"pending".equals(o.str("outcome"))).toList();
+                    .filter(o -> !"pending".equals(o.str("outcome")) && !Boolean.TRUE.equals(o.fields().get("duplicate")))
+                    .toList();
             if (found.size() > 1) {
                 violations.add("I3 effect " + q.opId() + " " + q.effect() + " has " + found.size() + " final outcomes");
             } else if (found.isEmpty() && evidence.complete()) {
@@ -163,6 +165,50 @@ public final class ControlInvariants {
                 }
             } else if ("released".equals(rule) || "releasedWithErrors".equals(rule)) {
                 live.remove(name, gen);
+            }
+        }
+        // I1: no InstallCapture for a generation once a decision has moved it to Releasing
+        Map<Long, Long> releasingFrom = new HashMap<>();
+        for (Rec d : evidence.ofType("Decision")) {
+            if ("stopStarted".equals(d.str("rule"))) releasingFrom.putIfAbsent(d.num("generation"), d.seq());
+        }
+        for (Requested q : requested) {
+            if ("Release".equals(q.effect())) releasingFrom.putIfAbsent(q.generation(), q.decisionSeq());
+        }
+        for (Requested q : requested) {
+            Long from = releasingFrom.get(q.generation());
+            if ("InstallCapture".equals(q.effect()) && from != null && q.decisionSeq() >= from) {
+                violations.add("I1 InstallCapture " + q.opId() + " on gen " + q.generation()
+                        + " requested after its release began (decision seq " + from + ")");
+            }
+        }
+        // I4: every capture resource opened (accepted or compensated) is closed exactly once; duplicate and unknown
+        // completions and refused closes do not count as opens
+        Map<Long, Integer> opened = new HashMap<>();
+        Map<Long, Integer> closed = new HashMap<>();
+        for (Rec d : evidence.ofType("Decision")) {
+            String rule = d.str("rule");
+            if ("captureOpened".equals(rule) || "captureOpenedStale".equals(rule)) opened.merge(d.num("resourceId"), 1, Integer::sum);
+        }
+        for (Rec r : evidence.records()) {
+            boolean closeOutcome = "EffectOutcome".equals(r.type()) && "CloseCapture".equals(r.str("effect"))
+                    && !"pending".equals(r.str("outcome")) && r.num("resourceId") >= 0
+                    && !Boolean.TRUE.equals(r.fields().get("duplicate"));
+            if (closeOutcome) closed.merge(r.num("resourceId"), 1, Integer::sum);
+        }
+        opened.forEach((resource, n) -> {
+            if (n > 1) violations.add("I4/I14 resource " + resource + " accepted as opened " + n + " times");
+            int c = closed.getOrDefault(resource, 0);
+            if (c > 1) violations.add("I4 resource " + resource + " closed " + c + " times");
+            if (c == 0 && evidence.complete()) violations.add("I4 resource " + resource + " opened and never closed");
+        });
+        // I14: a duplicate completion has no effect
+        for (Rec d : evidence.ofType("Decision")) {
+            if ("captureDuplicate".equals(d.str("rule")) || "captureCloseUnknown".equals(d.str("rule"))) {
+                String effects = d.str("effects");
+                if (effects != null && effects.contains("InstallCapture")) {
+                    violations.add("I14 duplicate completion (seq " + d.seq() + ") installed a capture: " + effects);
+                }
             }
         }
         // I10: control-record seq numbers are contiguous

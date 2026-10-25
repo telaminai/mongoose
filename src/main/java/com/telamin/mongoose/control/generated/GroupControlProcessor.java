@@ -35,11 +35,15 @@ import com.telamin.fluxtion.runtime.service.ServiceRegistryNode;
 import com.telamin.fluxtion.runtime.time.Clock;
 import com.telamin.fluxtion.runtime.time.ClockStrategy.ClockStrategyEvent;
 import com.telamin.mongoose.control.event.AddIntent;
+import com.telamin.mongoose.control.event.AuditStartIntent;
+import com.telamin.mongoose.control.event.AuditStopIntent;
 import com.telamin.mongoose.control.event.BroadcastIntent;
+import com.telamin.mongoose.control.event.CaptureCompletion;
 import com.telamin.mongoose.control.event.CloseIntent;
 import com.telamin.mongoose.control.event.EffectResult;
 import com.telamin.mongoose.control.event.RunIntent;
 import com.telamin.mongoose.control.event.StopIntent;
+import com.telamin.mongoose.control.node.CaptureRules;
 import com.telamin.mongoose.control.node.ControlInputs;
 import com.telamin.mongoose.control.node.ControlState;
 import com.telamin.mongoose.control.node.EffectOutcomes;
@@ -67,7 +71,10 @@ import java.util.function.Consumer;
  *   <li>com.telamin.fluxtion.runtime.audit.EventLogControlEvent
  *   <li>com.telamin.fluxtion.runtime.time.ClockStrategy.ClockStrategyEvent
  *   <li>com.telamin.mongoose.control.event.AddIntent
+ *   <li>com.telamin.mongoose.control.event.AuditStartIntent
+ *   <li>com.telamin.mongoose.control.event.AuditStopIntent
  *   <li>com.telamin.mongoose.control.event.BroadcastIntent
+ *   <li>com.telamin.mongoose.control.event.CaptureCompletion
  *   <li>com.telamin.mongoose.control.event.CloseIntent
  *   <li>com.telamin.mongoose.control.event.EffectResult
  *   <li>com.telamin.mongoose.control.event.RunIntent
@@ -94,7 +101,7 @@ public class GroupControlProcessor
   public final transient ControlInputs controlInputs =
       new com.telamin.mongoose.control.node.ControlInputs(controlState);;
   public final transient EffectOutcomes effectOutcomes =
-      new com.telamin.mongoose.control.node.EffectOutcomes(controlState);;
+      new com.telamin.mongoose.control.node.EffectOutcomes(controlState, controlInputs);;
   public final transient EventLogManager eventLogger = new EventLogManager();
   public final transient NodeNameAuditor nodeNameLookup = new NodeNameAuditor();
   private final transient SubscriptionManagerNode subscriptionManager =
@@ -103,9 +110,12 @@ public class GroupControlProcessor
       new com.telamin.fluxtion.runtime.node.MutableDataFlowContext(
           nodeNameLookup, callbackDispatcher, subscriptionManager, callbackDispatcher);;
   public final transient EffectQueue effectQueue = new EffectQueue();
+  public final transient CaptureRules captureRules =
+      new com.telamin.mongoose.control.node.CaptureRules(
+          controlInputs, effectOutcomes, controlState, effectQueue);;
   public final transient LifecycleRules lifecycleRules =
       new com.telamin.mongoose.control.node.LifecycleRules(
-          controlInputs, effectOutcomes, controlState, effectQueue);;
+          controlInputs, effectOutcomes, controlState, effectQueue, captureRules);;
   public final transient ServiceRegistryNode serviceRegistry = new ServiceRegistryNode();
   public final transient ServiceRules serviceRules =
       new com.telamin.mongoose.control.node.ServiceRules(
@@ -120,10 +130,11 @@ public class GroupControlProcessor
   //Measured saving on a 3-event-type graph: 0.098ns of a 5.61ns event on a JIT; nothing on native+PGO.
   private boolean callbacksPending = false;
   private final transient IdentityHashMap<Object, BooleanSupplier> dirtyFlagSupplierMap =
-      new IdentityHashMap<>(2);
+      new IdentityHashMap<>(3);
   private final transient IdentityHashMap<Object, Consumer<Boolean>> dirtyFlagUpdateMap =
-      new IdentityHashMap<>(2);
+      new IdentityHashMap<>(3);
 
+  private boolean isDirty_captureRules = false;
   private boolean isDirty_controlInputs = false;
   private boolean isDirty_effectOutcomes = false;
 
@@ -138,7 +149,13 @@ public class GroupControlProcessor
             new ProcessorDescriptor.Input(
                 "AddIntent", "com.telamin.mongoose.control.event.AddIntent", false),
             new ProcessorDescriptor.Input(
+                "AuditStartIntent", "com.telamin.mongoose.control.event.AuditStartIntent", false),
+            new ProcessorDescriptor.Input(
+                "AuditStopIntent", "com.telamin.mongoose.control.event.AuditStopIntent", false),
+            new ProcessorDescriptor.Input(
                 "BroadcastIntent", "com.telamin.mongoose.control.event.BroadcastIntent", false),
+            new ProcessorDescriptor.Input(
+                "CaptureCompletion", "com.telamin.mongoose.control.event.CaptureCompletion", false),
             new ProcessorDescriptor.Input(
                 "CloseIntent", "com.telamin.mongoose.control.event.CloseIntent", false),
             new ProcessorDescriptor.Input(
@@ -158,7 +175,7 @@ public class GroupControlProcessor
           new DescriptorSupport.Meta(
               null,
               "1.0.79",
-              "55881909a4a053d88c7d08d7a82c5415f1633eb2cb9508b330287a8fc7e82076",
+              "b954fa5595eb09cdce40daf8f7572c566b4e95b28ca88bfd41753f06f2de5343",
               null));
 
   @Override
@@ -319,8 +336,17 @@ public class GroupControlProcessor
     } else if (event instanceof AddIntent) {
       AddIntent typedEvent = (AddIntent) event;
       handleEvent(typedEvent);
+    } else if (event instanceof AuditStartIntent) {
+      AuditStartIntent typedEvent = (AuditStartIntent) event;
+      handleEvent(typedEvent);
+    } else if (event instanceof AuditStopIntent) {
+      AuditStopIntent typedEvent = (AuditStopIntent) event;
+      handleEvent(typedEvent);
     } else if (event instanceof BroadcastIntent) {
       BroadcastIntent typedEvent = (BroadcastIntent) event;
+      handleEvent(typedEvent);
+    } else if (event instanceof CaptureCompletion) {
+      CaptureCompletion typedEvent = (CaptureCompletion) event;
       handleEvent(typedEvent);
     } else if (event instanceof CloseIntent) {
       CloseIntent typedEvent = (CloseIntent) event;
@@ -355,7 +381,22 @@ public class GroupControlProcessor
   }
 
   @OnEventHandler(failBuildIfMissingBooleanReturn = false)
+  public void onEvent(AuditStartIntent event) {
+    processEvent(event);
+  }
+
+  @OnEventHandler(failBuildIfMissingBooleanReturn = false)
+  public void onEvent(AuditStopIntent event) {
+    processEvent(event);
+  }
+
+  @OnEventHandler(failBuildIfMissingBooleanReturn = false)
   public void onEvent(BroadcastIntent event) {
+    processEvent(event);
+  }
+
+  @OnEventHandler(failBuildIfMissingBooleanReturn = false)
+  public void onEvent(CaptureCompletion event) {
     processEvent(event);
   }
 
@@ -406,6 +447,26 @@ public class GroupControlProcessor
     afterEvent();
   }
 
+  public void handleEvent(AuditStartIntent typedEvent) {
+    auditEvent(typedEvent);
+    //Default, no filter methods
+    auditInvocation(controlInputs, "controlInputs", "onAuditStart", "OnEventHandler", typedEvent);
+    isDirty_controlInputs = controlInputs.onAuditStart(typedEvent);
+    auditInvocation(captureRules, "captureRules", "onAuditStart", "OnEventHandler", typedEvent);
+    isDirty_captureRules = captureRules.onAuditStart(typedEvent);
+    afterEvent();
+  }
+
+  public void handleEvent(AuditStopIntent typedEvent) {
+    auditEvent(typedEvent);
+    //Default, no filter methods
+    auditInvocation(controlInputs, "controlInputs", "onAuditStop", "OnEventHandler", typedEvent);
+    isDirty_controlInputs = controlInputs.onAuditStop(typedEvent);
+    auditInvocation(captureRules, "captureRules", "onAuditStop", "OnEventHandler", typedEvent);
+    isDirty_captureRules = captureRules.onAuditStop(typedEvent);
+    afterEvent();
+  }
+
   public void handleEvent(BroadcastIntent typedEvent) {
     auditEvent(typedEvent);
     //Default, no filter methods
@@ -413,6 +474,18 @@ public class GroupControlProcessor
     isDirty_controlInputs = controlInputs.onBroadcast(typedEvent);
     auditInvocation(serviceRules, "serviceRules", "onBroadcast", "OnEventHandler", typedEvent);
     serviceRules.onBroadcast(typedEvent);
+    afterEvent();
+  }
+
+  public void handleEvent(CaptureCompletion typedEvent) {
+    auditEvent(typedEvent);
+    //Default, no filter methods
+    auditInvocation(controlInputs, "controlInputs", "onCompletion", "OnEventHandler", typedEvent);
+    isDirty_controlInputs = controlInputs.onCompletion(typedEvent);
+    auditInvocation(effectOutcomes, "effectOutcomes", "onCompletion", "OnEventHandler", typedEvent);
+    isDirty_effectOutcomes = effectOutcomes.onCompletion(typedEvent);
+    auditInvocation(captureRules, "captureRules", "onCompletion", "OnEventHandler", typedEvent);
+    isDirty_captureRules = captureRules.onCompletion(typedEvent);
     afterEvent();
   }
 
@@ -431,6 +504,8 @@ public class GroupControlProcessor
     //Default, no filter methods
     auditInvocation(effectOutcomes, "effectOutcomes", "onResult", "OnEventHandler", typedEvent);
     isDirty_effectOutcomes = effectOutcomes.onResult(typedEvent);
+    auditInvocation(captureRules, "captureRules", "onResult", "OnEventHandler", typedEvent);
+    isDirty_captureRules = captureRules.onResult(typedEvent);
     auditInvocation(lifecycleRules, "lifecycleRules", "onResult", "OnEventHandler", typedEvent);
     lifecycleRules.onResult(typedEvent);
     auditInvocation(serviceRules, "serviceRules", "onResult", "OnEventHandler", typedEvent);
@@ -504,6 +579,20 @@ public class GroupControlProcessor
       isDirty_controlInputs = controlInputs.onAdd(typedEvent);
       auditInvocation(lifecycleRules, "lifecycleRules", "onAdd", "OnEventHandler", typedEvent);
       lifecycleRules.onAdd(typedEvent);
+    } else if (event instanceof AuditStartIntent) {
+      AuditStartIntent typedEvent = (AuditStartIntent) event;
+      auditEvent(typedEvent);
+      auditInvocation(controlInputs, "controlInputs", "onAuditStart", "OnEventHandler", typedEvent);
+      isDirty_controlInputs = controlInputs.onAuditStart(typedEvent);
+      auditInvocation(captureRules, "captureRules", "onAuditStart", "OnEventHandler", typedEvent);
+      isDirty_captureRules = captureRules.onAuditStart(typedEvent);
+    } else if (event instanceof AuditStopIntent) {
+      AuditStopIntent typedEvent = (AuditStopIntent) event;
+      auditEvent(typedEvent);
+      auditInvocation(controlInputs, "controlInputs", "onAuditStop", "OnEventHandler", typedEvent);
+      isDirty_controlInputs = controlInputs.onAuditStop(typedEvent);
+      auditInvocation(captureRules, "captureRules", "onAuditStop", "OnEventHandler", typedEvent);
+      isDirty_captureRules = captureRules.onAuditStop(typedEvent);
     } else if (event instanceof BroadcastIntent) {
       BroadcastIntent typedEvent = (BroadcastIntent) event;
       auditEvent(typedEvent);
@@ -511,6 +600,16 @@ public class GroupControlProcessor
       isDirty_controlInputs = controlInputs.onBroadcast(typedEvent);
       auditInvocation(serviceRules, "serviceRules", "onBroadcast", "OnEventHandler", typedEvent);
       serviceRules.onBroadcast(typedEvent);
+    } else if (event instanceof CaptureCompletion) {
+      CaptureCompletion typedEvent = (CaptureCompletion) event;
+      auditEvent(typedEvent);
+      auditInvocation(controlInputs, "controlInputs", "onCompletion", "OnEventHandler", typedEvent);
+      isDirty_controlInputs = controlInputs.onCompletion(typedEvent);
+      auditInvocation(
+          effectOutcomes, "effectOutcomes", "onCompletion", "OnEventHandler", typedEvent);
+      isDirty_effectOutcomes = effectOutcomes.onCompletion(typedEvent);
+      auditInvocation(captureRules, "captureRules", "onCompletion", "OnEventHandler", typedEvent);
+      isDirty_captureRules = captureRules.onCompletion(typedEvent);
     } else if (event instanceof CloseIntent) {
       CloseIntent typedEvent = (CloseIntent) event;
       auditEvent(typedEvent);
@@ -523,6 +622,8 @@ public class GroupControlProcessor
       auditEvent(typedEvent);
       auditInvocation(effectOutcomes, "effectOutcomes", "onResult", "OnEventHandler", typedEvent);
       isDirty_effectOutcomes = effectOutcomes.onResult(typedEvent);
+      auditInvocation(captureRules, "captureRules", "onResult", "OnEventHandler", typedEvent);
+      isDirty_captureRules = captureRules.onResult(typedEvent);
       auditInvocation(lifecycleRules, "lifecycleRules", "onResult", "OnEventHandler", typedEvent);
       lifecycleRules.onResult(typedEvent);
       auditInvocation(serviceRules, "serviceRules", "onResult", "OnEventHandler", typedEvent);
@@ -571,6 +672,7 @@ public class GroupControlProcessor
     auditor.nodeRegistered(callbackDispatcher, "callbackDispatcher");
     auditor.nodeRegistered(subscriptionManager, "subscriptionManager");
     auditor.nodeRegistered(context, "context");
+    auditor.nodeRegistered(captureRules, "captureRules");
     auditor.nodeRegistered(controlInputs, "controlInputs");
     auditor.nodeRegistered(controlState, "controlState");
     auditor.nodeRegistered(effectOutcomes, "effectOutcomes");
@@ -642,6 +744,7 @@ public class GroupControlProcessor
   private void afterEvent() {
     clock.processingComplete();
     eventLogger.processingComplete();
+    isDirty_captureRules = false;
     isDirty_controlInputs = false;
     isDirty_effectOutcomes = false;
   }
@@ -674,6 +777,7 @@ public class GroupControlProcessor
   @Override
   public BooleanSupplier dirtySupplier(Object node) {
     if (dirtyFlagSupplierMap.isEmpty()) {
+      dirtyFlagSupplierMap.put(captureRules, () -> isDirty_captureRules);
       dirtyFlagSupplierMap.put(controlInputs, () -> isDirty_controlInputs);
       dirtyFlagSupplierMap.put(effectOutcomes, () -> isDirty_effectOutcomes);
     }
@@ -683,14 +787,23 @@ public class GroupControlProcessor
   @Override
   public void setDirty(Object node, boolean dirtyFlag) {
     if (dirtyFlagUpdateMap.isEmpty()) {
+      dirtyFlagUpdateMap.put(captureRules, (b) -> isDirty_captureRules = b);
       dirtyFlagUpdateMap.put(controlInputs, (b) -> isDirty_controlInputs = b);
       dirtyFlagUpdateMap.put(effectOutcomes, (b) -> isDirty_effectOutcomes = b);
     }
     dirtyFlagUpdateMap.get(node).accept(dirtyFlag);
   }
 
-  private boolean guardCheck_lifecycleRules() {
+  private boolean guardCheck_captureRules() {
     return isDirty_controlInputs | isDirty_effectOutcomes;
+  }
+
+  private boolean guardCheck_effectOutcomes() {
+    return isDirty_controlInputs;
+  }
+
+  private boolean guardCheck_lifecycleRules() {
+    return isDirty_captureRules | isDirty_controlInputs | isDirty_effectOutcomes;
   }
 
   private boolean guardCheck_serviceRules() {
@@ -719,6 +832,8 @@ public class GroupControlProcessor
         return (T) serviceRegistry;
       case "clock":
         return (T) clock;
+      case "captureRules":
+        return (T) captureRules;
       case "controlInputs":
         return (T) controlInputs;
       case "controlState":
@@ -759,6 +874,9 @@ public class GroupControlProcessor
     }
     if (node == clock) {
       return "clock";
+    }
+    if (node == captureRules) {
+      return "captureRules";
     }
     if (node == controlInputs) {
       return "controlInputs";

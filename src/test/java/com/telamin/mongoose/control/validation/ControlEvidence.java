@@ -124,7 +124,12 @@ public final class ControlEvidence {
             for (String item : list.split(";")) {
                 Matcher m = Pattern.compile("^(\\S+) (\\w+)\\((-?\\d+)\\)$").matcher(item.strip());
                 if (!m.matches()) throw new IllegalStateException("unparseable effect '" + item + "' in " + d);
-                out.add(new Requested(m.group(1), m.group(2), Long.parseLong(m.group(3)), d.seq(), d.requestId()));
+                // an op id is requestId.n: a decision may answer another request (an audit start waiting on an open
+                // its stop cancelled), and the op id says which
+                String op = m.group(1);
+                int dot = op.indexOf('.');
+                long requestId = dot > 0 ? Long.parseLong(op.substring(0, dot)) : d.requestId();
+                out.add(new Requested(op, m.group(2), Long.parseLong(m.group(3)), d.seq(), requestId));
             }
         }
         return out;

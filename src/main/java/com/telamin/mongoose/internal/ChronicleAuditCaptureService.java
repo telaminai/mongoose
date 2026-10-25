@@ -24,6 +24,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 /**
@@ -61,11 +62,37 @@ import java.util.logging.Level;
  * {@code stop} the previous listener is restored.
  */
 @Log
-public final class ChronicleAuditCaptureService implements MongooseAuditCaptureService {
+public final class ChronicleAuditCaptureService implements MongooseAuditCaptureService,
+        com.telamin.mongoose.service.audit.AuditCaptureResources {
 
     private final AuditCaptureConfig config;
     private final MongooseCountersService counters;
     private final ConcurrentHashMap<String, ProcessorSink> sinks = new ConcurrentHashMap<>();
+    /**
+     * Design "Audit capture" (control-plane PR 5): once a server routes capture through its processor groups, start and
+     * stop are requests to the group's control processor, which opens, installs, uninstalls and closes through the
+     * {@link com.telamin.mongoose.service.audit.AuditCaptureResources} methods below. Unrouted (no server, as in a unit
+     * test), the service changes the sink itself, as before.
+     */
+    public interface CaptureRouter {
+        /** Send an audit start or stop for the processor admitted as {@code processorName}; null if none is. */
+        com.telamin.mongoose.control.ControlRequest send(String processorName, boolean start);
+
+        /** Whether the calling thread may wait for a reply from that processor's group. */
+        boolean safeToWait(String processorName);
+    }
+
+    private volatile CaptureRouter router;
+    /** Opened resources not yet closed: whoever removes one closes it, so each is closed exactly once. */
+    private final java.util.Set<CaptureHandle> openResources = ConcurrentHashMap.newKeySet();
+
+    /** A capture resource: the queue opened for a processor's sink. Opaque to the group that holds it. */
+    private record CaptureHandle(ProcessorSink sink, ChronicleQueue queue) { }
+
+    public void routeThrough(CaptureRouter router) {
+        this.router = router;
+    }
+
     /** Told when the set of live sinks changes, so a listing cache can drop its snapshot. */
     private volatile Runnable liveSinkMutation = () -> { };
 
@@ -139,6 +166,11 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
      */
     @Override
     public void start(String processorName) {
+        CaptureRouter routed = router;
+        if (routed != null) {
+            routedChange(routed, processorName, true);
+            return;
+        }
         ProcessorSink sink = sinks.get(processorName);
         if (sink == null) {
             throw new IllegalArgumentException(
@@ -170,6 +202,11 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
      */
     @Override
     public void stop(String processorName) {
+        CaptureRouter routed = router;
+        if (routed != null) {
+            routedChange(routed, processorName, false);
+            return;
+        }
         ProcessorSink sink = sinks.get(processorName);
         if (sink == null || !sink.isRecording()) {
             return;
@@ -183,6 +220,92 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             liveSinkMutation.run();
             log.info("audit-capture STOPPED for processor '" + processorName + "'");
         }
+    }
+
+    /**
+     * A start or stop as a request to the processor's group: waited for where the caller may wait, bounded as before; a
+     * request the group has not begun applying when the bound runs out is cancelled, so nothing changes later.
+     */
+    private void routedChange(CaptureRouter routed, String processorName, boolean start) {
+        String what = start ? "start" : "stop";
+        com.telamin.mongoose.control.ControlRequest request = routed.send(processorName, start);
+        if (request == null) {
+            if (!start) return;                 // nothing admitted under the name: nothing records it
+            if (sinks.containsKey(processorName)) {
+                throw new IllegalArgumentException("audit start for '" + processorName
+                        + "' refused: the processor has left its group");
+            }
+            throw new IllegalArgumentException("no processor named '" + processorName
+                    + "' attached to the audit-capture service");
+        }
+        if (!routed.safeToWait(processorName)) return;     // an agent thread, or a group not running yet: it applies later
+        com.telamin.mongoose.control.ControlReply reply =
+                com.telamin.mongoose.control.ControlReplies.await(request, TimeUnit.SECONDS.toMillis(APPLY_TIMEOUT_SECONDS));
+        if (reply == null) {
+            if (request.cancel("audit " + what + " not applied within " + APPLY_TIMEOUT_SECONDS + "s")) {
+                throw new IllegalStateException("audit " + what + " for '" + processorName + "' was not applied on its"
+                        + " agent thread within " + APPLY_TIMEOUT_SECONDS + "s before it started; it was cancelled, and"
+                        + " nothing changed");
+            }
+            // being applied: an open takes what it takes, bounded by its own timeout
+            reply = com.telamin.mongoose.control.ControlReplies.await(request, OPEN_WAIT_MILLIS);
+            if (reply == null) {
+                throw new IllegalStateException("audit " + what + " for '" + processorName + "' is still being applied"
+                        + " after " + OPEN_WAIT_MILLIS + " ms");
+            }
+        }
+        switch (reply.outcome()) {
+            case APPLIED -> { }
+            case REFUSED -> {
+                if ("no such processor".equals(reply.reason())) {
+                    throw new IllegalArgumentException("audit " + what + " for '" + processorName
+                            + "' refused: the processor has left its group");
+                }
+                throw new IllegalStateException("audit " + what + " for '" + processorName + "' refused: " + reply.reason());
+            }
+            default -> throw new IllegalStateException("audit " + what + " for '" + processorName + "' "
+                    + reply.outcome() + ": " + reply.reason());
+        }
+    }
+
+    /** How long a routed start waits once its open is in progress: the group's open timeout, with a margin. */
+    static final long OPEN_WAIT_MILLIS = 35_000;
+
+    // ------------------------------------------------------------------ AuditCaptureResources: the group's hands
+
+    @Override
+    public Object openCapture(String processorName) {
+        ProcessorSink sink = sinks.computeIfAbsent(processorName, n -> new ProcessorSink(null, n));
+        CaptureHandle handle = new CaptureHandle(sink, sink.openQueue(config));
+        openResources.add(handle);
+        return handle;
+    }
+
+    @Override
+    public void installCapture(Object resource, String processorName, DataFlow dataFlow) {
+        CaptureHandle handle = (CaptureHandle) resource;
+        handle.sink().adopt(dataFlow);
+        if (!handle.sink().beginRecording(handle.queue(), counters)) {
+            throw new IllegalStateException("audit capture of '" + processorName + "' is already recording");
+        }
+        liveSinkMutation.run();
+        log.info("audit-capture STARTED for processor '" + processorName + "' at " + handle.sink().path());
+    }
+
+    @Override
+    public void uninstallCapture(Object resource, String processorName, DataFlow dataFlow) {
+        CaptureHandle handle = (CaptureHandle) resource;
+        if (dataFlow == null) handle.sink().forgetAll();      // gone: restore nothing on an instance that left
+        if (handle.sink().endRecordingOf(handle.queue())) {
+            liveSinkMutation.run();
+            log.info("audit-capture STOPPED for processor '" + processorName + "'");
+        }
+    }
+
+    @Override
+    public void closeCapture(Object resource) {
+        CaptureHandle handle = (CaptureHandle) resource;
+        if (openResources.remove(handle)) handle.queue().close();
     }
 
     @Override
@@ -212,6 +335,8 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
     public void processorStopped(String processorName, DataFlow dataFlow) {
         ProcessorSink sink = sinks.get(processorName);
         if (sink != null) sink.forget(dataFlow);
+        // routed: the group's control processor uninstalled and closed the capture as it released the processor
+        if (router == null) stop(processorName);
     }
 
     @Override
@@ -241,6 +366,18 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
      */
     @Override
     public void stopAll() {
+        if (router != null) {
+            // routed: every group closed its captures as it closed; close any resource a closer had not reached
+            for (CaptureHandle handle : openResources.toArray(new CaptureHandle[0])) {
+                try {
+                    handle.sink().endRecordingOf(handle.queue());
+                    closeCapture(handle);
+                } catch (RuntimeException e) {
+                    log.log(Level.WARNING, "audit-capture could not close '" + handle.sink().processorName + "'", e);
+                }
+            }
+            return;
+        }
         for (java.util.Map.Entry<String, ProcessorSink> entry : sinks.entrySet()) {
             String name = entry.getKey();
             try {
@@ -466,6 +603,23 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
                     if (dataFlow == flow && captureListener == capture) flow.setAuditLogProcessor(capture);
                 });
             }
+        }
+
+        /** Routed install: the group hands over the instance it holds for the generation. */
+        synchronized void adopt(DataFlow flow) {
+            this.dataFlow = flow;
+        }
+
+        /** Routed uninstall of a processor that has gone: no instance is touched. */
+        synchronized void forgetAll() {
+            this.dataFlow = null;
+        }
+
+        /** Routed uninstall: end recording only if it is {@code q} that records (never another capture). */
+        synchronized boolean endRecordingOf(ChronicleQueue q) {
+            if (queue != q) return false;
+            endRecording();
+            return true;
         }
 
         /** {@code flow} left its group: nothing is installed on it again. Ignored for any other instance. */

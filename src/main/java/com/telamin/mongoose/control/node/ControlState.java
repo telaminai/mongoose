@@ -21,6 +21,9 @@ public class ControlState {
     /** Lifecycle of one registration, as the control processor has decided it. */
     public enum Lifecycle { STARTING, STARTED, RELEASING, RELEASED, FAILED }
 
+    /** A registration's audit capture sub-state (design "Audit capture"). */
+    public enum Capture { OFF, OPENING, RECORDING, CLOSING }
+
     /** One accepted add the control processor knows about. Removed once released, failed or cancelled. */
     public static final class Reg {
         public final long generation;
@@ -28,6 +31,13 @@ public class ControlState {
         public String name;
         public final long addRequestId;
         public Lifecycle lifecycle = Lifecycle.STARTING;
+        public Capture capture = Capture.OFF;
+        /** The open in progress, while OPENING. */
+        public String captureOp;
+        /** The installed (or closing) resource, while RECORDING or CLOSING. */
+        public long captureResource = -1;
+        /** The audit-start requests waiting on the open in progress: answered together when it settles. */
+        public final List<Long> captureWaiters = new ArrayList<>();
 
         Reg(long generation, int incarnation, String name, long addRequestId) {
             this.generation = generation;
@@ -38,7 +48,42 @@ public class ControlState {
     }
 
     /** What a request is waiting for: the next step is decided when the outcome of its current effect arrives. */
-    public enum ChainKind { ADD, REFUSED_ADD, STOP, CANCEL, CLOSE, BROADCAST, RUN }
+    public enum ChainKind { ADD, REFUSED_ADD, STOP, CANCEL, CLOSE, BROADCAST, RUN, AUDIT_START, AUDIT_STOP }
+
+    /** An open requested and not yet completed, kept until its completion arrives even if its registration has gone. */
+    public static final class PendingOpen {
+        public final String opId;
+        public final long generation;
+        public final long rootId;
+        /** Its waiters were answered already (the open was cancelled or timed out): its completion is cleanup. */
+        public boolean settled;
+
+        PendingOpen(String opId, long generation, long rootId) {
+            this.opId = opId;
+            this.generation = generation;
+            this.rootId = rootId;
+        }
+    }
+
+    public enum ResourceState { OPEN, INSTALLED, CLOSING }
+
+    /** One capture resource the group holds: exactly one owner (a generation, or none for a compensated open). */
+    public static final class Resource {
+        public final long id;
+        public long owner;
+        public ResourceState state;
+        public final String openedBy;
+
+        Resource(long id, long owner, ResourceState state, String openedBy) {
+            this.id = id;
+            this.owner = owner;
+            this.state = state;
+            this.openedBy = openedBy;
+        }
+    }
+
+    /** How many settled opens are remembered to recognise a duplicate completion; older ones are classified unknown. */
+    static final int SETTLED_OPENS_REMEMBERED = 1024;
 
     /** A request whose reply depends on effect outcomes still to come. */
     public static final class Chain {
@@ -67,6 +112,18 @@ public class ControlState {
     private transient long inputSeq = -1;
     private transient boolean closing;
     private transient Map<String, Long> serviceVersions = new HashMap<>();
+    private transient Map<String, PendingOpen> pendingOpens = new HashMap<>();
+    private transient Map<Long, Resource> resources = new LinkedHashMap<>();
+    private transient Map<String, Boolean> settledOpens = new LinkedHashMap<>() {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) {
+            return size() > SETTLED_OPENS_REMEMBERED;
+        }
+    };
+    /** Roots with asynchronous capture work outstanding: their op counters outlive their reply. */
+    private transient Map<Long, Integer> retainedRoots = new HashMap<>();
+    /** Effects requested after their root's reply: their outcomes are cleanup, not part of the request. */
+    private transient java.util.Set<String> cleanupOps = new java.util.HashSet<>();
 
     /** Begin recording a command or completion cycle. */
     public void beginInput(long requestId) {
@@ -117,6 +174,16 @@ public class ControlState {
 
     public long inputSeq() {
         return inputSeq;
+    }
+
+    private transient long compensations;
+
+    /**
+     * An op id for compensating a completion nothing expects (a duplicate or unknown one), which can arrive after its
+     * root's own sequence has been released: {@code requestId.cN}, from a sequence of its own, so it never collides.
+     */
+    public String nextCompensationOp(long requestId) {
+        return requestId + ".c" + (++compensations);
     }
 
     /** The next effect operation id of a request: {@code requestId.n}. */
@@ -194,7 +261,112 @@ public class ControlState {
     /** The request has its reply: its bookkeeping is released, so the state stays bounded. */
     public void closeChain(long requestId) {
         chains.remove(requestId);
-        opCounters.remove(requestId);
+        if (!retainedRoots.containsKey(requestId)) opCounters.remove(requestId);
+    }
+
+    // ------------------------------------------------------------------ audit capture
+
+    /** Asynchronous work under {@code rootId} began: its op ids keep counting after the root is answered. */
+    public void retain(long rootId) {
+        retainedRoots.merge(rootId, 1, Integer::sum);
+    }
+
+    /** Asynchronous work under {@code rootId} ended. */
+    public void release(long rootId) {
+        Integer left = retainedRoots.computeIfPresent(rootId, (k, n) -> n > 1 ? n - 1 : null);
+        if (left == null && !chains.containsKey(rootId)) opCounters.remove(rootId);
+    }
+
+    public int retainedRoots() {
+        return retainedRoots.size();
+    }
+
+    public PendingOpen addPendingOpen(String opId, long generation, long rootId) {
+        PendingOpen open = new PendingOpen(opId, generation, rootId);
+        pendingOpens.put(opId, open);
+        return open;
+    }
+
+    public PendingOpen pendingOpen(String opId) {
+        return pendingOpens.get(opId);
+    }
+
+    /** The open's completion arrived: it is remembered for a while, so a second completion reads as a duplicate. */
+    public PendingOpen settleOpen(String opId) {
+        PendingOpen open = pendingOpens.remove(opId);
+        if (open != null) settledOpens.put(opId, Boolean.TRUE);
+        return open;
+    }
+
+    public boolean wasSettled(String opId) {
+        return settledOpens.containsKey(opId);
+    }
+
+    public Resource addResource(long id, long owner, ResourceState resourceState, String openedBy) {
+        Resource r = new Resource(id, owner, resourceState, openedBy);
+        resources.put(id, r);
+        return r;
+    }
+
+    public Resource resource(long id) {
+        return resources.get(id);
+    }
+
+    /** Closed: the entry is removed, so the table stays bounded. */
+    public Resource removeResource(long id) {
+        return resources.remove(id);
+    }
+
+    public int resources() {
+        return resources.size();
+    }
+
+    public int pendingOpens() {
+        return pendingOpens.size();
+    }
+
+    private transient Map<String, Long> effectResources = new HashMap<>();
+
+    public void trackEffectResource(String opId, long resourceId) {
+        effectResources.put(opId, resourceId);
+    }
+
+    /** The resource a capture effect acted on, once its final result is in; -1 for any other effect. */
+    public long takeEffectResource(String opId) {
+        Long id = effectResources.remove(opId);
+        return id == null ? -1 : id;
+    }
+
+    public void markCleanup(String opId) {
+        cleanupOps.add(opId);
+    }
+
+    /** Whether {@code opId} was requested after its root's reply; forgotten once asked for a final outcome. */
+    public boolean isCleanup(String opId, boolean forget) {
+        return forget ? cleanupOps.remove(opId) : cleanupOps.contains(opId);
+    }
+
+    /**
+     * Write records on behalf of another request (an audit start answered by a stop that cancels its open): its
+     * identity for the duration of {@code body}, then this cycle's again.
+     */
+    public void asRequest(long otherRequestId, Runnable body) {
+        long savedRequest = requestId;
+        long savedRoot = rootId;
+        requestId = otherRequestId;
+        rootId = otherRequestId;
+        try {
+            body.run();
+        } finally {
+            requestId = savedRequest;
+            rootId = savedRoot;
+        }
+    }
+
+    /** The request waits on an asynchronous effect's completion, so settling its effects does not answer it. */
+    public boolean awaitsCompletion(long requestId) {
+        Chain chain = chains.get(requestId);
+        return chain != null && chain.kind == ChainKind.AUDIT_START;
     }
 
     public int openChains() {

@@ -24,7 +24,7 @@ import java.util.function.LongFunction;
  */
 public final class ControlRequest {
 
-    public enum Kind { ADD, STOP, BROADCAST, RUN, CLOSE }
+    public enum Kind { ADD, STOP, BROADCAST, RUN, CLOSE, CAPTURE }
 
     static final int SENT = 0;
     static final int CLAIMED = 1;
@@ -90,6 +90,19 @@ public final class ControlRequest {
     public ControlRequest onUnapplied(Runnable action) {
         this.onUnapplied = action;
         return this;
+    }
+
+    /**
+     * Answer the request {@code REFUSED} if the group has not begun applying it, so it never will (a caller that stopped
+     * waiting). @return false once the group has claimed it: it is being, or has been, applied
+     */
+    public boolean cancel(String why) {
+        if (!completeUnclaimed(new ControlReply(requestId, com.telamin.mongoose.control.event.ReplyOutcome.REFUSED, why, -1,
+                null))) {
+            return false;
+        }
+        runUnapplied();
+        return true;
     }
 
     void runUnapplied() {

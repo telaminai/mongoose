@@ -16,9 +16,33 @@ import com.telamin.mongoose.control.event.EffectResult;
 public class EffectOutcomes extends EventLogNode {
 
     private final ControlState state;
+    private final ControlInputs inputs;
 
-    public EffectOutcomes(ControlState state) {
+    /** Downstream of {@link ControlInputs}: a completion's {@code Input} is on the record before its outcome. */
+    public EffectOutcomes(ControlState state, ControlInputs inputs) {
         this.state = state;
+        this.inputs = inputs;
+    }
+
+    /**
+     * The final outcome of an asynchronous capture effect, as for every synchronous one. A completion for an open
+     * already settled, or a close of a resource the table no longer holds, is marked {@code duplicate}: it is not a
+     * second outcome of the effect. A timeout is not an outcome of the open.
+     */
+    @OnEventHandler
+    public boolean onCompletion(com.telamin.mongoose.control.event.CaptureCompletion c) {
+        if (c.kind() == com.telamin.mongoose.control.event.CaptureCompletion.Kind.TIMED_OUT) return false;
+        boolean open = c.kind() == com.telamin.mongoose.control.event.CaptureCompletion.Kind.OPENED
+                || c.kind() == com.telamin.mongoose.control.event.CaptureCompletion.Kind.OPEN_FAILED;
+        boolean ok = c.kind() == com.telamin.mongoose.control.event.CaptureCompletion.Kind.OPENED
+                || c.kind() == com.telamin.mongoose.control.event.CaptureCompletion.Kind.CLOSED;
+        boolean duplicate = open ? state.pendingOpen(c.opId()) == null : state.resource(c.resourceId()) == null;
+        ControlAudit.record(auditLog, state, "EffectOutcome", "opId", c.opId(),
+                "effect", open ? "OpenCapture" : "CloseCapture", "outcome", ok ? "succeeded" : "failed",
+                "resourceId", c.resourceId() >= 0 ? c.resourceId() : null, "reason", c.reason(),
+                "duplicate", duplicate ? Boolean.TRUE : null,
+                "cleanup", state.chain(c.requestId()) == null ? Boolean.TRUE : null);
+        return true;
     }
 
     @OnEventHandler
@@ -31,7 +55,10 @@ public class EffectOutcomes extends EventLogNode {
         } else {
             ControlAudit.record(auditLog, state, "EffectOutcome", "opId", result.opId(), "effect", result.effect(),
                     "outcome", result.outcome().name().toLowerCase(), "generation", result.generation(),
-                    "name", result.name(), "reason", result.reason());
+                    "name", result.name(), "reason", result.reason(),
+                    // an effect outcome after its request's reply is cleanup the reply never waited for
+                    "cleanup", state.isCleanup(result.opId(), false) || state.chain(result.requestId()) == null
+                            ? Boolean.TRUE : null);
         }
         return true;
     }

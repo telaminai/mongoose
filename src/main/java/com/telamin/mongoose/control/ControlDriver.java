@@ -164,12 +164,41 @@ public final class ControlDriver {
             case BROADCAST -> "service broadcast";
             case RUN -> "agent hand-off";
             case CLOSE -> "close";
+            case CAPTURE -> "audit capture";
         };
     }
 
-    /** A late result from an asynchronous effect; never refused, whatever the mailbox holds. */
+    /**
+     * A late result from an asynchronous effect; never refused, whatever the mailbox holds. One that reaches a group that
+     * has ended is handed to the orphan handler exactly once, by whichever of this sender and the closer removes it.
+     */
     public void complete(ControlInput completion) {
         completions.add(completion);
+        GroupState s = state.get();
+        if ((s == GroupState.CLOSED || s == GroupState.DEAD) && completions.remove(completion)) {
+            orphan(completion);
+        }
+    }
+
+    private volatile java.util.function.Consumer<ControlInput> orphanHandler = c -> { };
+
+    /** What to do with a completion no control processor will see (the group has ended): close what it carries. */
+    public void onOrphanCompletion(java.util.function.Consumer<ControlInput> handler) {
+        this.orphanHandler = handler == null ? c -> { } : handler;
+    }
+
+    private void orphan(ControlInput completion) {
+        try {
+            orphanHandler.accept(completion);
+        } catch (RuntimeException e) {
+            audit.fallback("Anomaly", "group", group, "requestId", completion.requestId(),
+                    "description", "orphaned completion could not be handled: " + e);
+        }
+    }
+
+    /** Hand every completion still queued to the orphan handler, once the group can no longer dispatch them. */
+    private void orphanLeftovers() {
+        for (ControlInput c; (c = completions.poll()) != null; ) orphan(c);
     }
 
     private boolean ended() {
@@ -345,9 +374,10 @@ public final class ControlDriver {
                 }
             }
         }
-        // every effect in this design is synchronous, so a request still claimed after its effects settle will never be
-        // answered by a rule: answer it here rather than leave it pending
-        if (request != null && claimed.containsKey(request.requestId())) {
+        // a request still claimed after its effects settle will never be answered by a rule, unless it waits on an
+        // asynchronous effect (an audit start waiting on its open): answer it here rather than leave it pending
+        if (request != null && claimed.containsKey(request.requestId())
+                && !processor.controlState.awaitsCompletion(request.requestId())) {
             complete(request, ReplyOutcome.FAILED, "no reply after its effects settled");
         }
     }
@@ -404,10 +434,14 @@ public final class ControlDriver {
             for (ControlRequest r : held) {
                 if (r.kind() != ControlRequest.Kind.RUN && !controlWedged) apply(r);
             }
+            // completions that arrived while closing (a capture closed synchronously by a test's closer) are still
+            // recorded by the control processor
+            for (ControlInput c; !controlWedged && (c = completions.poll()) != null; ) dispatch(c, null);
         }
         failClaimed("group ended");
         if (state.get() != GroupState.DEAD) state.set(GroupState.CLOSED);
         sweep();
+        orphanLeftovers();
     }
 
     /**
@@ -433,6 +467,7 @@ public final class ControlDriver {
             audit.fallback("Dead", "group", group, "reason", why);
         }
         sweep();
+        orphanLeftovers();
     }
 
     /** Complete every request still {@code SENT}: never one the agent has claimed. Idempotent. */

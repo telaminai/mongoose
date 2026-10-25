@@ -140,6 +140,12 @@ class ControlScenarioHarnessTest {
                 new DeadWheelScheduler(), new ConcurrentHashMap<>());
         boolean failFastBoot = random.nextInt(4) == 0;
         group.setIsolateStartFailuresAtBoot(!failFastBoot);
+        // audit capture as effects: every open, close and timeout runs when the scenario says
+        CaptureRig.ManualIo io = new CaptureRig.ManualIo();
+        CaptureRig.FakeResources captures = new CaptureRig.FakeResources();
+        captures.running = flow -> flow instanceof LedgerProc p && p.running();
+        group.setCaptureIo(io);
+        group.setAuditCaptureResources(captures);
         Reservations reservations = new Reservations();
         List<LedgerProc> all = new ArrayList<>();
         Map<String, Integer> serials = new HashMap<>();
@@ -165,7 +171,7 @@ class ControlScenarioHarnessTest {
                         script.add("enqueue " + add.name + "#" + add.proc.serial + " gen " + add.reg.generation());
                     }
                 }
-                int op = random.nextInt(10);
+                int op = random.nextInt(13);
                 String name = names[random.nextInt(names.length)];
                 if (!started && (op == 9 || step == steps / 3)) {
                     started = true;
@@ -222,6 +228,28 @@ class ControlScenarioHarnessTest {
                             RunIntent::new, (Runnable) ran::incrementAndGet));
                     runs.put(run, ran);
                     script.add("run task " + run.requestId());
+                } else if (op == 10 || op == 11) {
+                    // an audit start or stop, bound to the reserved registration (or by name when none is)
+                    ProcessorRegistration reg = reservations.table.get(name);
+                    ControlRequest r = op == 10 ? group.auditStart(name, reg) : group.auditStop(name, reg);
+                    script.add((op == 10 ? "audit start " : "audit stop ") + name + " req " + r.requestId());
+                } else if (op == 12) {
+                    // a helper or the timer acts: an open completes (in order or overtaking), a close completes, an
+                    // open times out, or an open delivers its completion again
+                    int which = random.nextInt(5);
+                    boolean acted = switch (which) {
+                        case 0 -> io.runOpen();
+                        case 1 -> io.runLatestOpen();
+                        case 2 -> io.runClose();
+                        case 3 -> {
+                            if (io.timeouts.isEmpty()) yield false;
+                            io.fireTimeout(random.nextInt(io.timeouts.size()));
+                            yield true;
+                        }
+                        default -> io.rerunOpen(random.nextInt(8));
+                    };
+                    script.add("io " + new String[]{"open", "latest open", "close", "timeout", "duplicate open"}[which]
+                            + (acted ? "" : " (nothing)"));
                 } else if (started && !closed) {
                     int cycles = 1 + random.nextInt(3);
                     for (int c = 0; c < cycles; c++) group.doWork();
@@ -254,6 +282,11 @@ class ControlScenarioHarnessTest {
                 closed = true;
                 script.add("close");
             }
+            // helpers still holding work finish after the close: their completions are orphans, compensated
+            io.runAll();
+            script.add("io drained");
+            assertEquals("", captures.leaks(), "seed " + seed + ": capture ledger\n" + script);
+            assertEquals(0, group.captureResourcesHeld(), "seed " + seed + ": capture resources held\n" + script);
 
             // ---- ledger verdict: every instance started at most once, released exactly once if it started
             for (LedgerProc p : all) {

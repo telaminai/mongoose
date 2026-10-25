@@ -34,12 +34,15 @@ public class LifecycleRules extends EventLogNode {
     private final EffectOutcomes outcomes;
     private final ControlState state;
     private final EffectQueue effects;
+    private final CaptureRules capture;
 
-    public LifecycleRules(ControlInputs inputs, EffectOutcomes outcomes, ControlState state, EffectQueue effects) {
+    public LifecycleRules(ControlInputs inputs, EffectOutcomes outcomes, ControlState state, EffectQueue effects,
+                          CaptureRules capture) {
         this.inputs = inputs;
         this.outcomes = outcomes;
         this.state = state;
         this.effects = effects;
+        this.capture = capture;
     }
 
     // ------------------------------------------------------------------ add
@@ -100,8 +103,12 @@ public class LifecycleRules extends EventLogNode {
             case STARTED -> {
                 reg.lifecycle = Lifecycle.RELEASING;
                 state.openChain(req, ChainKind.STOP);
-                ControlEffect release = new ControlEffect.Release(state.nextOp(req), req, reg.generation, reg.name, true);
-                decide("stopStarted", reg.generation, reg.name, "Started", "Releasing", release);
+                // a capture is uninstalled before the release and closed after it, never waited for
+                List<String> pendingCleanup = new java.util.ArrayList<>();
+                List<ControlEffect> requested = new java.util.ArrayList<>(capture.releaseCapture(reg, req, pendingCleanup));
+                requested.add(new ControlEffect.Release(state.nextOp(req), req, reg.generation, reg.name, true));
+                decide("stopStarted", reg.generation, reg.name, "Started", "Releasing", pendingCleanup,
+                        requested.toArray(new ControlEffect[0]));
             }
             case RELEASING -> {
                 ControlEffect reply = reply(req, reg.generation, reg.name, ReplyOutcome.APPLIED, "releasing");
@@ -129,14 +136,15 @@ public class LifecycleRules extends EventLogNode {
             return true;
         }
         Chain chain = state.openChain(req, ChainKind.CLOSE);
-        ControlEffect[] releases = new ControlEffect[started.size()];
-        for (int i = 0; i < started.size(); i++) {
-            Reg reg = started.get(i);
+        List<ControlEffect> requested = new java.util.ArrayList<>();
+        List<String> pendingCleanup = new java.util.ArrayList<>();
+        for (Reg reg : started) {
             reg.lifecycle = Lifecycle.RELEASING;
-            releases[i] = new ControlEffect.Release(state.nextOp(req), req, reg.generation, reg.name, true);
+            requested.addAll(capture.releaseCapture(reg, req, pendingCleanup));
+            requested.add(new ControlEffect.Release(state.nextOp(req), req, reg.generation, reg.name, true));
         }
-        chain.outstanding = releases.length;
-        decide("closeGroup", -1, null, "Running", "Closing", releases);
+        chain.outstanding = started.size();
+        decide("closeGroup", -1, null, "Running", "Closing", pendingCleanup, requested.toArray(new ControlEffect[0]));
         return true;
     }
 
@@ -250,13 +258,20 @@ public class LifecycleRules extends EventLogNode {
     }
 
     private void decide(String rule, long generation, String name, String from, String to, ControlEffect... requested) {
+        decide(rule, generation, name, from, to, List.of(), requested);
+    }
+
+    /** @param pendingCleanup capture work a release left outstanding (it never waits for it) */
+    private void decide(String rule, long generation, String name, String from, String to, List<String> pendingCleanup,
+                        ControlEffect... requested) {
         StringBuilder list = new StringBuilder();
         for (ControlEffect e : requested) {
             if (list.length() > 0) list.append(';');
             list.append(e.opId()).append(' ').append(e.effect()).append('(').append(e.generation()).append(')');
         }
         ControlAudit.record(auditLog, state, "Decision", "rule", rule, "generation", generation, "name", name,
-                "from", from, "to", to, "effects", list.toString());
+                "from", from, "to", to, "pendingCleanup", pendingCleanup.isEmpty() ? null : String.join(";", pendingCleanup),
+                "effects", list.toString());
         for (ControlEffect e : requested) {
             effects.request(e);
         }

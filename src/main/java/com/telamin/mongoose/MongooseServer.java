@@ -258,6 +258,8 @@ public class MongooseServer implements MongooseServerController {
             com.telamin.mongoose.internal.ChronicleAuditCaptureService chronicle =
                     new com.telamin.mongoose.internal.ChronicleAuditCaptureService(auditCfg, counters);
             auditCapture = chronicle;
+            // design "Audit capture": start and stop become requests to the processor's group
+            chronicle.routeThrough(captureRouter());
             auditIntrospection = new com.telamin.mongoose.internal.DirAuditIntrospectionService(auditCfg, chronicle);
         } else {
             auditCapture = com.telamin.mongoose.internal.NoOpAuditCaptureService.INSTANCE;
@@ -460,11 +462,9 @@ public class MongooseServer implements MongooseServerController {
         // the audit capture forgets the torn-down instance first (mongoose#46), so nothing is installed on it again and
         // an audit.start for it is refused; then a capture still recording is ended and its queue closed without
         // touching the instance (mongoose#71), rather than left open for a processor that has gone
-        try {
-            auditCaptureService.processorStopped(processorName, eventProcessor);
-        } finally {
-            auditCaptureService.stop(processorName);
-        }
+        // routed capture (design "Audit capture"): the group's control processor already uninstalled the capture and
+        // handed it to the closer as part of the stop; the service only forgets the instance (and, unrouted, stops)
+        auditCaptureService.processorStopped(processorName, eventProcessor);
     }
 
     /**
@@ -1186,6 +1186,9 @@ public class MongooseServer implements MongooseServerController {
                             errorHandler,
                             errorCounter,
                             group);
+                    if (auditCaptureService instanceof com.telamin.mongoose.service.audit.AuditCaptureResources resources) {
+                        group.setAuditCaptureResources(resources);
+                    }
                     return new ComposingEventProcessorAgentRunner(group, groupRunner, idleStrategyOverride);
                 });
 
@@ -1227,6 +1230,34 @@ public class MongooseServer implements MongooseServerController {
             lifecycleManager.startOnce(composingEventProcessorAgentRunner.groupRunner());
         }
         return new Admission(request, registration);
+    }
+
+    /**
+     * Routes the capture service's start and stop to the group holding the processor, bound to the generation admitted
+     * under the name, so a request can never reach a later processor under the same name.
+     */
+    private com.telamin.mongoose.internal.ChronicleAuditCaptureService.CaptureRouter captureRouter() {
+        return new com.telamin.mongoose.internal.ChronicleAuditCaptureService.CaptureRouter() {
+            @Override
+            public com.telamin.mongoose.control.ControlRequest send(String processorName, boolean start) {
+                for (var entry : reservedProcessorNames.entrySet()) {
+                    if (!entry.getKey().name().equals(processorName)) continue;
+                    var runner = composingEventProcessorAgents.get(entry.getKey().group());
+                    if (runner == null) continue;
+                    return start ? runner.group().auditStart(processorName, entry.getValue())
+                            : runner.group().auditStop(processorName, entry.getValue());
+                }
+                return null;
+            }
+
+            @Override
+            public boolean safeToWait(String processorName) {
+                for (ProcessorName key : reservedProcessorNames.keySet()) {
+                    if (key.name().equals(processorName)) return MongooseServer.this.safeToWait(key.group());
+                }
+                return false;
+            }
+        };
     }
 
     /** Build a processor from its supplier and wire it into the server (audit, perf monitor, capture). */

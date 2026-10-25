@@ -7,6 +7,9 @@ package com.telamin.mongoose.control.node;
 import com.telamin.fluxtion.runtime.annotations.OnEventHandler;
 import com.telamin.fluxtion.runtime.audit.EventLogNode;
 import com.telamin.mongoose.control.event.AddIntent;
+import com.telamin.mongoose.control.event.AuditStartIntent;
+import com.telamin.mongoose.control.event.AuditStopIntent;
+import com.telamin.mongoose.control.event.CaptureCompletion;
 import com.telamin.mongoose.control.event.BroadcastIntent;
 import com.telamin.mongoose.control.event.CloseIntent;
 import com.telamin.mongoose.control.event.RunIntent;
@@ -53,6 +56,35 @@ public class ControlInputs extends EventLogNode {
     public boolean onRun(RunIntent intent) {
         state.beginInput(intent.requestId());
         ControlAudit.record(auditLog, state, "Input", "fact", "Run");
+        return true;
+    }
+
+    @OnEventHandler
+    public boolean onAuditStart(AuditStartIntent intent) {
+        state.beginInput(intent.requestId());
+        ControlAudit.record(auditLog, state, "Input", "fact", "AuditStart", "generation", intent.generation(),
+                "name", intent.name(), "bound", intent.bound());
+        return true;
+    }
+
+    @OnEventHandler
+    public boolean onAuditStop(AuditStopIntent intent) {
+        state.beginInput(intent.requestId());
+        ControlAudit.record(auditLog, state, "Input", "fact", "AuditStop", "generation", intent.generation(),
+                "name", intent.name(), "bound", intent.bound());
+        return true;
+    }
+
+    /** A completion is an input like any other: recorded before any rule classifies it. */
+    @OnEventHandler
+    public boolean onCompletion(CaptureCompletion completion) {
+        state.beginOutcome(completion.requestId(), completion.opId());
+        ControlAudit.record(auditLog, state, "Input", "fact", completion.fact(), "completionId", completion.completionId(),
+                "opId", completion.opId(), "resourceId", completion.resourceId() >= 0 ? completion.resourceId() : null,
+                "ok", completion.kind() != CaptureCompletion.Kind.OPEN_FAILED
+                        && completion.kind() != CaptureCompletion.Kind.CLOSE_FAILED,
+                "reason", completion.reason(),
+                "cleanup", state.chain(completion.requestId()) == null ? Boolean.TRUE : null);
         return true;
     }
 
