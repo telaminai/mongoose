@@ -1,7 +1,19 @@
 # Third-review follow-up — implementation checkpoint
 
 This addresses the independent review of `44190ab` on branch `review/pr76-third-review` (`6fb26aa`).
-It is an implementation checkpoint, not the frozen release qualification. The previous 600-second soak and plugin
+It is an implementation checkpoint, not the frozen release qualification.
+At `cc9956c10c59afd9a3bca9eabe52afc8f9e0d528`, Java 21 `mvn -o test` reports **BUILD SUCCESS:
+1,013 tests, 0 failures, 0 errors, 14 unchanged skips**. The six committed source mutants were independently
+run in a fresh clone at this SHA: baseline 40/40 passes; each mutant compiles and fails assertions (5, 18, 19, 2,
+1 and 7 respectively). The name-only stop mutant is caught by the test-owned callback ledger.
+See [results and commands](results.json).
+
+The source still pins runtime 1.1.2 / builder 1.0.79. The upstream #105 branches are under review against
+[Fluxtion #36](https://github.com/telaminai/fluxtion/issues/36). A new-runtime upgrade needs that evidence,
+exact artifact versions and regenerated AOT code before qualification; installing a new runtime does not rewrite
+old generated processors. The agreed Mongoose default remains isolation and alerting without automatic retry
+or restart. Clearing dispatch flags does not roll back business state or external effects.
+ The previous 600-second soak and plugin
 preview results do not qualify these later runtime changes. Publication remains separate from client migration.
 
 | Finding | Disposition and proof |
