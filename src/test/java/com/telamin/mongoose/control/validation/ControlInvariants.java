@@ -99,6 +99,20 @@ public final class ControlInvariants {
             }
         }
         List<Requested> requested = evidence.requested();
+        Map<String, Integer> requestedAt = new HashMap<>();
+        Map<Rec, Integer> recordedAt = new java.util.IdentityHashMap<>();
+        for (int index = 0; index < evidence.records().size(); index++) {
+            Rec r = evidence.records().get(index);
+            recordedAt.put(r, index);
+            List<String> ops = new ArrayList<>();
+            if ("EffectRequested".equals(r.type()) && r.str("opId") != null) ops.add(r.str("opId"));
+            if ("Decision".equals(r.type()) && r.str("effects") != null && !r.str("effects").isBlank()) {
+                for (String effect : r.str("effects").split(";")) ops.add(effect.strip().split(" ", 2)[0]);
+            }
+            for (String op : ops) {
+                if (requestedAt.putIfAbsent(op, index) != null) violations.add("I3 effect " + op + " was requested twice");
+            }
+        }
         for (Requested q : requested) {
             List<Rec> found = outcomes.getOrDefault(q.opId(), List.of()).stream()
                     .filter(o -> !"pending".equals(o.str("outcome")) && !Boolean.TRUE.equals(o.fields().get("duplicate")))
@@ -109,7 +123,7 @@ public final class ControlInvariants {
                 violations.add("I3 effect " + q.opId() + " " + q.effect() + " has no final outcome");
             }
             for (Rec o : found) {
-                if (!o.fallback() && o.seq() <= q.decisionSeq()) {
+                if (recordedAt.get(o) <= requestedAt.get(q.opId())) {
                     violations.add("I9 effect " + q.opId() + " outcome (seq " + o.seq() + ") precedes its decision (seq "
                             + q.decisionSeq() + ")");
                 }
@@ -280,11 +294,15 @@ public final class ControlInvariants {
         java.util.Set<Long> releasedGens = new java.util.HashSet<>();
         Map<Long, Integer> installedOn = new HashMap<>();
         Map<Long, Long> resourceOwners = new HashMap<>();
+        Map<Long, Long> resourceGenerations = new HashMap<>();
         Set<Long> physicallyClosed = new HashSet<>();
         java.util.Set<Long> failedUninstall = new java.util.HashSet<>();
         for (Rec r : ordered) {
             String rule = r.str("rule");
             long gen = r.num("generation");
+            if ("Decision".equals(r.type()) && "captureOpened".equals(rule) && r.num("resourceId") >= 0) {
+                resourceGenerations.putIfAbsent(r.num("resourceId"), gen);
+            }
             if ("Decision".equals(r.type()) && "started".equals(rule)) startedGens.add(gen);
             if ("EffectOutcome".equals(r.type()) && "UninstallCapture".equals(r.str("effect"))
                     && "failed".equals(r.str("outcome"))) {
@@ -308,6 +326,9 @@ public final class ControlInvariants {
                         violations.add("I12 a second capture installed (seq " + r.seq() + ") on generation " + gen);
                     }
                     if (resource >= 0) {
+                        Long intended = resourceGenerations.get(resource);
+                        if (intended != null && intended != gen) violations.add("I12 resource " + resource
+                                + " opened for generation " + intended + " but installed on " + gen);
                         Long owner = resourceOwners.putIfAbsent(resource, gen);
                         if (owner != null) violations.add("I12 resource " + resource + " installed again on generation "
                                 + gen + " while owned by " + owner);

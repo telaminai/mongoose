@@ -52,6 +52,14 @@ class ControlResourceEvidenceReviewTest {
         assertTrue(result.violations().stream().anyMatch(s -> s.startsWith("I12 a second")), result.toString());
     }
 
+    @Test void anOpenedResourceCannotBeInstalledOnAReplacement() {
+        var result = check(
+                "record: Decision, rule: started, generation: 8, name: p, effects: ''",
+                "record: Decision, rule: captureOpened, generation: 7, resourceId: 41, effects: ''",
+                "record: EffectOutcome, effect: InstallCapture, outcome: succeeded, generation: 8, resourceId: 41");
+        assertTrue(result.violations().stream().anyMatch(s -> s.startsWith("I12 resource 41 opened for")), result.toString());
+    }
+
     @Test void closingDecisionCannotAlsoStartWork() {
         var result = check("record: Decision, requestId: 1, rule: closeGroup, effects: '1.1 BuildAndStart(7)'");
         assertTrue(result.violations().stream().anyMatch(s -> s.startsWith("I7 ")), result.toString());
@@ -77,5 +85,12 @@ class ControlResourceEvidenceReviewTest {
         String yaml = "---\ncontrolFallback: {record: EffectRequested, requestId: 1, opId: '1.orphan-close.41', effect: CloseCapture, resourceId: 41}\n";
         var result = ControlInvariants.check(ControlEvidence.parse(yaml, true));
         assertTrue(result.violations().stream().anyMatch(s -> s.startsWith("I3 ")), result.toString());
+    }
+
+    @Test void fallbackOutcomeMustFollowItsEffectRequest() {
+        String yaml = "---\ncontrolFallback: {record: EffectOutcome, requestId: 1, opId: '1.orphan-close.41', effect: CloseCapture, outcome: succeeded, resourceId: 41}\n"
+                + "---\ncontrolFallback: {record: EffectRequested, requestId: 1, opId: '1.orphan-close.41', effect: CloseCapture, resourceId: 41}\n";
+        var result = ControlInvariants.check(ControlEvidence.parse(yaml, true));
+        assertTrue(result.violations().stream().anyMatch(s -> s.startsWith("I9 ")), result.toString());
     }
 }
