@@ -130,12 +130,16 @@ class GroupContainmentTest {
             await(() -> g1.control().state() == ControlDriver.GroupState.DEAD, "the rule failure kills g1's control plane");
             assertEquals(HealthStatus.Verdict.DOWN, awaitControlVerdict(health, "g1", HealthStatus.Verdict.DOWN));
             assertEquals(HealthStatus.Verdict.UP, awaitControlVerdict(health, "g2", HealthStatus.Verdict.UP));
-            await(() -> sink.records().stream().anyMatch(r -> r.contains("record: DataPathFenced")), "g1 fenced");
-
+            // events first, so a missing fence fails on delivery, not only on the record (review round 4)
+            Thread.sleep(100);
             for (int i = 0; i < 5; i++) feed.publisher.publish(new RunIntent(10 + i));
             await(() -> healthy.events.get() == 6, "g2 keeps serving");
-            Thread.sleep(100);
+            Thread.sleep(200);
             assertEquals(1, dying.events.get(), "a dead control plane's processors receive nothing more");
+            assertTrue(sink.records().stream().anyMatch(r -> r.contains("record: DataPathFenced")), "g1 fenced");
+            var refused = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                    () -> g1.runOnAgentThread(() -> { }));
+            assertTrue(refused.getMessage().contains("control plane is DEAD"), refused.getMessage());
             assertTrue(g1.isProcessorRegistered("dying"), "owned, not released or restarted");
         } finally {
             server.stop();
@@ -179,6 +183,20 @@ class GroupContainmentTest {
                 .contains("cause: java.lang.IllegalStateException: handwritten threw"), failure.getMessage());
         var control = new ProcessorDispatchException(null, "event dispatch", null);
         assertTrue(!control.getMessage().contains("cause:"), "control: no cause, no cause text");
+    }
+
+    /** Round 4: a repeating failure is logged once, then at most once per interval with the count suppressed. */
+    @Test
+    void aRepeatingContainedFailureIsRateLimited() {
+        long[] now = {1_000};
+        var handler = new GlobalErrorHandler(FatalErrorPolicy.CONTAIN, s -> { }, () -> now[0]);
+        var failure = new IllegalStateException("repeating");
+        assertTrue(handler.logLine(failure) != null, "the first is logged");
+        for (int i = 0; i < 50; i++) assertEquals(null, handler.logLine(failure), "repeats are suppressed");
+        assertTrue(handler.logLine(new IllegalStateException("different")) != null, "control: a different failure is logged");
+        now[0] += GlobalErrorHandler.REPEAT_LOG_INTERVAL_MILLIS;
+        String again = handler.logLine(failure);
+        assertTrue(again != null && again.contains("50 repeats suppressed"), again);
     }
 
     @Test

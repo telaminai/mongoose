@@ -47,7 +47,24 @@ design is tracked in [#77](https://github.com/telaminai/mongoose/issues/77); the
 this existing policy. A successful bounded-load delivery test does not establish losslessness under overload.
 
 ## Failure handling
-- Startup failures: fail fast if critical services or feeds do not initialize.
+- **Fatal-error policy** (`fatalErrorPolicy`, YAML top level):
+  - `CONTAIN` (the default after issue #77): an agent error never exits the JVM.
+  - `EXIT_PROCESS`: restores exit-and-restart.
+  - Under `CONTAIN`, alert on health instead of on process exit.
+- **Health checks to alert on** (by service name and check):
+  - `group:<name>/control`: DOWN when a processor group's control plane is DEAD. Its processors are fenced from
+    inputs and timers (`DataPathFenced` in the group's control audit); nothing restarts. Remedy: close the group or
+    stop the server, then restart the process.
+  - `agent-group:<name>/agent`: DOWN when an agent-hosted service group's thread ended; its services' `up` gauges are
+    0. Restart the process.
+  - `group:<name>/control-audit`: DEGRADED when the control audit failed to write. Replies are marked `UNVERIFIED`
+    until you export the evidence (`control.audit.export`) or acknowledge the gap (`control.audit.acknowledge`).
+    Neither makes the evidence complete.
+  - `group:<name>/audit-capture`: DEGRADED on capture write, close or detach failures, or an unobservable capture.
+    Processors keep running. `control.capture.acknowledge <group>` clears the alert; the failures stay listed in
+    `control.group.status <group> [--json]`.
+- **Startup failures:** fail fast if critical services or feeds do not initialize. A failed `bootServer` stops what
+  it started, then throws.
 - Runtime errors in handlers: log with context; consider circuit breakers for flaky integrations.
 - Poison events: capture and route to quarantine sink with metadata.
 

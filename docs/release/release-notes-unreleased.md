@@ -5,7 +5,7 @@ The control-plane changes are assigned to **Mongoose 1.0.33**. See the
 Publication and qualification status is recorded in the [RC release procedure](rc-release-procedure.md).
 Client migration requires its own [checklist](client-migration-1.0.33.md).
 
-## After 1.0.33-rc1: issue #77 (failure taxonomy and audit-failure policy)
+## After 1.0.33: issue #77 (failure taxonomy and audit-failure policy)
 
 Target: the next **minor** version. See the [failure-handling design](../design/failure-handling.md).
 
@@ -16,13 +16,25 @@ previous canonical constructors of all of these remain as secondary constructors
 Record deconstruction patterns that list every component no longer compile, and `equals` now compares the new
 components. `FailureKind` gained `REFUSED_INVALID` (a malformed request or a foreign handle).
 
-**Containment scope.** A failing processor is quarantined and a dead control plane fences its group's processors;
-other groups keep serving. Under `bootServer`, a fatal error that escapes a group no longer exits the JVM by default
-(`fatalErrorPolicy: CONTAIN`): that group dies and its `group:<name>/control` health is DOWN. Set
-`fatalErrorPolicy: EXIT_PROCESS` to keep the pre-#77 exit. Embedders with their own error handler are unaffected. Under
-`CONTAIN` a failed `bootServer` throws to its caller instead of exiting; the server's other agent threads are not
-stopped, so an application that lets the exception escape `main` keeps running: catch it and exit (or stop the server),
-or opt into `EXIT_PROCESS`.
+**Breaking (behaviour): a fatal agent error no longer exits the JVM under `bootServer`.** The default is now
+`fatalErrorPolicy: CONTAIN`. A deployment that relied on a supervisor restarting the process after an exit will now
+keep running with the failed part reported instead: monitor the health checks below, or set
+`fatalErrorPolicy: EXIT_PROCESS` to keep the pre-#77 exit. Under `EXIT_PROCESS` the exit happens on the failing agent's
+thread and can race whatever the caller is doing. Embedders with their own error handler are unaffected.
+
+**Containment scope.** What reports a contained failure depends on the agent:
+
+- **Processor group:** a failing processor is quarantined. A dead control plane fences its group's processors, and
+  its `group:<name>/control` health is DOWN. An `Error` that ends the group's thread also leaves it DEAD and DOWN.
+- **Agent-hosted service group** (feeds, workers, pipes on their own agent): an `Error` ends its thread. Its
+  `agent-group:<name>/agent` health is DOWN and the `up` gauges of its services drop to 0.
+- **Any other throwable** leaves the agent running (Agrona continues its loop). It is logged at SEVERE, with a
+  repeating failure rate-limited to one report per 10 s plus a count of the repeats suppressed.
+
+Other groups keep serving.
+
+**A failed `bootServer` stops what it started, then throws.** The partial server's `StopResult` is attached as a
+suppressed exception, so under CONTAIN nothing is left running once the caller's `main` returns.
 
 **Behaviour.**
 
@@ -42,7 +54,10 @@ or opt into `EXIT_PROCESS`.
   processors (`DataPathFenced` record) and reports `group:<name>/control` DOWN; close the group or stop the server.
 - Capture failures can be acknowledged (`acknowledgeCaptureFailures`, admin `control.capture.acknowledge`): the
   audit-capture alert clears, the failures stay listed. `control.group.status <group> --json` prints the status as
-  JSON. The admin stop command refuses a malformed argument as `REFUSED_INVALID`.
+  JSON, including `captureUnobservable` and `unacknowledgedCaptureFailures`. The admin stop command refuses a
+  malformed argument as `REFUSED_INVALID`.
+- The dead-control-plane fence covers inputs and timers delivered by the group. It cannot stop other threads calling
+  a processor's exported services directly. Fenced readers keep their queued backlog until the group closes.
 - Opaque dispatch strategies (`failedPosition() == -1`): the processor whose handler threw is captured at throw time
   (`ProcessorContext.recordFailedProcessor`, called by `AbstractEventToInvocationStrategy`). A handwritten failure is
   retried under the legacy policy and no longer quarantines generated peers or ends the group; a generated thrower is

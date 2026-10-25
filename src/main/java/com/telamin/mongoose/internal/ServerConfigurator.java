@@ -140,9 +140,22 @@ public final class ServerConfigurator {
             });
         }
 
-        //start
-        mongooseServer.init();
-        mongooseServer.start();
+        //start: a failed boot stops what it started, then throws (issue #77 A1 / review round 4): under the default
+        // fatalErrorPolicy CONTAIN nothing else would stop the agent threads already running, and the caller never
+        // receives the server reference
+        try {
+            mongooseServer.init();
+            mongooseServer.start();
+        } catch (Throwable failed) {
+            try {
+                com.telamin.mongoose.StopResult stopped = mongooseServer.shutdown();
+                failed.addSuppressed(new IllegalStateException("boot failed; the partly started server was stopped: "
+                        + stopped));
+            } catch (Throwable stopFailure) {
+                if (stopFailure != failed) failed.addSuppressed(stopFailure);
+            }
+            throw failed;
+        }
 
         return mongooseServer;
     }

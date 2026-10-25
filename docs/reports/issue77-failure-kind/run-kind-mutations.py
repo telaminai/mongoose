@@ -103,6 +103,23 @@ mutations = [
         'if (policy == FatalErrorPolicy.EXIT_PROCESS) {', 'if (policy != null) {', False)]),
     ("opaque-thrower-not-captured", [("src/main/java/com/telamin/mongoose/dispatch/ProcessorContext.java",
         'FAILED.set(processor);', '', False)]),
+    # ---- round 4 (review of df11115): the three surviving extra mutants, plus the round-4 fixes
+    ("report-on-attach-removed", [("src/main/java/com/telamin/mongoose/internal/ChronicleAuditCaptureService.java",
+        'if (sessionCaptureFailures > 0 && !sessionFailureReported) reportFirstFailure();', '', False)]),
+    ("sink-catches-runtime-only", [("src/main/java/com/telamin/mongoose/control/ControlAuditSink.java",
+        '} catch (VirtualMachineError fatal) {\n            throw fatal;\n        } catch (Throwable e) {',
+        '} catch (RuntimeException e) {', False)]),
+    ("heldnames-dead-branch-removed", [("src/main/java/com/telamin/mongoose/MongooseServer.java",
+        '} else if (group.control().state() == com.telamin.mongoose.control.ControlDriver.GroupState.DEAD) {',
+        '} else if (reservation.group() == null) {', False)]),
+    ("failed-boot-not-stopped", [("src/main/java/com/telamin/mongoose/internal/ServerConfigurator.java",
+        'com.telamin.mongoose.StopResult stopped = mongooseServer.shutdown();',
+        'com.telamin.mongoose.StopResult stopped = null;', False)]),
+    ("service-group-health-always-up", [("src/main/java/com/telamin/mongoose/MongooseServer.java",
+        'if (!ended) return com.telamin.mongoose.service.health.HealthStatus.up();',
+        'if (agentGroup != null) return com.telamin.mongoose.service.health.HealthStatus.up();', False)]),
+    ("contain-log-not-rate-limited", [("src/main/java/com/telamin/mongoose/dutycycle/GlobalErrorHandler.java",
+        'if (state[0] != Long.MIN_VALUE && now - state[0] < REPEAT_LOG_INTERVAL_MILLIS) {', 'if (false) {', False)]),
     ("replay-identity-kind-dropped", [(replayer,
         'failed = "no stream was recorded for " + cursor.name;    // loud, never an instantly complete cursor\n'
         '                    failedKind = FailureKind.REPLAY_IDENTITY_MISMATCH;',
@@ -114,7 +131,8 @@ tests = ",".join(["ControlScenarioHarnessTest", "IndependentEvidenceMutationTest
                   "GeneratedProcessorFailureIsolationTest", "ReplayIdentityTest", "IndependentReviewReplayProbesTest",
                   "ControlTerminationAndAdmissionTest", "BoundedShutdownTest", "Review77ProbesTest",
                   "Review77bProbesTest", "GroupContainmentTest", "AuditFailurePolicyTest",
-                  "OpaqueDispatchHandwrittenFailureTest"])
+                  "OpaqueDispatchHandwrittenFailureTest", "Review77cProbesTest", "CaptureMigrationAcceptanceTest",
+                  "AdminStopCommandValidationTest"])
 cmd = ["mvn", "-o", "-Dtest=" + tests, "-Dmongoose.harness.seedStart=12001", "-Dmongoose.harness.seedCount=100", "test"]
 results = []
 

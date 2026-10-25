@@ -999,6 +999,11 @@ These are deliberate non-guarantees in this build:
 
 ## Generated processor failure containment
 
+A group whose **control plane** dies while its thread lives (a rule threw) fences every processor the same way: inputs
+and timers stop, instances and names stay owned, nothing restarts, and `group:<name>/control` reports DOWN (issue
+#77). The fence covers what the group delivers. It cannot stop other threads calling a processor's exported services
+directly, and fenced readers keep their queued backlog until the group closes.
+
 A generated or interpreted Fluxtion processor implementing `InternalEventProcessor` can retain partial application
 state and external effects after a handler throws. Runtime 1.1.3 and newly generated processors clear the processing
 flag and discard failed-cycle work, but old generated code can still wedge until regenerated. A normal return from

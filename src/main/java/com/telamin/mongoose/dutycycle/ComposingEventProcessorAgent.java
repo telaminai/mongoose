@@ -746,7 +746,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         ControlRequest request = control.send(new ControlRequest(ControlRequest.Kind.RUN, "run", RunIntent::new, work));
         ControlReply answer = request.reply().getNow(null);
         if (answer != null && answer.outcome() == ReplyOutcome.NOT_RUNNING) {
-            throw new IllegalStateException("group " + roleName() + " is not running: it has closed");
+            // a fenced group whose control plane died says so, not "closed" (review round 4)
+            throw new IllegalStateException("group " + roleName() + " is not running: " + (control.state()
+                    == ControlDriver.GroupState.DEAD ? "its control plane is DEAD" : "it has closed"));
         }
     }
 

@@ -89,6 +89,23 @@ class AuditFailurePolicyTest {
         assertFalse(sink.evidenceDegraded());
     }
 
+    /** Round 4 (survivor x-sink-catches-runtime-only): a non-VM Error in the audit write degrades; a VM error does not. */
+    @Test
+    void aNonVmErrorInAnAuditWriteDegradesTheSinkButAVmErrorPropagates() {
+        ControlAuditSink sink = new ControlAuditSink();
+        sink.processLogRecord(new com.telamin.fluxtion.runtime.audit.LogRecord(com.telamin.fluxtion.runtime.time.Clock.DEFAULT_CLOCK) {
+            @Override public CharSequence asCharSequence() { throw new AssertionError("injected non-VM error"); }
+        });
+        assertTrue(sink.evidenceDegraded(), "a non-VM Error is an audit write failure: DEGRADED, not a dead control plane");
+        assertEquals(1, sink.sinkFailures());
+        ControlAuditSink fatal = new ControlAuditSink();
+        org.junit.jupiter.api.Assertions.assertThrows(StackOverflowError.class, () -> fatal.processLogRecord(
+                new com.telamin.fluxtion.runtime.audit.LogRecord(com.telamin.fluxtion.runtime.time.Clock.DEFAULT_CLOCK) {
+                    @Override public CharSequence asCharSequence() { throw new StackOverflowError("injected"); }
+                }));
+        assertFalse(fatal.evidenceDegraded(), "control: a VM error is not swallowed as an audit failure");
+    }
+
     @Test
     void aDegradedGroupAcceptsStopAndCloseAndMarksEveryReplyUnverified() throws Exception {
         ComposingEventProcessorAgent group = group("degraded");

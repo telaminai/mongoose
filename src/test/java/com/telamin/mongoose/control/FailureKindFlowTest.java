@@ -179,7 +179,12 @@ class FailureKindFlowTest {
         assertEquals("{\"group\":\"g\\\"1\",\"state\":\"DEAD\",\"outstandingRequests\":1,\"captureResourcesHeld\":2,"
                 + "\"captureResourceSlotsInUse\":3,\"captureCloseFailures\":{\"7\":\"close \\\"failed\\\"\\n\"},"
                 + "\"captureCleanupFailures\":{},\"quarantinedProcessors\":{\"p\":\"x\\\\y\"},"
-                + "\"controlAuditDegraded\":false,\"captureWriteFailures\":0}", status.toJson());
+                + "\"controlAuditDegraded\":false,\"captureWriteFailures\":0,\"captureUnobservable\":0,"
+                + "\"unacknowledgedCaptureFailures\":null}", status.toJson());
+        var withCapture = new com.telamin.mongoose.MongooseServer.ControlGroupStatus("g", ControlDriver.GroupState.RUNNING, 0, 0, 0,
+                java.util.Map.of(), java.util.Map.of(), java.util.Map.of(), false, 2, 1, "writes=2 unobservable=1");
+        assertTrue(withCapture.toJson().endsWith("\"captureWriteFailures\":2,\"captureUnobservable\":1,"
+                + "\"unacknowledgedCaptureFailures\":\"writes=2 unobservable=1\"}"), withCapture.toJson());
     }
 
     @Test

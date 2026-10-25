@@ -64,6 +64,11 @@ public class ComposingServiceAgent extends DynamicCompositeAgent {
         this.schedulerService = new Service<>(scheduler, SchedulerService.class);
     }
 
+    /** The names of the services this group hosts: their health follows the group's thread (issue #77 review round 4). */
+    public java.util.List<String> hostedServiceNames() {
+        return hostedAgents.stream().map(a -> a.exportedService().serviceName()).toList();
+    }
+
     public <T> void registerServer(ServiceAgent<T> server) {
         hostedAgents.add(server);
         offerBounded(toStartList, server, "service start");

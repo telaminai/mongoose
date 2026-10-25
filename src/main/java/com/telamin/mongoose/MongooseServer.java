@@ -1174,6 +1174,7 @@ public class MongooseServer implements MongooseServerController {
                             errorHandler,
                             errorCounter,
                             group);
+                    registerServiceGroupHealth(agentGroup, group, groupRunner);
                     return new ComposingWorkerServiceAgentRunner(group, groupRunner, idleStrategy);
                 });
 
@@ -1461,7 +1462,18 @@ public class MongooseServer implements MongooseServerController {
                                      int outstandingRequests, int captureResourcesHeld, int captureResourceSlotsInUse,
                                      Map<Long, String> captureCloseFailures, Map<Long, String> captureCleanupFailures,
                                      Map<String, String> quarantinedProcessors, boolean controlAuditDegraded,
-                                     long captureWriteFailures) {
+                                     long captureWriteFailures, long captureUnobservable,
+                                     String unacknowledgedCaptureFailures) {
+        /** Without the capture-observability fields (round-2 shape of this branch). */
+        public ControlGroupStatus(String group, com.telamin.mongoose.control.ControlDriver.GroupState state,
+                                  int outstandingRequests, int captureResourcesHeld, int captureResourceSlotsInUse,
+                                  Map<Long, String> captureCloseFailures, Map<Long, String> captureCleanupFailures,
+                                  Map<String, String> quarantinedProcessors, boolean controlAuditDegraded,
+                                  long captureWriteFailures) {
+            this(group, state, outstandingRequests, captureResourcesHeld, captureResourceSlotsInUse, captureCloseFailures,
+                    captureCleanupFailures, quarantinedProcessors, controlAuditDegraded, captureWriteFailures, 0, null);
+        }
+
         /** The 1.0.33-rc1 shape (review R6): not degraded, no write failures. */
         public ControlGroupStatus(String group, com.telamin.mongoose.control.ControlDriver.GroupState state,
                                   int outstandingRequests, int captureResourcesHeld, int captureResourceSlotsInUse,
@@ -1483,7 +1495,9 @@ public class MongooseServer implements MongooseServerController {
             jsonMap(b, "captureCleanupFailures", captureCleanupFailures).append(',');
             jsonMap(b, "quarantinedProcessors", quarantinedProcessors).append(',');
             b.append("\"controlAuditDegraded\":").append(controlAuditDegraded).append(',');
-            b.append("\"captureWriteFailures\":").append(captureWriteFailures);
+            b.append("\"captureWriteFailures\":").append(captureWriteFailures).append(',');
+            b.append("\"captureUnobservable\":").append(captureUnobservable).append(',');
+            json(b, "unacknowledgedCaptureFailures", unacknowledgedCaptureFailures);
             return b.append('}').toString();
         }
 
@@ -1564,6 +1578,29 @@ public class MongooseServer implements MongooseServerController {
         runner.group().control().audit().acknowledgeEvidenceGap();
     }
 
+    /**
+     * Issue #77 review round 4: an agent-hosted service group (feeds, workers, pipes on their own agent) whose thread
+     * ended or whose runner closed while the server runs is DOWN under {@code agent-group:<name>/agent}, and the
+     * {@code up} gauges of the services it hosts drop to 0. Under the default fatalErrorPolicy CONTAIN this is the
+     * signal that replaced the process exit.
+     */
+    private void registerServiceGroupHealth(String agentGroup, ComposingServiceAgent group, AgentRunner runner) {
+        Service<?> healthSvc = registeredServices.get(com.telamin.mongoose.service.health.MongooseHealthService.SERVICE_NAME);
+        if (healthSvc == null) return;
+        var health = (com.telamin.mongoose.service.health.MongooseHealthService) healthSvc.instance();
+        health.registerCheck("agent-group:" + agentGroup, "agent", ctx -> {
+            if (!isStarted() || isStopRequested()) {
+                return com.telamin.mongoose.service.health.HealthStatus.unknown("server not running");
+            }
+            Thread thread = runner.thread();
+            boolean ended = runner.isClosed() || thread == AgentRunner.TOMBSTONE || (thread != null && !thread.isAlive());
+            if (!ended) return com.telamin.mongoose.service.health.HealthStatus.up();
+            for (String service : group.hostedServiceNames()) flipServiceUp(service, 0);
+            return com.telamin.mongoose.service.health.HealthStatus.down("agent group " + agentGroup
+                    + " is not running (its thread ended); its services " + group.hostedServiceNames() + " are down");
+        });
+    }
+
     /** Acknowledge a group's capture failures: its audit-capture health clears; the failures stay listed. */
     public void acknowledgeCaptureFailures(String groupName) {
         var runner = composingEventProcessorAgents.get(Objects.requireNonNull(groupName, "groupName"));
@@ -1579,7 +1616,8 @@ public class MongooseServer implements MongooseServerController {
         return new ControlGroupStatus(groupName, group.control().state(), group.control().outstanding(),
                 group.captureResourcesHeld(), group.captureResourceSlotsInUse(),
                 group.captureCloseFailures(), group.captureCleanupFailures(), group.quarantinedProcessors(),
-                group.control().audit().evidenceDegraded(), group.captureWriteFailures());
+                group.control().audit().evidenceDegraded(), group.captureWriteFailures(), group.captureUnobservable(),
+                group.unacknowledgedCaptureFailures());
     }
 
     /** Waiting is safe only off agent/lifecycle threads, on a group whose thread is running. */

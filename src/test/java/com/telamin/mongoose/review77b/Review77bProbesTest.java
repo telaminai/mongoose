@@ -315,6 +315,33 @@ class Review77bProbesTest {
         }
     }
 
+    /**
+     * Round 4 (survivor x-report-on-attach-removed): a write failure that happens before any observer is attached is
+     * reported when one attaches, once per recording.
+     */
+    @Test
+    void aWriteFailureBeforeTheObserverAttachesIsReportedOnAttach(@TempDir Path dir) throws Exception {
+        AuditCaptureConfig cfg = new AuditCaptureConfig();
+        cfg.setEnabled(true);
+        cfg.setDirectory(dir.toString());
+        ChronicleAuditCaptureService svc = new ChronicleAuditCaptureService(cfg, NoOpCountersService.INSTANCE);
+        Proc proc = new Proc();
+        AuditCaptureIdentity identity = new AuditCaptureIdentity("attach", "p", 1);
+        svc.attachScoped(proc, identity, rec -> { }, Runnable::run);
+        Object handle = svc.openCaptureScoped(identity);
+        svc.installCapture(handle, "p", proc);                 // installed with no observer
+        closeQueue(handle);
+        proc.current().processLogRecord(record("fails before any observer"));
+        List<String> reported = new ArrayList<>();
+        svc.observeWriteFailures(handle, reported::add);
+        assertEquals(1, reported.size(), "the earlier failure is reported on attach: " + reported);
+        proc.current().processLogRecord(record("fails again"));
+        assertEquals(1, reported.size(), "once per recording");
+        List<String> control = new ArrayList<>();
+        svc.observeWriteFailures(handle, control::add);
+        assertEquals(0, control.size(), "control: an already reported failure is not reported again");
+    }
+
     /** D2 premise: does a real generated processor write the listener-swap cycle's record to the NEW listener? */
     @Test
     void generatedProcessorWritesTheSwapRecordToTheNewListener() throws Exception {
