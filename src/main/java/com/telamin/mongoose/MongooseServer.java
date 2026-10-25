@@ -1007,10 +1007,12 @@ public class MongooseServer implements MongooseServerController {
             }
             if (request.stopped || stopped) return;
             if (stopFailure != null) throw new IllegalStateException("removed service stop previously failed", stopFailure);
+            List<String> retiredNames = new ArrayList<>();
+            boolean live;
             serviceLock.lock();
             try {
                 request.confirmed = true;
-                boolean live = registeredServices.values().stream()
+                live = registeredServices.values().stream()
                         .anyMatch(binding -> binding.instance() == service.instance());
                 if (live) {
                     // The registry owns this instance again. Preserve any other unconfirmed withdrawal: that alias
@@ -1020,16 +1022,26 @@ public class MongooseServer implements MongooseServerController {
                         if (shutdown || alias.confirmed) {
                             alias.stopped = true;
                             removedServices.remove(alias.id, alias);
+                            retiredNames.add(alias.service.serviceName());
                             iterator.remove();
                         }
                     }
                     if (aliases.isEmpty()) serviceRetirements.remove(service.instance(), this);
-                    return;
+                } else {
+                    if (!shutdown && aliases.stream().anyMatch(alias -> !alias.confirmed)) return;
+                    retirementStops.merge(service.instance(), 1, Integer::sum);
                 }
-                if (!shutdown && aliases.stream().anyMatch(alias -> !alias.confirmed)) return;
-                retirementStops.merge(service.instance(), 1, Integer::sum);
             } finally {
                 serviceLock.unlock();
+            }
+            if (live) {
+                // The physical instance remains live under another name; the removed names are down. As with
+                // final-stop metrics below, call counter implementations outside the registry lock and avoid
+                // marking an already visible replacement down.
+                for (String name : retiredNames) {
+                    if (!registeredServices.containsKey(name)) flipServiceUp(name, 0);
+                }
+                return;
             }
             try {
                 service.stop();

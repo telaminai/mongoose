@@ -14,6 +14,31 @@ import static org.junit.jupiter.api.Assertions.*;
 
 @Timeout(30)
 class ServiceAliasRetirementProbeTest {
+    @Test void retiredAliasGaugeIsDownWhileTheOtherAliasRemainsLive() {
+        var count = new AtomicInteger();
+        Lifecycle instance = lifecycle(count::incrementAndGet);
+        var config = new MongooseServerConfig();
+        var monitoring = new com.telamin.mongoose.config.PerformanceMonitoringConfig();
+        monitoring.setEnabled(true);
+        config.setPerformanceMonitoring(monitoring);
+        var server = new MongooseServer(config);
+        server.registerService(new Service<>(instance, Lifecycle.class, "A"), new Service<>(instance, Lifecycle.class, "B"));
+        server.init(); server.start();
+        try {
+            var counters = (com.telamin.mongoose.service.counters.MongooseCountersService) server.registeredServices()
+                    .get(com.telamin.mongoose.service.counters.MongooseCountersService.SERVICE_NAME).instance();
+            assertEquals(1, counters.counter("service.A.up").get());
+            assertEquals(1, counters.counter("service.B.up").get());
+            server.removeService("A");
+            assertFalse(server.registeredServices().containsKey("A"));
+            assertSame(instance, server.registeredServices().get("B").instance());
+            assertEquals(0, count.get(), "retiring a name must not stop its still-live shared instance");
+            assertEquals(0, counters.counter("service.A.up").get(), "removed alias must not remain reported up");
+            assertEquals(1, counters.counter("service.B.up").get(), "the remaining alias stays up");
+        } finally { server.stop(); }
+        assertEquals(1, count.get());
+    }
+
     @Test void lastAliasWithdrawalMustCompleteBeforeOnePhysicalStop() throws Exception {
         var aEntered = new CountDownLatch(1);
         var aRelease = new CountDownLatch(1);
