@@ -80,6 +80,7 @@ final class ChaosWorkload implements AutoCloseable {
         int feeds = 2;
         int feedRatePerSec = 2_000;
         int adminThreads = 4;
+        /** Number of churned service names; zero disables service churn for scoped replay tests. */
         int services = 4;
         /** Pause between one admin thread's operations, uniformly random in [0, this). */
         int adminPauseMillis = 40;
@@ -730,6 +731,7 @@ final class ChaosWorkload implements AutoCloseable {
     }
 
     private void serviceChange(Random random) {
+        if (settings.services == 0) return;
         int id = random.nextInt(settings.services);
         String name = SVC_PREFIX + id;
         floodLock.readLock().lock();
