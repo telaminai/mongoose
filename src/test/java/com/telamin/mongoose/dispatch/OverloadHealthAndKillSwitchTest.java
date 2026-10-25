@@ -40,7 +40,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Milestone 3 of telaminai/mongoose#79: the health latch (D4), counters, one log line and audit record per state
- * change, the kill-switch hook (D5), and the Failed marker a drop leaves in a recording.
+ * change, the kill-switch hook (D5), and the Dropped marker a drop leaves in a recording.
  */
 @Timeout(60)
 class OverloadHealthAndKillSwitchTest {
@@ -199,7 +199,7 @@ class OverloadHealthAndKillSwitchTest {
             assertEquals(RISK, loss.queue());
             assertEquals("risk", loss.group());
             assertEquals("refused", loss.kind());
-            assertEquals("mongoose-overload-kill-switch", threads.getFirst());
+            assertEquals("mongoose-overload-kill-switch-feed", threads.getFirst(), "the feed's own hook thread");
 
             rig.manager.clearOverloadState("feed");
             assertThrows(PublishRefusedException.class, () -> rig.publisher.publish(-1));

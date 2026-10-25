@@ -97,6 +97,9 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
         Object event;
         boolean marking = recorder != null && dropMarks != null;
         while (processed < batchLimit && (!marking || markDropsThen()) && (event = inputQueue.poll()) != null) {
+            // a drop marked after the check above but before this item was offered precedes it: mark it first, so the
+            // Dropped entry lands exactly where the items were lost (review of 1d925ee, finding 7)
+            if (marking) markDrops(inputQueue.removedCount() - 1);
             // this queue's reference to a pooled event is held until every processor has been given it (released in
             // the finally below, so a failure that escapes the retry loop cannot leak it)
             PoolTracker<?> tracker = trackerOf(event);
@@ -346,11 +349,10 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
         return sourceName;
     }
 
-    /** RECORD mode: record what this queue dispatches (spec-replay-recording R2). */
     /**
-     * RECORD mode (#79): where the publisher dropped items for this queue. Each mark becomes a Failed entry in the
-     * recordings of this queue's processors once every item offered before the drop has been dispatched, so a replay
-     * stops at the loss. Null when not recording.
+     * RECORD mode (#79): where the publisher dropped items for this queue. Each mark becomes a
+     * {@link com.telamin.mongoose.replay.ReplayEntry.Dropped} entry in the recordings of this queue's processors, placed
+     * where the items were lost; a replay reports the loss and carries on. Null when not recording.
      */
     public EventQueueToEventProcessorAgent withDropMarks(com.telamin.mongoose.dispatch.DropMarks dropMarks) {
         this.dropMarks = dropMarks;
@@ -358,19 +360,23 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     }
 
     private boolean markDropsThen() {
-        markDrops();
+        markDrops(inputQueue.removedCount());
         return true;
     }
 
-    /** Turn the drop marks this reader has reached into Failed entries; recording only, on the group's thread. */
-    private void markDrops() {
+    /**
+     * Turn the drop marks that precede the next item into Dropped entries: those whose producer position is at most
+     * {@code consumed}, the number of items offered before the drop that have been taken. Recording only, on the group's
+     * thread.
+     */
+    private void markDrops(long consumed) {
         com.telamin.mongoose.dispatch.DropMarks.Mark m = dropMarks.peek();
-        if (m == null || m.position() > inputQueue.removedCount()) {
+        if (m == null || m.position() > consumed) {
             return;
         }
         java.util.Collection<DataFlow> targets = eventToInvokeStrategy.registeredProcessors();
         if (targets.isEmpty()) targets = java.util.List.copyOf(subscribed);
-        while ((m = dropMarks.peek()) != null && m.position() <= inputQueue.removedCount()) {
+        while ((m = dropMarks.peek()) != null && m.position() <= consumed) {
             dropMarks.poll();
             long position = m.position();
             long first = m.sequence(), last = m.sequence(), count = 1;
@@ -381,13 +387,15 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                 last = next.sequence();
                 count++;
             }
-            count += dropMarks.takeOverflow();
-            recorder.inputDropped(sourceName, targets, count + " item(s) of " + sourceName + " dropped by the full queue "
-                    + name + " (sequence " + first + (last != first ? ".." + last : "") + "): " + reason
-                    + "; the processor never received them, and a replay reports the loss here");
+            long unmarked = dropMarks.takeOverflow();
+            recorder.inputDropped(sourceName, targets, (count + unmarked) + " item(s) of " + sourceName
+                    + " dropped by the full queue " + name + " (sequence " + first + (last != first ? ".." + last : "")
+                    + (unmarked > 0 ? ", plus " + unmarked + " dropped while the drop marks were full" : "") + "): "
+                    + reason + "; the processor never received them");
         }
     }
 
+    /** RECORD mode: record what this queue dispatches (spec-replay-recording R2). */
     public void recordWith(GroupRecorder recorder) {
         this.recorder = recorder;
         this.received = recorder == null ? null : recorder::received;

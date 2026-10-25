@@ -22,15 +22,19 @@ import java.util.concurrent.TimeUnit;
  *                          clears them
  * @param killSwitchOnLoss  invoke the server's overload kill switch when a never-drop queue of this feed latches
  *                          (off by default)
+ * @param explicit          false only for {@link #DEFAULT}, the feed that configured no policy: its queues keep the
+ *                          health semantics of PR #76 (DEGRADED after a loss, no quiet-period recovery), as decision
+ *                          D2 requires; any configured or programmatic setting is explicit
  */
 public record FeedOverloadSettings(OverloadSettings feedDefault, Map<String, OverloadSettings> bySubscriberGroup,
-                                   long quietPeriodNanos, boolean killSwitchOnLoss) {
+                                   long quietPeriodNanos, boolean killSwitchOnLoss, boolean explicit) {
 
     /** Default quiet period before a drop-tolerant queue's health recovers. */
     public static final long DEFAULT_QUIET_PERIOD_NANOS = TimeUnit.SECONDS.toNanos(60);
 
     /** Every queue on {@link OverloadSettings#DEFAULT}: the behaviour before #79. */
-    public static final FeedOverloadSettings DEFAULT = new FeedOverloadSettings(OverloadSettings.DEFAULT, Map.of());
+    public static final FeedOverloadSettings DEFAULT = new FeedOverloadSettings(OverloadSettings.DEFAULT, Map.of(),
+            DEFAULT_QUIET_PERIOD_NANOS, false, false);
 
     public FeedOverloadSettings {
         Objects.requireNonNull(feedDefault, "feedDefault must be non-null");
@@ -41,7 +45,12 @@ public record FeedOverloadSettings(OverloadSettings feedDefault, Map<String, Ove
     }
 
     public FeedOverloadSettings(OverloadSettings feedDefault, Map<String, OverloadSettings> bySubscriberGroup) {
-        this(feedDefault, bySubscriberGroup, DEFAULT_QUIET_PERIOD_NANOS, false);
+        this(feedDefault, bySubscriberGroup, DEFAULT_QUIET_PERIOD_NANOS, false, true);
+    }
+
+    public FeedOverloadSettings(OverloadSettings feedDefault, Map<String, OverloadSettings> bySubscriberGroup,
+                                long quietPeriodNanos, boolean killSwitchOnLoss) {
+        this(feedDefault, bySubscriberGroup, quietPeriodNanos, killSwitchOnLoss, true);
     }
 
     /** One policy for every subscriber of the feed. */
