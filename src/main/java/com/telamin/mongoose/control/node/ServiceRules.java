@@ -40,6 +40,12 @@ public class ServiceRules extends EventLogNode {
         long req = intent.requestId();
         List<Reg> started = state.started();
         String rule = intent.register() ? "registerService" : "deregisterService";
+        if (state.isClosing()) {
+            ControlEffect reply = new ControlEffect.Reply(state.nextOp(req), req, -1, null, ReplyOutcome.NOT_RUNNING,
+                    "group closed");
+            decide(rule + "WhileClosing", intent.serviceName(), reply);
+            return true;
+        }
         if (started.isEmpty()) {
             ControlEffect reply = new ControlEffect.Reply(state.nextOp(req), req, -1, null, ReplyOutcome.APPLIED,
                     "no running processors");

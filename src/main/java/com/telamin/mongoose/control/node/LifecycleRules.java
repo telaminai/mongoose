@@ -53,9 +53,11 @@ public class LifecycleRules extends EventLogNode {
             return true;
         }
         if (state.isClosing()) {
-            // queued before the close: nothing new starts in a closing group, and its supplier never runs
-            ControlEffect reply = reply(req, intent.generation(), intent.name(), ReplyOutcome.NOT_RUNNING, "group closed");
-            decide("addWhileClosing", intent.generation(), intent.name(), "Admitted", "Refused", reply);
+            // queued before the close: nothing new starts in a closing group and its supplier never runs; its name is
+            // released before it is answered, so it does not outlive the refusal
+            state.openChain(req, ChainKind.REFUSED_ADD);
+            ControlEffect free = new ControlEffect.ReleaseName(state.nextOp(req), req, intent.generation(), intent.name());
+            decide("addWhileClosing", intent.generation(), intent.name(), "Admitted", "Refused", free);
             return true;
         }
         Reg reg = state.admit(intent.generation(), intent.incarnation(), intent.name(), req);
@@ -202,8 +204,10 @@ public class LifecycleRules extends EventLogNode {
         if (reg != null && reg.lifecycle != Lifecycle.FAILED) reg.lifecycle = Lifecycle.RELEASED;
         ControlEffect free = new ControlEffect.ReleaseName(state.nextOp(req), req, result.generation(), result.name());
         String to = reg != null && reg.lifecycle == Lifecycle.FAILED ? "Failed" : "Released";
-        decide(result.succeeded() ? "released" : "releasedWithErrors", result.generation(), result.name(), from, to,
-                free);
+        // a release whose stop or tearDown threw still leaves the group holding nothing for the processor: the name is
+        // freed (as 1.0.33 does); only a fatal error mid-release leaves the group dead, with its names held
+        boolean clean = result.succeeded() && result.reason() == null;
+        decide(clean ? "released" : "releasedWithErrors", result.generation(), result.name(), from, to, free);
     }
 
     private void nameReleased(Chain chain, EffectResult result) {
@@ -227,6 +231,10 @@ public class LifecycleRules extends EventLogNode {
             case CANCEL -> {
                 ControlEffect reply = reply(req, result.generation(), result.name(), ReplyOutcome.APPLIED, "cancelled");
                 decide("cancelComplete", result.generation(), result.name(), "Cancelled", "Cancelled", reply);
+            }
+            case REFUSED_ADD -> {
+                ControlEffect reply = reply(req, result.generation(), result.name(), ReplyOutcome.NOT_RUNNING, "group closed");
+                decide("addRefused", result.generation(), result.name(), "Refused", "Refused", reply);
             }
             default -> {
                 ControlEffect reply = reply(req, result.generation(), result.name(), ReplyOutcome.APPLIED, "stopped");

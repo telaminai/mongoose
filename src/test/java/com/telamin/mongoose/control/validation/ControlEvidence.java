@@ -75,12 +75,27 @@ public final class ControlEvidence {
                 out.add(new Rec(String.valueOf(fields.get("record")), "fallback", fields));
                 continue;
             }
-            for (String line : text.split("\n")) {
-                Matcher m = NODE_ENTRY.matcher(line);
-                if (!m.matches()) continue;
-                Map<String, Object> fields = yaml.load(m.group(2));
-                if (fields == null || !fields.containsKey("record")) continue;
-                out.add(new Rec(String.valueOf(fields.get("record")), m.group(1), new LinkedHashMap<>(fields)));
+            // strict: every exported document must load as YAML, as the analyser's reader loads it
+            Map<String, Object> root;
+            try {
+                root = yaml.load(text);
+            } catch (RuntimeException e) {
+                throw new IllegalStateException("exported audit document is not valid YAML: " + e.getMessage() + "\n" + text, e);
+            }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> record = root == null ? null : (Map<String, Object>) root.get("eventLogRecord");
+            if (record == null) {
+                throw new IllegalStateException("exported audit document is neither an eventLogRecord nor a fallback:\n" + text);
+            }
+            Object nodeLogs = record.get("nodeLogs");
+            if (!(nodeLogs instanceof List<?> entries)) continue;
+            for (Object entry : entries) {
+                if (!(entry instanceof Map<?, ?> one) || one.size() != 1) continue;
+                Map.Entry<?, ?> e = one.entrySet().iterator().next();
+                if (!(e.getValue() instanceof Map<?, ?> f) || !f.containsKey("record")) continue;
+                @SuppressWarnings("unchecked")
+                Map<String, Object> fields = new LinkedHashMap<>((Map<String, Object>) f);
+                out.add(new Rec(String.valueOf(fields.get("record")), String.valueOf(e.getKey()), fields));
             }
         }
         return new ControlEvidence(out, complete);

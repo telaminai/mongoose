@@ -63,14 +63,16 @@ public class EffectQueue {
             ControlEffect effect = batch.get(i);
             EffectResult result = perform(effect);
             if (result == null) {
-                abandoned.addAll(batch.subList(i + 1, batch.size()));
+                // this effect included: it stashed the fatal and has no recorded outcome
+                abandoned.addAll(batch.subList(i, batch.size()));
                 return;
             }
             try {
                 dataFlowContext.getEventDispatcher().processAsNewEventCycle(result);
             } catch (Throwable t) {
                 fatal = t;
-                abandoned.addAll(batch.subList(i + 1, batch.size()));
+                // this effect included: it was performed, but its result never reached the record
+                abandoned.addAll(batch.subList(i, batch.size()));
                 return;
             }
         }

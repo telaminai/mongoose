@@ -76,6 +76,9 @@ public final class ControlDriver {
         // default sink is System.out (measured in the analyser's SessionDriver)
         processor.setAuditLogProcessor(audit);
         processor.eventLogger.logLevel(EventLogControlEvent.LogLevel.INFO);
+        // the runtime prints each event's toString unquoted: a name with a colon, or the multi-line text of an exported
+        // function, breaks the YAML for the analyser. The Input records carry every field, quoted, so drop it
+        processor.eventLogger.printEventToString(false);
         processor.init();
         processor.start();
         processor.registerService(new Service<>(adapter, EffectAdapter.class));
@@ -145,7 +148,7 @@ public final class ControlDriver {
         GroupState s = state.get();
         if (s == GroupState.CLOSING || s == GroupState.CLOSED || s == GroupState.DEAD) return true;
         Thread t = agentThread;
-        if (t != null && !t.isAlive() && s == GroupState.RUNNING) {
+        if (t != null && !t.isAlive() && (s == GroupState.RUNNING || s == GroupState.STARTING)) {
             // the agent died without the fatal wrapper or onClose running: whoever notices runs the death path
             markDead("agent thread terminated without closing");
             return true;
@@ -155,6 +158,7 @@ public final class ControlDriver {
 
     private void refuseTerminal(ControlRequest request) {
         if (request.completeUnclaimed(ControlReply.notRunning(request.requestId(), "group " + group + " is " + state.get()))) {
+            request.runUnapplied();
             audit.fallback("NotRunning", "group", group, "requestId", request.requestId(), "request", request.description());
         }
         outstanding.remove(request);
@@ -162,6 +166,7 @@ public final class ControlDriver {
 
     private void refuse(ControlRequest request, String why) {
         if (request.completeUnclaimed(new ControlReply(request.requestId(), ReplyOutcome.REFUSED, why, -1, null))) {
+            request.runUnapplied();
             audit.fallback("Refused", "group", group, "requestId", request.requestId(), "reason", why);
         }
         outstanding.remove(request);
@@ -265,7 +270,19 @@ public final class ControlDriver {
                 if (request != null) complete(request, ReplyOutcome.FAILED, "effects did not settle");
                 return;
             }
-            processor.batchEnd();
+            try {
+                processor.batchEnd();
+            } catch (Throwable t) {
+                // a rule threw while an outcome was dispatched inside batchEnd: the generated method has no finally,
+                // so the processor's processing flag stays set and it cannot dispatch again
+                controlWedged = true;
+                audit.fallback("Anomaly", "group", group, "requestId", input.requestId(),
+                        "description", "control processor threw during batchEnd: " + t);
+                if (request != null) complete(request, ReplyOutcome.FAILED, "control processor threw: " + t);
+                markDead("control processor threw during batchEnd");
+                if (t instanceof VirtualMachineError e) throw e;
+                return;
+            }
             Throwable fatal = processor.effectQueue.takeFatal();
             if (fatal != null) {
                 List<ControlEffect> abandoned = processor.effectQueue.takeAbandoned();
@@ -285,17 +302,24 @@ public final class ControlDriver {
                 for (ControlEffect a : abandoned) {
                     dispatch(new EffectResult(a.opId(), a.requestId(), a.effect(), ControlOutcome.FAILED, a.generation(),
                             a.name(), "abandoned"), null);
+                    if (controlWedged) return;
                 }
             }
+        }
+        // every effect in this design is synchronous, so a request still claimed after its effects settle will never be
+        // answered by a rule: answer it here rather than leave it pending
+        if (request != null && claimed.containsKey(request.requestId())) {
+            complete(request, ReplyOutcome.FAILED, "no reply after its effects settled");
         }
     }
 
     /** The control processor's Reply effect lands here: complete the claimed request once. */
-    public void reply(long requestId, ReplyOutcome outcome, String reason, long generation, String name) {
+    public boolean reply(long requestId, ReplyOutcome outcome, String reason, long generation, String name) {
         ControlRequest request = claimed.remove(requestId);
-        if (request == null) return;
-        request.completeClaimed(new ControlReply(requestId, outcome, reason, generation, name));
+        if (request == null) return false;
+        boolean delivered = request.completeClaimed(new ControlReply(requestId, outcome, reason, generation, name));
         outstanding.remove(request);
+        return delivered;
     }
 
     private void complete(ControlRequest request, ReplyOutcome outcome, String reason) {
@@ -327,17 +351,36 @@ public final class ControlDriver {
         for (ControlRequest r; (r = mailbox.poll()) != null; ) held.add(r);
         if (!controlWedged && before != GroupState.DEAD) {
             for (ControlInput c; (c = completions.poll()) != null; ) dispatch(c, null);
+            // work handed to the group's thread before the close still runs before its processors stop
+            for (ControlRequest r : held) {
+                if (r.kind() == ControlRequest.Kind.RUN && !controlWedged) apply(r);
+            }
             ControlRequest close = new ControlRequest(ControlRequest.Kind.CLOSE, "close " + group, CloseIntent::new, null);
             close.assignId(requestIds.incrementAndGet());
             outstanding.add(close);
-            apply(close);
-            // what was queued before the close is still answered by the control processor's rules, now that it is
-            // closing: an add is refused without running its supplier, a stop finds its processor already stopped
-            for (ControlRequest r : held) apply(r);
+            if (!controlWedged) apply(close);
+            // what else was queued before the close is answered by the control processor's rules, now that it is
+            // closing: an add is refused and its name released without its supplier running, a broadcast is refused,
+            // a stop finds its processor already stopped
+            for (ControlRequest r : held) {
+                if (r.kind() != ControlRequest.Kind.RUN && !controlWedged) apply(r);
+            }
         }
         failClaimed("group ended");
         if (state.get() != GroupState.DEAD) state.set(GroupState.CLOSED);
         sweep();
+    }
+
+    /**
+     * The server is about to close this group: from now on senders are answered NOT_RUNNING at once and senders waiting
+     * on a full mailbox leave. The agent goes on draining what was accepted until its onClose runs.
+     */
+    public void beginClosing() {
+        GroupState s;
+        do {
+            s = state.get();
+            if (s == GroupState.CLOSING || s == GroupState.CLOSED || s == GroupState.DEAD) return;
+        } while (!state.compareAndSet(s, GroupState.CLOSING));
     }
 
     /** Move the group to DEAD and sweep. Idempotent; run again after the thread is joined. */
@@ -358,6 +401,7 @@ public final class ControlDriver {
         for (ControlRequest r : outstanding.toArray(new ControlRequest[0])) {
             if (r.isClaimed()) continue;
             if (r.completeUnclaimed(ControlReply.notRunning(r.requestId(), "group " + group + " is " + state.get()))) {
+                r.runUnapplied();
                 audit.fallback("NotRunning", "group", group, "requestId", r.requestId(), "request", r.description());
             }
             if (r.isReplied()) outstanding.remove(r);

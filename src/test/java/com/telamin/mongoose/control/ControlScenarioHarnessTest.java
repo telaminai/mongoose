@@ -9,6 +9,9 @@ import com.telamin.mongoose.dispatch.EventFlowManager;
 import com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent;
 import com.telamin.mongoose.dutycycle.NamedEventProcessor;
 import com.telamin.mongoose.dutycycle.ProcessorRegistration;
+import com.telamin.mongoose.dutycycle.ProcessorStartException;
+import com.telamin.mongoose.control.event.RunIntent;
+import com.telamin.fluxtion.runtime.service.Service;
 import com.telamin.mongoose.service.error.ErrorReporting;
 import com.telamin.mongoose.service.scheduler.DeadWheelScheduler;
 import org.junit.jupiter.api.Test;
@@ -19,6 +22,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
+import java.util.Set;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -125,13 +131,20 @@ class ControlScenarioHarnessTest {
         Random random = new Random(seed);
         ComposingEventProcessorAgent group = new ComposingEventProcessorAgent("harness", new EventFlowManager(), null,
                 new DeadWheelScheduler(), new ConcurrentHashMap<>());
-        group.setIsolateStartFailuresAtBoot(true);
+        boolean failFastBoot = random.nextInt(4) == 0;
+        group.setIsolateStartFailuresAtBoot(!failFastBoot);
         Reservations reservations = new Reservations();
         List<LedgerProc> all = new ArrayList<>();
         Map<String, Integer> serials = new HashMap<>();
+        Map<ProcessorRegistration, LedgerProc> procOf = new IdentityHashMap<>();
+        List<ProcessorRegistration> everAdmitted = new ArrayList<>();
+        Set<LedgerProc> legitimatelyStopped = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+        Map<ControlRequest, AtomicInteger> runs = new LinkedHashMap<>();
         List<String> script = new ArrayList<>();
+        script.add(failFastBoot ? "boot failures fail fast" : "boot failures isolated");
         String[] names = {"a", "b", "c"};
         boolean started = false;
+        boolean closed = false;
         try {
             int steps = 20 + random.nextInt(40);
             List<PendingAdd> pending = new ArrayList<>();
@@ -148,10 +161,9 @@ class ControlScenarioHarnessTest {
                 int op = random.nextInt(10);
                 String name = names[random.nextInt(names.length)];
                 if (!started && (op == 9 || step == steps / 3)) {
-                    group.onStart();
                     started = true;
-                    script.add("start");
-                } else if (op < 4) {
+                    closed = startOrClose(group, script);
+                } else if (op < 3) {
                     // admission and enqueue are two steps on two threads in the server: a stop can land between them
                     ProcessorRegistration reg = reservations.admit(name);
                     if (reg == null) {
@@ -163,17 +175,20 @@ class ControlScenarioHarnessTest {
                     boolean failStop = random.nextInt(8) == 0;
                     LedgerProc proc = new LedgerProc(name, serial, failStart, failStop);
                     all.add(proc);
+                    procOf.put(reg, proc);
+                    everAdmitted.add(reg);
                     PendingAdd add = new PendingAdd(name, reg, proc, step + random.nextInt(3));
                     pending.add(add);
                     script.add("admit " + name + "#" + serial + (failStart ? " failStart" : "") + (failStop ? " failStop" : "")
                             + " enqueue@" + add.enqueueAt);
-                } else if (op < 7) {
+                } else if (op < 5) {
                     ProcessorRegistration reg = reservations.table.get(name);
                     if (reg == null) {
                         script.add("stop " + name + ": nothing reserved");
                         continue;
                     }
                     group.removeEventProcessorByName(name, reg, null);
+                    legitimatelyStopped.add(procOf.get(reg));
                     for (PendingAdd add : pending) {
                         if (add.reg == reg) {
                             add.overtaken = true;
@@ -181,7 +196,26 @@ class ControlScenarioHarnessTest {
                         }
                     }
                     script.add("stop " + name + " gen " + reg.generation());
-                } else if (started) {
+                } else if (op == 5 && !everAdmitted.isEmpty()) {
+                    // a stop bound to a registration chosen from history: stale unless it is still the reserved one
+                    ProcessorRegistration reg = everAdmitted.get(random.nextInt(everAdmitted.size()));
+                    boolean current = reservations.table.get(reg.name()) == reg;
+                    group.removeEventProcessorByName(reg.name(), reg, null);
+                    if (current) legitimatelyStopped.add(procOf.get(reg));
+                    script.add((current ? "stop " : "stale stop ") + reg.name() + " gen " + reg.generation());
+                } else if (op == 6) {
+                    String svc = "svc-" + random.nextInt(3);
+                    Service<Runnable> service = new Service<>(() -> { }, Runnable.class, svc);
+                    if (random.nextBoolean()) group.broadcastServiceRegistered(service);
+                    else group.broadcastServiceDeregistered(service);
+                    script.add("broadcast " + svc);
+                } else if (op == 7) {
+                    AtomicInteger ran = new AtomicInteger();
+                    ControlRequest run = group.control().send(new ControlRequest(ControlRequest.Kind.RUN, "task",
+                            RunIntent::new, (Runnable) ran::incrementAndGet));
+                    runs.put(run, ran);
+                    script.add("run task " + run.requestId());
+                } else if (started && !closed) {
                     int cycles = 1 + random.nextInt(3);
                     for (int c = 0; c < cycles; c++) group.doWork();
                     script.add("doWork x" + cycles);
@@ -198,12 +232,21 @@ class ControlScenarioHarnessTest {
                 script.add("enqueue " + add.name + "#" + add.proc.serial + " gen " + add.reg.generation());
             }
             if (!started) {
-                group.onStart();
-                script.add("start");
+                started = true;
+                closed = startOrClose(group, script);
             }
-            for (int i = 0; i < 200 && !group.control().isEmpty(); i++) group.doWork();
-            group.onClose();
-            script.add("close");
+            if (!closed && random.nextBoolean()) {
+                // half the runs close with requests still queued: the close must answer them through the rules
+                for (int i = 0; i < 200 && !group.control().isEmpty(); i++) group.doWork();
+                script.add("drained");
+            }
+            Map<LedgerProc, Integer> stopsBeforeClose = new IdentityHashMap<>();
+            for (LedgerProc p : all) stopsBeforeClose.put(p, p.stops.get());
+            if (!closed) {
+                group.onClose();
+                closed = true;
+                script.add("close");
+            }
 
             // ---- ledger verdict: every instance started at most once, released exactly once if it started
             for (LedgerProc p : all) {
@@ -217,12 +260,24 @@ class ControlScenarioHarnessTest {
                 if (p.failStart) {
                     assertEquals(0, p.stops.get(), "seed " + seed + ": " + who + " failed to start but was stopped\n" + script);
                 }
+                // rule 7: a stop affects only the registration it was bound to; a stale stop never stops a replacement
+                if (stopsBeforeClose.get(p) > 0) {
+                    assertTrue(legitimatelyStopped.contains(p), "seed " + seed + ": " + who
+                            + " was stopped before the close, but no stop was bound to its registration\n" + script);
+                }
             }
             // scenario expectation from the rules table (stopBeforeAdd, addCancelled): an add whose stop was sent
             // before the add was queued never starts and never runs its processor
             for (LedgerProc p : overtaken) {
                 assertEquals(0, p.starts.get(), "seed " + seed + ": " + p.name + "#" + p.serial
                         + " started although its stop overtook its add\n" + script);
+            }
+            // a task runs exactly when it is answered APPLIED, and never otherwise
+            for (Map.Entry<ControlRequest, AtomicInteger> e : runs.entrySet()) {
+                ControlReply answer = e.getKey().reply().getNow(null);
+                assertTrue(answer != null, "seed " + seed + ": task " + e.getKey().requestId() + " never answered\n" + script);
+                assertEquals(answer.applied() ? 1 : 0, e.getValue().get(), "seed " + seed + ": task "
+                        + e.getKey().requestId() + " answered " + answer + " but ran " + e.getValue().get() + " times\n" + script);
             }
             assertTrue(reservations.table.isEmpty(), "seed " + seed + ": names still reserved after close: "
                     + reservations.table.keySet() + "\n" + script);
@@ -239,9 +294,22 @@ class ControlScenarioHarnessTest {
                         + "\n" + script);
             }
         } finally {
-            if (group.control().state() != ControlDriver.GroupState.CLOSED) {
+            if (!closed) {
                 try { group.onClose(); } catch (Throwable ignored) { }
             }
+        }
+    }
+
+    /** Start the group; a boot failure under fail-fast closes it, as Agrona does when onStart throws. */
+    private static boolean startOrClose(ComposingEventProcessorAgent group, List<String> script) {
+        try {
+            group.onStart();
+            script.add("start");
+            return false;
+        } catch (ProcessorStartException e) {
+            group.onClose();
+            script.add("start failed fast, group closed");
+            return true;
         }
     }
 

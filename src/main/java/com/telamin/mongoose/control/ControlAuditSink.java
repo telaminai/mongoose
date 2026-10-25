@@ -50,7 +50,7 @@ public final class ControlAuditSink implements LogRecordListener {
     @Override
     public synchronized void processLogRecord(LogRecord logRecord) {
         try {
-            add(logRecord.asCharSequence().toString());
+            add(withoutRawEventText(logRecord.asCharSequence().toString()));
         } catch (RuntimeException e) {
             sinkFailures++;
             if (firstSinkFailure == null) firstSinkFailure = e.toString();
@@ -78,6 +78,31 @@ public final class ControlAuditSink implements LogRecordListener {
         }
         add(b.toString());
     }
+
+    /**
+     * Drop the runtime's {@code eventToString} line, and any continuation lines, from a record. It is printed unquoted
+     * (some records ignore {@code printEventToString(false)}, such as an exported function's multi-line signature), so
+     * it can make a record unreadable as YAML; every control field is already recorded, quoted, by the nodes.
+     */
+    static String withoutRawEventText(String record) {
+        if (!record.contains("\n    eventToString:")) return record;
+        StringBuilder out = new StringBuilder(record.length());
+        boolean skipping = false;
+        for (String line : record.split("\n", -1)) {
+            if (line.startsWith("    eventToString:")) {
+                skipping = true;
+                continue;
+            }
+            // the record's next field (four spaces, a name, a colon) ends the event text
+            if (skipping && !RECORD_FIELD.matcher(line).lookingAt()) continue;
+            skipping = false;
+            if (out.length() > 0) out.append('\n');
+            out.append(line);
+        }
+        return out.toString();
+    }
+
+    private static final java.util.regex.Pattern RECORD_FIELD = java.util.regex.Pattern.compile("^    [A-Za-z]+:");
 
     private void add(String text) {
         total++;

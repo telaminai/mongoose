@@ -197,6 +197,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         ControlRequest request = new ControlRequest(ControlRequest.Kind.ADD,
                 "add " + (registration == null || registration.name() == null ? "<unnamed>" : registration.name()),
                 id -> addIntent(id, registration), new AddPayload(initFunction, registration));
+        if (registration != null) request.onUnapplied(registration::releaseName);   // refused or swept unapplied
         return control.send(request);
     }
 
@@ -270,8 +271,11 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             long generation = generations.incrementAndGet();
             return new AddIntent(requestId, generation, 0, null, false, bootDraining, bootFailFast, true);
         }
-        registrationsByGeneration.put(registration.generation(), registration);
         boolean cancelled = registration.cancelled;
+        if (!cancelled) {
+            // a cancelled add's registration was released by its cancel: never re-insert it
+            registrationsByGeneration.put(registration.generation(), registration);
+        }
         registration.startTaken = true;
         return new AddIntent(requestId, registration.generation(), registration.incarnation(), registration.name(),
                 cancelled, bootDraining, bootFailFast, false);
@@ -279,7 +283,11 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
 
     private StopIntent stopIntent(long requestId, String name, ProcessorRegistration registration) {
         if (registration != null) {
-            registrationsByGeneration.putIfAbsent(registration.generation(), registration);
+            if (!registration.startTaken) {
+                // a stop overtaking its add needs the registration for its CancelRegistration and ReleaseName effects;
+                // a stale stop of a released registration must not re-insert it
+                registrationsByGeneration.putIfAbsent(registration.generation(), registration);
+            }
             return new StopIntent(requestId, registration.generation(), name, true, registration.startTaken);
         }
         // no registration: the control processor resolves the name against what is running when the stop is applied
@@ -408,6 +416,11 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         control.markDead("cleanup after the agent thread ended");
         control.failClaimed("group died");
         stopAndTearDownProcessors();
+        // the dead group's processors are released: so are their names
+        for (ProcessorRegistration registration : registrationsByGeneration.values()) {
+            registration.releaseName();
+        }
+        registrationsByGeneration.clear();
         control.audit().fallback("CleanedUp", "group", roleName(), "processorsLeft", registeredEventProcessors.size());
     }
 
@@ -472,8 +485,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                 yield result(e, ControlOutcome.SUCCEEDED, null);
             }
             case ControlEffect.Reply e -> {
-                control.reply(e.requestId(), e.outcome(), e.reason(), e.generation(), e.name());
-                yield result(e, ControlOutcome.SUCCEEDED, e.outcome().name());
+                boolean delivered = control.reply(e.requestId(), e.outcome(), e.reason(), e.generation(), e.name());
+                yield delivered ? result(e, ControlOutcome.SUCCEEDED, e.outcome().name())
+                        : result(e, ControlOutcome.FAILED, "not claimed: answered earlier");
             }
         };
     }

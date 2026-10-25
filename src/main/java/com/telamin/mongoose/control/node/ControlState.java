@@ -38,7 +38,7 @@ public class ControlState {
     }
 
     /** What a request is waiting for: the next step is decided when the outcome of its current effect arrives. */
-    public enum ChainKind { ADD, ADD_FAILED, STOP, CANCEL, CLOSE, BROADCAST, RUN }
+    public enum ChainKind { ADD, REFUSED_ADD, STOP, CANCEL, CLOSE, BROADCAST, RUN }
 
     /** A request whose reply depends on effect outcomes still to come. */
     public static final class Chain {

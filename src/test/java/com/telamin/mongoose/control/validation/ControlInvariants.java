@@ -45,13 +45,35 @@ public final class ControlInvariants {
         }
         Map<Long, List<Rec>> replies = new HashMap<>();
         for (Rec r : evidence.records()) {
-            if (r.type().equals("Reply") || (r.fallback() && FALLBACK_REPLIES.contains(r.type()) && r.num("requestId") >= 0)) {
+            boolean delivered = r.type().equals("Reply") && !Boolean.FALSE.equals(r.fields().get("completed"));
+            if (delivered || (r.fallback() && FALLBACK_REPLIES.contains(r.type()) && r.num("requestId") >= 0)) {
                 replies.computeIfAbsent(r.requestId(), k -> new ArrayList<>()).add(r);
             }
         }
-        // I13: no command is replied twice
+        // I11: nothing happens for a request after its reply: the reply comes only once every effect it depends on has
+        // its final outcome
+        Map<Long, Long> replySeq = new HashMap<>();
+        for (Rec r : evidence.ofType("Reply")) {
+            if (!Boolean.FALSE.equals(r.fields().get("completed"))) replySeq.putIfAbsent(r.requestId(), r.seq());
+        }
+        for (Rec r : evidence.records()) {
+            if (r.fallback() || r.type().equals("Reply")) continue;
+            Long at = replySeq.get(r.requestId());
+            if (at != null && r.seq() > at && !"Input".equals(r.type())) {
+                violations.add("I11 request " + r.requestId() + " has a " + r.type() + " (seq " + r.seq()
+                        + ") after its reply (seq " + at + "): " + r);
+            }
+        }
+        // I13: no command is replied twice, and the rules ask for its reply only once
         replies.forEach((req, list) -> {
             if (list.size() > 1) violations.add("I13 request " + req + " replied " + list.size() + " times: " + list);
+        });
+        Map<Long, Integer> replyRequests = new HashMap<>();
+        for (Requested q : evidence.requested()) {
+            if ("Reply".equals(q.effect())) replyRequests.merge(q.requestId(), 1, Integer::sum);
+        }
+        replyRequests.forEach((req, count) -> {
+            if (count > 1) violations.add("I13 request " + req + " had its reply requested " + count + " times");
         });
         // I2: every command input has exactly one reply
         if (evidence.complete()) {
@@ -84,6 +106,23 @@ public final class ControlInvariants {
                     violations.add("I9 effect " + q.opId() + " outcome (seq " + o.seq() + ") precedes its decision (seq "
                             + q.decisionSeq() + ")");
                 }
+            }
+        }
+        // I12: the effects one decision requested get their outcomes in the order they were requested (a close releases
+        // in add order)
+        Map<Long, List<Requested>> byDecision = new HashMap<>();
+        for (Requested q : requested) byDecision.computeIfAbsent(q.decisionSeq(), k -> new ArrayList<>()).add(q);
+        for (List<Requested> batch : byDecision.values()) {
+            long last = -1;
+            for (Requested q : batch) {
+                long at = outcomes.getOrDefault(q.opId(), List.of()).stream().filter(o -> !o.fallback())
+                        .mapToLong(Rec::seq).min().orElse(-1);
+                if (at < 0) continue;
+                if (at < last) {
+                    violations.add("I12 effect " + q.opId() + " " + q.effect() + " got its outcome (seq " + at
+                            + ") before an effect requested ahead of it in the same decision");
+                }
+                last = Math.max(last, at);
             }
         }
         // I6: every effect of an add or stop targets only the generation that request was bound to

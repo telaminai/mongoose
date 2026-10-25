@@ -445,6 +445,9 @@ public final class LifecycleManager {
 
     private static void closeGroup(String kind, String name, GroupRunner group) {
         log.info("stopping composing " + kind + " " + name);
+        if (group.getGroup() instanceof com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent processors) {
+            processors.control().beginClosing();   // senders are answered NOT_RUNNING from here on
+        }
         try {
             group.getGroupRunner().close();
         } catch (Throwable t) {

@@ -38,6 +38,7 @@ public final class ControlRequest {
     private final CompletableFuture<ControlReply> reply = new CompletableFuture<>();
     private volatile long requestId = -1;
     private volatile Runnable onReply;
+    private volatile Runnable onUnapplied;
 
     /**
      * @param intentOnAgent builds the intent from the request id; called on the agent thread when the request is
@@ -80,6 +81,20 @@ public final class ControlRequest {
     public ControlRequest onReply(Runnable action) {
         this.onReply = action;
         return this;
+    }
+
+    /**
+     * Run once if the request is answered without ever being applied (refused at send, swept at close or death): what
+     * the sender reserved for it, such as a name, must not outlive it.
+     */
+    public ControlRequest onUnapplied(Runnable action) {
+        this.onUnapplied = action;
+        return this;
+    }
+
+    void runUnapplied() {
+        Runnable action = onUnapplied;
+        if (action != null) action.run();
     }
 
     /** The reply, completed exactly once. Callers must not run blocking or re-entrant work on the completing thread. */
