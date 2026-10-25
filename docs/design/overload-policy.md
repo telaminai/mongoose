@@ -1,7 +1,7 @@
 # Overload and loss policy for the data path
 
 Issue: [telaminai/mongoose#79](https://github.com/telaminai/mongoose/issues/79) (split from #77).
-Status: milestones 1 and 2 implemented on `feature/79-overload-policy`; milestones 3 and 4 proposed.
+Status: milestones 1, 2 and 3 implemented on `feature/79-overload-policy`; milestone 4 (client configuration guide) proposed.
 Scope: the Mongoose dispatch layer (`EventToQueuePublisher`, `EventFlowManager`) and feed configuration. No change
 to generated processors, the control plane or the lifecycle phases.
 
@@ -17,8 +17,9 @@ implementation follows them. The product owner has not yet confirmed them.
 | D1 | Ship `BLOCK_WITH_DEADLINE` first. Unbounded `BLOCK` is not in this implementation. | implemented |
 | D2 | The default stays `DROP_AFTER_SPIN`, byte for byte today's behaviour. A configured feed with no explicit policy gets a one-time boot warning. | implemented |
 | D3 | A new `OverloadPolicy` type. `SlowConsumerStrategy.BACKOFF` maps to `DROP_AFTER_SPIN` with a warning. `DISCONNECT` and `EXIT_PROCESS` fail boot until they are implemented. | implemented |
-| D4 | Never-drop feeds latch DEGRADED until an operator clears them. Drop-tolerant feeds recover after a quiet period. | proposed (milestone 3) |
-| D5 | A kill-switch hook on loss from a never-drop feed: configurable, off by default. | proposed (milestone 3) |
+| D4 | Never-drop feeds latch DEGRADED until an operator clears them. Drop-tolerant feeds recover after a quiet period. | implemented (milestone 3) |
+| D5 | A kill-switch hook on loss from a never-drop feed: configurable, off by default. | implemented (milestone 3) |
+| — | Dropped items keep their journal entry and sequence number. A recording marks the loss with a `Dropped` entry, so a replay names it. | implemented (milestone 3) |
 
 ## 2. Current behaviour (before #79)
 
@@ -169,11 +170,13 @@ proposed.
 | --- | --- |
 | Drops under any policy, including downgraded ones: the PR #76 per-queue counter, health check and first-drop `QueueDrop` audit | implemented (unchanged) |
 | `refusedCount()`, `refusedCount(queue)`, `downgradedCount()` on the publisher; a warning on the first refusal per binding and the first downgrade per publisher | implemented |
-| `MongooseCountersService` counters for refusals, blocks, blocked time total and max, and downgrades | proposed (milestone 3) |
-| Health latch: a never-drop feed (any blocking binding) stays DEGRADED on a refusal or downgraded drop until an operator clears it; drop-tolerant feeds return to UP after a configurable quiet period (D4) | proposed (milestone 3) |
-| One structured log line and one control-audit record per policy state change (UP to DEGRADED, cleared), not per event | proposed (milestone 3) |
-| Kill-switch hook on loss from a never-drop feed: configurable, off by default (D5) | proposed (milestone 3) |
-| A recorded processor's input-queue drop appends a `Failed` entry, so replay stops at the loss | proposed |
+| `MongooseCountersService` counters per queue, `queue.{path}.refused`, `.blocked` (waits, delivered or refused), `.blockedNanos` (total) and `.blockedMaxNanos`; per feed, `feed.{name}.downgraded` (publishes that would have waited) | implemented |
+| Loss state per queue (`OverloadState`). A **never-drop** queue (`BLOCK_WITH_DEADLINE` binding) goes to `LATCHED` on a refusal, a downgraded drop or a dropped cache replay, and stays there until an operator clears it. A **drop-tolerant** queue goes to `DEGRADED` on a drop and returns to `UP` once the feed's `quietPeriodMillis` (default 60 s) passes with no further loss. The quiet-period recovery is applied when the state is read (by the health check, `overload.status`, or the API), so its record appears then. A refusal at shutdown changes no state. | implemented |
+| Health: the per-queue check (`queue-drops:{path}`) reports the state. `LATCHED` is DEGRADED with "latched until cleared". As before, it is UNKNOWN while counters are disabled, and the health service caches a status for 1 s. | implemented |
+| Operator clear: admin `overload.clear <feed>`, `MongooseServer.clearOverloadState(feed)`. Status: admin `overload.status`, `MongooseServer.overloadStates()`. Counters are not reset. | implemented |
+| One structured log line (`overload state: feed=… queue=… group=… from=… to=… reason=…`; WARNING, or INFO back to UP) and one `OverloadState` audit record per state change, never per event. Records go to the publisher's `getStateAudit()` and to the subscribing group's control audit. PR #76's `QueueDrop` first-loss records are unchanged. | implemented |
+| Kill switch (D5): a feed with `killSwitch: true` calls the hook set with `MongooseServer.setOverloadKillSwitch` when a never-drop queue enters `LATCHED`, once per latch. The hook gets an `OverloadLoss` and runs on the daemon thread `mongoose-overload-kill-switch`, never under a publish lock. Off by default. A feed that enables it with no hook set is warned after start. | implemented |
+| Recording (owner decision): in RECORD mode, a drop keeps its journal entry and sequence number. The publisher marks the queue's producer position (`DropMarks`). The reader, on its group thread, appends one `ReplayEntry.Dropped` to each recorded processor once every item offered before the drop has been dispatched. The entry names the count, the sequence range and the reason, and consecutive drops are coalesced; it is also stored in CSV as `DROPPED`. A replay reports the loss (`GroupReplayer.losses(processor)`) and **carries on**. The processor never received those items, so its recorded stream is still reproducible. A terminal `Failed` entry was tried first: it stopped the chaos replay stress test (`ChaosReplayStressTest`) at the first drop, for no gain in fidelity. CSV readers older than this change reject a `DROPPED` row rather than misread it. | implemented |
 
 ## 9. The default path is unchanged
 
@@ -206,6 +209,8 @@ eventFeeds:
       policy: BLOCK_WITH_DEADLINE      # or DROP_AFTER_SPIN
       blockDeadlineMillis: 250         # required for, and only for, BLOCK_WITH_DEADLINE
       spinBoundMillis: 10              # optional; default 10; may be 0
+      quietPeriodMillis: 60000         # feed level; drop-tolerant queues recover after this
+      killSwitch: false                # feed level; true calls MongooseServer.setOverloadKillSwitch's hook on a latch
       subscribers:                     # optional overrides, keyed by processor group name
         telemetryGroup:
           policy: DROP_AFTER_SPIN
@@ -264,3 +269,5 @@ Rules:
 | Default parity, configurable spin bound | `dispatch/OverloadDefaultParityTest` |
 | YAML and builders, validation, `SlowConsumerStrategy` mapping, boot failure, boot wiring, compatible constructors | `config/OverloadPolicyConfigTest` |
 | Deadline expiry, room freed mid-wait, unsubscribe while waiting, shutdown while waiting, agent-thread downgrade, no duplicate on retry, pooled refusal, slow subscriber under an override | `dispatch/BlockWithDeadlineTest` (real threads) |
+| Review of 35bdeb2: nesting across publishers and within one, pooled reset contract, downgrade counting, cache replay, deadline re-read, wake on removal, interrupt, policy change while waiting | `dispatch/OverloadReviewRegressionTest` |
+| Latch and quiet period, health, counters, state-change log and audit, operator clear, kill switch (on, off by default, not at shutdown), the recording `Failed` marker | `dispatch/OverloadHealthAndKillSwitchTest` |

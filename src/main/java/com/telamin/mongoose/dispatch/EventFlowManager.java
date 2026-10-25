@@ -209,6 +209,48 @@ public class EventFlowManager {
      * Refuse every publish waiting for room in a BLOCK_WITH_DEADLINE queue, now and from now on (telaminai/mongoose#79).
      * Idempotent; never waits for a dispatch.
      */
+    private volatile OverloadKillSwitch killSwitch;
+
+    /** The hook for never-drop losses on feeds with the kill switch on (#79 D5); null removes it. */
+    public void setOverloadKillSwitch(OverloadKillSwitch killSwitch) {
+        this.killSwitch = killSwitch;
+        eventSourceToQueueMap.values().forEach(p -> p.queuePublisher().setKillSwitch(killSwitch));
+    }
+
+    public OverloadKillSwitch overloadKillSwitch() {
+        return killSwitch;
+    }
+
+    /** Feeds whose overload settings turn the kill switch on. */
+    public java.util.Set<String> killSwitchFeeds() {
+        java.util.Set<String> feeds = new java.util.TreeSet<>();
+        overloadByFeed.forEach((feed, s) -> { if (s.killSwitchOnLoss()) feeds.add(feed); });
+        return feeds;
+    }
+
+    /**
+     * Operator clear of feed {@code sourceName}'s overload health (#79 D4): every DEGRADED or LATCHED queue returns to
+     * UP. Returns the number of queues cleared, or -1 when no such feed is registered.
+     */
+    public int clearOverloadState(String sourceName) {
+        EventSource_QueuePublisher<?> p = eventSourceToQueueMap.get(new EventSourceKey<>(sourceName));
+        return p == null ? -1 : p.queuePublisher().clearOverloadState();
+    }
+
+    /** Per feed and queue, the overload state: for the admin {@code overload.status} command. */
+    public java.util.Map<String, java.util.Map<String, OverloadState>> overloadStates() {
+        java.util.Map<String, java.util.Map<String, OverloadState>> states = new java.util.TreeMap<>();
+        eventSourceToQueueMap.forEach((key, p) -> {
+            java.util.Map<String, OverloadState> queues = new java.util.TreeMap<>();
+            for (EventToQueuePublisher.NamedQueue q : p.queuePublisher().getTargetQueues()) {
+                OverloadState s = p.queuePublisher().overloadState(q.name());
+                if (s != null) queues.put(q.name(), s);
+            }
+            states.put(key.sourceName(), queues);
+        });
+        return states;
+    }
+
     /** Per feed, the overload override groups that have never bound a subscriber queue (review finding 6). */
     public java.util.Map<String, java.util.Set<String>> unboundOverloadOverrides() {
         java.util.Map<String, java.util.Set<String>> unbound = new java.util.TreeMap<>();
@@ -325,6 +367,8 @@ public class EventFlowManager {
         if (overload != null) {
             queuePublisher.setOverload(overload);
         }
+        queuePublisher.downgradeCounter(countersService.feedDowngradeCounter(sourceName));
+        queuePublisher.setKillSwitch(killSwitch);
         // R3: a journalled feed's items are journalled once, and carry their sequence number to every queue
         if (replayConfig.mode() == ReplayConfig.Mode.RECORD && replayConfig.journalled(sourceName)) {
             queuePublisher.journal(replayConfig.journal(), replayConfig.journalledFeeds().get(sourceName));
@@ -367,15 +411,29 @@ public class EventFlowManager {
         var drops = countersService.queueDropCounter(path);
         var groupAudit = subscriber instanceof com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent group
                 ? group.control().audit() : null;
-        sourcePublisher.queuePublisher().addTargetQueue(eventQueue, name, drops, groupAudit, subscriber.roleName(), path);
+        EventToQueuePublisher<T> queuePublisher = sourcePublisher.queuePublisher();
+        queuePublisher.addTargetQueue(eventQueue, name, drops, groupAudit, subscriber.roleName(), path);
+        // #79 M3: overload counters per queue, and in RECORD mode the drop marks its reader turns into Failed entries
+        DropMarks dropMarks = replayConfig.mode() == ReplayConfig.Mode.RECORD ? new DropMarks() : null;
+        queuePublisher.bindOverloadExtras(name, countersService.queueRefusalCounter(path),
+                countersService.queueBlockCounter(path), countersService.queueBlockedNanosGauge(path),
+                countersService.queueBlockedMaxNanosGauge(path), dropMarks);
         if (healthService != null) {
             queueDropChecks.compute(keySubscriber, (key, existing) -> {
                 if (existing == null) existing = new QueueDropCheck(healthService.registerCheck(eventSourceKey.sourceName(),
                     "queue-drops:" + path, ctx -> {
                         if (!ctx.countersOperational()) return com.telamin.mongoose.service.health.HealthStatus.unknown("counters disabled");
-                        long count = drops.get();
-                        return count == 0 ? com.telamin.mongoose.service.health.HealthStatus.up()
-                                : com.telamin.mongoose.service.health.HealthStatus.degraded(count + " item(s) dropped by queue " + path);
+                        // #79 D4: never-drop queues latch until an operator clears them; drop-tolerant queues recover
+                        // after the feed's quiet period
+                        EventToQueuePublisher.OverloadHealth h = queuePublisher.overloadHealth(path);
+                        return switch (h.state()) {
+                            case UP -> com.telamin.mongoose.service.health.HealthStatus.up();
+                            case DEGRADED -> com.telamin.mongoose.service.health.HealthStatus.degraded(h.drops()
+                                    + " item(s) dropped by queue " + path);
+                            case LATCHED -> com.telamin.mongoose.service.health.HealthStatus.degraded("never-drop queue "
+                                    + path + " lost items (" + h.drops() + " dropped, " + h.refusals() + " refused; "
+                                    + h.reason() + "); latched until cleared (overload.clear " + eventSourceKey.sourceName() + ")");
+                        };
                     }));
                 existing.bindings.add(name);
                 return existing;
@@ -391,7 +449,8 @@ public class EventFlowManager {
 
         return new EventQueueToEventProcessorAgent(eventQueue, eventMapperSupplier.get(), name, eventSourceKey.sourceName(),
                 type.name())
-                .withUnsubscribeAction(unsubscribe);
+                .withUnsubscribeAction(unsubscribe)
+                .withDropMarks(dropMarks);
     }
 
     public <T> EventQueueToEventProcessor getMappingAgent(EventSubscriptionKey<T> subscriptionKey, Agent subscriber) {

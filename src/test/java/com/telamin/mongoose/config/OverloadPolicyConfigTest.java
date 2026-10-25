@@ -237,6 +237,51 @@ class OverloadPolicyConfigTest {
     }
 
     @Test
+    void quietPeriodAndKillSwitchAreFeedLevelKeys() {
+        FeedOverloadSettings s = load("""
+                eventFeeds:
+                  - name: orders
+                    overload:
+                      policy: BLOCK_WITH_DEADLINE
+                      blockDeadlineMillis: 100
+                      quietPeriodMillis: 5000
+                      killSwitch: true
+                """).getEventFeeds().getFirst().resolveOverload();
+        assertEquals(TimeUnit.MILLISECONDS.toNanos(5000), s.quietPeriodNanos());
+        assertTrue(s.killSwitchOnLoss());
+        FeedOverloadSettings defaults = EventFeedConfig.builder().name("d")
+                .overload(OverloadPolicyConfig.dropAfterSpin(Duration.ofMillis(1))).build().resolveOverload();
+        assertEquals(FeedOverloadSettings.DEFAULT_QUIET_PERIOD_NANOS, defaults.quietPeriodNanos());
+        assertFalse(defaults.killSwitchOnLoss(), "the kill switch is off by default");
+        assertBad("may not set quietPeriodMillis or killSwitch", cfg(OverloadPolicy.DROP_AFTER_SPIN, null, null)
+                .subscriber("t", cfg(OverloadPolicy.DROP_AFTER_SPIN, null, null).killSwitch(true)));
+        assertBad("overload.quietPeriodMillis must be >= 0", cfg(OverloadPolicy.DROP_AFTER_SPIN, null, null)
+                .quietPeriod(Duration.ofMillis(-1)));
+    }
+
+    @Test
+    void killSwitchEnabledWithoutAHookIsWarnedAfterStartAndServerExposesStatusAndClear() throws Exception {
+        var source = new CapturingSource();
+        var config = MongooseServerConfig.builder()
+                .addEventFeed(EventFeedConfig.builder().instance(source).name("orders")
+                        .overload(OverloadPolicyConfig.blockWithDeadline(Duration.ofMillis(250)).killSwitch(true))
+                        .build())
+                .build();
+        try (Captured started = new Captured(MongooseServer.class)) {
+            MongooseServer server = MongooseServer.bootServer(config, rec -> { });
+            try {
+                assertTrue(started.contains("overload kill switch enabled for feeds [orders] but no hook is set"),
+                        started.messages());
+                assertTrue(server.overloadStates().containsKey("orders"));
+                assertEquals(0, server.clearOverloadState("orders"));
+                assertEquals(-1, server.clearOverloadState("nope"));
+            } finally {
+                server.stop();
+            }
+        }
+    }
+
+    @Test
     void preOverloadAllArgumentConstructorsAreKept() throws Exception {
         assertNotNull(EventFeedConfig.class.getConstructor(Object.class, String.class, boolean.class, boolean.class,
                 EventSource.EventWrapStrategy.class, EventSource.SlowConsumerStrategy.class, Function.class, String.class,

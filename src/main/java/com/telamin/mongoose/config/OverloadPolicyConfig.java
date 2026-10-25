@@ -52,6 +52,13 @@ public class OverloadPolicyConfig {
     private Long spinBoundMillis;
     /** Overrides keyed by subscriber (processor) group name; an override may not nest further overrides. */
     private Map<String, OverloadPolicyConfig> subscribers;
+    /**
+     * Feed level only: how long a drop-tolerant queue stays DEGRADED after its last loss (default 60000). Never-drop
+     * queues latch until an operator clears them.
+     */
+    private Long quietPeriodMillis;
+    /** Feed level only: call the server's overload kill switch when a never-drop queue latches (default false). */
+    private Boolean killSwitch;
 
     public static OverloadPolicyConfig dropAfterSpin(Duration spinBound) {
         OverloadPolicyConfig cfg = new OverloadPolicyConfig();
@@ -92,10 +99,34 @@ public class OverloadPolicyConfig {
                 if (e.getValue().getSubscribers() != null && !e.getValue().getSubscribers().isEmpty()) {
                     throw new ConfigurationException("feed '" + feed + "': " + where + " may not nest subscribers");
                 }
+                if (e.getValue().getQuietPeriodMillis() != null || e.getValue().getKillSwitch() != null) {
+                    throw new ConfigurationException("feed '" + feed + "': " + where
+                            + " may not set quietPeriodMillis or killSwitch (feed level only)");
+                }
                 overrides.put(e.getKey(), e.getValue().toSettings(feed, where));
             }
         }
-        return new FeedOverloadSettings(feedDefault, overrides);
+        long quietNanos = FeedOverloadSettings.DEFAULT_QUIET_PERIOD_NANOS;
+        if (quietPeriodMillis != null) {
+            if (quietPeriodMillis < 0) {
+                throw new ConfigurationException("feed '" + feed + "': overload.quietPeriodMillis must be >= 0, was "
+                        + quietPeriodMillis);
+            }
+            quietNanos = TimeUnit.MILLISECONDS.toNanos(quietPeriodMillis);
+        }
+        return new FeedOverloadSettings(feedDefault, overrides, quietNanos, Boolean.TRUE.equals(killSwitch));
+    }
+
+    /** Feed level: the quiet period before a drop-tolerant queue's health recovers. */
+    public OverloadPolicyConfig quietPeriod(Duration quietPeriod) {
+        this.quietPeriodMillis = quietPeriod.toMillis();
+        return this;
+    }
+
+    /** Feed level: call the server's overload kill switch when a never-drop queue latches. */
+    public OverloadPolicyConfig killSwitch(boolean on) {
+        this.killSwitch = on;
+        return this;
     }
 
     private OverloadSettings toSettings(String feed, String where) {

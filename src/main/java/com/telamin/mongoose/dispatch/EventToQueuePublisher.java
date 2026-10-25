@@ -50,6 +50,9 @@ public class EventToQueuePublisher<T> {
     /** Bounded first-drop evidence for direct publishers and subscribers without a processor control audit. */
     private final com.telamin.mongoose.control.ControlAuditSink dropAudit =
             new com.telamin.mongoose.control.ControlAuditSink();
+    /** One {@code OverloadState} record per loss-state change of a queue (#79 M3); also on the group's control audit. */
+    private final com.telamin.mongoose.control.ControlAuditSink stateAudit =
+            new com.telamin.mongoose.control.ControlAuditSink();
 
     private final List<NamedFeedEvent<?>> eventLog = new ArrayList<>();
     private final String name;
@@ -158,6 +161,11 @@ public class EventToQueuePublisher<T> {
     private final java.util.Set<String> boundGroups = new java.util.HashSet<>();
     @Getter(lombok.AccessLevel.NONE)
     private boolean cacheReplayWarned;
+    private static final MongooseCounter NO_COUNTER = NoOpCountersService.INSTANCE.counter("noop");
+    @Getter(lombok.AccessLevel.NONE)
+    private volatile MongooseCounter downgradeCounter = NO_COUNTER;
+    @Getter(lombok.AccessLevel.NONE)
+    private volatile OverloadKillSwitch killSwitch;
     /** The feed's policy and per-group overrides. Written under the publish lock. */
     @Getter(lombok.AccessLevel.NONE)
     private FeedOverloadSettings overload = FeedOverloadSettings.DEFAULT;
@@ -273,10 +281,192 @@ public class EventToQueuePublisher<T> {
     /** Wake every publish waiting for room, so it re-evaluates (a target, the policy or {@link #closing} changed). */
     /** A downgraded publish that would have waited (M3 hook: counters and health). Under the publish lock. */
     private void onDowngrade(String downgrade) {
+        increment(downgradeCounter);
     }
 
     /** A blocking publish waited {@code waitedNanos} and was then delivered (M3 hook). Under the publish lock. */
     private void onWaited(NamedQueue blocker, long waitedNanos) {
+        QueueDrops binding = queueDrops.get(blocker);
+        if (binding != null) {
+            recordWait(binding, waitedNanos);
+        }
+    }
+
+    /** One wait for room in {@code binding}'s queue, delivered or refused. Under the publish lock. */
+    private static void recordWait(QueueDrops binding, long waitedNanos) {
+        binding.blocks++;
+        binding.blockedNanosTotal += waitedNanos;
+        binding.blockedNanosMax = Math.max(binding.blockedNanosMax, waitedNanos);
+        increment(binding.blockCounter);
+        setOrdered(binding.blockedNanosGauge, binding.blockedNanosTotal);
+        setOrdered(binding.blockedMaxNanosGauge, binding.blockedNanosMax);
+    }
+
+    private static void increment(MongooseCounter counter) {
+        try {
+            counter.increment();
+        } catch (RuntimeException failed) {
+            log.warning("overload counter failed: " + failed);
+        }
+    }
+
+    private static void setOrdered(MongooseCounter counter, long value) {
+        try {
+            counter.setOrdered(value);
+        } catch (RuntimeException failed) {
+            log.warning("overload gauge failed: " + failed);
+        }
+    }
+
+    /**
+     * A loss on a binding (decision D4): a never-drop (BLOCK_WITH_DEADLINE) binding latches until an operator clears it;
+     * a drop-tolerant one is DEGRADED until its quiet period passes. One log line and one audit record per state change,
+     * and, on a feed with the kill switch on, the hook on entering LATCHED. Under the publish lock.
+     */
+    private void loss(NamedQueue queue, QueueDrops binding, String kind, long sequence, String reason) {
+        long now = System.nanoTime();
+        binding.lastLossNanos = now;
+        OverloadState to = binding.settings.blocks() ? OverloadState.LATCHED : OverloadState.DEGRADED;
+        if (binding.state == to || binding.state == OverloadState.LATCHED) {
+            return;
+        }
+        changeState(queue, binding, to, kind + ": " + reason);
+        OverloadKillSwitch hook = killSwitch;
+        if (to == OverloadState.LATCHED && overload.killSwitchOnLoss() && hook != null) {
+            OverloadLoss event = new OverloadLoss(name, queue.name(), binding.group, kind, sequence, reason,
+                    System.currentTimeMillis());
+            KillSwitchThread.submit(hook, event);
+        }
+    }
+
+    private void changeState(NamedQueue queue, QueueDrops binding, OverloadState to, String why) {
+        OverloadState from = binding.state;
+        binding.state = to;
+        binding.stateReason = why;
+        String line = "overload state: feed=" + name + " queue=" + queue.name() + " group=" + binding.group
+                + " from=" + from + " to=" + to + " reason=" + why;
+        if (to == OverloadState.UP) {
+            log.info(line);
+        } else {
+            log.warning(line);
+        }
+        Object[] fields = {"feed", name, "queue", queue.name(), "queuePath", binding.path, "group", binding.group,
+                "from", from.name(), "to", to.name(), "reason", why, "epochMillis", System.currentTimeMillis()};
+        stateAudit.fallback("OverloadState", fields);
+        if (binding.groupAudit != null) binding.groupAudit.fallback("OverloadState", fields);
+    }
+
+    /** Drop-tolerant bindings whose quiet period has passed return to UP. Under the publish lock. */
+    private void refreshStates() {
+        long now = System.nanoTime();
+        long quiet = overload.quietPeriodNanos();
+        for (var e : queueDrops.entrySet()) {
+            QueueDrops b = e.getValue();
+            if (b.state == OverloadState.DEGRADED && now - b.lastLossNanos >= quiet) {
+                changeState(e.getKey(), b, OverloadState.UP, "quiet for " + (quiet / 1_000_000) + " ms");
+            }
+        }
+    }
+
+    /**
+     * The worst loss state of the bindings with queue path {@code path} (several callback bindings can share one
+     * queue), after applying the quiet period, with a description; UP with an empty description when none is degraded.
+     */
+    public OverloadHealth overloadHealth(String path) {
+        synchronized (publishLock) {
+            refreshStates();
+            OverloadState worst = OverloadState.UP;
+            long drops = 0, refusals = 0;
+            String reason = "";
+            for (QueueDrops b : queueDrops.values()) {
+                if (!java.util.Objects.equals(b.path, path)) continue;
+                drops += b.count;
+                refusals += b.refusals;
+                if (b.state.compareTo(worst) > 0) {
+                    worst = b.state;
+                    reason = b.stateReason;
+                }
+            }
+            return new OverloadHealth(worst, drops, refusals, reason);
+        }
+    }
+
+    /** The loss state of the binding named {@code queueName}, after applying the quiet period; null when not bound. */
+    public OverloadState overloadState(String queueName) {
+        synchronized (publishLock) {
+            refreshStates();
+            for (var e : queueDrops.entrySet()) {
+                if (e.getKey().name().equals(queueName)) return e.getValue().state;
+            }
+            return null;
+        }
+    }
+
+    /**
+     * Operator clear (decision D4): every DEGRADED or LATCHED binding of this feed returns to UP, each with its state
+     * change record. Counters are not reset. Returns how many bindings were cleared.
+     */
+    public int clearOverloadState() {
+        synchronized (publishLock) {
+            int cleared = 0;
+            for (var e : queueDrops.entrySet()) {
+                if (e.getValue().state != OverloadState.UP) {
+                    changeState(e.getKey(), e.getValue(), OverloadState.UP, "cleared by operator");
+                    cleared++;
+                }
+            }
+            return cleared;
+        }
+    }
+
+    /** Set the hook called when a never-drop queue latches, on feeds with the kill switch on (decision D5). */
+    public void setKillSwitch(OverloadKillSwitch killSwitch) {
+        this.killSwitch = killSwitch;
+    }
+
+    /** Attach the M3 counters and, in RECORD mode, the drop marks to the binding named {@code queueName}. */
+    void bindOverloadExtras(String queueName, MongooseCounter refusals, MongooseCounter blocks,
+                            MongooseCounter blockedNanos, MongooseCounter blockedMaxNanos, DropMarks marks) {
+        synchronized (publishLock) {
+            for (var e : queueDrops.entrySet()) {
+                if (!e.getKey().name().equals(queueName)) continue;
+                QueueDrops b = e.getValue();
+                b.refusalCounter = refusals;
+                b.blockCounter = blocks;
+                b.blockedNanosGauge = blockedNanos;
+                b.blockedMaxNanosGauge = blockedMaxNanos;
+                b.dropMarks = marks;
+            }
+        }
+    }
+
+    /** The feed-level downgrade counter (decision: counters for downgrades). */
+    void downgradeCounter(MongooseCounter counter) {
+        this.downgradeCounter = counter;
+    }
+
+    /** One queue's overload health. */
+    public record OverloadHealth(OverloadState state, long drops, long refusals, String reason) {
+    }
+
+    /** Runs kill-switch hooks off the publishing thread and outside any publish lock. */
+    private static final class KillSwitchThread {
+        private static final java.util.concurrent.ExecutorService EXECUTOR =
+                java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                    Thread t = new Thread(r, "mongoose-overload-kill-switch");
+                    t.setDaemon(true);
+                    return t;
+                });
+
+        static void submit(OverloadKillSwitch hook, OverloadLoss loss) {
+            EXECUTOR.execute(() -> {
+                try {
+                    hook.onNeverDropLoss(loss);
+                } catch (Throwable t) {
+                    log.log(Level.SEVERE, "overload kill switch failed for " + loss, t);
+                }
+            });
+        }
     }
 
     /** True while the current thread is inside any publisher's dispatch (see {@link #DISPATCH_DEPTH}). */
@@ -542,6 +732,16 @@ public class EventToQueuePublisher<T> {
             refusalsForFeed = ++refusedCount;
             QueueDrops binding = queueDrops.get(queue);
             refusalsForQueue = binding == null ? 0 : ++binding.refusals;
+            if (binding != null) {
+                increment(binding.refusalCounter);
+                if (waitedNanos > 0) {
+                    recordWait(binding, waitedNanos);
+                }
+                // a refusal at shutdown is reported to the caller and is not a health event: the server is stopping
+                if (reason != PublishRefusedException.Reason.SHUTDOWN) {
+                    loss(queue, binding, "refused", -1, reason + " after ~" + (waitedNanos / 1_000_000) + " ms");
+                }
+            }
         }
         if ((refusalsForQueue == 1 || refusalsForFeed == 1) && logWarning) {
             log.warning("feed " + name + ": first refused publish for queue " + queue.name() + " (" + reason
@@ -994,11 +1194,17 @@ public class EventToQueuePublisher<T> {
         if (drops == null) return;
         try { drops.counter.increment(); }
         catch (RuntimeException failed) { log.warning("queue drop counter failed for " + queue.name() + ": " + failed); }
-        if (++drops.count != 1) return;
-        Object[] fields = {"feed", name, "queue", queue.name(), "queuePath", drops.path, "group", drops.group,
-                "sequence", sequence, "dropped", 1, "reason", reason, "epochMillis", System.currentTimeMillis()};
-        dropAudit.fallback("QueueDrop", fields);
-        if (drops.groupAudit != null) drops.groupAudit.fallback("QueueDrop", fields);
+        if (drops.dropMarks != null) {
+            // RECORD mode: the reader marks the loss in its processors' recordings once it reaches this point (#79)
+            drops.dropMarks.add(queue.targetQueue().addedCount(), sequence, reason);
+        }
+        if (++drops.count == 1) {
+            Object[] fields = {"feed", name, "queue", queue.name(), "queuePath", drops.path, "group", drops.group,
+                    "sequence", sequence, "dropped", 1, "reason", reason, "epochMillis", System.currentTimeMillis()};
+            dropAudit.fallback("QueueDrop", fields);
+            if (drops.groupAudit != null) drops.groupAudit.fallback("QueueDrop", fields);
+        }
+        loss(queue, drops, "dropped", sequence, reason);
     }
 
     private static final class QueueDrops {
@@ -1010,6 +1216,18 @@ public class EventToQueuePublisher<T> {
         /** This binding's resolved overload policy; written under the publish lock. */
         OverloadSettings settings = OverloadSettings.DEFAULT;
         long refusals;
+        // ---- M3 (#79): loss state, counters, recording marks; written under the publish lock ----
+        OverloadState state = OverloadState.UP;
+        long lastLossNanos;
+        String stateReason = "";
+        MongooseCounter refusalCounter = NO_COUNTER;
+        MongooseCounter blockCounter = NO_COUNTER;
+        MongooseCounter blockedNanosGauge = NO_COUNTER;
+        MongooseCounter blockedMaxNanosGauge = NO_COUNTER;
+        long blocks;
+        long blockedNanosTotal;
+        long blockedNanosMax;
+        DropMarks dropMarks;
         QueueDrops(MongooseCounter counter, com.telamin.mongoose.control.ControlAuditSink groupAudit, String group, String path) {
             this.counter = counter; this.groupAudit = groupAudit; this.group = group; this.path = path;
         }
