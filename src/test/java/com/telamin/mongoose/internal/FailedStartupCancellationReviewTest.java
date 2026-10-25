@@ -16,11 +16,19 @@ class FailedStartupCancellationReviewTest {
         checkCancellation(true);
     }
 
-    @Test void successfulCancellationIsNotStoppedAgainAfterStartupReturns() throws Exception {
+    @Test void successfulCancellationStillNeedsFinalStopAfterStartupReturns() throws Exception {
         checkCancellation(false);
     }
 
-    @Test void cancellationAfterReplacementDoesNotRepeatRetiredStopOrStopReplacementEarly() throws Exception {
+    @Test void replacedServiceReacquiredDuringStartupStillGetsFinalCleanup() throws Exception {
+        checkReplacement(false);
+    }
+
+    @Test void failedRetirementStillAllowsDistinctFinalCleanupAfterStartup() throws Exception {
+        checkReplacement(true);
+    }
+
+    private void checkReplacement(boolean failRetirement) throws Exception {
         var config = new MongooseServerConfig();
         config.setShutdownTimeoutMillis(100);
         var server = new MongooseServer(config);
@@ -28,13 +36,19 @@ class FailedStartupCancellationReviewTest {
         var release = new CountDownLatch(1);
         AtomicInteger oldStops = new AtomicInteger();
         AtomicInteger newStops = new AtomicInteger();
+        var oldLive = new java.util.concurrent.atomic.AtomicBoolean();
         server.registerService(new Service<>(new Lifecycle() {
             public void init() { }
             public void start() {
                 entered.countDown();
                 try { release.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                oldLive.set(true);
             }
-            public void stop() { oldStops.incrementAndGet(); }
+            public void stop() {
+                int attempt = oldStops.incrementAndGet();
+                if (failRetirement && attempt == 1) throw new IllegalStateException("retirement failed");
+                oldLive.set(false);
+            }
             public void tearDown() { }
         }, Lifecycle.class, "replace-during-start"));
         server.init();
@@ -42,7 +56,8 @@ class FailedStartupCancellationReviewTest {
         Future<?> start = thread.submit(server::start);
         try {
             assertTrue(entered.await(2, TimeUnit.SECONDS));
-            server.removeService("replace-during-start");
+            if (failRetirement) assertThrows(IllegalStateException.class, () -> server.removeService("replace-during-start"));
+            else server.removeService("replace-during-start");
             server.registerService(new Service<>(new Lifecycle() {
                 public void init() { }
                 public void start() { }
@@ -56,7 +71,8 @@ class FailedStartupCancellationReviewTest {
             assertThrows(ExecutionException.class, () -> start.get(2, TimeUnit.SECONDS));
             assertTrue(server.shutdown().complete());
             assertEquals(1, newStops.get());
-            assertEquals(1, oldStops.get());
+            assertEquals(2, oldStops.get(), "the old start reacquired resources after retirement completed");
+            assertFalse(oldLive.get());
         } finally {
             release.countDown();
             thread.shutdownNow();
@@ -71,15 +87,18 @@ class FailedStartupCancellationReviewTest {
         var release = new CountDownLatch(1);
         AtomicInteger otherStops = new AtomicInteger();
         AtomicInteger cancellationStops = new AtomicInteger();
+        var live = new java.util.concurrent.atomic.AtomicBoolean();
         server.registerService(new Service<>(new Lifecycle() {
             public void init() { }
             public void start() {
                 entered.countDown();
                 try { release.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                live.set(true);
             }
             public void stop() {
-                cancellationStops.incrementAndGet();
-                if (failCancellation) throw new IllegalStateException("cancel failed");
+                int attempt = cancellationStops.incrementAndGet();
+                if (failCancellation && attempt == 1) throw new IllegalStateException("cancel failed");
+                live.set(false);
             }
             public void tearDown() { }
         }, Lifecycle.class, "blocking-start"));
@@ -99,10 +118,10 @@ class FailedStartupCancellationReviewTest {
             assertThrows(ExecutionException.class, () -> start.get(2, TimeUnit.SECONDS));
             var result = server.shutdown();
             assertEquals(1, otherStops.get(), "startup returned, so unrelated services can now be cleaned up");
-            assertEquals(!failCancellation, result.complete());
-            if (failCancellation) assertTrue(result.servicesLeftRunning().contains("blocking-start"));
+            assertTrue(result.complete(), "final cleanup succeeds even if the cancellation request failed");
+            assertFalse(live.get(), "cleanup must follow the last resource acquisition in start");
             server.shutdown();
-            assertEquals(1, cancellationStops.get(), "cancellation already attempted this service's stop");
+            assertEquals(2, cancellationStops.get(), "cancellation and post-fence cleanup are distinct attempts");
         } finally {
             release.countDown();
             thread.shutdownNow();

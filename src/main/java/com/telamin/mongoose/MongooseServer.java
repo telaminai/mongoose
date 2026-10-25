@@ -898,6 +898,36 @@ public class MongooseServer implements MongooseServerController {
         // No live or retired owner remains: its removal already completed the stop.
     }
 
+    /**
+     * Internal post-fence cleanup ownership. A start that returned after removal/cancellation may have reacquired
+     * resources. Retain that exact incarnation for one final stop even when its earlier retirement completed.
+     */
+    public Map<String, Service<?>> includeFinalStartupCleanup(Map<String, Service<?>> services, Service<?> owner) {
+        if (services.get(owner.serviceName()) == owner) return services;
+        Map<String, Service<?>> out = new java.util.LinkedHashMap<>(services);
+        RemovedService retired = null;
+        for (var entry : services.entrySet()) {
+            if (entry.getValue().instance() instanceof RemovedService removed && removed.service == owner) {
+                retired = removed;
+                out.remove(entry.getKey());
+            }
+        }
+        RemovedService retirement = retired;
+        var finalCleanup = new com.telamin.fluxtion.runtime.lifecycle.Lifecycle() {
+            public void init() { }
+            public void start() { }
+            public void tearDown() { }
+            public void stop() {
+                if (retirement == null) owner.stop();
+                else retirement.stopAfterStartup();
+            }
+        };
+        String name = "startup-final:" + owner.serviceName();
+        while (out.containsKey(name)) name = "startup-final:" + name;
+        out.put(name, new Service<>(finalCleanup, com.telamin.fluxtion.runtime.lifecycle.Lifecycle.class, name));
+        return out;
+    }
+
     /** Shutdown includes removed resources, including a stop callback already in progress. */
     private Map<String, Service<?>> shutdownServices() {
         return shutdownServices(true);
@@ -929,6 +959,13 @@ public class MongooseServer implements MongooseServerController {
         @Override public void init() { }
         @Override public void start() { }
         @Override public void tearDown() { }
+
+        /** A separate final attempt: the interrupted startup may have acquired resources after the earlier stop. */
+        private synchronized void stopAfterStartup() {
+            stopped = false;
+            stopFailure = null;
+            stop();
+        }
 
         @Override
         public synchronized void stop() {
