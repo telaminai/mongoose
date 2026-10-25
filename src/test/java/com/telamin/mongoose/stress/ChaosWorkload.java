@@ -1041,7 +1041,7 @@ final class ChaosWorkload implements AutoCloseable {
                     + audit.isComplete() + " " + result);
             if (!audit.isComplete()) failures.add(e.getKey() + " audit incomplete: dropped=" + audit.dropped()
                     + " sinkFailures=" + audit.sinkFailures() + " " + audit.firstSinkFailure());
-            if (!result.ok() || !audit.isComplete()) {
+            if (!result.verified() || !audit.isComplete()) {
                 try {
                     Path out = audit.export(Path.of(System.getProperty("mongoose.stress.auditDir", "target/stress-audit"),
                             e.getKey() + "-" + settings.seed + ".yaml"));
@@ -1050,11 +1050,23 @@ final class ChaosWorkload implements AutoCloseable {
                     summary.put(e.getKey() + " export", "failed: " + io);
                 }
             }
-            if (!result.ok()) {
-                List<String> v = result.violations();
-                failures.add(e.getKey() + " invariant violations (" + v.size() + "): "
-                        + v.subList(0, Math.min(10, v.size())));
-            }
+            failures.addAll(auditFailures(e.getKey(), result));
+        }
+        return failures;
+    }
+
+    static List<String> auditFailures(String group, ControlInvariants.Result result) {
+        if (result.verified()) return List.of();
+        List<String> failures = new ArrayList<>();
+        if (!result.violations().isEmpty()) {
+            List<String> v = result.violations();
+            failures.add(group + " invariant violations (" + v.size() + "): "
+                    + v.subList(0, Math.min(10, v.size())));
+        }
+        if (!result.unverifiable().isEmpty()) {
+            List<String> u = result.unverifiable();
+            failures.add(group + " unverifiable invariants (" + u.size() + "): "
+                    + u.subList(0, Math.min(10, u.size())));
         }
         return failures;
     }
