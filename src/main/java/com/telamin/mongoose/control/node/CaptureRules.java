@@ -170,6 +170,8 @@ public class CaptureRules extends EventLogNode {
             }
             case OPENING -> {
                 pendingCleanup.add(reg.captureOp);
+                // an earlier capture's close may still be with the closer: outstanding too (FM-4)
+                if (reg.captureCloseOp != null) pendingCleanup.add(reg.captureCloseOp);
                 out.addAll(cancelOpen(reg, "generation " + reg.generation + " released before the capture opened"));
             }
             case CLOSING -> {
@@ -232,7 +234,7 @@ public class CaptureRules extends EventLogNode {
                 String op = state.nextCompensationOp(c.requestId());
                 state.retain(c.requestId());
                 // held by nothing, closing: so its close completes against the table like any other
-                state.addResource(c.resourceId(), -1, ResourceState.CLOSING, c.opId());
+                state.addResource(c.resourceId(), -1, ResourceState.CLOSING, c.opId(), -1, null);
                 state.markCleanup(op);
                 close.add(tracked(new ControlEffect.CloseCapture(op, c.requestId(), -1, null, c.resourceId())));
             }
@@ -259,14 +261,14 @@ public class CaptureRules extends EventLogNode {
             return;
         }
         if (current) {
-            state.addResource(c.resourceId(), open.generation, ResourceState.OPEN, c.opId());
+            state.addResource(c.resourceId(), open.generation, ResourceState.OPEN, c.opId(), open.generation, name);
             reg.captureResource = c.resourceId();
             decideCompletion("captureOpened", open.generation, name, c.resourceId(), null,
                     tracked(new ControlEffect.InstallCapture(state.nextOp(root), root, open.generation, name, c.resourceId())));
             return;
         }
         // stale: the resource enters the table with no owner and is closed, never installed
-        state.addResource(c.resourceId(), -1, ResourceState.CLOSING, c.opId());
+        state.addResource(c.resourceId(), -1, ResourceState.CLOSING, c.opId(), open.generation, name);
         decideCompletion("captureOpenedStale", open.generation, name, c.resourceId(), note("stale", true),
                 closeEffect(root, open.generation, name, c.resourceId()));
     }
@@ -286,10 +288,15 @@ public class CaptureRules extends EventLogNode {
             reg.capture = Capture.OFF;
             reg.captureResource = -1;
         }
-        if (reg != null && c.opId().equals(reg.captureCloseOp)) reg.captureCloseOp = null;
+        // a resource disowned by a later open still belongs to the generation it was opened for: its close is recorded
+        // against that generation and processor, and clears that registration's outstanding close (FM-3)
+        Reg openedFor = reg != null ? reg : r.openedFor < 0 ? null : state.registration(r.openedFor);
+        if (openedFor != null && c.opId().equals(openedFor.captureCloseOp)) openedFor.captureCloseOp = null;
+        long generation = r.owner >= 0 ? r.owner : r.openedFor;
+        String name = reg != null ? reg.name : r.openedName;
         // a failed physical close is recorded and counted, and never blocks anything
-        decideCompletion(ok ? "captureClosed" : "captureCloseFailed", r.owner, reg == null ? null : reg.name,
-                c.resourceId(), note("cleared", c.opId()));
+        decideCompletion(ok ? "captureClosed" : "captureCloseFailed", generation, name, c.resourceId(),
+                note("cleared", c.opId()));
     }
 
     /**

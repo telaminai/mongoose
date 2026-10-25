@@ -120,6 +120,8 @@ nav:
           - Object pooling: architecture/object_pooling.md
           - Server control: architecture/server-control.md
       - Reference:
+          - Control plane contracts: reference/control-plane-contracts.md
+          - Release notes (unreleased): release/release-notes-unreleased.md
           - Troubleshooting and FAQ: reference/troubleshooting.md
           - Comparisons: reference/comparisons.md
           - Modulith suitability: reference/modulith-suitability.md

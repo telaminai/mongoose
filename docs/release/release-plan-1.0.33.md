@@ -90,6 +90,9 @@ The skipped tests are skipped on `main` as well.
 
 ## 4. Behaviour changes (release notes)
 
+The control-plane changes of PR #76 are not part of 1.0.33. Several of them supersede notes below; see
+[Release notes — unreleased](release-notes-unreleased.md).
+
 ### Mongoose 1.0.33
 - **Publishing**: publishes are serialised per publisher. A subscriber whose queue is full now stalls every
   publisher on that publisher for up to ~10 ms per event (the existing spin). Adding/removing a subscriber waits

@@ -124,10 +124,19 @@ public interface MongooseAuditCaptureService {
      *
      * @param processorName the YAML processor name (as it appears in
      *                      {@code eventHandlers.&lt;name&gt;}).
+     * <p>In a server with capture enabled, the start is a request to the
+     * processor's group: the queue is opened on an I/O helper, installed on
+     * the processor's agent thread, and this returns once it records.
+     * Called on an agent thread, or before the group has started, it
+     * returns at once and the start applies later.
+     *
      * @throws IllegalArgumentException if no processor with that name
      *         is registered.
-     * @throws IllegalStateException if the change could not be applied on
-     *         the processor's agent thread in time; nothing changed.
+     * @throws IllegalStateException if the start was refused or failed (the
+     *         group is not running, the processor has not started, the open
+     *         failed or timed out, too many opens are in flight), or was not
+     *         applied in time; the message says whether anything may still
+     *         change.
      */
     void start(String processorName);
 

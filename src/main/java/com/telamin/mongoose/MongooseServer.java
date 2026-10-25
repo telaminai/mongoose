@@ -636,25 +636,24 @@ public class MongooseServer implements MongooseServerController {
         registerWorkerService(services);
     }
 
-    /**
-     * Register one or more services with the server.
-     * <p>
-     * - Enforces unique service names.<br>
-     * - Injects dependencies: newly registered services get other services injected into them,
-     * and existing services receive the new service (single-target injection).<br>
-     * - If a service participates in event flow, it is connected to the flow manager.
-     *
-     * @param services services to register
-     * @throws com.telamin.mongoose.exception.ServiceRegistrationException if a service name is already in use
-     */
-    /** Single-service variant required by {@link MongooseServerController}.
-     *  Delegates to the varargs form so the broadcast + injection
-     *  logic stays in one place. */
+    /** Single-service variant required by {@link MongooseServerController}: as {@link #registerService(Service[])}. */
     @Override
     public void registerService(Service<?> service) {
         registerService(new Service<?>[] { service });
     }
 
+    /**
+     * Register one or more services with the server, each in turn: reserve its name, inject (other services into it, and
+     * it into existing services), connect it to the flow manager if it takes part in event flow, then publish a
+     * versioned registration to every processor group. Off an agent thread, wait up to
+     * {@link MongooseServerConfig#getControlWaitMillis()} for every group to apply it; on an agent thread, or for a group
+     * that has not started, return without waiting. A group whose mailbox is full misses the registration, reported
+     * through {@code ErrorReporting}.
+     *
+     * @param services services to register
+     * @throws com.telamin.mongoose.exception.ServiceRegistrationException if a service name is already in use
+     * @throws IllegalStateException if the server is stopping
+     */
     public void registerService(Service<?>... services) {
         for (Service<?> service : services) {
             ServiceBroadcast sent;
@@ -825,11 +824,15 @@ public class MongooseServer implements MongooseServerController {
     /**
      * Deregister a previously registered service.
      * <p>
-     * Removes the service from the global registry, calls {@code stop()}
-     * on it, flips the {@code service.{name}.up} gauge to 0, and
-     * broadcasts {@code @ServiceDeregistered} to every running processor
-     * group so processor-internal nodes (SubscriptionManagerNode,
-     * SinkPublisher, custom nodes) can unbind.
+     * Removes the service from the global registry and broadcasts {@code @ServiceDeregistered} to every running
+     * processor group, so processor-internal nodes (SubscriptionManagerNode, SinkPublisher, custom nodes) can unbind.
+     * Off an agent thread it waits up to {@link MongooseServerConfig#getControlWaitMillis()} for every group to confirm.
+     * Only once every group has confirmed the withdrawal is {@code stop()} called and the {@code service.{name}.up}
+     * gauge flipped to 0, at once or, for replies that come later, on a reply thread. If any group does not confirm
+     * (it missed the broadcast, or a handler failed), the service is not stopped: the server keeps it, and
+     * {@link #shutdown()} stops it after every processor group has closed.
+     * <p>
+     * Ignored, and logged, while the server is stopping: the stop stops the service itself.
      * <p>
      * Distinct from {@link #stopService(String)}: stopService is the
      * lifecycle-pause callback (service can be restarted, stays in the
@@ -1143,11 +1146,21 @@ public class MongooseServer implements MongooseServerController {
      * for audit logging. If the server is already started and the group's thread is not yet
      * running, the group is started.
      *
+     * <p>
+     * Off an agent thread, on a running group, the call waits up to {@link MongooseServerConfig#getControlWaitMillis()}
+     * for the processor to start; after a timeout it logs and returns, and the add still applies. On an agent thread, or
+     * when the group has not started, it returns once the add is queued. When the add does not apply,
+     * {@link MongooseServerConfig#getAddFailurePolicy()} decides: {@code REPORT} (default) logs and returns, {@code THROW}
+     * throws. {@link #addProcessor} returns the outcome instead.
+     *
      * @param processorName unique name of the processor within the group
      * @param groupName     the logical processor group to host the processor
      * @param idleStrategy  optional idle strategy override for the group (may be {@code null})
      * @param feedConsumer  supplier creating the {@link DataFlow} instance
      * @throws IllegalArgumentException if a processor with {@code processorName} already exists in the group
+     * @throws IllegalStateException    if the server is stopping, the group's mailbox stays full, or, under
+     *                                  {@code THROW}, the add was refused
+     * @throws com.telamin.mongoose.dutycycle.ProcessorStartException under {@code THROW}, when the processor's start failed
      */
     public void addEventProcessor(
             String processorName,
@@ -1189,8 +1202,9 @@ public class MongooseServer implements MongooseServerController {
     }
 
     /**
-     * Add a processor and return its outcome without waiting (design "Agent threads and replies"). Never throws for a
-     * duplicate name or a stopping server: the reply says {@code REFUSED} or {@code NOT_RUNNING}. Admitted requests'
+     * Add a processor and return its outcome without waiting for it (design "Agent threads and replies"). Never throws
+     * for a duplicate name, a stopping server or a full mailbox: the reply says {@code REFUSED} or {@code NOT_RUNNING}.
+     * Admission into a full mailbox may back off, off agent threads, up to the group's full-mailbox timeout first. Admitted requests'
      * stages complete off agent threads; refusals may already be completed. Use asynchronous continuations for
      * blocking work: a synchronous dependent attached after
      * completion executes on the attaching thread, as specified by CompletionStage.
@@ -1241,7 +1255,11 @@ public class MongooseServer implements MongooseServerController {
 
     /**
      * Stop exactly the processor a handle names, never a later one under the same name, and return the outcome without
-     * waiting. A handle whose processor has gone is answered {@code APPLIED} ("alreadyStopped").
+     * waiting. A handle whose processor has gone is answered {@code APPLIED} ("alreadyStopped"); a handle from another
+     * server, or for a group that does not exist, {@code REFUSED}.
+     *
+     * @throws IllegalStateException when the group's mailbox is full: at once on an agent thread, otherwise after the
+     *                               group's full-mailbox timeout. Nothing is stopped
      */
     public java.util.concurrent.CompletionStage<com.telamin.mongoose.control.ControlReply> stopProcessor(ProcessorHandle handle) {
         if (!handle.belongsTo(processorHandleOwner)) {
@@ -1532,10 +1550,16 @@ public class MongooseServer implements MongooseServerController {
 
 
     /**
-     * Stop and remove an event processor from the specified group.
+     * Stop and remove the event processor admitted as {@code processorName} in the group when this is called; a
+     * processor that replaces it later is not stopped. Off an agent thread, on a running group, waits up to
+     * {@link MongooseServerConfig#getControlWaitMillis()} for the stop to apply; after a timeout it returns, and the stop
+     * still applies. On an agent thread, or when the group has not started, returns once the stop is queued. Does
+     * nothing when no such group exists or nothing is admitted under the name.
      *
      * @param groupName     the processor group containing the processor
      * @param processorName the unique name of the processor to stop
+     * @throws IllegalStateException when the group's mailbox is full: at once on an agent thread, otherwise after the
+     *                               group's full-mailbox timeout. Nothing is stopped
      */
     @Override
     public void stopProcessor(String groupName, String processorName) {
@@ -1777,10 +1801,12 @@ public class MongooseServer implements MongooseServerController {
      * {@link MongooseServerConfig#getShutdownDrainTimeoutMillis()}; each processor group stops and tears down its
      * processors on its own thread; then the remaining agent hosted services and registered services stop.
      * <p>
-     * The stop runs once. Called from an ordinary thread, it returns when the server has stopped, and so does a call
-     * that races an in-progress stop. Called from one of the server's own agent threads (a processor's event handler, an
-     * admin command, an agent hosted service), or from a synchronous startup callback, it cannot wait for itself: it
-     * hands the stop to a new
+     * As {@link #shutdown()}, discarding its {@link StopResult}. Called from an ordinary thread, it returns when the
+     * server has stopped or when {@link MongooseServerConfig#getShutdownTimeoutMillis()} runs out, whichever is first; a
+     * stop that ran out leaves the server STOPPING, and calling stop again resumes it. A call that races an in-progress
+     * stop waits for it, within its own deadline. Called from one of the server's own agent threads (a processor's event
+     * handler, an admin command, an agent hosted service), or from a synchronous startup callback, it cannot wait for
+     * itself: it hands the stop to a new
      * {@code mongoose-server-stop} thread and returns at once. Use {@link #awaitStopped(long, java.util.concurrent.TimeUnit)} from another
      * thread to wait for it to finish.
      */

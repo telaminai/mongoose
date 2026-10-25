@@ -8,7 +8,8 @@ import com.telamin.mongoose.dutycycle.ProcessorRegistration;
 
 /**
  * Identifies one accepted add of a processor: group, name and generation. A stop made with a handle can only ever stop
- * that registration, never a later processor added under the same name (design rule 7).
+ * that registration, never a later processor added under the same name (design rule 7). A handle belongs to the server
+ * that made it: {@code MongooseServer.stopProcessor(handle)} on another server answers {@code REFUSED} and stops nothing.
  */
 public final class ProcessorHandle {
 

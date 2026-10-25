@@ -6,7 +6,8 @@ package com.telamin.mongoose.replay;
 
 /**
  * Replay stream identity (design "Deterministic replay", decision D3): a processor's stream is keyed by its name and
- * its per-name {@code incarnation} in the group (1, 2, ... in the order its adds were accepted), never by the live
+ * its per-name build ordinal in the group, passed here as {@code incarnation} (1, 2, ... counting the processors of the
+ * name actually built in the group, so an add refused, cancelled or never built consumes no number), never by the live
  * {@code generation}, which concurrent adds of different names race for. Names escape each {@code #} as {@code ##}
  * before the ordinal suffix is added, so a name such as
  * {@code p#2} cannot alias the second incarnation of {@code p}. The first incarnation of an ordinary name keeps

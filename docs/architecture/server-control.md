@@ -101,39 +101,58 @@ AdminCommandProcessor registers several default commands during start():
 
 Source: [AdminCommandProcessor.java]({{source_root}}/main/java/com/telamin/mongoose/service/admin/impl/AdminCommandProcessor.java)
 
-## Server controller (optional plugin)
+## Server controller
 
-For broader operational control (adding/stopping processors, starting/stopping services, etc.), use the server
-controller API. This is provided by the MongooseServerController interface. Important: the controller is an optional
-plugin — it is not available by default in the runtime. You must include and register the plugin if you want
-programmatic
-control.
-
-Security note:
-- Do not expose admin command adapters (CLI/HTTP/gRPC) publicly without authentication and authorization.
-- Consider whitelisting safe commands for external access.
-- The MongooseServerController plugin should be enabled only when you require runtime control; keep it disabled otherwise.
+For broader operational control (adding and stopping processors, registering, removing, starting and stopping
+services), use the server controller API, `MongooseServerController`. A server booted with `bootServer` registers
+itself as this service, under `MongooseServerController.SERVICE_NAME`, so a processor or service can receive it with
+`@ServiceRegistered`.
 
 - MongooseServerController interface
   Source: [MongooseServerController.java]({{source_root}}/main/java/com/telamin/mongoose/service/servercontrol/MongooseServerController.java)
 
 Capabilities provided:
 
-- Add new event processors into a named group with a chosen IdleStrategy:
-  addEventProcessor(processorName, groupName, idleStrategy, Supplier<StaticEventProcessor>)
-- Start/stop named services at runtime:
-  startService(serviceName), stopService(serviceName)
-- Inspect registered services:
-  registeredServices() → Map<String, Service<?>>
-- Inspect registered processors grouped by group name:
-  registeredProcessors() → Map<String, Collection<NamedEventProcessor>>
-- Stop a specific processor within a group:
-  stopProcessor(groupName, processorName)
+- Add an event processor to a named group with a chosen `IdleStrategy`:
+  `addEventProcessor(processorName, groupName, idleStrategy, Supplier<DataFlow>)`
+- Stop a specific processor within a group: `stopProcessor(groupName, processorName)`
+- Register and remove services: `registerService(service)`, `registerEventSource(name, source)`,
+  `removeService(serviceName)`
+- Start and stop named services: `startService(serviceName)`, `stopService(serviceName)`
+- Inspect registered services: `registeredServices()` returns `Map<String, Service<?>>`
+- Inspect registered processors by group: `registeredProcessors()` returns `Map<String, Collection<NamedEventProcessor>>`
 
-Because it is optional, production deployments that do not require runtime control can omit the plugin entirely. If you
-do
-include it, you can also surface safe subsets of its capabilities via admin commands (e.g., wrap a stopProcessor action
-behind an authenticated admin command).
+**When these calls return, and what they guarantee**, is specified in the
+[control-plane contracts](../reference/control-plane-contracts.md). In short: called from an ordinary thread, the
+void methods wait up to `controlWaitMillis` for the change to be applied; called from a processor's handler, its
+`start()` or `stop()`, or any other agent thread, they queue the change and return at once. `MongooseServer` adds
+methods that return the outcome: `addProcessor`, `stopProcessor(ProcessorHandle)` and
+`stopProcessor(group, name, waitMillis)`.
+
+A processor that has been recorded or replayed sees this controller through an interceptor: its requests are
+recorded, and in a replay they are matched against the recording instead of executed. See
+[Record and replay](../reference/control-plane-contracts.md#record-and-replay).
+
+Security note:
+
+- Do not expose admin command adapters (CLI/HTTP/gRPC) publicly without authentication and authorization.
+- Consider whitelisting safe commands for external access.
+- Any processor or service can be injected with the controller. Review which components receive it.
+
+## Server admin commands
+
+`MongooseServerAdmin` is not installed by default. Register it as a service, and when it starts it adds these
+server-level commands to the admin registry:
+
+| Command | What it does |
+| --- | --- |
+| `server.service.list` | Lists registered services |
+| `server.processors.list` | Lists processors by group |
+| `server.processors.stop <group>/<name>` | Stops a processor and prints `stop <OUTCOME>: <reason>`. It waits at most one second; if no reply comes in time it prints `stop pending (still applies)`, and the stop still happens ([contract](../reference/control-plane-contracts.md#the-admin-stop-command)) |
+| `audit.start <name>`, `audit.stop <name>`, `audit.status`, `audit.list` | Audit capture ([contract](../reference/control-plane-contracts.md#audit-capture)) |
+| `latency.status`, `latency.enable`, `latency.disable`, `latency.toggle`, `latency.reset` | Latency monitoring |
+
+Source: [MongooseServerAdmin.java]({{source_root}}/main/java/com/telamin/mongoose/service/servercontrol/MongooseServerAdmin.java)
 
 ## End-to-end example (CLI)
 
