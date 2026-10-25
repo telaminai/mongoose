@@ -31,7 +31,14 @@ public class EffectOutcomes extends EventLogNode {
      */
     @OnEventHandler
     public boolean onCompletion(com.telamin.mongoose.control.event.CaptureCompletion c) {
-        if (c.kind() == com.telamin.mongoose.control.event.CaptureCompletion.Kind.TIMED_OUT) return false;
+        if (c.kind() == com.telamin.mongoose.control.event.CaptureCompletion.Kind.TIMED_OUT) {
+            // a timeout settles an open still pending: its final outcome, so a later completion is a duplicate
+            if (state.pendingOpen(c.opId()) == null) return false;
+            ControlAudit.record(auditLog, state, "EffectOutcome", "opId", c.opId(), "effect", "OpenCapture",
+                    "outcome", "failed", "reason", "open timed out",
+                    "cleanup", state.chain(c.requestId()) == null ? Boolean.TRUE : null);
+            return true;
+        }
         boolean open = c.kind() == com.telamin.mongoose.control.event.CaptureCompletion.Kind.OPENED
                 || c.kind() == com.telamin.mongoose.control.event.CaptureCompletion.Kind.OPEN_FAILED;
         boolean ok = c.kind() == com.telamin.mongoose.control.event.CaptureCompletion.Kind.OPENED

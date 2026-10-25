@@ -22,7 +22,7 @@ public interface ReplayStore {
 
     /** Whether a stream was recorded for {@code processor} at all: absent is not the same as empty (review of PR 6, 5). */
     default boolean has(String processor) {
-        return !entries(processor).isEmpty();
+        return !entries(processor).isEmpty() || provenance(processor) != null;
     }
 
     /** Whether it already holds a recording: RECORD mode refuses one, whose entries a new run would append after. */

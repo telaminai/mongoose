@@ -28,6 +28,13 @@ public final class ControlInterception {
     static final Set<String> CHANGES = Set.of("stopService", "startService", "stopProcessor", "registerService",
             "registerEventSource", "removeService", "addEventProcessor");
 
+    /**
+     * Requests that change the service registry: in a replay they are matched and then executed, so the registry the
+     * stream's later entries name (a {@code ServiceChanged}) exists; delivery to replayed processors stays suppressed
+     * and is replayed in position (final review, finding 2). Every other change is never executed in a replay.
+     */
+    static final Set<String> REGISTRY = Set.of("registerService", "registerEventSource", "removeService");
+
     /** What a wrapper does with a request that changes the server. */
     interface Handler {
         Object handle(String method, List<String> args, Method m, Object[] rawArgs) throws Throwable;
@@ -69,7 +76,10 @@ public final class ControlInterception {
         List<String> out = new ArrayList<>();
         if (args == null) return out;
         for (Object a : args) {
-            if (a instanceof Service<?> s) out.add("service:" + s.serviceName());
+            // a supplier or an idle strategy has no stable text: it is named by its kind only
+            if (a instanceof java.util.function.Supplier<?>) out.add("supplier");
+            else if (a instanceof org.agrona.concurrent.IdleStrategy) out.add("idleStrategy");
+            else if (a instanceof Service<?> s) out.add("service:" + s.serviceName());
             else if (a instanceof com.telamin.mongoose.service.EventSource<?> src) out.add("source:" + src.getClass().getName());
             else out.add(String.valueOf(a));
         }

@@ -292,18 +292,32 @@ public class CaptureRules extends EventLogNode {
                 c.resourceId(), note("cleared", c.opId()));
     }
 
+    /**
+     * The open's timer fired before its completion: the open is settled now (its final outcome, failed, is recorded by
+     * {@link EffectOutcomes}), so a helper that never returns leaks no bookkeeping; a completion arriving later is a
+     * duplicate, and a resource it carries is closed (final review, finding 8).
+     */
     private void openTimedOut(CaptureCompletion c) {
-        PendingOpen open = state.pendingOpen(c.opId());
-        Reg reg = open == null ? null : state.registration(open.generation);
-        if (open == null || open.settled || reg == null || reg.capture != Capture.OPENING || !c.opId().equals(reg.captureOp)) {
-            decideCompletion("captureTimeoutIgnored", open == null ? -1 : open.generation, null, -1, null);
+        PendingOpen open = state.settleOpen(c.opId());
+        if (open == null) {
+            decideCompletion("captureTimeoutIgnored", -1, null, -1, null);
             return;
         }
-        open.settled = true;
-        reg.capture = Capture.OFF;
-        reg.captureOp = null;
-        decideCompletion("captureOpenTimedOut", reg.generation, reg.name, -1, note("pendingCleanup", c.opId()),
-                answerWaiters(reg, ReplyOutcome.FAILED, "open timed out").toArray(new ControlEffect[0]));
+        try {
+            Reg reg = state.registration(open.generation);
+            boolean current = reg != null && reg.capture == Capture.OPENING && c.opId().equals(reg.captureOp);
+            if (!current) {
+                decideCompletion("captureOpenTimedOutAfterCancel", open.generation, reg == null ? null : reg.name, -1,
+                        note("cleared", c.opId()));
+                return;
+            }
+            reg.capture = Capture.OFF;
+            reg.captureOp = null;
+            decideCompletion("captureOpenTimedOut", reg.generation, reg.name, -1, null,
+                    answerWaiters(reg, ReplyOutcome.FAILED, "open timed out").toArray(new ControlEffect[0]));
+        } finally {
+            state.release(open.rootId);
+        }
     }
 
     // ------------------------------------------------------------------ outcomes of synchronous capture effects

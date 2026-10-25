@@ -249,6 +249,11 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
         }
         com.telamin.mongoose.control.ControlReply reply =
                 com.telamin.mongoose.control.ControlReplies.await(request, TimeUnit.SECONDS.toMillis(APPLY_TIMEOUT_SECONDS));
+        if (reply == null && Thread.currentThread().isInterrupted()) {
+            // interrupted, not timed out: the request still applies; nothing is cancelled (final review, finding 7)
+            throw new IllegalStateException("audit " + what + " for '" + processorName + "': interrupted while waiting"
+                    + " for it to be applied; it still applies");
+        }
         if (reply == null) {
             if (request.cancel("audit " + what + " not applied within " + APPLY_TIMEOUT_SECONDS + "s")) {
                 throw new IllegalStateException("audit " + what + " for '" + processorName + "' was not applied on its"
@@ -309,6 +314,8 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
     public void uninstallCapture(Object resource, String processorName, DataFlow dataFlow) {
         CaptureHandle handle = (CaptureHandle) resource;
         if (dataFlow == null) handle.sink().forgetAll();      // gone: restore nothing on an instance that left
+        // endRecording stops recording before it restores the listener, and logs a failed restore rather than throw:
+        // a release may therefore close the queue right after an uninstall, whatever the restore did (final review, 10)
         if (handle.sink().endRecordingOf(handle.queue())) {
             liveSinkMutation.run();
             log.info("audit-capture STOPPED for processor '" + processorName + "'");

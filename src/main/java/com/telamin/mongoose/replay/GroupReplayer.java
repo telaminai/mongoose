@@ -1,5 +1,7 @@
 package com.telamin.mongoose.replay;
 
+import com.telamin.mongoose.control.AgentThreads;
+
 import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
 
 import com.telamin.fluxtion.runtime.DataFlow;
@@ -50,6 +52,8 @@ public final class GroupReplayer {
         boolean ended;
         /** The stream records its service changes: they are replayed in position and live ones suppressed. */
         boolean recordsServices;
+        /** Every service the stream records a change of: those changes reach the processor only from the stream. */
+        java.util.Set<String> changedServices = java.util.Set.of();
         /** Services the stream registers before it ever withdraws them: not given at build, but where it has them. */
         java.util.Set<String> deferred = java.util.Set.of();
         /** The clock readings the recorded stop took, checked once the replayed stop has run. */
@@ -127,7 +131,18 @@ public final class GroupReplayer {
                 } else {
                     cursor.entries = config.store().entries(cursor.name);
                     cursor.recordsServices = cursor.entries.stream().anyMatch(e -> e instanceof ReplayEntry.ServiceChanged);
+                    cursor.changedServices = cursor.entries.stream()
+                            .filter(e -> e instanceof ReplayEntry.ServiceChanged)
+                            .map(e -> ((ReplayEntry.ServiceChanged) e).service())
+                            .collect(java.util.stream.Collectors.toUnmodifiableSet());
                     cursor.deferred = firstRegistered(cursor.entries);
+                    // requests the processor made while it was built and started (before any input) are expected now:
+                    // its start() runs before the cursor is first driven (final review, finding 1)
+                    while (cursor.next < cursor.entries.size()
+                            && cursor.entries.get(cursor.next) instanceof ReplayEntry.ControlCall cc) {
+                        cursor.expectedCalls.add(cc);
+                        cursor.next++;
+                    }
                 }
             } catch (VirtualMachineError e) {
                 throw e;
@@ -218,8 +233,14 @@ public final class GroupReplayer {
      */
     private com.telamin.fluxtion.runtime.service.Service<?> intercepted(Cursor cursor,
                                                                         com.telamin.fluxtion.runtime.service.Service<?> service) {
+        Object target = service.instance();
         return ControlInterception.wrap(service, (method, args, m, raw) -> {
             controlRequests.computeIfAbsent(cursor.name, n -> new CopyOnWriteArrayList<>()).add(method + args);
+            if (!AgentThreads.isAgentThread()) {
+                // off the processor's own thread: not part of its input order, so not reproducible (final review, 11)
+                stop(cursor, "control request " + method + args + " made off the processor's thread; not executed");
+                return null;
+            }
             if ("addEventProcessor".equals(method)) {
                 // A Supplier is executable construction logic, not a stable description of the generated processor.
                 // Until its build identity is recorded, refuse rather than invoke it against the live server.
@@ -243,6 +264,9 @@ public final class GroupReplayer {
                 String why = "recorded control exception cannot be reconstructed for " + method + ": " + expected.outcome();
                 stop(cursor, why);
                 throw new IllegalStateException(why);
+            }
+            if (ControlInterception.REGISTRY.contains(method)) {
+                return ControlInterception.invoke(m, target, raw);    // the registry the stream names must exist
             }
             return null;
         });
@@ -290,6 +314,18 @@ public final class GroupReplayer {
      * changes, so they are delivered in position instead. A stream recorded without them (an earlier recording) gets
      * live deliveries as before, and is partial in that respect.
      */
+    /**
+     * Whether a live change of {@code service} must not reach {@code flow}, whatever the replay server's own state: the
+     * stream records changes of that service, so they are delivered in position. A replay can run its inputs while its
+     * server is still starting, so "after the server started" cannot decide this here (final review, finding 2).
+     */
+    public boolean suppressesLiveService(DataFlow flow, String service) {
+        for (Cursor c : cursors) {
+            if (c.flow == flow) return c.changedServices.contains(service);
+        }
+        return false;
+    }
+
     public boolean suppressesLiveServices(DataFlow flow) {
         for (Cursor c : cursors) {
             if (c.flow == flow) return c.recordsServices;

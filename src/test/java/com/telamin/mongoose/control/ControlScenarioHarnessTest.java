@@ -153,6 +153,7 @@ class ControlScenarioHarnessTest {
         List<ProcessorRegistration> everAdmitted = new ArrayList<>();
         Set<LedgerProc> legitimatelyStopped = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
         Map<ControlRequest, AtomicInteger> runs = new LinkedHashMap<>();
+        Map<String, Long> versions = new HashMap<>();
         List<String> script = new ArrayList<>();
         script.add(failFastBoot ? "boot failures fail fast" : "boot failures isolated");
         String[] names = {"a", "b", "c"};
@@ -200,6 +201,15 @@ class ControlScenarioHarnessTest {
                         script.add("stop " + name + ": nothing reserved");
                         continue;
                     }
+                    if (random.nextInt(4) == 0) {
+                        // a stop that only names the processor: resolved to whatever answers to the name when applied
+                        group.removeEventProcessorByName(name);
+                        for (ProcessorRegistration r : everAdmitted) {
+                            if (name.equals(r.name())) legitimatelyStopped.add(procOf.get(r));
+                        }
+                        script.add("stop by name " + name);
+                        continue;
+                    }
                     group.removeEventProcessorByName(name, reg, null);
                     legitimatelyStopped.add(procOf.get(reg));
                     for (PendingAdd add : pending) {
@@ -219,9 +229,11 @@ class ControlScenarioHarnessTest {
                 } else if (op == 6) {
                     String svc = "svc-" + random.nextInt(3);
                     Service<Runnable> service = new Service<>(() -> { }, Runnable.class, svc);
-                    if (random.nextBoolean()) group.broadcastServiceRegistered(service);
-                    else group.broadcastServiceDeregistered(service);
-                    script.add("broadcast " + svc);
+                    // versioned as the server sends them, sometimes arriving stale (an older version after a newer one)
+                    long version = versions.merge(svc, 1L, Long::sum);
+                    if (random.nextInt(5) == 0) version = Math.max(1, version - 1 - random.nextInt(2));
+                    group.broadcastService(service, random.nextBoolean(), version);
+                    script.add("broadcast " + svc + " v" + version);
                 } else if (op == 7) {
                     AtomicInteger ran = new AtomicInteger();
                     ControlRequest run = group.control().send(new ControlRequest(ControlRequest.Kind.RUN, "task",
