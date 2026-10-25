@@ -217,6 +217,13 @@ public final class GroupReplayer {
                                                                         com.telamin.fluxtion.runtime.service.Service<?> service) {
         return ControlInterception.wrap(service, (method, args, m, raw) -> {
             controlRequests.computeIfAbsent(cursor.name, n -> new CopyOnWriteArrayList<>()).add(method + args);
+            if ("addEventProcessor".equals(method)) {
+                // A Supplier is executable construction logic, not a stable description of the generated processor.
+                // Until its build identity is recorded, refuse rather than invoke it against the live server.
+                String why = "addEventProcessor supplier cannot be verified from the recording; not executed";
+                stop(cursor, why);
+                throw new UnsupportedOperationException(why);
+            }
             ReplayEntry.ControlCall expected = cursor.expectedCalls.poll();
             if (expected == null) {
                 stop(cursor, "control request " + method + args + " was not made by the recorded run here; not executed");
@@ -228,7 +235,11 @@ public final class GroupReplayer {
                 return null;
             }
             if (expected.outcome().startsWith("failed")) {
-                throw new IllegalStateException("replayed outcome of " + method + ": " + expected.outcome());
+                // Text does not preserve the original throwable's type or payload. A processor may branch on those,
+                // or catch this substitute exception; either way it must not turn an unverifiable replay into success.
+                String why = "recorded control exception cannot be reconstructed for " + method + ": " + expected.outcome();
+                stop(cursor, why);
+                throw new IllegalStateException(why);
             }
             return null;
         });

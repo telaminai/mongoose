@@ -24,6 +24,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -65,6 +66,37 @@ class ReplayControlAndProvenanceTest {
                 if (sink != null) sink.accept("killed");
             } else if ("kill-other".equals(event)) {
                 controller.stopProcessor(GROUP, "someone-else");
+            }
+            return true;
+        }
+    }
+
+    public static class Spawner extends ObjectEventHandlerNode {
+        protected MongooseServerController controller;
+        @ServiceRegistered
+        public void controller(MongooseServerController controller, String name) { this.controller = controller; }
+        @Override public void start() { getContext().subscribeToNamedFeed(ORDERS); }
+        @Override protected boolean handleEvent(Object event) {
+            if ("spawn".equals(event)) {
+                controller.addEventProcessor("spawned", GROUP, null, () -> {
+                    var flow = new com.telamin.mongoose.internal.ConfigAwareEventProcessor(new Quiet());
+                    flow.init();
+                    return flow;
+                });
+            }
+            return true;
+        }
+    }
+
+    public static class FailureCatcher extends Spawner {
+        @Override protected boolean handleEvent(Object event) {
+            if ("register-duplicate".equals(event)) {
+                try {
+                    controller.registerService(new com.telamin.fluxtion.runtime.service.Service<>(
+                            new Object(), Object.class, "memSink"));
+                } catch (RuntimeException caught) {
+                    // Both the real exception and an inaccurate replay substitute are caught by the processor.
+                }
             }
             return true;
         }
@@ -158,6 +190,41 @@ class ReplayControlAndProvenanceTest {
     }
 
     @Test
+    void replayNeverInvokesAnOpaqueProcessorSupplierOrAddsALiveProcessor() throws Exception {
+        InMemoryReplayStore store = new InMemoryReplayStore();
+        InMemoryEventJournal journal = new InMemoryEventJournal();
+        try (Server s = boot(record(store, journal), Spawner::new)) {
+            s.orders().offer("spawn");
+            awaitTrue(() -> s.running("spawned"), "the recorded run spawned a processor");
+        }
+        try (Server s = boot(replay(store, journal), Spawner::new)) {
+            awaitTrue(() -> s.replayer().complete(), "replay settled");
+            Thread.sleep(100);       // a mistakenly queued live add has time to run
+            assertFalse(s.running("spawned"), "replay must never execute addEventProcessor on the live controller");
+            assertNotNull(s.replayer().stopped(PROCESSOR));
+            assertTrue(s.replayer().stopped(PROCESSOR).contains("supplier"));
+        }
+    }
+
+    @Test
+    void catchingAnInaccurateFailureSubstituteCannotMakeReplaySuccessful() throws Exception {
+        InMemoryReplayStore store = new InMemoryReplayStore();
+        InMemoryEventJournal journal = new InMemoryEventJournal();
+        try (Server s = boot(record(store, journal), FailureCatcher::new)) {
+            s.orders().offer("register-duplicate");
+            awaitTrue(() -> store.entries(PROCESSOR).stream().anyMatch(e -> e instanceof ReplayEntry.Indexed),
+                    "the processor caught the original failure and completed its event");
+        }
+        assertTrue(store.entries(PROCESSOR).stream().anyMatch(e -> e instanceof ReplayEntry.ControlCall call
+                && call.outcome().startsWith("failed")));
+        try (Server s = boot(replay(store, journal), FailureCatcher::new)) {
+            awaitTrue(() -> s.replayer().complete(), "replay settled");
+            assertNotNull(s.replayer().stopped(PROCESSOR), "catching the substitute exception cannot certify success");
+            assertTrue(s.replayer().stopped(PROCESSOR).contains("exception cannot be reconstructed"));
+        }
+    }
+
+    @Test
     void aReplayedControlRequestThatDiffersIsADivergence() throws Exception {
         InMemoryReplayStore store = new InMemoryReplayStore();
         InMemoryEventJournal journal = new InMemoryEventJournal();
@@ -206,6 +273,37 @@ class ReplayControlAndProvenanceTest {
             awaitTrue(() -> s.replayer().complete(), "replayed without the check");
             assertNull(s.replayer().stopped(PROCESSOR), "the check is configurable");
         }
+    }
+
+    @Test
+    void provenanceAloneIsAnExistingEmptyStreamAndPreventsRecordingOverIt(@TempDir Path dir) {
+        var flow = new com.telamin.mongoose.internal.ConfigAwareEventProcessor(new Quiet());
+        flow.init();
+        Provenance provenance = Provenance.of(flow, 2, 99);
+        String key = ReplayStreams.key("p#2", 2);
+        InMemoryReplayStore memory = new InMemoryReplayStore();
+        memory.began(key, provenance);
+        assertEmptyRecordedStream(memory, key, flow);
+        Path file = dir.resolve("empty-store.csv");
+        try (CsvReplayStore store = new CsvReplayStore(file, new JavaSerializationCodec())) {
+            store.began(key, provenance);
+            assertEmptyRecordedStream(store, key, flow);
+        }
+        try (CsvReplayStore reopened = new CsvReplayStore(file, new JavaSerializationCodec())) {
+            assertEmptyRecordedStream(reopened, key, flow);
+        }
+    }
+
+    private void assertEmptyRecordedStream(ReplayStore store, String key,
+                                           com.telamin.fluxtion.runtime.DataFlow flow) {
+        assertTrue(store.has(key), "provenance proves the stream began even without an event");
+        assertTrue(store.holdsRecording(), "a new RECORD run must not overwrite existing provenance");
+        assertTrue(store.entries(key).isEmpty());
+        GroupReplayer replayer = new GroupReplayer(ReplayConfig.replay(Set.of("p#2"), Map.of(), null, store),
+                null, new ReplayScheduler());
+        replayer.attach("p#2", 2, flow);
+        assertNull(replayer.stopped(key), "an existing empty second-incarnation stream is valid");
+        assertTrue(replayer.complete());
     }
 
     @Test

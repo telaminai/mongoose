@@ -26,7 +26,7 @@ import java.util.Set;
 public final class ControlInterception {
 
     static final Set<String> CHANGES = Set.of("stopService", "startService", "stopProcessor", "registerService",
-            "registerEventSource", "removeService");
+            "registerEventSource", "removeService", "addEventProcessor");
 
     /** What a wrapper does with a request that changes the server. */
     interface Handler {
