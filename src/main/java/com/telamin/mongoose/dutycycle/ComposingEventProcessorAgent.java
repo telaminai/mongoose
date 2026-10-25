@@ -838,7 +838,8 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             io.open(() -> {
                 CaptureCompletion done;
                 try {
-                    Object handle = resources.openCapture(name);
+                    Object handle = resources.openCaptureScoped(new com.telamin.mongoose.service.audit.AuditCaptureIdentity(
+                            roleName(), name, effect.generation()));
                     long id = captureResourceIds.incrementAndGet();
                     captureHandles.put(id, handle);
                     done = new CaptureCompletion(root, op, completionIds.incrementAndGet(), CaptureCompletion.Kind.OPENED, id, null);

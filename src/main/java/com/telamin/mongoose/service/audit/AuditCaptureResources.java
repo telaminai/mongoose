@@ -21,6 +21,11 @@ public interface AuditCaptureResources {
     /** Open a capture for {@code processorName} and return the resource; closes what it created before throwing. */
     Object openCapture(String processorName) throws Exception;
 
+    /** Registration-scoped open. Existing resource implementations remain source compatible. */
+    default Object openCaptureScoped(AuditCaptureIdentity identity) throws Exception {
+        return openCapture(identity.name());
+    }
+
     /** Install an open capture on the processor, in front of the listener the server configured on it. */
     void installCapture(Object resource, String processorName, DataFlow dataFlow);
 

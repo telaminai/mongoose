@@ -95,6 +95,19 @@ public interface MongooseAuditCaptureService {
         attach(dataFlow, processorName, configuredListener);
     }
 
+    /** Registration-scoped attachment. Existing capture plugins keep their original attachment contract. */
+    default void attachScoped(DataFlow flow, AuditCaptureIdentity identity, LogRecordListener listener,
+                        java.util.concurrent.Executor onAgentThread) {
+        attach(flow, identity.name(), listener, onAgentThread);
+    }
+
+    /** Registration-scoped start; existing plugins retain their bare-name API. */
+    default void startScoped(AuditCaptureIdentity identity) { start(identity.name()); }
+
+    /** Group-scoped lifecycle notifications; old implementations continue to receive the bare name. */
+    default void detach(String group, String name, DataFlow flow) { detach(name, flow); }
+    default void processorStopped(String group, String name, DataFlow flow) { processorStopped(name, flow); }
+
     /**
      * Forget a processor that left the server without stopping normally (a failed start, mongoose#57): stop any capture
      * of it and drop the reference to {@code dataFlow}. Ignored when {@code processorName} is now bound to another
@@ -160,7 +173,7 @@ public interface MongooseAuditCaptureService {
 
     /**
      * True iff capture is currently active for the named processor.
-     * Constant-time lookup; safe to call from any thread.
+     * A unique bare name or an encoded group/name selector; safe to call from any thread.
      */
     boolean isRecording(String processorName);
 }

@@ -77,11 +77,11 @@ public final class DirAuditIntrospectionService implements MongooseAuditIntrospe
      * map lookup per entry and keeps the walk cached, which is what the cache was for.
      */
     private List<AuditSinkHandle> withLiveCounters(List<AuditSinkHandle> snapshot) {
-        Map<String, AuditSinkHandle> live = captureService.liveSinks();
+        Map<String, AuditSinkHandle> live = liveById();
         if (live.isEmpty()) return snapshot;
         List<AuditSinkHandle> out = new ArrayList<>(snapshot.size());
         for (AuditSinkHandle h : snapshot) {
-            AuditSinkHandle fresh = live.get(h.processorName());
+            AuditSinkHandle fresh = live.get(h.id());
             out.add(fresh != null ? fresh : h);
         }
         return List.copyOf(out);
@@ -89,7 +89,7 @@ public final class DirAuditIntrospectionService implements MongooseAuditIntrospe
 
     @Override
     public AuditSinkHandle currentSink(String processorName) {
-        return captureService.liveSinks().get(processorName);
+        return captureService.currentSink(processorName);
     }
 
     @Override
@@ -97,17 +97,32 @@ public final class DirAuditIntrospectionService implements MongooseAuditIntrospe
         return captureService.liveSinks();
     }
 
+    private Map<String, AuditSinkHandle> liveById() {
+        Map<String, AuditSinkHandle> out = new HashMap<>();
+        for (AuditSinkHandle handle : captureService.liveSinks().values()) out.put(handle.id(), handle);
+        return out;
+    }
+
     private List<AuditSinkHandle> walk() {
         Path root = Path.of(config.getDirectory());
         if (!Files.isDirectory(root)) {
             return Collections.emptyList();
         }
-        Map<String, AuditSinkHandle> live = captureService.liveSinks();
+        Map<String, AuditSinkHandle> live = liveById();
         List<AuditSinkHandle> out = new ArrayList<>();
         try (Stream<Path> entries = Files.list(root)) {
             entries.filter(Files::isDirectory).forEach(procDir -> {
-                String name = procDir.getFileName().toString();
-                AuditSinkHandle liveHandle = live.get(name);
+                String id = procDir.getFileName().toString();
+                String name = id;
+                Path metadata = procDir.resolve(".mongoose-capture.properties");
+                if (Files.isRegularFile(metadata)) {
+                    java.util.Properties properties = new java.util.Properties();
+                    try (var reader = Files.newBufferedReader(metadata)) {
+                        properties.load(reader);
+                        if ("1".equals(properties.getProperty("schema"))) name = properties.getProperty("processor", id);
+                    } catch (IOException ignored) { /* retain the unique directory id when metadata is unreadable */ }
+                }
+                AuditSinkHandle liveHandle = live.get(id);
                 if (liveHandle != null) {
                     // Live capture — handle from the service has authoritative
                     // recordCount + lastWriteAt; reuse verbatim.
@@ -131,7 +146,7 @@ public final class DirAuditIntrospectionService implements MongooseAuditIntrospe
                     // best effort — handle still emitted with size=so-far
                 }
                 out.add(new AuditSinkHandle(
-                        name, name, procDir,
+                        id, name, procDir,
                         -1L,       // cycle: unknown from a closed dir walk
                         size,
                         -1L,       // recordCount: -1 = needs a tailer walk; deferred
@@ -152,7 +167,7 @@ public final class DirAuditIntrospectionService implements MongooseAuditIntrospe
         for (Map.Entry<String, AuditSinkHandle> e : live.entrySet()) {
             boolean present = false;
             for (AuditSinkHandle h : out) {
-                if (h.processorName().equals(e.getKey())) { present = true; break; }
+                if (h.id().equals(e.getKey())) { present = true; break; }
             }
             if (!present) {
                 out.add(0, e.getValue());
@@ -160,7 +175,7 @@ public final class DirAuditIntrospectionService implements MongooseAuditIntrospe
         }
         Map<String, AuditSinkHandle> deduped = new HashMap<>();
         for (AuditSinkHandle h : out) {
-            deduped.putIfAbsent(h.processorName(), h);
+            deduped.putIfAbsent(h.id(), h);
         }
         return Collections.unmodifiableList(new ArrayList<>(deduped.values()));
     }
