@@ -166,7 +166,7 @@ Adds a processor to a group, creating the group (and starting its thread, if the
 | Name already admitted in the group | `IllegalArgumentException`, at once |
 | Server is stopping or stopped | `IllegalStateException` ("server is stopping") |
 | Mailbox full, on an agent thread | `IllegalStateException`, at once; the name is released |
-| Mailbox full, off an agent thread | Backs off up to the group's full-mailbox timeout (10 s), then `IllegalStateException`; the name is released |
+| Mailbox full, off an agent thread | Backs off until `controlWaitMillis` from the call (or the group's 10 s full-mailbox timeout, if sooner), then `IllegalStateException`; the name is released. One deadline covers admission and the reply |
 | Mailbox full when a server stop begins | A sender still backing off leaves at once: the request is answered `NOT_RUNNING` ("server is stopping") and its name released, so it never holds up the stop |
 | `start()` throws, `REPORT` | Reported through `ErrorReporting`; processor dropped; call returns |
 | `start()` throws, `THROW` | `ProcessorStartException` |
@@ -294,7 +294,8 @@ the processor is replaced before the stop is applied, the replacement keeps runn
 
 **Failure modes**
 
-- Mailbox full: `IllegalStateException`, at once on an agent thread, or after the 10 s full-mailbox timeout
+- Mailbox full: `IllegalStateException`, at once on an agent thread, or once `controlWaitMillis` from the call (or the
+  10 s full-mailbox timeout, if sooner) has passed
   elsewhere. Nothing is stopped and the name stays reserved.
 - The method does not report the outcome. Use the `waitMillis` form, or a handle, if you need it.
 

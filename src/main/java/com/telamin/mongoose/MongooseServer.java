@@ -1176,13 +1176,16 @@ public class MongooseServer implements MongooseServerController {
                     + groupName + "'");
         }
         com.telamin.mongoose.control.ControlRequest request;
+        // one deadline, from here, for admission and the reply (FM-8): a full mailbox no longer spends a separate 10 s
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(controlWaitMillis());
         try {
-            request = admitEventProcessor(processorName, groupName, idleStrategy, feedConsumer).request();
+            request = admitEventProcessor(processorName, groupName, idleStrategy, feedConsumer, deadline).request();
         } finally {
             read.unlock();
         }
+        refuseIfNotAdmitted(request, "event processor '" + processorName + "' was not added to group '" + groupName + "'");
         // design PR 3: wait for the outcome where waiting is safe; a timeout detaches, the add still applies
-        com.telamin.mongoose.control.ControlReply reply = awaitWhereSafe(groupName, request);
+        com.telamin.mongoose.control.ControlReply reply = awaitWhereSafe(groupName, request, deadline);
         if (reply == null || reply.applied()) {
             return;
         }
@@ -1293,6 +1296,31 @@ public class MongooseServer implements MongooseServerController {
     /** How long a void control method waits for its outcome before detaching (the request still applies). */
     static final long CONTROL_WAIT_MILLIS = 10_000;
 
+    /** A void call whose request missed its deadline at admission throws, as one refused for a full mailbox does. */
+    private static void refuseIfNotAdmitted(com.telamin.mongoose.control.ControlRequest request, String what) {
+        if (request == null) return;
+        com.telamin.mongoose.control.ControlReply reply = request.reply().getNow(null);
+        if (reply != null && reply.outcome() == com.telamin.mongoose.control.event.ReplyOutcome.REFUSED
+                && reply.reason() != null && reply.reason().startsWith("not admitted within its deadline")) {
+            throw new IllegalStateException(what + ": " + reply.reason());
+        }
+    }
+
+    private com.telamin.mongoose.control.ControlReply awaitWhereSafe(String groupName,
+                                                                     com.telamin.mongoose.control.ControlRequest request,
+                                                                     long deadlineNanos) {
+        if (request == null || request.reply().isDone()) return request == null ? null : request.reply().getNow(null);
+        if (!safeToWait(groupName)) return null;
+        long left = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(deadlineNanos - System.nanoTime());
+        com.telamin.mongoose.control.ControlReply reply = left <= 0 ? null
+                : com.telamin.mongoose.control.ControlReplies.await(request, left);
+        if (reply == null) {
+            log.warning("control request " + request.description() + " in group '" + groupName + "' not answered within "
+                    + controlWaitMillis() + " ms; it still applies");
+        }
+        return reply;
+    }
+
     private com.telamin.mongoose.control.ControlReply awaitWhereSafe(String groupName,
                                                                      com.telamin.mongoose.control.ControlRequest request) {
         if (request == null || !safeToWait(groupName)) return null;
@@ -1329,6 +1357,11 @@ public class MongooseServer implements MongooseServerController {
 
     private Admission admitEventProcessor(String processorName, String groupName,
                                                                          IdleStrategy idleStrategy, Supplier<DataFlow> feedConsumer) {
+        return admitEventProcessor(processorName, groupName, idleStrategy, feedConsumer, Long.MAX_VALUE);
+    }
+
+    private Admission admitEventProcessor(String processorName, String groupName, IdleStrategy idleStrategy,
+                                          Supplier<DataFlow> feedConsumer, long admitByNanos) {
         IdleStrategy idleStrategyOverride = mongooseServerConfig.getIdleStrategyOrDefault(groupName, idleStrategy);
         ComposingEventProcessorAgentRunner composingEventProcessorAgentRunner = composingEventProcessorAgents.computeIfAbsent(
                 groupName,
@@ -1386,7 +1419,7 @@ public class MongooseServer implements MongooseServerController {
                     reservedProcessorNames.remove(reservation, registration);
                     throw e;
                 }
-            }, registration);
+            }, registration, admitByNanos);
         } catch (RuntimeException | Error e) {
             // Rejected before the supplier ran: its own failure cleanup cannot release this reservation.
             reservedProcessorNames.remove(reservation, registration);
@@ -1561,8 +1594,11 @@ public class MongooseServer implements MongooseServerController {
     @Override
     public void stopProcessor(String groupName, String processorName) {
         log.info("stopProcessor:" + processorName + " in group:" + groupName);
-        // design PR 3: wait for the outcome where waiting is safe; a timeout detaches, the stop still applies
-        awaitWhereSafe(groupName, sendStop(groupName, processorName));
+        // one deadline for admission and the reply (FM-8); a timeout detaches, the stop still applies
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(controlWaitMillis());
+        com.telamin.mongoose.control.ControlRequest request = sendStop(groupName, processorName, deadline);
+        refuseIfNotAdmitted(request, "processor '" + processorName + "' in group '" + groupName + "' was not stopped");
+        awaitWhereSafe(groupName, request, deadline);
     }
 
     /** Send a stop bound, now, to the registration admitted under the name; null when nothing is admitted. */
