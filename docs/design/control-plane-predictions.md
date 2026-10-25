@@ -32,6 +32,15 @@ which are unedited.
 
 The P7 figures above are the original author’s measurements, not a new qualification of the integrated candidate. The benchmark counter padding was corrected during review. The result remains unresolved until repeated with the corrected harness on a quiet machine; pinned-core Linux validation is still outstanding.
 
+**Independent follow-up, 2026-10-25:** five alternating JVM forks per build on macOS arm64 / Corretto 21.0.9, with
+both builds on runtime 1.1.2 and the identical corrected benchmark, gave fork medians of
+`11.553, 11.778, 10.479, 12.444, 11.892` M events/s for baseline `74ad868`, and
+`12.114, 10.835, 9.754, 12.710, 12.910` for runtime candidate `c7c92da`. The medians of those samples are 11.778 and
+12.114; their means are 11.6292 and 11.6646. No qualification stress test ran concurrently. This did not reproduce a
+consistent 12% loss, but the large variation and unpinned cores leave the earlier result unexplained. It does not
+close the pinned-core Linux check. The counter's `value` offset was verified as 144 bytes on this JDK too.
+[Full methodology, samples and qualification limits](../reports/pr76-qualification-2026-10-25/results.json).
+
 ### What the predictions missed
 
 - **Tests that pass for the wrong reason.** A test-compile failure hid behind a filtered log once, and a leaked agent
