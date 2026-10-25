@@ -353,6 +353,15 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         this.captureOpenTimeoutMillis = timeout.toMillis();
     }
 
+    private boolean admitCaptureOpen() {
+        int current;
+        do {
+            current = opensInFlight.get();
+            if (current >= captureOpenLimit) return false;
+        } while (!opensInFlight.compareAndSet(current, current + 1));
+        return true;
+    }
+
     /**
      * Begin capturing a processor's audit: {@code registration}'s generation if given, else whichever processor answers
      * to {@code name} when the request is applied. The reply comes once the capture records, or not.
@@ -755,45 +764,53 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         if (resources == null) {
             return result(effect, ControlOutcome.FAILED, "audit capture is not enabled");
         }
+        if (!admitCaptureOpen()) return result(effect, ControlOutcome.FAILED, "unresolved capture open limit reached");
         long root = effect.requestId();
         String op = effect.opId();
         String name = effect.name();
-        if (opensInFlight.incrementAndGet() > captureOpenLimit) {
-            int inFlight = opensInFlight.decrementAndGet();
-            return result(effect, ControlOutcome.FAILED, inFlight + " physical capture opens are still in flight (limit "
-                    + captureOpenLimit + "): a helper has not returned");
-        }
         var io = captureIo;
-        var timeout = io.schedule(() -> {
-            openTimeouts.remove(op);
-            control.complete(new CaptureCompletion(root, op, completionIds.incrementAndGet(),
-                    CaptureCompletion.Kind.TIMED_OUT, -1, null));
-        }, captureOpenTimeoutMillis);
-        openTimeouts.put(op, timeout);
+        var permitHeld = new java.util.concurrent.atomic.AtomicBoolean(true);
+        Runnable releasePermit = () -> {
+            if (permitHeld.compareAndSet(true, false)) opensInFlight.decrementAndGet();
+        };
         try {
+            var timeoutFired = new java.util.concurrent.atomic.AtomicBoolean();
+            var timeout = io.schedule(() -> {
+                timeoutFired.set(true);
+                openTimeouts.remove(op);
+                control.complete(new CaptureCompletion(root, op, completionIds.incrementAndGet(),
+                        CaptureCompletion.Kind.TIMED_OUT, -1, null));
+            }, captureOpenTimeoutMillis);
+            openTimeouts.put(op, timeout);
+            // A zero-delay/custom timer may fire before its cancellation handle was published.
+            if (timeoutFired.get()) openTimeouts.remove(op, timeout);
             io.open(() -> {
-                CaptureCompletion done;
                 try {
-                    Object handle = resources.openCapture(name);
-                    long id = captureResourceIds.incrementAndGet();
-                    captureHandles.put(id, handle);
-                    done = new CaptureCompletion(root, op, completionIds.incrementAndGet(), CaptureCompletion.Kind.OPENED, id, null);
-                } catch (Throwable t) {
-                    done = new CaptureCompletion(root, op, completionIds.incrementAndGet(), CaptureCompletion.Kind.OPEN_FAILED,
-                            -1, String.valueOf(t));
-                }
-                var pendingTimeout = openTimeouts.remove(op);
-                if (pendingTimeout != null) pendingTimeout.cancel();
-                try {
+                    CaptureCompletion done;
+                    try {
+                        Object handle = resources.openCapture(name);
+                        long id = captureResourceIds.incrementAndGet();
+                        captureHandles.put(id, handle);
+                        done = new CaptureCompletion(root, op, completionIds.incrementAndGet(), CaptureCompletion.Kind.OPENED, id, null);
+                    } catch (Throwable t) {
+                        done = new CaptureCompletion(root, op, completionIds.incrementAndGet(), CaptureCompletion.Kind.OPEN_FAILED,
+                                -1, String.valueOf(t));
+                    }
+                    var pendingTimeout = openTimeouts.remove(op);
+                    if (pendingTimeout != null) pendingTimeout.cancel();
                     control.complete(done);
                 } finally {
-                    opensInFlight.decrementAndGet();    // the physical operation has finished, whatever its request did
+                    releasePermit.run();
                 }
             });
-        } catch (RuntimeException rejected) {
-            opensInFlight.decrementAndGet();
+        } catch (RuntimeException | Error rejected) {
             var pendingTimeout = openTimeouts.remove(op);
-            if (pendingTimeout != null) pendingTimeout.cancel();
+            try {
+                if (pendingTimeout != null) pendingTimeout.cancel();
+            } finally {
+                releasePermit.run();
+            }
+            if (rejected instanceof Error fatal) throw fatal;
             return result(effect, ControlOutcome.FAILED, "the open could not be handed to a helper: " + rejected);
         }
         return result(effect, ControlOutcome.PENDING, null);
@@ -875,7 +892,6 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         switch (c.kind()) {
             case OPENED -> {
                 Object handle = captureHandles.remove(c.resourceId());
-                CaptureCompletion closed = handle == null ? null : closeResource(c.requestId(), c.opId(), c.resourceId(), handle);
                 // the open's final outcome, then the compensating close: as the control processor would have recorded
                 // an open its timeout already settled has had its final outcome: this one is a duplicate. The group has
                 // ended, so its control state no longer changes and is read safely here
@@ -883,16 +899,23 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                 audit.fallback("EffectOutcome", "group", roleName(), "requestId", c.requestId(), "opId", c.opId(),
                         "effect", "OpenCapture", "outcome", "succeeded", "stale", true, "resourceId", c.resourceId(),
                         "duplicate", settled ? Boolean.TRUE : null);
-                audit.fallback("CaptureCompensated", "group", roleName(), "opId", c.opId(), "resourceId", c.resourceId(),
-                        "closed", closed != null && closed.kind() == CaptureCompletion.Kind.CLOSED);
-                // the compensating close's own outcome, with the physical failure's reason when it failed: an attempted
-                // close is not a successful one (follow-up review, finding 8)
-                if (closed != null) {
-                    audit.fallback("EffectOutcome", "group", roleName(), "requestId", c.requestId(),
-                            "opId", "orphan-close." + c.resourceId(), "effect", "CloseCapture",
-                            "outcome", closed.kind() == CaptureCompletion.Kind.CLOSED ? "succeeded" : "failed",
-                            "resourceId", c.resourceId(), "reason", closed.reason());
+                if (handle == null) {
+                    audit.fallback("CaptureCompensated", "group", roleName(), "requestId", c.requestId(),
+                            "opId", c.opId(), "resourceId", c.resourceId(), "duplicate", true,
+                            "closed", false, "reason", "resource already handed to a closer");
+                    break;
                 }
+                String closeOp = c.requestId() + ".orphan-close." + c.resourceId();
+                audit.fallback("EffectRequested", "group", roleName(), "requestId", c.requestId(), "opId", closeOp,
+                        "effect", "CloseCapture", "resourceId", c.resourceId(), "causeOp", c.opId());
+                CaptureCompletion closed = closeResource(c.requestId(), closeOp, c.resourceId(), handle);
+                audit.fallback("EffectOutcome", "group", roleName(), "requestId", c.requestId(), "opId", closeOp,
+                        "effect", "CloseCapture", "resourceId", c.resourceId(), "causeOp", c.opId(),
+                        "outcome", closed.kind() == CaptureCompletion.Kind.CLOSED ? "succeeded" : "failed",
+                        "reason", closed.reason());
+                audit.fallback("CaptureCompensated", "group", roleName(), "requestId", c.requestId(),
+                        "opId", closeOp, "resourceId", c.resourceId(), "causeOp", c.opId(),
+                        "closed", closed.kind() == CaptureCompletion.Kind.CLOSED, "reason", closed.reason());
             }
             case CLOSED, CLOSE_FAILED -> audit.fallback("EffectOutcome", "group", roleName(), "requestId", c.requestId(),
                     "opId", c.opId(), "effect", "CloseCapture", "outcome", c.kind() == CaptureCompletion.Kind.CLOSED
