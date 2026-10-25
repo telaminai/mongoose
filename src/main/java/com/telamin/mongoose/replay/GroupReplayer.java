@@ -30,8 +30,9 @@ public final class GroupReplayer {
     private final ReplayConfig config;
     private final ReplayRouting routing;
     private final ReplayScheduler scheduler;
-    private final List<Cursor> cursors = new ArrayList<>();
-    private final List<String> adminReplies = new CopyOnWriteArrayList<>();
+    // Membership changes only on attach/detach; event replay never copies this list.
+    private final List<Cursor> cursors = new CopyOnWriteArrayList<>();
+    private final List<String> adminReplies = java.util.Collections.synchronizedList(new ArrayList<>());
     /** L2: what each replayed processor sent to its sinks, captured instead of delivered (D8). */
     private final java.util.Map<String, List<Object>> outputs = new java.util.concurrent.ConcurrentHashMap<>();
     private final java.util.Map<DataFlow, java.util.Map<com.telamin.fluxtion.runtime.service.Service<?>,
@@ -42,20 +43,20 @@ public final class GroupReplayer {
         final DataFlow flow;
         final ReplayClock clock;
         /** Empty until the store is read at attach; stays empty when setup failed (the cursor is then stopped). */
-        List<ReplayEntry> entries = List.of();
-        int next;
-        String stopped;
+        volatile List<ReplayEntry> entries = List.of();
+        volatile int next;
+        volatile String stopped;
         /** While the current entry cannot be delivered yet: since when (System.nanoTime) and why. */
         long waitingSince;
         String waitingFor;
         /** Ended by a recorded Stop: the processor was stopped where the recorded run stopped it. */
-        boolean ended;
+        volatile boolean ended;
         /** The stream records its service changes: they are replayed in position and live ones suppressed. */
-        boolean recordsServices;
+        volatile boolean recordsServices;
         /** Every service the stream records a change of: those changes reach the processor only from the stream. */
-        java.util.Set<String> changedServices = java.util.Set.of();
+        volatile java.util.Set<String> changedServices = java.util.Set.of();
         /** Services the stream registers before it ever withdraws them: not given at build, but where it has them. */
-        java.util.Set<String> deferred = java.util.Set.of();
+        volatile java.util.Set<String> deferred = java.util.Set.of();
         /** The clock readings the recorded stop took, checked once the replayed stop has run. */
         List<Long> stopReads;
         /** Control requests the recorded run made before the next input completed: the replayed ones must match. */
@@ -67,8 +68,10 @@ public final class GroupReplayer {
             this.clock = clock;
         }
 
+        volatile boolean attaching = true;
+
         boolean done() {
-            return stopped != null || ended || next >= entries.size();
+            return stopped != null || !attaching && (ended || next >= entries.size());
         }
     }
 
@@ -158,6 +161,7 @@ public final class GroupReplayer {
             }
         }
         if (failed != null) stop(cursor, failed);
+        cursor.attaching = false;
     }
 
     /** A processor that left its group (stopped, mongoose#71, or a failed start, review of #66): its replay cursor and captures are dropped. */
@@ -167,6 +171,10 @@ public final class GroupReplayer {
             // A control refusal can fail start() and immediately detach this processor, before replay drains any
             // entries. Removing the cursor must not erase the refusal and make the settled replay appear successful.
             if (c.stopped != null) ended.putIfAbsent(c.name, c.stopped);
+            if (!c.done()) {
+                ended.putIfAbsent(c.name, "left the group at entry " + c.next + " of " + c.entries.size()
+                        + " before its replay completed");
+            }
             if (!c.expectedCalls.isEmpty()) {
                 ended.put(c.name, "the recorded run made control request " + describe(c.expectedCalls.peek())
                         + " that the replay did not");
@@ -245,7 +253,7 @@ public final class GroupReplayer {
     private com.telamin.fluxtion.runtime.service.Service<?> intercepted(Cursor cursor,
                                                                         com.telamin.fluxtion.runtime.service.Service<?> service) {
         return ControlInterception.wrap(service, (method, args, m, raw) -> {
-            controlRequests.computeIfAbsent(cursor.name, n -> new CopyOnWriteArrayList<>()).add(method + args);
+            controlRequests.computeIfAbsent(cursor.name, n -> java.util.Collections.synchronizedList(new ArrayList<>())).add(method + args);
             if (!ownThread.getAsBoolean()) {
                 // off the processor's own thread: not part of its input order, so not reproducible (final review, 11)
                 stop(cursor, "control request " + method + args + " made off the processor's thread; not executed");
@@ -294,12 +302,17 @@ public final class GroupReplayer {
 
     /** The control requests {@code processor} made during the replay, intercepted, in order. */
     public List<String> controlRequests(String processor) {
-        return List.copyOf(controlRequests.getOrDefault(processor, List.of()));
+        return snapshot(controlRequests.getOrDefault(processor, List.of()));
     }
 
     /** What {@code processor} sent to its sinks during the replay, in order (L2: captured, not delivered). */
     public List<Object> outputs(String processor) {
-        return List.copyOf(outputs.getOrDefault(processor, List.of()));
+        return snapshot(outputs.getOrDefault(processor, List.of()));
+    }
+
+    /** Copy only when queried; captured event/admin/control outputs append in constant time. */
+    private static <T> List<T> snapshot(List<T> values) {
+        synchronized (values) { return java.util.Collections.unmodifiableList(new ArrayList<>(values)); }
     }
 
     /** A sink that keeps what it is given, after the processor's own value mapper, and delivers nothing. */
@@ -400,7 +413,7 @@ public final class GroupReplayer {
     }
 
     public List<String> adminReplies() {
-        return List.copyOf(adminReplies);
+        return snapshot(adminReplies);
     }
 
     /** Why a processor's replay stopped early, or null. */

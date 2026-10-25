@@ -98,6 +98,15 @@ public final class GroupRecorder {
         }
     }
 
+    /** A built stream must retain startup failure even after its processor is immediately released. */
+    public void startFailed(DataFlow flow, Throwable failure) {
+        Recorded recorded = byFlow.get(flow);
+        if (recorded == null || recorded.broken != null) return;
+        String why = "processor start failed: " + failure;
+        append(recorded, new ReplayEntry.Failed("start", why, recorded.clock.instant(recorded.clock.captured())));
+        if (recorded.broken == null) recorded.broken = why;
+    }
+
     public void detach(DataFlow flow) {
         byFlow.remove(flow);
         wrapped.remove(flow);

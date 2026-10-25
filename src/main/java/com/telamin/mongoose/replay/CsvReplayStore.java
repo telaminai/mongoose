@@ -155,8 +155,17 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
             case ReplayEntry.Stopped s -> "STOPPED,,,," + s.instant() + ",," + reads(s.reads());
             case ReplayEntry.ServiceChanged c -> "SERVICE," + Csv.field(c.service()) + "," + (c.register() ? "register" : "deregister")
                     + "," + c.version() + "," + c.instant() + ",," + reads(c.reads());
-            case ReplayEntry.ControlCall cc -> "CONTROL," + Csv.field(cc.method()) + "," + Csv.field(cc.outcome()) + ",,"
-                    + cc.instant() + "," + encode(new ArrayList<>(cc.args())) + ",";
+            case ReplayEntry.ControlCall cc -> {
+                // Keep ordinary/legacy rows unchanged. A multiline exception is data, not a CSV field: put its
+                // UTF-8 bytes in the unused sequence slot. A distinct kind makes older readers fail closed
+                // instead of misreading an encoded failure as a successful empty outcome.
+                boolean multiline = cc.outcome().indexOf('\n') >= 0 || cc.outcome().indexOf('\r') >= 0;
+                String outcome = multiline ? "" : Csv.field(cc.outcome());
+                String encodedOutcome = multiline ? "outcome-base64:"
+                        + Base64.getEncoder().encodeToString(cc.outcome().getBytes(StandardCharsets.UTF_8)) : "";
+                yield (multiline ? "CONTROL64," : "CONTROL,") + Csv.field(cc.method()) + "," + outcome + "," + encodedOutcome + ","
+                        + cc.instant() + "," + encode(new ArrayList<>(cc.args())) + ",";
+            }
         };
     }
 
@@ -174,8 +183,15 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
             case "STOPPED" -> new ReplayEntry.Stopped(instant, reads);
             case "SERVICE" -> new ReplayEntry.ServiceChanged(source, "register".equals(route), Long.parseLong(seq), instant, reads);
             case "CONTROL" -> new ReplayEntry.ControlCall(source, List.copyOf((List<String>) decode(payload)), route, instant);
+            case "CONTROL64" -> new ReplayEntry.ControlCall(source, List.copyOf((List<String>) decode(payload)), controlOutcome(seq), instant);
             default -> throw new IllegalArgumentException(file + ": an unknown entry kind " + kind);
         };
+    }
+
+    private static String controlOutcome(String encoded) {
+        String prefix = "outcome-base64:";
+        if (!encoded.startsWith(prefix)) throw new IllegalArgumentException("unknown control outcome encoding");
+        return new String(Base64.getDecoder().decode(encoded.substring(prefix.length())), StandardCharsets.UTF_8);
     }
 
     /** The six-field format: no route, and the instant was the first reading (a cycle always recorded one). */

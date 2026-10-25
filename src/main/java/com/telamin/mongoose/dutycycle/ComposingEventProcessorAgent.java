@@ -783,8 +783,17 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             }
             return result(effect, name, ControlOutcome.SUCCEEDED, null);
         } catch (VirtualMachineError fatal) {
+            if (recorder != null && namedEventProcessor != null) {
+                try { recorder.startFailed(namedEventProcessor.eventProcessor(), fatal); }
+                catch (Throwable recordingFailure) {
+                    if (recordingFailure != fatal) fatal.addSuppressed(recordingFailure);
+                }
+            }
             throw fatal;
         } catch (Throwable t) {
+            if (recorder != null && namedEventProcessor != null) {
+                recorder.startFailed(namedEventProcessor.eventProcessor(), t);
+            }
             String name = namedEventProcessor == null ? effect.name() : namedEventProcessor.name();
             lastStartFailure = t;   // whether it fails the boot or is reported is the control processor's decision
             return result(effect, name, ControlOutcome.FAILED, String.valueOf(t));
