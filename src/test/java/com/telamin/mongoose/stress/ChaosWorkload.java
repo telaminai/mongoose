@@ -882,6 +882,12 @@ final class ChaosWorkload implements AutoCloseable {
             if (error != null) anomalies.add("request completed exceptionally: " + op + " " + error);
             pendingOps.remove(op);
             if (op.what.startsWith("add") && reply != null) checkAddReply(op, reply);
+            if (reply != null && ControlInvariants.isSafetyNetFailure(reply.reason()))
+                anomalies.add("driver safety net answered a request: " + op + " " + reply);
+            if (op.what.equals("stop") && reply != null && reply.outcome() == ReplyOutcome.FAILED
+                    && (reply.reason() == null || (!reply.reason().contains("CHAOS stop failure")
+                    && !reply.reason().contains("CHAOS tearDown failure"))))
+                anomalies.add("stop failed without an injected lifecycle failure: " + op + " " + reply);
             op.reply = reply;
             op.error = error;
             count(op.what.split(" ")[0] + (op.what.startsWith("flood") ? " flood" : "") + " "

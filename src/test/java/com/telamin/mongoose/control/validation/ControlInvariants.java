@@ -49,6 +49,21 @@ public final class ControlInvariants {
         if (!evidence.complete()) {
             unverifiable.add("I2, I3, I4, I10, I11: the record is incomplete (dropped or failed writes)");
         }
+        List<Requested> requested = evidence.requested();
+        Map<String, Requested> requestsByOp = new HashMap<>();
+        for (Requested request : requested) requestsByOp.putIfAbsent(request.opId(), request);
+        boolean terminalRecorded = false;
+        for (Rec record : evidence.records()) {
+            if (record.type().equals("Dead") || (record.type().equals("Input") && "Close".equals(record.str("fact"))))
+                terminalRecorded = true;
+            String reason = record.str("reason");
+            boolean unexplainedOrphan = record.type().equals("CaptureOrphan")
+                    && !(terminalRecorded && "CaptureOpenTimedOut".equals(record.str("fact")));
+            if (record.type().equals("Anomaly") || record.type().equals("Dead") || record.str("anomaly") != null
+                    || unexplainedOrphan || isSafetyNetFailure(reason)) {
+                violations.add("I18 engine safety diagnostic: " + record);
+            }
+        }
         Map<Long, List<Rec>> replies = new HashMap<>();
         for (Rec r : evidence.records()) {
             boolean delivered = r.type().equals("Reply") && !Boolean.FALSE.equals(r.fields().get("completed"));
@@ -59,13 +74,32 @@ public final class ControlInvariants {
         // I15 (not in the design table): nothing happens for a request after its reply: the reply comes only once every effect it depends on has
         // its final outcome
         Map<Long, Long> replySeq = new HashMap<>();
+        Map<Long, String> replyKinds = new HashMap<>();
+        Map<Long, Rec> recordsBySeq = new HashMap<>();
+        for (Rec record : evidence.records()) if (!record.fallback()) recordsBySeq.put(record.seq(), record);
         for (Rec r : evidence.ofType("Reply")) {
-            if (!Boolean.FALSE.equals(r.fields().get("completed"))) replySeq.putIfAbsent(r.requestId(), r.seq());
+            if (!Boolean.FALSE.equals(r.fields().get("completed"))) {
+                replySeq.putIfAbsent(r.requestId(), r.seq());
+                replyKinds.putIfAbsent(r.requestId(), r.str("outcome"));
+            }
         }
         for (Rec r : evidence.records()) {
-            if (r.fallback() || r.type().equals("Reply") || Boolean.TRUE.equals(r.fields().get("cleanup"))) continue;
+            if (r.fallback() || r.type().equals("Reply")) continue;
             Long at = replySeq.get(r.requestId());
-            if (at != null && r.seq() > at && !"Input".equals(r.type())) {
+            Requested origin = requestsByOp.get(r.str("opId"));
+            // The engine's cleanup flag cannot excuse an outcome of an effect requested before its reply.
+            // New effects requested by a later completion are separate cleanup obligations.
+            boolean laterEffect = origin != null && origin.decisionSeq() > (at == null ? Long.MAX_VALUE : at);
+            boolean asyncCapture = "EffectOutcome".equals(r.type()) && ("CloseCapture".equals(r.str("effect"))
+                    || ("OpenCapture".equals(r.str("effect")) && (!"APPLIED".equals(replyKinds.get(r.requestId()))
+                    || Boolean.TRUE.equals(r.fields().get("duplicate")))));
+            Rec cause = recordsBySeq.get(r.num("causeSeq"));
+            boolean laterDecision = "Decision".equals(r.type()) && cause != null && "Input".equals(cause.type())
+                    && cause.str("fact") != null && cause.str("fact").startsWith("Capture")
+                    && at != null && cause.seq() > at && (r.str("effects") == null || r.str("effects").isBlank()
+                    || java.util.Arrays.stream(r.str("effects").split(";")).allMatch(e -> e.contains(" CloseCapture(")));
+            if (at != null && r.seq() > at && !"Input".equals(r.type()) && !laterEffect
+                    && !asyncCapture && !laterDecision) {
                 violations.add("I15 request " + r.requestId() + " has a " + r.type() + " (seq " + r.seq()
                         + ") after its reply (seq " + at + "): " + r);
             }
@@ -98,7 +132,6 @@ public final class ControlInvariants {
                 outcomes.computeIfAbsent(r.str("opId"), k -> new ArrayList<>()).add(r);
             }
         }
-        List<Requested> requested = evidence.requested();
         Map<String, Integer> requestedAt = new HashMap<>();
         Map<Rec, Integer> recordedAt = new java.util.IdentityHashMap<>();
         for (int index = 0; index < evidence.records().size(); index++) {
@@ -172,9 +205,54 @@ public final class ControlInvariants {
         for (Rec reply : evidence.ofType("Reply")) {
             if (!"APPLIED".equals(reply.str("outcome"))) continue;
             for (Rec o : failedByRequest.getOrDefault(reply.requestId(), List.of())) {
-                if (o.seq() < reply.seq()) {
+                Requested origin = requestsByOp.get(o.str("opId"));
+                if (o.seq() < reply.seq() || (origin != null && origin.decisionSeq() < reply.seq()
+                        && !("OpenCapture".equals(o.str("effect")) && Boolean.TRUE.equals(o.fields().get("duplicate"))))) {
                     violations.add("I8 request " + reply.requestId() + " replied APPLIED after a failed "
                             + o.str("effect") + " (" + o.str("opId") + ")");
+                }
+            }
+        }
+        // I17: a successful stop/close of a physically started generation needs successful Release and ReleaseName
+        // outcomes before its reply. Derive obligations from inputs and actual effect outcomes, never rule names.
+        Set<Long> physicallyStarted = new HashSet<>();
+        Map<Long, String> physicalNames = new HashMap<>();
+        Map<Long, Set<Long>> releaseObligations = new HashMap<>();
+        Set<Long> releasedSuccessfully = new HashSet<>();
+        Set<Long> namesReleased = new HashSet<>();
+        for (Rec record : evidence.records()) {
+            long generation = record.num("generation");
+            if ("EffectOutcome".equals(record.type())) {
+                if ("BuildAndStart".equals(record.str("effect")) && "succeeded".equals(record.str("outcome"))) {
+                    physicallyStarted.add(generation);
+                    physicalNames.put(generation, record.str("name"));
+                    releasedSuccessfully.remove(generation);
+                    namesReleased.remove(generation);
+                } else if ("Release".equals(record.str("effect")) && !"pending".equals(record.str("outcome"))) {
+                    physicallyStarted.remove(generation);
+                    if ("succeeded".equals(record.str("outcome"))) releasedSuccessfully.add(generation);
+                } else if ("ReleaseName".equals(record.str("effect")) && "succeeded".equals(record.str("outcome"))) {
+                    namesReleased.add(generation);
+                }
+            }
+            if ("Input".equals(record.type())) {
+                if ("Close".equals(record.str("fact"))) {
+                    releaseObligations.put(record.requestId(), Set.copyOf(physicallyStarted));
+                } else if ("Stop".equals(record.str("fact"))) {
+                    Set<Long> bound = new HashSet<>();
+                    for (Long liveGeneration : physicallyStarted) {
+                        if (generation >= 0 ? generation == liveGeneration
+                                : java.util.Objects.equals(record.str("name"), physicalNames.get(liveGeneration))) bound.add(liveGeneration);
+                    }
+                    releaseObligations.put(record.requestId(), bound);
+                }
+            }
+            if ("Reply".equals(record.type()) && "APPLIED".equals(record.str("outcome"))) {
+                for (Long expected : releaseObligations.getOrDefault(record.requestId(), Set.of())) {
+                    if (!releasedSuccessfully.contains(expected) || !namesReleased.contains(expected)) {
+                        violations.add("I17 request " + record.requestId() + " replied APPLIED before generation " + expected
+                                + " had successful Release and ReleaseName outcomes");
+                    }
                 }
             }
         }
@@ -198,6 +276,8 @@ public final class ControlInvariants {
         long closingFrom = evidence.ofType("Decision").stream()
                 .filter(d -> "closeGroup".equals(d.str("rule")) || "closeEmpty".equals(d.str("rule")))
                 .mapToLong(Rec::seq).min().orElse(Long.MAX_VALUE);
+        closingFrom = Math.min(closingFrom, evidence.ofType("Input").stream()
+                .filter(in -> "Close".equals(in.str("fact"))).mapToLong(Rec::seq).min().orElse(Long.MAX_VALUE));
         for (Requested q : requested) {
             if (q.decisionSeq() >= closingFrom && Set.of("BuildAndStart", "OpenCapture", "InstallCapture").contains(q.effect())) {
                 violations.add("I7 " + q.effect() + " " + q.opId() + " requested after the group decided to close (seq "
@@ -208,6 +288,10 @@ public final class ControlInvariants {
         Map<Long, Long> releasingFrom = new HashMap<>();
         for (Rec d : evidence.ofType("Decision")) {
             if ("stopStarted".equals(d.str("rule"))) releasingFrom.putIfAbsent(d.num("generation"), d.seq());
+        }
+        for (Rec input : evidence.ofType("Input")) {
+            if ("Stop".equals(input.str("fact")) && input.num("generation") >= 0)
+                releasingFrom.putIfAbsent(input.num("generation"), input.seq());
         }
         for (Requested q : requested) {
             if ("Release".equals(q.effect())) releasingFrom.putIfAbsent(q.generation(), q.decisionSeq());
@@ -387,5 +471,11 @@ public final class ControlInvariants {
             }
         }
         return new Result(violations, unverifiable);
+    }
+
+    public static boolean isSafetyNetFailure(String reason) {
+        return reason != null && (reason.contains("no reply after its effects settled")
+                || reason.contains("effects did not settle") || reason.contains("control processor threw")
+                || reason.equals("abandoned"));
     }
 }

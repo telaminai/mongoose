@@ -473,7 +473,10 @@ class CaptureAsEffectsTest {
         assertEquals(0, group.captureResourceSlotsInUse());
         var evidence = ControlEvidence.parse(group.control().audit().exportText(), true);
         var validation = ControlInvariants.check(evidence);
-        assertTrue(validation.verified(), validation.toString());
+        assertEquals(1, validation.violations().size(), validation.toString());
+        assertTrue(validation.violations().get(0).startsWith("I18 engine safety diagnostic: Dead@fallback"));
+        assertTrue(validation.violations().get(0).contains("simulated: the control processor died"));
+        assertTrue(validation.unverifiable().isEmpty(), validation.toString());
         var records = evidence.records();
         var detachRequest = records.stream().filter(r -> r.type().equals("EffectRequested")
                 && "UninstallCapture".equals(r.str("effect")) && Boolean.TRUE.equals(r.fields().get("offline")))

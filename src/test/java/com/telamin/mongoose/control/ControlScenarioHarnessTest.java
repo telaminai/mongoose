@@ -130,6 +130,88 @@ class ControlScenarioHarnessTest {
         }
     }
 
+    /** Caller-owned request ledger. Callback snapshots precede any later group-close compensation. */
+    static final class RequestLedger {
+        final List<ControlRequest> sent = new ArrayList<>();
+        final List<String> failures = new ArrayList<>();
+        final Map<ControlRequest, AtomicInteger> answers = new IdentityHashMap<>();
+        final Reservations reservations;
+        final CaptureRig.FakeResources captures;
+        boolean ending;
+
+        RequestLedger(Reservations reservations) { this(reservations, null); }
+        RequestLedger(Reservations reservations, CaptureRig.FakeResources captures) {
+            this.reservations = reservations;
+            this.captures = captures;
+        }
+
+        ControlRequest track(ControlRequest request, ProcessorRegistration registration, LedgerProc target) {
+            sent.add(request);
+            AtomicInteger count = new AtomicInteger();
+            answers.put(request, count);
+            request.reply().whenComplete((reply, error) -> {
+                count.incrementAndGet();
+                if (error != null || reply == null) { failures.add(request + " exceptional/missing reply: " + error); return; }
+                String reason = reply.reason() == null ? "" : reply.reason();
+                if (ControlInvariants.isSafetyNetFailure(reason)) failures.add(request + " safety-net reply: " + reply);
+                if (reply.outcome() == com.telamin.mongoose.control.event.ReplyOutcome.NOT_RUNNING && !ending)
+                    failures.add(request + " refused as not running without a harness close: " + reply);
+                switch (request.kind()) {
+                    case ADD -> {
+                        if (reply.applied() && (target == null || target.starts.get() != 1 || target.failStart))
+                            failures.add(request + " APPLIED without a successful start");
+                        if (reply.outcome() == com.telamin.mongoose.control.event.ReplyOutcome.FAILED
+                                && (target == null || !target.failStart)) failures.add(request + " unexpected failed add: " + reply);
+                        if (!reply.applied() && reply.outcome() != com.telamin.mongoose.control.event.ReplyOutcome.FAILED
+                                && target != null && target.starts.get() != 0) failures.add(request + " refused add started");
+                    }
+                    case STOP -> {
+                        if (reply.applied() && target != null && target.starts.get() == 1 && !target.failStart) {
+                            if (target.stops.get() != 1 || target.tearDowns.get() != 1)
+                                failures.add(request + " APPLIED before stop/teardown completed for " + target.name + "#" + target.serial);
+                            if (captures != null && captures.installed.containsKey(target))
+                                failures.add(request + " APPLIED with capture still installed on stopped processor");
+                            if (reservations.table.get(target.name) == registration)
+                                failures.add(request + " APPLIED before its name was released");
+                        }
+                        if (reply.outcome() == com.telamin.mongoose.control.event.ReplyOutcome.FAILED
+                                && !reason.contains("simulated stop failure") && !reason.contains("simulated uninstall failure"))
+                            failures.add(request + " unexplained failed stop: " + reply);
+                        if (reply.outcome() == com.telamin.mongoose.control.event.ReplyOutcome.REFUSED
+                                && !reason.equals("no such processor")) failures.add(request + " unexpected refused stop: " + reply);
+                    }
+                    case RUN, BROADCAST -> {
+                        if (!reply.applied() && !(ending && reply.outcome() == com.telamin.mongoose.control.event.ReplyOutcome.NOT_RUNNING))
+                            failures.add(request + " unexpected control outcome: " + reply);
+                    }
+                    case CAPTURE -> {
+                        if (reply.applied() && target != null && captures != null) {
+                            boolean installed = captures.installed.containsKey(target);
+                            if (request.description().startsWith("audit start ") && !installed)
+                                failures.add(request + " APPLIED before capture installation");
+                            if (request.description().startsWith("audit stop ") && installed)
+                                failures.add(request + " APPLIED before capture removal");
+                        }
+                        if (reply.outcome() == com.telamin.mongoose.control.event.ReplyOutcome.FAILED
+                                && !(reason.startsWith("open failed:") || reason.equals("open timed out")
+                                || reason.startsWith("install failed:") || reason.startsWith("uninstall failed:")))
+                            failures.add(request + " unexpected capture failure: " + reply);
+                    }
+                    default -> { }
+                }
+            });
+            return request;
+        }
+
+        void verify(String context) {
+            for (ControlRequest request : sent) {
+                assertTrue(request.reply().isDone(), "caller still awaits " + request + "\n" + context);
+                assertEquals(1, answers.get(request).get(), "reply observation count: " + request);
+            }
+            assertEquals(List.of(), failures, context);
+        }
+    }
+
     static LongStream seeds() {
         long first = Long.getLong("mongoose.harness.seedStart", 1L);
         long count = Long.getLong("mongoose.harness.seedCount", 200L);
@@ -152,6 +234,7 @@ class ControlScenarioHarnessTest {
         group.setCaptureIo(io);
         group.setAuditCaptureResources(captures);
         Reservations reservations = new Reservations();
+        RequestLedger requests = new RequestLedger(reservations, captures);
         List<LedgerProc> all = new ArrayList<>();
         Map<LedgerProc, Integer> stopsDuringClose = new IdentityHashMap<>();
         Map<String, Integer> serials = new HashMap<>();
@@ -174,7 +257,7 @@ class ControlScenarioHarnessTest {
                     PendingAdd add = it.next();
                     if (add.enqueueAt <= step) {
                         it.remove();
-                        group.addNamedEventProcessor(() -> new NamedEventProcessor(add.name, add.proc), add.reg);
+                        requests.track(group.addNamedEventProcessor(() -> new NamedEventProcessor(add.name, add.proc), add.reg), add.reg, add.proc);
                         script.add("enqueue " + add.name + "#" + add.proc.serial + " gen " + add.reg.generation());
                     }
                 }
@@ -182,7 +265,7 @@ class ControlScenarioHarnessTest {
                 String name = names[random.nextInt(names.length)];
                 if (!started && (op == 9 || step == steps / 3)) {
                     started = true;
-                    closed = startOrClose(group, script, all, stopsDuringClose);
+                    closed = startOrClose(group, script, all, stopsDuringClose, requests);
                 } else if (op < 3) {
                     // admission and enqueue are two steps on two threads in the server: a stop can land between them
                     ProcessorRegistration reg = reservations.admit(name);
@@ -209,14 +292,14 @@ class ControlScenarioHarnessTest {
                     }
                     if (random.nextInt(4) == 0) {
                         // a stop that only names the processor: resolved to whatever answers to the name when applied
-                        group.removeEventProcessorByName(name);
+                        requests.track(group.removeEventProcessorByName(name, null, null), null, null);
                         for (ProcessorRegistration r : everAdmitted) {
                             if (name.equals(r.name())) legitimatelyStopped.add(procOf.get(r));
                         }
                         script.add("stop by name " + name);
                         continue;
                     }
-                    group.removeEventProcessorByName(name, reg, null);
+                    requests.track(group.removeEventProcessorByName(name, reg, null), reg, procOf.get(reg));
                     legitimatelyStopped.add(procOf.get(reg));
                     for (PendingAdd add : pending) {
                         if (add.reg == reg) {
@@ -229,7 +312,7 @@ class ControlScenarioHarnessTest {
                     // a stop bound to a registration chosen from history: stale unless it is still the reserved one
                     ProcessorRegistration reg = everAdmitted.get(random.nextInt(everAdmitted.size()));
                     boolean current = reservations.table.get(reg.name()) == reg;
-                    group.removeEventProcessorByName(reg.name(), reg, null);
+                    requests.track(group.removeEventProcessorByName(reg.name(), reg, null), reg, procOf.get(reg));
                     if (current) legitimatelyStopped.add(procOf.get(reg));
                     script.add((current ? "stop " : "stale stop ") + reg.name() + " gen " + reg.generation());
                 } else if (op == 6) {
@@ -238,23 +321,25 @@ class ControlScenarioHarnessTest {
                     // versioned as the server sends them, sometimes arriving stale (an older version after a newer one)
                     long version = versions.merge(svc, 1L, Long::sum);
                     if (random.nextInt(5) == 0) version = Math.max(1, version - 1 - random.nextInt(2));
-                    group.broadcastService(service, random.nextBoolean(), version);
+                    requests.track(group.broadcastService(service, random.nextBoolean(), version), null, null);
                     script.add("broadcast " + svc + " v" + version);
                 } else if (op == 7) {
                     AtomicInteger ran = new AtomicInteger();
                     ControlRequest run = group.control().send(new ControlRequest(ControlRequest.Kind.RUN, "task",
                             RunIntent::new, (Runnable) ran::incrementAndGet));
+                    requests.track(run, null, null);
                     runs.put(run, ran);
                     script.add("run task " + run.requestId());
                 } else if (op == 10 || op == 11) {
                     // an audit start or stop, bound to the reserved registration (or by name when none is)
                     ProcessorRegistration reg = reservations.table.get(name);
                     ControlRequest r = op == 10 ? group.auditStart(name, reg) : group.auditStop(name, reg);
+                    requests.track(r, reg, procOf.get(reg));
                     script.add((op == 10 ? "audit start " : "audit stop ") + name + " req " + r.requestId());
                 } else if (op == 12) {
                     // a helper or the timer acts: an open completes (in order or overtaking), a close completes, an
                     // open times out, or an open delivers its completion again
-                    int which = random.nextInt(8);
+                    int which = random.nextInt(11);
                     boolean acted = switch (which) {
                         case 0 -> io.runOpen();
                         case 1 -> io.runLatestOpen();
@@ -267,10 +352,14 @@ class ControlScenarioHarnessTest {
                         case 4 -> io.rerunOpen(random.nextInt(8));
                         case 5 -> io.rejectNextOpen = true;         // the opener pool refuses the next open
                         case 6 -> io.rejectNextClose = true;        // the closer refuses: the group closes inline
-                        default -> captures.failCloses = !captures.failCloses;
+                        case 7 -> captures.failCloses = !captures.failCloses;
+                        case 8 -> captures.failOpens = !captures.failOpens;
+                        case 9 -> captures.failInstalls = !captures.failInstalls;
+                        default -> captures.failLiveUninstalls = !captures.failLiveUninstalls;
                     };
                     script.add("io " + new String[]{"open", "latest open", "close", "timeout", "duplicate open",
-                            "reject next open", "reject next close", "toggle close failures"}[which]
+                            "reject next open", "reject next close", "toggle close failures", "toggle open failures",
+                            "toggle install failures", "toggle live uninstall failures"}[which]
                             + (acted ? "" : " (nothing)"));
                 } else if (started && !closed) {
                     int cycles = 1 + random.nextInt(3);
@@ -285,19 +374,32 @@ class ControlScenarioHarnessTest {
                 }
             }
             for (PendingAdd add : pending) {
-                group.addNamedEventProcessor(() -> new NamedEventProcessor(add.name, add.proc), add.reg);
+                requests.track(group.addNamedEventProcessor(() -> new NamedEventProcessor(add.name, add.proc), add.reg), add.reg, add.proc);
                 script.add("enqueue " + add.name + "#" + add.proc.serial + " gen " + add.reg.generation());
             }
             if (!started) {
                 started = true;
-                closed = startOrClose(group, script, all, stopsDuringClose);
+                closed = startOrClose(group, script, all, stopsDuringClose, requests);
             }
             if (!closed && random.nextBoolean()) {
                 // half the runs close with requests still queued: the close must answer them through the rules
                 for (int i = 0; i < 200 && !group.control().isEmpty(); i++) group.doWork();
                 script.add("drained");
+                // This branch explicitly retires capture sessions while the group is still running. The other half
+                // retains close-with-queued-work coverage. Failed physical closes remain accounted failures.
+                settleIo(group, io);
+                captures.failOpens = false;
+                captures.failInstalls = false;
+                captures.failLiveUninstalls = false;
+                for (ProcessorRegistration registration : everAdmitted) {
+                    requests.track(group.auditStop(registration.name(), registration), registration, procOf.get(registration));
+                }
+                settleIo(group, io);
+                assertPreCloseResources(group, captures, "seed " + seed + " before close\n" + script);
+                assertEquals(List.of(), requests.failures, "reply-time ledger before close: " + script);
             }
             if (!closed) {
+                requests.ending = true;
                 closeAndRecordStops(group, all, stopsDuringClose);
                 closed = true;
                 script.add("close");
@@ -308,6 +410,7 @@ class ControlScenarioHarnessTest {
             assertEquals("", captures.accountingErrors(), "seed " + seed + ": capture ledger\n" + script);
             assertEquals(0, group.captureResourcesHeld(), "seed " + seed + ": capture resources held\n" + script);
 
+            requests.verify("seed " + seed + "\n" + script);
             // ---- ledger verdict: every instance started at most once, released exactly once if it started
             for (LedgerProc p : all) {
                 String who = p.name + "#" + p.serial;
@@ -372,16 +475,152 @@ class ControlScenarioHarnessTest {
 
     /** Start the group; a boot failure under fail-fast closes it, as Agrona does when onStart throws. */
     private static boolean startOrClose(ComposingEventProcessorAgent group, List<String> script,
-                                        List<LedgerProc> all, Map<LedgerProc, Integer> stopsDuringClose) {
+                                        List<LedgerProc> all, Map<LedgerProc, Integer> stopsDuringClose, RequestLedger requests) {
         try {
             group.onStart();
             script.add("start");
             return false;
         } catch (ProcessorStartException e) {
+            requests.ending = true;
             closeAndRecordStops(group, all, stopsDuringClose);
             script.add("start failed fast, group closed");
             return true;
         }
+    }
+
+    private static void settleIo(ComposingEventProcessorAgent group, CaptureRig.ManualIo io) throws Exception {
+        for (int i = 0; i < 100; i++) {
+            group.doWork();
+            io.runAll();
+            if (group.control().isEmpty() && io.opens.isEmpty() && io.closes.isEmpty()) return;
+        }
+        fail("capture work did not settle before the group close");
+    }
+
+    private static void assertPreCloseResources(ComposingEventProcessorAgent group, CaptureRig.FakeResources resources,
+                                                String context) {
+        assertEquals("", resources.accountingErrors(), context);
+        assertEquals(0, group.captureResourcesHeld(), context);
+        assertEquals(resources.failedCloseResources().size(), group.captureResourceSlotsInUse(),
+                "only physically failed close attempts may retain permits: " + context);
+        var evidence = ControlEvidence.parse(group.control().audit().exportText(), group.control().audit().isComplete());
+        assertTrue(evidence.records().stream().filter(r -> Boolean.TRUE.equals(r.fields().get("offline")))
+                        .allMatch(r -> "UninstallCapture".equals(r.str("effect"))
+                                && resources.failedUninstallResources.contains(r.num("resourceId"))),
+                "only a ledger-confirmed failed detach may need an offline retry before close: " + context);
+    }
+
+    @Test
+    void staleOpenMustBeCompensatedWhileTheGroupStillRuns() throws Exception {
+        var group = new ComposingEventProcessorAgent("pre-close-capture", new EventFlowManager(), null,
+                new DeadWheelScheduler(), new ConcurrentHashMap<>());
+        var io = new CaptureRig.ManualIo();
+        var resources = new CaptureRig.FakeResources();
+        group.setCaptureIo(io);
+        group.setAuditCaptureResources(resources);
+        var reservations = new Reservations();
+        var requests = new RequestLedger(reservations);
+        LedgerProc proc = new LedgerProc("p", 1, false, false);
+        ProcessorRegistration registration = reservations.admit("p");
+        try {
+            group.onStart();
+            requests.track(group.addNamedEventProcessor(() -> new NamedEventProcessor("p", proc), registration), registration, proc);
+            group.doWork();
+            requests.track(group.auditStart("p", registration), registration, proc);
+            group.doWork();
+            requests.track(group.removeEventProcessorByName("p", registration, null), registration, proc);
+            group.doWork();
+            assertEquals(1, proc.stops.get());
+            assertEquals(1, proc.tearDowns.get());
+            io.runOpen();
+            settleIo(group, io);
+            assertEquals(1, resources.opened.size());
+            assertPreCloseResources(group, resources, "late open must close before group shutdown");
+            requests.verify("late open lifecycle");
+        } finally { group.onClose(); io.runAll(); }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"open", "install", "uninstall"})
+    void captureFaultsHaveDefiniteOutcomesAndRecoverBeforeGroupClose(String fault) throws Exception {
+        var group = new ComposingEventProcessorAgent("capture-fault-" + fault, new EventFlowManager(), null,
+                new DeadWheelScheduler(), new ConcurrentHashMap<>());
+        var io = new CaptureRig.ManualIo();
+        var resources = new CaptureRig.FakeResources();
+        group.setCaptureIo(io);
+        group.setAuditCaptureResources(resources);
+        var reservations = new Reservations();
+        var requests = new RequestLedger(reservations, resources);
+        var proc = new LedgerProc("p", 1, false, false);
+        var registration = reservations.admit("p");
+        try {
+            group.onStart();
+            requests.track(group.addNamedEventProcessor(() -> new NamedEventProcessor("p", proc), registration), registration, proc);
+            group.doWork();
+            resources.failOpens = fault.equals("open");
+            resources.failInstalls = fault.equals("install");
+            var start = requests.track(group.auditStart("p", registration), registration, proc);
+            settleIo(group, io);
+            if (fault.equals("uninstall")) {
+                assertTrue(start.reply().join().applied());
+                resources.failUninstalls = true;
+                var stop = requests.track(group.auditStop("p", registration), registration, proc);
+                group.doWork();
+                assertEquals(com.telamin.mongoose.control.event.ReplyOutcome.FAILED, stop.reply().join().outcome());
+                assertTrue(resources.installed.containsKey(proc), "failed uninstall retains the installed resource");
+                resources.failUninstalls = false;
+                requests.track(group.auditStop("p", registration), registration, proc);
+                settleIo(group, io);
+            } else {
+                assertEquals(com.telamin.mongoose.control.event.ReplyOutcome.FAILED, start.reply().join().outcome());
+                assertTrue(start.reply().join().reason().startsWith(fault + " failed:"));
+            }
+            requests.verify("injected " + fault + " failure");
+            assertPreCloseResources(group, resources, "recovered " + fault + " before group close");
+            assertEquals(0, proc.stops.get(), "resource verification preceded processor/group cleanup");
+        } finally { group.onClose(); io.runAll(); }
+    }
+
+    @Test
+    void independentRequestLedgerRejectsMissingAndPrematureRepliesEvenAfterCleanup() {
+        var reservations = new Reservations();
+        var ledger = new RequestLedger(reservations);
+        var proc = new LedgerProc("p", 1, false, false);
+        var registration = reservations.admit("p");
+        proc.start();
+        var stop = ledger.track(new ControlRequest(ControlRequest.Kind.STOP, "synthetic premature stop", null, null),
+                registration, proc);
+        assertThrows(AssertionError.class, () -> ledger.verify("missing request is retained outside the driver"));
+        assertTrue(stop.claim());
+        stop.completeClaimed(new ControlReply(1, com.telamin.mongoose.control.event.ReplyOutcome.APPLIED, "stopped", 1, "p"));
+        proc.stop();
+        proc.tearDown();
+        reservations.table.remove("p");
+        assertThrows(AssertionError.class, () -> ledger.verify("later cleanup cannot erase premature-reply evidence"));
+        assertTrue(ledger.failures.stream().anyMatch(f -> f.contains("before stop/teardown")));
+    }
+
+    @Test
+    void terminalSweepAnswersEveryIndependentlyRetainedUnpublishedRequest() {
+        var group = new ComposingEventProcessorAgent("explicit-sweep", new EventFlowManager(), null,
+                new DeadWheelScheduler(), new ConcurrentHashMap<>());
+        var requests = new RequestLedger(new Reservations());
+        AtomicInteger executions = new AtomicInteger();
+        for (int i = 0; i < 5; i++) {
+            ControlRequest request = new ControlRequest(ControlRequest.Kind.RUN, "unpublished " + i,
+                    RunIntent::new, (Runnable) executions::incrementAndGet);
+            requests.track(request, null, null);
+            group.control().registerUnpublished(request);
+        }
+        requests.ending = true;
+        group.control().beginClosing();
+        group.control().sweep();
+        requests.verify("direct terminal sweep, before onClose");
+        assertEquals(0, executions.get());
+        for (ControlRequest request : requests.sent)
+            assertEquals(com.telamin.mongoose.control.event.ReplyOutcome.NOT_RUNNING, request.reply().join().outcome());
+        group.onClose();
+        requests.verify("sweep followed by close must not answer twice");
     }
 
     /** Count only callbacks inside the actual close call, including the early fail-fast close. */
@@ -430,7 +669,7 @@ class ControlScenarioHarnessTest {
         group.addNamedEventProcessor(() -> new NamedEventProcessor("failed", failed), new ProcessorRegistration("failed"));
         List<String> script = new ArrayList<>();
         try {
-            assertTrue(startOrClose(group, script, all, closeStops));
+            assertTrue(startOrClose(group, script, all, closeStops, new RequestLedger(new Reservations())));
             assertEquals(1, alreadyStopped.stops.get());
             assertEquals(0, closeStops.getOrDefault(alreadyStopped, 0));
             assertEquals(1, closed.stops.get());

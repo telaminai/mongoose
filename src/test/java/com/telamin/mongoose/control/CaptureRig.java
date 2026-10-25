@@ -140,6 +140,7 @@ final class CaptureRig {
         final List<String> findings = new ArrayList<>();
         boolean failUninstalls;
         boolean failLiveUninstalls;
+        final java.util.Set<Long> failedUninstallResources = new java.util.HashSet<>();
 
         @Override
         public Object openCapture(String processorName) {
@@ -163,6 +164,7 @@ final class CaptureRig {
         @Override
         public void uninstallCapture(Object resource, String processorName, DataFlow dataFlow) {
             if (failUninstalls || (failLiveUninstalls && dataFlow != null)) {
+                failedUninstallResources.add((long) ((Res) resource).serial);
                 throw new IllegalStateException("simulated uninstall failure");
             }
             Res r = (Res) resource;
