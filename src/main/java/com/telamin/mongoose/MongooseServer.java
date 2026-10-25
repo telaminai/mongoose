@@ -536,6 +536,15 @@ public class MongooseServer implements MongooseServerController {
     }
 
     /**
+     * Set the overload policy of the feed named {@code feedName} (telaminai/mongoose#79): what its publisher does when a
+     * subscriber's queue is full, with overrides per subscriber group. Applied when the feed registers, or at once if it
+     * already has. Config-driven boot calls this for every configured feed and pipe.
+     */
+    public void setFeedOverload(String feedName, com.telamin.mongoose.dispatch.FeedOverloadSettings settings) {
+        flowManager.setFeedOverload(feedName, settings);
+    }
+
+    /**
      * Register a named event source (feed) with the server.
      * <p>
      * The source will be made available to the event flow manager for routing to

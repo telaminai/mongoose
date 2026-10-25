@@ -13,6 +13,7 @@ import com.telamin.mongoose.replay.EventCodec;
 import com.telamin.mongoose.replay.EventJournal;
 import com.telamin.mongoose.replay.JournalledItem;
 import com.telamin.mongoose.service.EventSource;
+import com.telamin.mongoose.exception.PublishRefusedException;
 import com.telamin.mongoose.service.counters.MongooseCounter;
 import com.telamin.mongoose.service.pool.PoolAware;
 import com.telamin.mongoose.service.pool.impl.PoolTracker;
@@ -26,6 +27,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.Function;
 import java.util.logging.Level;
 
@@ -138,6 +140,39 @@ public class EventToQueuePublisher<T> {
     @Getter(lombok.AccessLevel.NONE)
     private volatile long droppedCount;
 
+    // ---- overload policy (telaminai/mongoose#79); see docs/design/overload-policy.md ----
+    /** Longest single park of a publish waiting for room; bounds how late it notices room a consumer freed. */
+    private static final long MAX_PARK_NANOS = java.util.concurrent.TimeUnit.MICROSECONDS.toNanos(100);
+    /** The feed's policy and per-group overrides. Written under the publish lock. */
+    @Getter(lombok.AccessLevel.NONE)
+    private FeedOverloadSettings overload = FeedOverloadSettings.DEFAULT;
+    /**
+     * Bindings whose policy is BLOCK_WITH_DEADLINE; guarded by the publish lock. While it is zero (the default policy
+     * everywhere) a publish takes exactly the path it took before #79: this one int compare is the only addition.
+     */
+    @Getter(lombok.AccessLevel.NONE)
+    private int blockingTargets;
+    /** Set once, when the server stops: a blocking publish then never waits, and a waiting one is refused. */
+    @Getter(lombok.AccessLevel.NONE)
+    private volatile boolean closing;
+    /** Threads waiting, outside the publish lock, for room: woken by a subscriber change, a policy change or close. */
+    @Getter(lombok.AccessLevel.NONE)
+    private final java.util.Set<Thread> waiters = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** Bumped on every subscriber or policy change, so a waiting publish re-evaluates its targets at once. */
+    @Getter(lombok.AccessLevel.NONE)
+    private final java.util.concurrent.atomic.AtomicInteger targetsEpoch = new java.util.concurrent.atomic.AtomicInteger();
+    /** Why the publish in flight does not wait for a blocking queue (agent thread, nested); guarded by the lock. */
+    @Getter(lombok.AccessLevel.NONE)
+    private String currentDowngrade;
+    @Getter(lombok.AccessLevel.NONE)
+    private boolean downgradeWarned;
+    /** Refused BLOCK_WITH_DEADLINE publishes (deadline or shutdown); written under the publish lock. */
+    @Getter(lombok.AccessLevel.NONE)
+    private volatile long refusedCount;
+    /** Publishes that met a blocking queue on a thread that may not wait, and so used the drop policy instead. */
+    @Getter(lombok.AccessLevel.NONE)
+    private volatile long downgradedCount;
+
     /** Journal this feed's items (spec-replay-recording R3). */
     public void journal(EventJournal journal, EventCodec codec) {
         this.journal = journal;
@@ -159,12 +194,69 @@ public class EventToQueuePublisher<T> {
         try {
             synchronized (publishLock) {
                 if (!targetQueues.contains(namedQueue)) {
-                    queueDrops.put(namedQueue, new QueueDrops(dropCounter, groupAudit, group, path));
+                    QueueDrops binding = new QueueDrops(dropCounter, groupAudit, group, path);
+                    binding.settings = overload.forGroup(group);
+                    queueDrops.put(namedQueue, binding);
                     targetQueues.add(namedQueue);
+                    if (binding.settings.blocks()) {
+                        blockingTargets++;
+                    }
                 }
             }
         } finally {
             subscriberChangesWaiting.decrementAndGet();
+        }
+        wakeWaiters();
+    }
+
+    /**
+     * Set this feed's overload policy and its per-subscriber-group overrides (telaminai/mongoose#79). Applies to the
+     * current bindings and to every binding added later; a publish waiting for room re-evaluates at once.
+     */
+    public void setOverload(FeedOverloadSettings settings) {
+        java.util.Objects.requireNonNull(settings, "settings must be non-null");
+        subscriberChangesWaiting.incrementAndGet();
+        try {
+            synchronized (publishLock) {
+                overload = settings;
+                int blocking = 0;
+                for (QueueDrops binding : queueDrops.values()) {
+                    binding.settings = settings.forGroup(binding.group);
+                    if (binding.settings.blocks()) {
+                        blocking++;
+                    }
+                }
+                blockingTargets = blocking;
+            }
+        } finally {
+            subscriberChangesWaiting.decrementAndGet();
+        }
+        wakeWaiters();
+    }
+
+    /** This feed's overload policy. */
+    public FeedOverloadSettings overload() {
+        synchronized (publishLock) {
+            return overload;
+        }
+    }
+
+    /**
+     * The server is stopping (telaminai/mongoose#79): a publish waiting for room in a BLOCK_WITH_DEADLINE queue is
+     * refused at once ({@link PublishRefusedException.Reason#SHUTDOWN}), and a later one is refused instead of waiting
+     * when a blocking queue is full. Permanent and idempotent. Never takes the publish lock, so it cannot wait behind a
+     * dispatch.
+     */
+    public void cancelBlockedPublishes() {
+        closing = true;
+        wakeWaiters();
+    }
+
+    /** Wake every publish waiting for room, so it re-evaluates (a target, the policy or {@link #closing} changed). */
+    private void wakeWaiters() {
+        targetsEpoch.incrementAndGet();
+        for (Thread waiter : waiters) {
+            LockSupport.unpark(waiter);
         }
     }
 
@@ -186,8 +278,12 @@ public class EventToQueuePublisher<T> {
         }
         yieldToSubscriberChanges();
         synchronized (publishLock) {
-            publishSerialised(itemToPublish);
+            if (blockingTargets == 0) {
+                publishSerialised(itemToPublish);
+                return;
+            }
         }
+        publishWithOverload(itemToPublish);
     }
 
     private void publishSerialised(T itemToPublish) {
@@ -197,7 +293,193 @@ public class EventToQueuePublisher<T> {
             log.fine("mapped itemToPublish is null");
             return;
         }
+        publishMapped(itemToPublish, mappedItem);
+    }
 
+    /**
+     * A publish when at least one binding is BLOCK_WITH_DEADLINE (telaminai/mongoose#79). All-or-nothing: the item is
+     * committed (sequence number, journal, offers) only once every blocking queue has room for it, which then cannot
+     * shrink while the lock is held, since this publisher is the queues' only producer. Until then it waits WITHOUT the
+     * publish lock, so an unsubscribe, a queue removal or another publisher is never held up by it, and nothing has
+     * been consumed: a refusal leaves no queue holding the item and no sequence number used. Called without the lock.
+     */
+    private void publishWithOverload(T itemToPublish) {
+        // never wait on an agent thread (it would stall its group, and every service it hosts), nor inside a publish
+        // that already holds the lock (it could not let go of it to wait)
+        String downgrade = Thread.holdsLock(publishLock) ? "publish nested inside another publish"
+                : com.telamin.mongoose.control.AgentThreads.isAgentThread()
+                ? "agent thread " + Thread.currentThread().getName() : null;
+        Object mappedItem;
+        NamedQueue blocker;
+        synchronized (publishLock) {
+            if (blockingTargets == 0) {
+                publishSerialised(itemToPublish);
+                return;
+            }
+            if (downgrade != null) {
+                publishDowngraded(itemToPublish, downgrade);
+                return;
+            }
+            mappedItem = mapItemSafely(itemToPublish, "publish");
+            if (mappedItem == null) {
+                log.fine("mapped itemToPublish is null");
+                return;
+            }
+            blocker = blockerWithoutRoom();
+            if (blocker == null) {
+                publishMapped(itemToPublish, mappedItem);
+                return;
+            }
+            if (closing) {
+                throw refuse(mappedItem, blocker, PublishRefusedException.Reason.SHUTDOWN, 0);
+            }
+        }
+        awaitRoomThenPublish(itemToPublish, mappedItem, blocker);
+    }
+
+    /** Publish on a thread that may not wait: blocking queues use the drop policy for this publish, counted. */
+    private void publishDowngraded(T itemToPublish, String downgrade) {
+        downgradedCount++;
+        if (!downgradeWarned && logWarning) {
+            downgradeWarned = true;
+            log.warning("feed " + name + ": BLOCK_WITH_DEADLINE downgraded to drop-after-spin for a publish on a "
+                    + "thread that may not wait (" + downgrade + "); counted in downgradedCount(), warned once");
+        }
+        currentDowngrade = downgrade;
+        try {
+            publishSerialised(itemToPublish);
+        } finally {
+            currentDowngrade = null;
+        }
+    }
+
+    /**
+     * Wait, without the publish lock, until every blocking queue has room, then publish; or refuse at the deadline, or
+     * at once when the publisher closes. Owns the publisher's reference to a pooled item throughout: publishMapped
+     * releases it on success, refuse on refusal, so it is released exactly once.
+     */
+    private void awaitRoomThenPublish(Object itemToPublish, Object mappedItem, NamedQueue blocker) {
+        long start = System.nanoTime();
+        long deadlineNanos;
+        long spinNanos;
+        synchronized (publishLock) {
+            OverloadSettings settings = settingsOf(blocker);
+            deadlineNanos = settings.blockDeadlineNanos();
+            spinNanos = Math.min(settings.spinBoundNanos(), deadlineNanos);
+        }
+        Thread self = Thread.currentThread();
+        waiters.add(self);
+        try {
+            int epochSeen = targetsEpoch.get();
+            while (true) {
+                long now = System.nanoTime();
+                long waited = now - start;
+                boolean timedOut = waited >= deadlineNanos;
+                // re-evaluate under the lock when there may be room, the targets changed, closing, or at the deadline
+                boolean interrupted = self.isInterrupted();
+                if (closing || timedOut || interrupted || epochSeen != targetsEpoch.get()
+                        || blocker.targetQueue().remainingCapacity() > 0 || !targetQueues.contains(blocker)) {
+                    epochSeen = targetsEpoch.get();
+                    yieldToSubscriberChanges();
+                    synchronized (publishLock) {
+                        NamedQueue current = blockingTargets == 0 ? null : blockerWithoutRoom();
+                        if (current == null) {
+                            publishMapped(itemToPublish, mappedItem);
+                            return;
+                        }
+                        blocker = current;
+                        if (closing) {
+                            throw refuse(mappedItem, current, PublishRefusedException.Reason.SHUTDOWN, waited);
+                        }
+                        if (timedOut) {
+                            throw refuse(mappedItem, current, PublishRefusedException.Reason.DEADLINE, waited);
+                        }
+                        if (interrupted) {
+                            // the interrupt stays set for the caller
+                            throw refuse(mappedItem, current, PublishRefusedException.Reason.INTERRUPTED, waited);
+                        }
+                    }
+                }
+                if (waited < spinNanos) {
+                    Thread.onSpinWait();
+                } else {
+                    LockSupport.parkNanos(this, Math.max(1, Math.min(MAX_PARK_NANOS, deadlineNanos - waited)));
+                }
+            }
+        } finally {
+            waiters.remove(self);
+        }
+    }
+
+    /**
+     * The first BLOCK_WITH_DEADLINE binding whose queue lacks room for this publish, or null when all have room.
+     * Called under the publish lock. Room means one slot per binding sharing the physical queue (several callback
+     * types of one group share it), plus one per cached item the publish dispatches first.
+     */
+    private NamedQueue blockerWithoutRoom() {
+        int cachedFirst = cacheEventLog ? eventLog.size() - cacheReadPointer : 0;
+        for (int i = 0, n = targetQueues.size(); i < n; i++) {
+            NamedQueue candidate = targetQueues.get(i);
+            if (!settingsOf(candidate).blocks()) {
+                continue;
+            }
+            OneToOneConcurrentArrayQueue<Object> physical = candidate.targetQueue();
+            int bindings = 0;
+            boolean checkedAlready = false;
+            for (int j = 0; j < n; j++) {
+                NamedQueue other = targetQueues.get(j);
+                if (other.targetQueue() == physical) {
+                    if (j < i && settingsOf(other).blocks()) {
+                        checkedAlready = true;
+                        break;
+                    }
+                    bindings++;
+                }
+            }
+            if (!checkedAlready && physical.remainingCapacity() < (long) bindings * (1 + cachedFirst)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    /** A binding's resolved settings; the feed default for one no longer bound. Called under the publish lock. */
+    private OverloadSettings settingsOf(NamedQueue queue) {
+        QueueDrops binding = queueDrops.get(queue);
+        return binding == null ? overload.feedDefault() : binding.settings;
+    }
+
+    /**
+     * Count a refusal and release the publisher's reference to a pooled item (no queue holds it, so it goes back to
+     * its pool), then return the exception for the caller. The item must not be published again.
+     */
+    private PublishRefusedException refuse(Object mappedItem, NamedQueue queue, PublishRefusedException.Reason reason,
+                                           long waitedNanos) {
+        String description;
+        try {
+            description = String.valueOf(mappedItem);
+        } catch (Throwable t) {
+            description = mappedItem.getClass().getName() + " (toString failed: " + t + ")";
+        }
+        long refusalsForQueue;
+        synchronized (publishLock) {
+            refusedCount++;
+            QueueDrops binding = queueDrops.get(queue);
+            refusalsForQueue = binding == null ? 0 : ++binding.refusals;
+        }
+        if (refusalsForQueue == 1 && logWarning) {
+            log.warning("feed " + name + ": first refused publish for queue " + queue.name() + " (" + reason
+                    + ", waited ~" + (waitedNanos / 1_000_000) + " ms); later refusals are counted in refusedCount()");
+        }
+        PoolTracker<?> publisherRef = trackerOf(mappedItem);
+        if (publisherRef != null) {
+            publisherRef.releaseReference();
+        }
+        return new PublishRefusedException(name, queue.name(), reason, waitedNanos, description);
+    }
+
+    /** Commit and dispatch an already mapped item: sequence number, journal, event log, offers. Under the lock. */
+    private void publishMapped(Object itemToPublish, Object mappedItem) {
         publishCounter.increment();
         sequenceNumber++;
         journalItem(mappedItem, sequenceNumber);
@@ -247,12 +529,16 @@ public class EventToQueuePublisher<T> {
         }
         yieldToSubscriberChanges();
         synchronized (publishLock) {
-            if (startComplete) {
-                publishSerialised(item);
-            } else {
+            if (!startComplete) {
                 cacheSerialised(item);
+                return;
+            }
+            if (blockingTargets == 0) {
+                publishSerialised(item);
+                return;
             }
         }
+        publishWithOverload(item);
     }
 
     public void cache(T itemToCache) {
@@ -442,6 +728,27 @@ public class EventToQueuePublisher<T> {
         return droppedCount;
     }
 
+    /** Refused BLOCK_WITH_DEADLINE publishes, at the deadline or on shutdown (telaminai/mongoose#79). */
+    public long refusedCount() {
+        return refusedCount;
+    }
+
+    /** Refusals attributed to the current binding named {@code queueName}; removed bindings are forgotten. */
+    public long refusedCount(String queueName) {
+        synchronized (publishLock) {
+            return queueDrops.entrySet().stream().filter(e -> java.util.Objects.equals(e.getKey().name(), queueName))
+                    .mapToLong(e -> e.getValue().refusals).sum();
+        }
+    }
+
+    /**
+     * Publishes that met a BLOCK_WITH_DEADLINE queue on a thread that may not wait (an agent thread, or a nested
+     * publish), and so used the drop-after-spin policy for that publish (telaminai/mongoose#79).
+     */
+    public long downgradedCount() {
+        return downgradedCount;
+    }
+
     /** Why this feed's journal stopped (an append or its encoding failed), or null while it journals. */
     public String journalBroken() {
         return journalBroken;
@@ -473,7 +780,7 @@ public class EventToQueuePublisher<T> {
         OneToOneConcurrentArrayQueue<Object> targetQueue = namedQueue.targetQueue();
         boolean offered = false;
         long startNs = -1;
-        final long maxSpinNs = java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(10); // bound spin to avoid publisher timeouts under contention
+        long maxSpinNs = 0; // the binding's spin bound (10 ms by default), looked up on the first failed offer only
         PoolTracker<?> tracker = trackerOf(itemToPublish);
         // the queue's reference, taken before the offer (a consumer may poll and release at once) and kept across
         // retries; the publisher still holds its own, so releasing this one on a drop never returns the item early
@@ -488,8 +795,9 @@ public class EventToQueuePublisher<T> {
                 if (!offered) {
                     if (startNs < 0) {
                         startNs = System.nanoTime();
+                        maxSpinNs = settingsOf(namedQueue).spinBoundNanos();
                     } else if (System.nanoTime() - startNs > maxSpinNs) {
-                        recordDrop(namedQueue, sequence, "queue full after 10 ms spin");
+                        recordDrop(namedQueue, sequence, dropReason(namedQueue, maxSpinNs));
                         if (queueRef) {
                             queueRef = false;
                             tracker.releaseReference();
@@ -524,6 +832,16 @@ public class EventToQueuePublisher<T> {
             long delta = System.nanoTime() - startNs;
             log.fine("spin wait took " + (delta / 1_000_000) + "ms queue:" + namedQueue.name() + " size:" + targetQueue.size());
         }
+    }
+
+    /** The drop's reason for the first-loss evidence: unchanged text for the default policy. */
+    private String dropReason(NamedQueue queue, long spinNanos) {
+        String spun = "queue full after " + java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(spinNanos) + " ms spin";
+        if (!settingsOf(queue).blocks()) {
+            return spun;
+        }
+        return spun + "; BLOCK_WITH_DEADLINE not waited: " + (currentDowngrade != null ? currentDowngrade
+                : "cached or replayed item");
     }
 
     private PoolTracker<?> trackerOf(Object item) {
@@ -569,6 +887,9 @@ public class EventToQueuePublisher<T> {
         final String group;
         final String path;
         long count;
+        /** This binding's resolved overload policy; written under the publish lock. */
+        OverloadSettings settings = OverloadSettings.DEFAULT;
+        long refusals;
         QueueDrops(MongooseCounter counter, com.telamin.mongoose.control.ControlAuditSink groupAudit, String group, String path) {
             this.counter = counter; this.groupAudit = groupAudit; this.group = group; this.path = path;
         }
@@ -585,14 +906,26 @@ public class EventToQueuePublisher<T> {
         // the feed's thread is indexing it (an IndexOutOfBounds out of publish exits the process via the agent's
         // error handler). The remove waits for the dispatch in flight (up to ~10 ms per full target queue): publishers
         // hold back while it waits, so one publishing in a loop cannot starve it. See the publishLock javadoc.
+        // A publish waiting for room in a BLOCK_WITH_DEADLINE queue does not hold the lock, so this never waits for it
+        // (#79); waking it makes it re-evaluate against the remaining targets at once
         subscriberChangesWaiting.incrementAndGet();
         try {
+            wakeWaiters();
             synchronized (publishLock) {
                 targetQueues.removeIf(q -> queueName.equals(q.name()));
-                queueDrops.keySet().removeIf(q -> queueName.equals(q.name()));
+                queueDrops.entrySet().removeIf(e -> {
+                    if (!queueName.equals(e.getKey().name())) {
+                        return false;
+                    }
+                    if (e.getValue().settings.blocks()) {
+                        blockingTargets--;
+                    }
+                    return true;
+                });
             }
         } finally {
             subscriberChangesWaiting.decrementAndGet();
         }
+        wakeWaiters();
     }
 }

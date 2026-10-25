@@ -10,9 +10,13 @@ import com.telamin.fluxtion.runtime.input.NamedFeed;
 import com.telamin.fluxtion.runtime.service.Service;
 import com.telamin.mongoose.dutycycle.ServiceAgent;
 import com.telamin.mongoose.service.EventSource;
-import lombok.AllArgsConstructor;
+import lombok.AccessLevel;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
+import lombok.Getter;
 import lombok.NoArgsConstructor;
+import lombok.Setter;
+import lombok.ToString;
 import lombok.SneakyThrows;
 import org.agrona.concurrent.Agent;
 import org.agrona.concurrent.IdleStrategy;
@@ -28,7 +32,6 @@ import java.util.function.Function;
  */
 @Experimental
 @Data
-@AllArgsConstructor
 @NoArgsConstructor
 public class EventFeedConfig<IN> {
 
@@ -58,11 +61,26 @@ public class EventFeedConfig<IN> {
     private EventSource.EventWrapStrategy eventWrapStrategy = EventSource.EventWrapStrategy.SUBSCRIPTION_NAMED_EVENT;
 
     /**
-     * Ignored compatibility setting: the publisher spins for at most 10 ms then drops this queue's item.
-     * @deprecated Has no effect; blocking publish is tracked in issue #77.
+     * Superseded by {@link #overload} (telaminai/mongoose#79). When set explicitly and there is no {@code overload}
+     * block, {@code BACKOFF} means {@code DROP_AFTER_SPIN} (with a boot warning), and {@code DISCONNECT} or
+     * {@code EXIT_PROCESS} fail boot until they are implemented.
+     * @deprecated Use {@link #overload}.
      */
     @Deprecated
     private EventSource.SlowConsumerStrategy slowConsumerStrategy = EventSource.SlowConsumerStrategy.BACKOFF;
+
+    /** Whether {@link #slowConsumerStrategy} was set, rather than left at its default. */
+    @Getter(AccessLevel.NONE)
+    @Setter(AccessLevel.NONE)
+    @EqualsAndHashCode.Exclude
+    @ToString.Exclude
+    private boolean slowConsumerStrategyExplicit;
+
+    /**
+     * What the feed's publisher does when a subscriber's queue is full, with overrides per subscriber group
+     * (telaminai/mongoose#79). Null: {@code DROP_AFTER_SPIN} with a one-time boot warning. YAML key {@code overload}.
+     */
+    private OverloadPolicyConfig overload;
 
     /**
      * Function to transform event values before delivery
@@ -78,6 +96,45 @@ public class EventFeedConfig<IN> {
      * Idle strategy for agent-based execution
      */
     private IdleStrategy idleStrategy;
+
+    /**
+     * The all-arguments constructor as it was before {@link #overload} was added (telaminai/mongoose#79), kept for
+     * source and binary compatibility; the overload policy is then unset.
+     */
+    @SuppressWarnings("deprecation")
+    public EventFeedConfig(Object instance, String name, boolean broadcast, boolean wrapWithNamedEvent,
+                           EventSource.EventWrapStrategy eventWrapStrategy,
+                           EventSource.SlowConsumerStrategy slowConsumerStrategy, Function<IN, ?> valueMapper,
+                           String agentName, IdleStrategy idleStrategy) {
+        this.instance = instance;
+        this.name = name;
+        this.broadcast = broadcast;
+        this.wrapWithNamedEvent = wrapWithNamedEvent;
+        this.eventWrapStrategy = eventWrapStrategy;
+        setSlowConsumerStrategy(slowConsumerStrategy);
+        this.valueMapper = valueMapper;
+        this.agentName = agentName;
+        this.idleStrategy = idleStrategy;
+    }
+
+    /**
+     * @deprecated Use {@link #setOverload(OverloadPolicyConfig)}; see {@link #slowConsumerStrategy}.
+     */
+    @Deprecated
+    public void setSlowConsumerStrategy(EventSource.SlowConsumerStrategy slowConsumerStrategy) {
+        this.slowConsumerStrategy = slowConsumerStrategy;
+        this.slowConsumerStrategyExplicit = slowConsumerStrategy != null;
+    }
+
+    /**
+     * This feed's overload policy, resolved and validated for boot (telaminai/mongoose#79); see
+     * {@link OverloadPolicyConfig#resolve}. Logs the boot warnings and throws a
+     * {@link com.telamin.mongoose.exception.ConfigurationException} naming the feed on a bad value.
+     */
+    @SuppressWarnings("deprecation")
+    public com.telamin.mongoose.dispatch.FeedOverloadSettings resolveOverload() {
+        return OverloadPolicyConfig.resolve(name, overload, slowConsumerStrategy, slowConsumerStrategyExplicit);
+    }
 
     /**
      * Checks if this feed is configured for agent-based execution
@@ -152,6 +209,7 @@ public class EventFeedConfig<IN> {
         private boolean broadcast;
         private boolean wrapWithNamedEvent;
         private EventSource.SlowConsumerStrategy slowConsumerStrategy;
+        private OverloadPolicyConfig overload;
         private Function<IN, ?> valueMapper;
         private String agentName;
         private IdleStrategy idleStrategy;
@@ -192,11 +250,18 @@ public class EventFeedConfig<IN> {
         }
 
         /**
-         * @deprecated Ignored compatibility setting; all values use bounded spin then drop.
+         * @deprecated Use {@link #overload(OverloadPolicyConfig)}: {@code BACKOFF} maps to {@code DROP_AFTER_SPIN},
+         * {@code DISCONNECT} and {@code EXIT_PROCESS} fail boot.
          */
         @Deprecated
         public Builder<IN> slowConsumerStrategy(EventSource.SlowConsumerStrategy strategy) {
             this.slowConsumerStrategy = strategy;
+            return this;
+        }
+
+        /** Sets the overload policy (telaminai/mongoose#79). */
+        public Builder<IN> overload(OverloadPolicyConfig overload) {
+            this.overload = overload;
             return this;
         }
 
@@ -227,6 +292,7 @@ public class EventFeedConfig<IN> {
             cfg.setBroadcast(broadcast);
             cfg.setWrapWithNamedEvent(wrapWithNamedEvent);
             if (slowConsumerStrategy != null) cfg.setSlowConsumerStrategy(slowConsumerStrategy);
+            cfg.setOverload(overload);
             if (valueMapper != null) cfg.setValueMapper(valueMapper);
             cfg.setAgentName(agentName);
             cfg.setIdleStrategy(idleStrategy);

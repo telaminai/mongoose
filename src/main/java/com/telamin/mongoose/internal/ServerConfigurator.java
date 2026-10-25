@@ -59,6 +59,11 @@ public final class ServerConfigurator {
         //event sources
         if (mongooseServerConfig.getEventFeeds() != null) {
             mongooseServerConfig.getEventFeeds().forEach(server -> {
+                // #79: resolved and validated before registration, so a bad policy fails boot naming the feed
+                var overload = server.resolveOverload();
+                if (server.getName() != null) {
+                    mongooseServer.setFeedOverload(server.getName(), overload);
+                }
                 if (server.isAgent()) {
                     mongooseServer.registerEventFeedWorker(server.toServiceAgent(), server.getValueMapper());
                 } else {
@@ -155,6 +160,7 @@ public final class ServerConfigurator {
     private static <T> void registerPipe(MongooseServer mongooseServer,
                                          HandlerPipeConfig<T> pipeCfg) {
         HandlerPipeConfig.Built<T> built = pipeCfg.build();
+        mongooseServer.setFeedOverload(built.feedService.serviceName(), pipeCfg.resolveOverload());
         if (pipeCfg.isAgent()) {
             mongooseServer.registerEventFeedWorker(pipeCfg.toFeedServiceAgent(built), pipeCfg.getValueMapper());
         } else {

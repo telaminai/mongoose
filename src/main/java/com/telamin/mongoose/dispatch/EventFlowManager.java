@@ -69,6 +69,22 @@ public class EventFlowManager {
     private MongooseCountersService countersService = NoOpCountersService.INSTANCE;
     private com.telamin.mongoose.service.health.MongooseHealthService healthService;
     private final ConcurrentHashMap<EventSourceKey_Subscriber<?>, QueueDropCheck> queueDropChecks = new ConcurrentHashMap<>();
+    /** Overload policies by feed name (telaminai/mongoose#79), applied to the feed's publisher when it registers. */
+    private final ConcurrentHashMap<String, FeedOverloadSettings> overloadByFeed = new ConcurrentHashMap<>();
+
+    /**
+     * Set the overload policy of feed {@code sourceName} (telaminai/mongoose#79): applied now if the feed is registered,
+     * else when it registers. Overrides are keyed by subscriber group (the subscribing agent's role name).
+     */
+    public void setFeedOverload(String sourceName, FeedOverloadSettings settings) {
+        Objects.requireNonNull(sourceName, "sourceName must be non-null");
+        Objects.requireNonNull(settings, "settings must be non-null");
+        overloadByFeed.put(sourceName, settings);
+        EventSource_QueuePublisher<?> p = eventSourceToQueueMap.get(new EventSourceKey<>(sourceName));
+        if (p != null) {
+            p.queuePublisher().setOverload(settings);
+        }
+    }
 
     /** Bind before subscriptions are created, like the counters service. */
     public void setHealthService(com.telamin.mongoose.service.health.MongooseHealthService healthService) {
@@ -169,6 +185,9 @@ public class EventFlowManager {
      * threads hosting feeds have closed, so an agent-hosted source is not stopped under its own running duty cycle.
      */
     public void stop() {
+        // first, and on every call: a publish waiting for room in a BLOCK_WITH_DEADLINE queue is refused rather than
+        // left parked, so a source's stop that joins its publishing thread returns (#79)
+        cancelBlockedPublishes();
         if (!stopped.compareAndSet(false, true)) {
             return;
         }
@@ -184,6 +203,14 @@ public class EventFlowManager {
                 LOG.log(Level.WARNING, "event source " + source + " failed to tear down", t);
             }
         });
+    }
+
+    /**
+     * Refuse every publish waiting for room in a BLOCK_WITH_DEADLINE queue, now and from now on (telaminai/mongoose#79).
+     * Idempotent; never waits for a dispatch.
+     */
+    public void cancelBlockedPublishes() {
+        eventSourceToQueueMap.values().forEach(p -> p.queuePublisher().cancelBlockedPublishes());
     }
 
     /**
@@ -284,6 +311,10 @@ public class EventFlowManager {
                         eventSource));
 
         EventToQueuePublisher<T> queuePublisher = (EventToQueuePublisher<T>) eventSourceQueuePublisher.queuePublisher();
+        FeedOverloadSettings overload = overloadByFeed.get(sourceName);
+        if (overload != null) {
+            queuePublisher.setOverload(overload);
+        }
         // R3: a journalled feed's items are journalled once, and carry their sequence number to every queue
         if (replayConfig.mode() == ReplayConfig.Mode.RECORD && replayConfig.journalled(sourceName)) {
             queuePublisher.journal(replayConfig.journal(), replayConfig.journalledFeeds().get(sourceName));

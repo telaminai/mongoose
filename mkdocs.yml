@@ -137,6 +137,7 @@ nav:
           - Agent Execution: architecture/agent-execution.md
           - Threading model: architecture/threading-model.md
           - Object pooling: architecture/object_pooling.md
+          - Overload and loss policy (design): design/overload-policy.md
           - Server control: architecture/server-control.md
       - Reference:
           - Control plane contracts: reference/control-plane-contracts.md
