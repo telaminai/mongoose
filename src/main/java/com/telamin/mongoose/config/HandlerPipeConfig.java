@@ -93,8 +93,10 @@ public class HandlerPipeConfig<T> {
     private boolean cacheEventLog = false;
 
     /**
-     * Strategy for slow-consumer back-pressure on the feed side.
+     * Ignored compatibility setting: all values use bounded spin then drop.
+     * @deprecated Has no effect; blocking publish is tracked in issue #77.
      */
+    @Deprecated
     private EventSource.SlowConsumerStrategy slowConsumerStrategy = EventSource.SlowConsumerStrategy.BACKOFF;
 
     /**
@@ -240,6 +242,8 @@ public class HandlerPipeConfig<T> {
         public Builder<T> broadcast(boolean b)                             { this.broadcast = b; return this; }
         public Builder<T> wrapWithNamedEvent(boolean w)                    { this.wrapWithNamedEvent = w; return this; }
         public Builder<T> cacheEventLog(boolean c)                         { this.cacheEventLog = c; return this; }
+        /** @deprecated Ignored compatibility setting; all values use bounded spin then drop. */
+        @Deprecated
         public Builder<T> slowConsumerStrategy(EventSource.SlowConsumerStrategy s) { this.slowConsumerStrategy = s; return this; }
         public Builder<T> valueMapper(Function<T, ?> m)                    { this.valueMapper = m; return this; }
         public Builder<T> agent(String agentName, IdleStrategy idle)       { this.agentName = agentName; this.idleStrategy = idle; return this; }

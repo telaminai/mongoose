@@ -295,6 +295,7 @@ public class MongooseServer implements MongooseServerController {
         // it being present even with the skeleton in place.
         com.telamin.mongoose.service.health.MongooseHealthService health =
                 new com.telamin.mongoose.internal.DefaultMongooseHealth(counters);
+        flowManager.setHealthService(health);
         registerService(new Service<>(
                 health,
                 com.telamin.mongoose.service.health.MongooseHealthService.class,

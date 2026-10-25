@@ -60,6 +60,12 @@ public interface MongooseCountersService {
      */
     MongooseCounter queueDepthGauge(String path);
 
+    /** Cumulative items dropped for a subscriber queue. Label: {@code queue.{path}.dropped}. */
+    default MongooseCounter queueDropCounter(String path) {
+        return counter("queue." + path + ".dropped");
+    }
+
+
     /**
      * Counter tracking events dispatched to the given processor.
      * Label form: {@code processor.{name}.events}.

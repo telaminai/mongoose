@@ -42,6 +42,13 @@ import java.util.logging.Level;
 public class EventToQueuePublisher<T> {
 
     private final List<NamedQueue> targetQueues = new CopyOnWriteArrayList<>();
+    /** Only read on a drop; guarded by publishLock, so delivered events pay no lookup or counter cost. */
+    @Getter(lombok.AccessLevel.NONE)
+    private final java.util.Map<NamedQueue, QueueDrops> queueDrops = new java.util.HashMap<>();
+    /** Bounded first-drop evidence for direct publishers and subscribers without a processor control audit. */
+    private final com.telamin.mongoose.control.ControlAuditSink dropAudit =
+            new com.telamin.mongoose.control.ControlAuditSink();
+
     private final List<NamedFeedEvent<?>> eventLog = new ArrayList<>();
     private final String name;
     /**
@@ -127,7 +134,7 @@ public class EventToQueuePublisher<T> {
     @Getter(lombok.AccessLevel.NONE)
     private final java.util.concurrent.atomic.AtomicInteger subscriberChangesWaiting =
             new java.util.concurrent.atomic.AtomicInteger();
-    /** Items dropped because a target queue stayed full past the spin bound, over all target queues. */
+    /** Dropped queue copies: ordinary publish's bounded spin, or publishReplay's immediate failed offer. */
     @Getter(lombok.AccessLevel.NONE)
     private volatile long droppedCount;
 
@@ -138,6 +145,11 @@ public class EventToQueuePublisher<T> {
     }
 
     public void addTargetQueue(OneToOneConcurrentArrayQueue<Object> targetQueue, String name) {
+        addTargetQueue(targetQueue, name, NoOpCountersService.INSTANCE.queueDropCounter(name), null, null, name);
+    }
+
+    void addTargetQueue(OneToOneConcurrentArrayQueue<Object> targetQueue, String name, MongooseCounter dropCounter,
+                        com.telamin.mongoose.control.ControlAuditSink groupAudit, String group, String path) {
         NamedQueue namedQueue = new NamedQueue(name, targetQueue);
         if (log.isLoggable(Level.FINE)) {
             log.fine("adding a publisher queue:" + namedQueue);
@@ -147,6 +159,7 @@ public class EventToQueuePublisher<T> {
         try {
             synchronized (publishLock) {
                 if (!targetQueues.contains(namedQueue)) {
+                    queueDrops.put(namedQueue, new QueueDrops(dropCounter, groupAudit, group, path));
                     targetQueues.add(namedQueue);
                 }
             }
@@ -284,6 +297,7 @@ public class EventToQueuePublisher<T> {
         }
     }
 
+    /** Legacy synthetic replay publication: one offer per target, no spin/retry; failed offers count as drops. */
     public void publishReplay(ReplayRecord record) {
         if (record == null) {
             log.fine("itemToPublish is null");
@@ -298,7 +312,7 @@ public class EventToQueuePublisher<T> {
             for (int i = 0, targetQueuesSize = targetQueues.size(); i < targetQueuesSize; i++) {
                 NamedQueue namedQueue = targetQueues.get(i);
                 OneToOneConcurrentArrayQueue<Object> targetQueue = namedQueue.targetQueue();
-                targetQueue.offer(record);
+                if (!targetQueue.offer(record)) recordDrop(namedQueue, -1, "replay offer full; no retry");
                 if (log.isLoggable(Level.FINE)) {
                     log.fine("queue:" + namedQueue.name() + " size:" + targetQueue.size());
                 }
@@ -423,7 +437,7 @@ public class EventToQueuePublisher<T> {
         }
     }
 
-    /** Items dropped because a target queue stayed full for longer than the 10 ms spin bound, over all target queues. */
+    /** Dropped queue copies across all targets, including publishReplay's immediate failed offers. */
     public long droppedCount() {
         return droppedCount;
     }
@@ -440,13 +454,13 @@ public class EventToQueuePublisher<T> {
             OneToOneConcurrentArrayQueue<Object> targetQueue = namedQueue.targetQueue();
             switch (eventWrapStrategy) {
                 case SUBSCRIPTION_NOWRAP, BROADCAST_NOWRAP -> writeToQueue(namedQueue,
-                        journal == null ? mappedItem : new JournalledItem(seq, mappedItem));
+                        journal == null ? mappedItem : new JournalledItem(seq, mappedItem), seq);
                 case SUBSCRIPTION_NAMED_EVENT, BROADCAST_NAMED_EVENT -> {
                     //TODO reduce memory pressure by using copy or a recyclable wrapper if needed
                     NamedFeedEventImpl<Object> namedFeedEvent = new NamedFeedEventImpl<>(name)
                             .data(mappedItem)
                             .sequenceNumber(seq);
-                    writeToQueue(namedQueue, namedFeedEvent);
+                    writeToQueue(namedQueue, namedFeedEvent, seq);
                 }
             }
             if (log.isLoggable(Level.FINE)) {
@@ -455,7 +469,7 @@ public class EventToQueuePublisher<T> {
         }
     }
 
-    private void writeToQueue(NamedQueue namedQueue, Object itemToPublish) {
+    private void writeToQueue(NamedQueue namedQueue, Object itemToPublish, long sequence) {
         OneToOneConcurrentArrayQueue<Object> targetQueue = namedQueue.targetQueue();
         boolean offered = false;
         long startNs = -1;
@@ -475,7 +489,7 @@ public class EventToQueuePublisher<T> {
                     if (startNs < 0) {
                         startNs = System.nanoTime();
                     } else if (System.nanoTime() - startNs > maxSpinNs) {
-                        droppedCount++; // written under publishLock only
+                        recordDrop(namedQueue, sequence, "queue full after 10 ms spin");
                         if (queueRef) {
                             queueRef = false;
                             tracker.releaseReference();
@@ -528,6 +542,38 @@ public class EventToQueuePublisher<T> {
         return null;
     }
 
+    /** Current binding's drop count, even when performance counters are disabled; removed bindings are forgotten. */
+    public long droppedCount(String queueName) {
+        synchronized (publishLock) {
+            return queueDrops.entrySet().stream().filter(e -> java.util.Objects.equals(e.getKey().name(), queueName))
+                    .mapToLong(e -> e.getValue().count).sum();
+        }
+    }
+
+    private void recordDrop(NamedQueue queue, long sequence, String reason) {
+        droppedCount++;
+        QueueDrops drops = queueDrops.get(queue);
+        if (drops == null) return;
+        try { drops.counter.increment(); }
+        catch (RuntimeException failed) { log.warning("queue drop counter failed for " + queue.name() + ": " + failed); }
+        if (++drops.count != 1) return;
+        Object[] fields = {"feed", name, "queue", queue.name(), "queuePath", drops.path, "group", drops.group,
+                "sequence", sequence, "dropped", 1, "reason", reason, "epochMillis", System.currentTimeMillis()};
+        dropAudit.fallback("QueueDrop", fields);
+        if (drops.groupAudit != null) drops.groupAudit.fallback("QueueDrop", fields);
+    }
+
+    private static final class QueueDrops {
+        final MongooseCounter counter;
+        final com.telamin.mongoose.control.ControlAuditSink groupAudit;
+        final String group;
+        final String path;
+        long count;
+        QueueDrops(MongooseCounter counter, com.telamin.mongoose.control.ControlAuditSink groupAudit, String group, String path) {
+            this.counter = counter; this.groupAudit = groupAudit; this.group = group; this.path = path;
+        }
+    }
+
     public record NamedQueue(String name, OneToOneConcurrentArrayQueue<Object> targetQueue) {
     }
 
@@ -543,6 +589,7 @@ public class EventToQueuePublisher<T> {
         try {
             synchronized (publishLock) {
                 targetQueues.removeIf(q -> queueName.equals(q.name()));
+                queueDrops.keySet().removeIf(q -> queueName.equals(q.name()));
             }
         } finally {
             subscriberChangesWaiting.decrementAndGet();

@@ -58,8 +58,10 @@ public class EventFeedConfig<IN> {
     private EventSource.EventWrapStrategy eventWrapStrategy = EventSource.EventWrapStrategy.SUBSCRIPTION_NAMED_EVENT;
 
     /**
-     * Strategy for handling slow consumers
+     * Ignored compatibility setting: the publisher spins for at most 10 ms then drops this queue's item.
+     * @deprecated Has no effect; blocking publish is tracked in issue #77.
      */
+    @Deprecated
     private EventSource.SlowConsumerStrategy slowConsumerStrategy = EventSource.SlowConsumerStrategy.BACKOFF;
 
     /**
@@ -190,8 +192,9 @@ public class EventFeedConfig<IN> {
         }
 
         /**
-         * Sets the slow consumer handling strategy
+         * @deprecated Ignored compatibility setting; all values use bounded spin then drop.
          */
+        @Deprecated
         public Builder<IN> slowConsumerStrategy(EventSource.SlowConsumerStrategy strategy) {
             this.slowConsumerStrategy = strategy;
             return this;
