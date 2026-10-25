@@ -150,6 +150,11 @@ public final class LifecycleManager {
         startStep(() -> startOnce(runner), null);
     }
 
+    /** True once {@code runner}'s thread has been started, even before the thread itself has run and is visible. */
+    public boolean isLaunched(AgentRunner runner) {
+        return startedRunners.contains(runner);
+    }
+
     /** Start {@code runner}'s thread unless it was already started; safe when several threads race to start it. */
     public void startOnce(AgentRunner runner) {
         if (startedRunners.add(runner)) {

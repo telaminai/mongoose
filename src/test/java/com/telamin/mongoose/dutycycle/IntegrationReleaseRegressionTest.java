@@ -155,7 +155,8 @@ class IntegrationReleaseRegressionTest {
             assertTrue(held.await(5, TimeUnit.SECONDS));
             AtomicInteger built = new AtomicInteger();
             for (int i = 0; i < ComposingEventProcessorAgent.CONTROL_QUEUE_CAPACITY; i++) {
-                s.addEventProcessor("DEMO-" + i, "DEMO", null, () -> { built.incrementAndGet(); return new Proc(); });
+                // the non-waiting add: the void add now waits for each outcome, so it would block on the held group
+                s.addProcessor("DEMO-" + i, "DEMO", null, () -> { built.incrementAndGet(); return new Proc(); });
             }
             AtomicInteger rejectedSupplierCalls = new AtomicInteger();
             assertThrows(IllegalStateException.class, () -> s.addEventProcessor("RETRY", "DEMO", null, () -> {

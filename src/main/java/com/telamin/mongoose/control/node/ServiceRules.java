@@ -46,6 +46,12 @@ public class ServiceRules extends EventLogNode {
             decide(rule + "WhileClosing", intent.serviceName(), reply);
             return true;
         }
+        if (!state.applyServiceVersion(intent.serviceName(), intent.version())) {
+            ControlEffect reply = new ControlEffect.Reply(state.nextOp(req), req, -1, null, ReplyOutcome.APPLIED,
+                    "stale version " + intent.version());
+            decide(rule + "Stale", intent.serviceName(), reply);
+            return true;
+        }
         if (started.isEmpty()) {
             ControlEffect reply = new ControlEffect.Reply(state.nextOp(req), req, -1, null, ReplyOutcome.APPLIED,
                     "no running processors");

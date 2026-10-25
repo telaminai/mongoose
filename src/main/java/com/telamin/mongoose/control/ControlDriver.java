@@ -108,6 +108,12 @@ public final class ControlDriver {
                     refuseTerminal(request);
                     return request;
                 }
+                if (Thread.currentThread() != agentThread && AgentThreads.isAgentThread()) {
+                    // another group's agent thread never backs off: blocking it would stall that group's events
+                    refuse(request, "mailbox full");
+                    throw new IllegalStateException("group " + group + ": " + queueName(request.kind())
+                            + " queue is full (" + mailbox.capacity() + ") and an agent thread never waits for it");
+                }
                 if (Thread.currentThread() == agentThread) {
                     refuse(request, "mailbox full");
                     throw new IllegalStateException("group " + group + ": " + queueName(request.kind())

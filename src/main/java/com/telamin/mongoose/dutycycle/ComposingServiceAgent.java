@@ -39,9 +39,15 @@ public class ComposingServiceAgent extends DynamicCompositeAgent {
     private final MongooseServer mongooseServer;
     private final DeadWheelScheduler scheduler;
     private final Service<SchedulerService> schedulerService;
-    private final OneToOneConcurrentArrayQueue<ServiceAgent<?>> toStartList = new OneToOneConcurrentArrayQueue<>(128);
+    /**
+     * Design PR 4: written by many threads (the config loader, admin, a service's own start), so many-to-one; a full
+     * queue is waited on, bounded, never thrown at the first attempt.
+     */
+    private final org.agrona.concurrent.ManyToOneConcurrentArrayQueue<ServiceAgent<?>> toStartList =
+            new org.agrona.concurrent.ManyToOneConcurrentArrayQueue<>(128);
     private final OneToOneConcurrentArrayQueue<ServiceAgent<?>> toAddList = new OneToOneConcurrentArrayQueue<>(128);
-    private final OneToOneConcurrentArrayQueue<ServiceAgent<?>> toCallStartupCompleteList = new OneToOneConcurrentArrayQueue<>(128);
+    private final org.agrona.concurrent.ManyToOneConcurrentArrayQueue<ServiceAgent<?>> toCallStartupCompleteList =
+            new org.agrona.concurrent.ManyToOneConcurrentArrayQueue<>(128);
     private final ServiceRegistryNode serviceRegistry = new ServiceRegistryNode();
     private final AtomicBoolean startUpComplete = new AtomicBoolean(false);
     /** Every service agent registered on this group, in registration order. */
@@ -60,13 +66,27 @@ public class ComposingServiceAgent extends DynamicCompositeAgent {
 
     public <T> void registerServer(ServiceAgent<T> server) {
         hostedAgents.add(server);
-        toStartList.add(server);
-        toCallStartupCompleteList.add(server);
+        offerBounded(toStartList, server, "service start");
+        offerBounded(toCallStartupCompleteList, server, "service start-complete");
         log.info("registerServer toCallStartupCompleteList size:" + toCallStartupCompleteList.size());
+    }
+
+    /** Offer with a bounded back-off (10 s); never on an agent thread, which is refused at once. */
+    private void offerBounded(org.agrona.concurrent.ManyToOneConcurrentArrayQueue<ServiceAgent<?>> queue, ServiceAgent<?> item,
+                              String what) {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+        while (!queue.offer(item)) {
+            if (com.telamin.mongoose.control.AgentThreads.isAgentThread() || System.nanoTime() - deadline > 0) {
+                throw new IllegalStateException("service group " + roleName() + ": " + what + " queue is full ("
+                        + queue.capacity() + ")");
+            }
+            java.util.concurrent.locks.LockSupport.parkNanos(50_000);
+        }
     }
 
     @Override
     public void onStart() {
+        com.telamin.mongoose.control.AgentThreads.enter(mongooseServer != null ? mongooseServer : this);
         // Best-effort core pinning if configured for this agent group (guard for null during unit tests)
         if (mongooseServer != null) {
             Integer coreId = mongooseServer.resolveCoreIdForAgentName(roleName());
@@ -123,7 +143,11 @@ public class ComposingServiceAgent extends DynamicCompositeAgent {
     @Override
     public void onClose() {
         log.info("onClose");
-        super.onClose();
+        try {
+            super.onClose();
+        } finally {
+            com.telamin.mongoose.control.AgentThreads.exit();
+        }
     }
 
     private void checkForAdded() {

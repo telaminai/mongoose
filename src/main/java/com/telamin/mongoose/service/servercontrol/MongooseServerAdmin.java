@@ -289,6 +289,12 @@ public class MongooseServerAdmin implements Lifecycle {
         String arg = args.get(1);
         out.accept("stopping processor:" + arg);
         String[] splitArgs = arg.split("/");
-        serverController.stopProcessor(splitArgs[0], splitArgs[1]);
+        if (serverController instanceof com.telamin.mongoose.MongooseServer server) {
+            // the admin transport runs commands inline: wait at most 1 s, then report pending; the stop still applies
+            com.telamin.mongoose.control.ControlReply reply = server.stopProcessor(splitArgs[0], splitArgs[1], 1_000);
+            out.accept(reply == null ? "stop pending (still applies): " + arg : "stop " + reply.outcome() + ": " + reply.reason());
+        } else {
+            serverController.stopProcessor(splitArgs[0], splitArgs[1]);
+        }
     }
 }

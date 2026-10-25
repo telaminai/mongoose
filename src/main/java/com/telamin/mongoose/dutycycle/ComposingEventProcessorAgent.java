@@ -243,20 +243,24 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     }
 
     /** Queue a service for broadcast {@code @ServiceRegistered} dispatch on every processor in this group. Any thread. */
-    public void broadcastServiceRegistered(Service<?> service) {
-        broadcast(service, true);
+    public ControlRequest broadcastServiceRegistered(Service<?> service) {
+        return broadcastService(service, true, 0);
     }
 
     /** Symmetric to {@link #broadcastServiceRegistered}: fires {@code @ServiceDeregistered} on every processor. */
-    public void broadcastServiceDeregistered(Service<?> service) {
-        broadcast(service, false);
+    public ControlRequest broadcastServiceDeregistered(Service<?> service) {
+        return broadcastService(service, false, 0);
     }
 
-    private void broadcast(Service<?> service, boolean register) {
+    /**
+     * Deliver or withdraw a service with its registry version (design PR 4): a group applies a versioned broadcast only
+     * if it is newer than the last it applied for that service; version 0 is unversioned and always applies.
+     */
+    public ControlRequest broadcastService(Service<?> service, boolean register, long version) {
         ControlRequest request = new ControlRequest(ControlRequest.Kind.BROADCAST,
                 (register ? "register " : "deregister ") + service.serviceName(),
-                id -> new BroadcastIntent(id, service.serviceName(), register, 0), new BroadcastPayload(service, register));
-        control.send(request);
+                id -> new BroadcastIntent(id, service.serviceName(), register, version), new BroadcastPayload(service, register));
+        return control.send(request);
     }
 
     /** What an add needs to perform its effects: never seen by the control processor. */
@@ -308,6 +312,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             }
             log.info("onStart " + roleName());
             agentThread = Thread.currentThread();
+            com.telamin.mongoose.control.AgentThreads.enter(mongooseServer != null ? mongooseServer : this);
             control.starting(agentThread);
             // the requests accepted before the group started are its boot requests: by default a failed start among
             // them fails the group's start, so the server's boot fails, rather than boot on without it (review of #66)
@@ -389,6 +394,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             control.close();       // every started processor stopped through the control processor, in add order
         } finally {
             stopAndTearDownProcessors();   // only what a dead or wedged control processor could not release
+            if (Thread.currentThread() == control.agentThread()) com.telamin.mongoose.control.AgentThreads.exit();
             agentThread = null;
             log.info("onClose " + roleName());
             super.onClose();

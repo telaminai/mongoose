@@ -66,6 +66,7 @@ public class ControlState {
     private transient String causeOp;
     private transient long inputSeq = -1;
     private transient boolean closing;
+    private transient Map<String, Long> serviceVersions = new HashMap<>();
 
     /** Begin recording a command or completion cycle. */
     public void beginInput(long requestId) {
@@ -141,6 +142,18 @@ public class ControlState {
             if (name.equals(r.name) && (r.lifecycle == Lifecycle.STARTED || r.lifecycle == Lifecycle.RELEASING)) return r;
         }
         return null;
+    }
+
+    /**
+     * Record a service transition's version; @return false if it is not newer than the last applied (a stale
+     * broadcast). Version 0 is unversioned and always applies.
+     */
+    public boolean applyServiceVersion(String service, long version) {
+        if (version <= 0) return true;
+        Long last = serviceVersions.get(service);
+        if (last != null && version <= last) return false;
+        serviceVersions.put(service, version);
+        return true;
     }
 
     /** Set by the close rule: from then on adds are refused and nothing new is started. */
