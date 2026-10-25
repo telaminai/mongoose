@@ -41,6 +41,12 @@ consistent 12% loss, but the large variation and unpinned cores leave the earlie
 close the pinned-core Linux check. The counter's `value` offset was verified as 144 bytes on this JDK too.
 [Full methodology, samples and qualification limits](../reports/pr76-qualification-2026-10-25/results.json).
 
+After the replay-only follow-up fixes, the same five-fork comparison on final runtime `c40264b` gave baseline
+medians `11.498, 9.711, 10.056, 10.231, 9.308`, and candidate medians
+`10.280, 11.901, 11.576, 14.343, 11.242` M events/s. Their medians are 10.056 and 11.576. The baseline itself moved
+substantially between the two sessions: neither this apparent improvement nor the earlier gap establishes a
+portable implementation effect. The Linux check remains open.
+
 ### What the predictions missed
 
 - **Tests that pass for the wrong reason.** A test-compile failure hid behind a filtered log once, and a leaked agent
