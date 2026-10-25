@@ -341,6 +341,7 @@ class ControlScenarioHarnessTest {
 
             // ---- audit verdict, from the exported record alone
             ControlAuditSink audit = group.control().audit();
+            assertTrue(audit.isComplete(), "seed " + seed + ": incomplete audit cannot validate this scenario");
             ControlEvidence evidence = ControlEvidence.parse(audit.exportText(), audit.isComplete());
             Set<Long> recordedCloseFailures = evidence.ofType("EffectOutcome").stream()
                     .filter(r -> "CloseCapture".equals(r.str("effect")) && "failed".equals(r.str("outcome"))
@@ -349,6 +350,11 @@ class ControlScenarioHarnessTest {
             assertEquals(captures.failedCloseResources(), recordedCloseFailures,
                     "seed " + seed + ": physical ledger and audited close failures disagree\n" + script);
             ControlInvariants.Result result = ControlInvariants.check(evidence);
+            Set<String> expectedUnknownClosures = captures.failedCloseResources().stream()
+                    .map(id -> "I4/I11 resource " + id + " close failed; physical closure is not established")
+                    .collect(java.util.stream.Collectors.toSet());
+            assertEquals(expectedUnknownClosures, Set.copyOf(result.unverifiable()),
+                    "seed " + seed + ": only ledger-confirmed physical close failures may remain unverifiable\n" + script);
             if (!result.ok()) {
                 Path out = Path.of("target/control-audit/harness-seed-" + seed + ".yaml");
                 audit.export(out);
