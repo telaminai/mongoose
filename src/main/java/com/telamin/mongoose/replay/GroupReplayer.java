@@ -468,8 +468,9 @@ public final class GroupReplayer {
             }
             case ReplayEntry.ServiceChanged sc -> {
                 pin(c, sc.instant(), sc.reads());
-                if (!routing.deliverService(c.flow, sc.service(), sc.register(), sc.version())) {
-                    return waiting(c, "service " + sc.service() + " is not registered");
+                String outcome = routing.deliverService(c.flow, sc.service(), sc.register(), sc.version());
+                if (outcome != null) {
+                    return outcome.startsWith("wait:") ? waiting(c, outcome.substring(5)) : stop(c, outcome);
                 }
                 return readsMatch(c, sc.reads());
             }

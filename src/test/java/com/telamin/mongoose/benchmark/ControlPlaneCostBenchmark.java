@@ -37,23 +37,28 @@ public class ControlPlaneCostBenchmark {
         @Override public void tearDown() { }
     }
 
-    /** A counter alone on its cache lines: no false sharing with whatever the server allocated beside it. */
-    static final class Padded {
-        long p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15;
-        final AtomicLong value = new AtomicLong();
-        long q1, q2, q3, q4, q5, q6, q7, q8, q9, q10, q11, q12, q13, q14, q15;
+    /**
+     * The count, in a field of its own padded object (follow-up review, finding 9: padding around a reference to a
+     * separately allocated AtomicLong isolated nothing). Verified on JDK 25 (Apple M4) with Unsafe.objectFieldOffset:
+     * {@code value} at offset 144, with 128 bytes of the object's own fields before and after it, which covers a
+     * 128-byte cache line. The JVM lays fields out, not the declaration order: re-check the offsets on another JVM.
+     */
+    static final class PaddedCount {
+        long p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15, p16;
+        volatile long value;
+        long q1, q2, q3, q4, q5, q6, q7, q8, q9, q10, q11, q12, q13, q14, q15, q16;
+        static final java.util.concurrent.atomic.AtomicLongFieldUpdater<PaddedCount> VALUE =
+                java.util.concurrent.atomic.AtomicLongFieldUpdater.newUpdater(PaddedCount.class, "value");
     }
 
     public static final class Counter extends ObjectEventHandlerNode {
-        static final long[] GAP = new long[64];
-        static final AtomicLong COUNT;
-        static final long[] GAP2 = new long[64];
-        static {
-            new Padded();
-            COUNT = new Padded().value;
-        }
+        static final PaddedCount COUNT = new PaddedCount();
         @Override public void start() { getContext().subscribeToNamedFeed("feed"); }
-        @Override protected boolean handleEvent(Object event) { COUNT.lazySet(COUNT.get() + 1); return true; }
+        @Override protected boolean handleEvent(Object event) {
+            PaddedCount.VALUE.lazySet(COUNT, COUNT.value + 1);
+            return true;
+        }
+        static long get() { return COUNT.value; }
     }
 
     public static void main(String[] args) throws Exception {
@@ -89,13 +94,13 @@ public class ControlPlaneCostBenchmark {
         double[] mps = new double[7];
         for (int r = -2; r < mps.length; r++) {
             int n = 2_000_000;
-            long start = Counter.COUNT.get();
+            long start = Counter.get();
             long t0 = System.nanoTime();
             for (int i = 0; i < n; i++) {
                 feed.offer(item);
-                while (i - (Counter.COUNT.get() - start) > 4096) Thread.onSpinWait();   // bounded in-flight
+                while (i - (Counter.get() - start) > 4096) Thread.onSpinWait();   // bounded in-flight
             }
-            while (Counter.COUNT.get() - start < n) Thread.onSpinWait();
+            while (Counter.get() - start < n) Thread.onSpinWait();
             double secs = (System.nanoTime() - t0) / 1e9;
             if (r >= 0) mps[r] = n / secs / 1e6;
         }

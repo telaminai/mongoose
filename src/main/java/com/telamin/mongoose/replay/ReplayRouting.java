@@ -39,9 +39,12 @@ public interface ReplayRouting {
 
     /**
      * Deliver to, or withdraw from, the replayed processor the service registered as {@code service}, as the recorded
-     * run did at this point. @return false while a service to deliver is not registered yet
+     * run did at this point, with the recorded instance (by registry version).
+     *
+     * @return null once delivered; {@code "wait:<why>"} while it cannot be yet; otherwise why the replay cannot
+     *         reproduce it (a version no longer available, a callback that failed), which stops the replay
      */
-    default boolean deliverService(DataFlow flow, String service, boolean register, long version) {
-        return false;
+    default String deliverService(DataFlow flow, String service, boolean register, long version) {
+        return "wait:service delivery is not supported by this group";
     }
 }

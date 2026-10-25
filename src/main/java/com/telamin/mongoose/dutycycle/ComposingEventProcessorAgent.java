@@ -374,6 +374,17 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     private final Map<String, AtomicInteger> builtOrdinals = new HashMap<>();
     /** Per service, the registry version of the last broadcast applied here. Agent thread only. */
     private final Map<String, Long> lastServiceVersions = new HashMap<>();
+    /**
+     * Per service, the instances this group has been sent, by registry version, so a replay delivers the recorded
+     * version and never the current one in its place (follow-up review, finding 3). Bounded per name. Agent thread only.
+     */
+    private final Map<String, java.util.LinkedHashMap<Long, Service<?>>> serviceHistory = new HashMap<>();
+    static final int SERVICE_VERSIONS_REMEMBERED = 32;
+
+    /** What handing a processor a service did: delivered, skipped (it already held it), or delivered with a failure. */
+    private record Delivery(boolean delivered, String failure) {
+        static final Delivery SKIPPED = new Delivery(false, null);
+    }
 
     /** What an add needs to perform its effects: never seen by the control processor. */
     private record AddPayload(Supplier<NamedEventProcessor> init, ProcessorRegistration registration) { }
@@ -723,18 +734,35 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         // the services a server registers while it boots (its feeds among them) are configuration, delivered live and
         // never recorded; a service change is what was sent once the server had started
         boolean runtimeChange = payload.runtime();
-        if (payload.version() > 0) lastServiceVersions.put(payload.service().serviceName(), payload.version());
+        if (payload.version() > 0) {
+            lastServiceVersions.put(payload.service().serviceName(), payload.version());
+            if (payload.register()) {
+                serviceHistory.computeIfAbsent(payload.service().serviceName(), n -> new java.util.LinkedHashMap<>() {
+                    @Override
+                    protected boolean removeEldestEntry(Map.Entry<Long, Service<?>> eldest) {
+                        return size() > SERVICE_VERSIONS_REMEMBERED;
+                    }
+                }).put(payload.version(), payload.service());
+            }
+        }
         if (replayer != null && (runtimeChange && replayer.suppressesLiveServices(flow)
                 || replayer.suppressesLiveService(flow, payload.service().serviceName()))) {
             // replayed from a stream that records its service changes: delivered where the recorded run had it
             return result(effect, ControlOutcome.SUCCEEDED, "replayed: delivered in position");
         }
         if (runtimeChange && recorder != null) recorder.beforeControl(flow);
-        String failure = deliverService(named, payload.service(), payload.register());
+        Delivery delivery = deliverService(named, payload.service(), payload.register());
         if (runtimeChange && recorder != null) {
-            recorder.serviceChanged(flow, payload.service().serviceName(), payload.register(), payload.version());
+            // only a change that reached the processor is a position in its stream: one it already held was skipped
+            // live and must not move it on replay (follow-up review, finding 4); a failed callback ends what the
+            // stream can reproduce
+            String name = payload.service().serviceName();
+            if (delivery.failure() != null) recorder.serviceFailed(flow, name, delivery.failure());
+            else if (delivery.delivered()) recorder.serviceChanged(flow, name, payload.register(), payload.version());
+            else recorder.discardControl(flow);
         }
-        return result(effect, failure == null ? ControlOutcome.SUCCEEDED : ControlOutcome.FAILED, failure);
+        return result(effect, delivery.failure() == null ? ControlOutcome.SUCCEEDED : ControlOutcome.FAILED,
+                delivery.failure());
     }
 
     private EffectResult runTask(ControlEffect.RunTask effect) {
@@ -1078,26 +1106,53 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             }
 
             @Override
-            public boolean deliverService(DataFlow flow, String service, boolean register, long version) {
-                Long live = lastServiceVersions.get(service);
-                if (version > 0 && live != null && live != version) {
-                    log.warning("replay delivers service " + service + " recorded at version " + version
-                            + " where this run's registry is at version " + live);
+            public String deliverService(DataFlow flow, String service, boolean register, long version) {
+                NamedEventProcessor np = null;
+                for (NamedEventProcessor candidate : registeredEventProcessors.values()) {
+                    if (candidate.eventProcessor() == flow) np = candidate;
                 }
-                for (NamedEventProcessor np : registeredEventProcessors.values()) {
-                    if (np.eventProcessor() != flow) continue;
-                    Service<?> svc = register ? registeredServices.get(service) : null;
-                    if (!register) {
-                        for (Service<?> held : servicesDeliveredTo(flow)) {
-                            if (held.serviceName().equals(service)) svc = held;
+                if (np == null) return "wait:the replayed processor is not running";
+                Service<?> svc = null;
+                if (register) {
+                    // the recorded version, never the current one in its place (follow-up review, finding 3)
+                    var versions = serviceHistory.get(service);
+                    svc = version > 0 && versions != null ? versions.get(version) : null;
+                    if (svc == null) {
+                        Long live = lastServiceVersions.get(service);
+                        if (version > 0 && live != null) {
+                            if (live < version) {
+                                return "wait:service " + service + " version " + version
+                                        + " is not registered in this run yet (it is at version " + live + ")";
+                            }
+                            return "service " + service + " version " + version + " cannot be reproduced: this run's"
+                                    + " registry is at version " + live + " and no longer holds the recorded instance";
                         }
-                        if (svc == null) return true;     // nothing to withdraw
+                        svc = registeredServices.get(service);
+                        if (svc == null) return "wait:service " + service + " is not registered";
+                        if (version > 0) {
+                            // a registry with no version history here (configured at boot): the instance is the only one
+                            // this run has, and its identity with the recorded one cannot be checked; said, not silent
+                            log.warning("replay delivers service " + service + " recorded at version " + version
+                                    + " from a registry with no version history: the recorded instance is unverified");
+                        }
                     }
-                    if (svc == null) return false;        // not registered yet in this run: wait for it
-                    ComposingEventProcessorAgent.this.deliverService(np, svc, register);
-                    return true;
+                } else {
+                    for (Service<?> held : servicesDeliveredTo(flow)) {
+                        if (held.serviceName().equals(service)) svc = held;
+                    }
+                    if (svc == null) return null;       // nothing held to withdraw
                 }
-                return false;
+                Delivery delivery = ComposingEventProcessorAgent.this.deliverService(np, svc, register);
+                if (delivery.failure() != null) {
+                    // a replayed callback that fails is a divergence, never a success (follow-up review, finding 5)
+                    return "service " + service + " " + (register ? "registration" : "deregistration")
+                            + " callback failed during replay: " + delivery.failure();
+                }
+                if (!delivery.delivered() && register) {
+                    return "service " + service + " was already held: it reached the processor before its recorded"
+                            + " position";
+                }
+                return null;
             }
 
             @Override
@@ -1276,14 +1331,14 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
      * delivered: a later broadcast of the same service is not offered to that processor again, and a later deregister
      * of it does reach the processor. Likewise a {@code deRegisterService} that throws counts as done.
      *
-     * @return null when delivered (or already held), else why it failed
+     * @return delivered, skipped (already held, or not held to withdraw), or delivered with the callback's failure
      */
-    private String deliverService(NamedEventProcessor np, Service<?> svc, boolean register) {
+    private Delivery deliverService(NamedEventProcessor np, Service<?> svc, boolean register) {
         DataFlow eventProcessor = np.eventProcessor();
         // each service once (mongoose#60 item 1): a register the processor already has - it joined after the service
         // was in the registry - is skipped, and a deregister reaches only a processor that was handed the service
         if (register ? !servicesDeliveredTo(eventProcessor).add(svc) : !servicesDeliveredTo(eventProcessor).remove(svc)) {
-            return null;
+            return Delivery.SKIPPED;
         }
         com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(eventProcessor);
         try {
@@ -1294,13 +1349,13 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             } else {
                 eventProcessor.deRegisterService(serviceFor(eventProcessor, svc));
             }
-            return null;
+            return new Delivery(true, null);
         } catch (VirtualMachineError fatal) {
             throw fatal;
         } catch (Throwable t) {
             reportProcessorFailure(np.name(), (register ? "failed to register" : "failed to deregister")
                     + " service '" + svc.serviceName() + "'", t);
-            return String.valueOf(t);
+            return new Delivery(true, String.valueOf(t));
         } finally {
             com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
         }

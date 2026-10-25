@@ -155,6 +155,21 @@ public final class GroupRecorder {
         append(r, new ReplayEntry.Stopped(r.clock.instant(reads), reads));
     }
 
+    /** A service delivery's callback failed: the stream cannot be reproduced past this point. */
+    public void serviceFailed(DataFlow flow, String service, String failure) {
+        Recorded r = byFlow.get(flow);
+        if (r == null || r.broken != null) return;
+        List<Long> reads = r.clock.captured();
+        append(r, new ReplayEntry.Failed("service", "service " + service + " callback failed: " + failure,
+                r.clock.instant(reads)));
+    }
+
+    /** A control action began but changed nothing for the processor (a service it already held): nothing recorded. */
+    public void discardControl(DataFlow flow) {
+        Recorded r = byFlow.get(flow);
+        if (r != null) r.clock.captured();
+    }
+
     /** A service was delivered to, or withdrawn from, the running processor, at registry {@code version}. */
     public void serviceChanged(DataFlow flow, String service, boolean register, long version) {
         Recorded r = byFlow.get(flow);
