@@ -523,7 +523,6 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
      * that throws is reported and the others are still stopped; a {@link VirtualMachineError} is rethrown.
      */
     private void stopAndTearDownProcessors() {
-        releaseLeftoverCaptures();
         // A release removes the live name before calling user code. Resume its remaining steps even though that
         // processor is no longer in registeredEventProcessors. A callback already attempted is never repeated.
         for (ReleaseProgress release : new ArrayList<>(releasesInProgress.values())) {
@@ -534,6 +533,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             if (named != null) release(named, true, false);
         }
         processorsByGeneration.clear();
+        // As in the normal release effects, close capture resources only after lifecycle callbacks have finished.
+        // A fatal callback leaves both the remaining release progress and the resource owned for the next attempt.
+        releaseLeftoverCaptures();
     }
 
     private void reportCloseFailure(String processorName, String what, Throwable t) {
