@@ -49,7 +49,7 @@ public record ControlReply(long requestId, ReplyOutcome outcome, String reason, 
 
 package com.telamin.mongoose.control.event;
 public enum ReplyOutcome { APPLIED, REFUSED, FAILED, NOT_RUNNING }
-public enum FailureKind { NONE, REFUSED_ADMISSION, REFUSED_STATE, REFUSED_DEADLINE, FAILED_RULE, FAILED_EFFECT,
+public enum FailureKind { NONE, REFUSED_ADMISSION, REFUSED_STATE, REFUSED_DEADLINE, REFUSED_INVALID, FAILED_RULE, FAILED_EFFECT,
     FAILED_DRIVER_FALLBACK, FAILED_DEAD, FAILED_SHUTDOWN, QUARANTINED, DETACHED, UNVERIFIED, LEFTOVER_RECOVERED,
     REPLAY_IDENTITY_MISMATCH, REPLAY_STOPPED }
 ```
@@ -344,7 +344,7 @@ On an agent thread with a full mailbox this reply-returning form returns `REFUSE
 <reason>`, or `stop pending (still applies): <group>/<name>` when no reply came within one second. An unknown group or
 name prints `stop REFUSED (REFUSED_STATE): no such ...`, never `pending`. A missing or malformed argument (not exactly
 one `<group>/<name>` with both parts non-blank) is refused on the error stream with
-`stop REFUSED (REFUSED_STATE): usage: ...` and stops nothing. On a `MongooseServerController` that is not a
+`stop REFUSED (REFUSED_INVALID): usage: ...` and stops nothing. On a `MongooseServerController` that is not a
 `MongooseServer`, it calls the void form.
 
 ## Services

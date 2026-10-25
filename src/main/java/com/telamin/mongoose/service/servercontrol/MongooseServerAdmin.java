@@ -138,6 +138,24 @@ public class MongooseServerAdmin implements Lifecycle {
         registry.registerCommand("control.audit.export.status", this::controlAuditExportStatus);
         registry.registerCommand("control.group.status", this::controlGroupStatus);
         registry.registerCommand("control.audit.acknowledge", this::acknowledgeControlAudit);
+        registry.registerCommand("control.capture.acknowledge", this::acknowledgeCaptureFailures);
+    }
+
+    private void acknowledgeCaptureFailures(List<String> args, Consumer<String> out, Consumer<String> err) {
+        if (args.size() != 2) {
+            err.accept("usage: control.capture.acknowledge <group>");
+            return;
+        }
+        if (!(serverController instanceof com.telamin.mongoose.MongooseServer server)) {
+            err.accept("control capture acknowledge requires a MongooseServer");
+            return;
+        }
+        try {
+            server.acknowledgeCaptureFailures(args.get(1));
+            out.accept("capture failures acknowledged for group " + args.get(1) + "; they stay listed and owned");
+        } catch (IllegalArgumentException failed) {
+            err.accept(failed.getMessage());
+        }
     }
 
     private void acknowledgeControlAudit(List<String> args, Consumer<String> out, Consumer<String> err) {
@@ -158,8 +176,9 @@ public class MongooseServerAdmin implements Lifecycle {
     }
 
     private void controlGroupStatus(List<String> args, Consumer<String> out, Consumer<String> err) {
-        if (args.size() != 2) {
-            err.accept("usage: control.group.status <group>");
+        boolean json = args.size() == 3 && "--json".equals(args.get(2));
+        if (args.size() != 2 && !json) {
+            err.accept("usage: control.group.status <group> [--json]");
             return;
         }
         if (!(serverController instanceof com.telamin.mongoose.MongooseServer server)) {
@@ -167,7 +186,8 @@ public class MongooseServerAdmin implements Lifecycle {
             return;
         }
         try {
-            out.accept(server.controlGroupStatus(args.get(1)).toString());
+            var status = server.controlGroupStatus(args.get(1));
+            out.accept(json ? status.toJson() : status.toString());
         } catch (IllegalArgumentException failed) {
             err.accept(failed.getMessage());
         }
@@ -414,7 +434,7 @@ public class MongooseServerAdmin implements Lifecycle {
         String arg = args.size() == 2 ? args.get(1) : null;
         String[] splitArgs = arg == null ? new String[0] : arg.split("/", -1);
         if (splitArgs.length != 2 || splitArgs[0].isBlank() || splitArgs[1].isBlank()) {
-            err.accept("stop REFUSED (REFUSED_STATE): usage: server.processors.stop <group>/<processor>");
+            err.accept("stop REFUSED (REFUSED_INVALID): usage: server.processors.stop <group>/<processor>");
             return;
         }
         out.accept("stopping processor:" + arg);

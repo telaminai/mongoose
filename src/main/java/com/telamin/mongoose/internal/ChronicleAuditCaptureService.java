@@ -149,6 +149,8 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
     /** A capture resource: the queue opened for a processor's sink. Opaque to the group that holds it. */
     private static final class CaptureHandle {
         private volatile ProcessorSink sink;
+        /** Who is told of this resource's first write failure; registered before install (review R1). */
+        private volatile java.util.function.Consumer<String> writeFailureObserver;
         private final ChronicleQueue queue;
         CaptureHandle(ProcessorSink sink, ChronicleQueue queue) { this.sink = sink; this.queue = queue; }
         ProcessorSink sink() { return sink; }
@@ -481,6 +483,9 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             throw new IllegalArgumentException("capture does not belong to this processor instance");
         }
         handle.bind(sink);
+        // the observer is set before the listener swap, whose own record is the recording's first write (review R1);
+        // always set, so a shared sink never keeps a previous recording's observer
+        sink.useObserver(handle.writeFailureObserver);
         if (!sink.beginRecording(handle.queue(), counters)) {
             throw new IllegalStateException("audit capture of '" + processorName + "' is already recording");
         }
@@ -501,10 +506,16 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
     }
 
     @Override
+    public boolean observesWriteFailures() {
+        return true;
+    }
+
+    @Override
     public void observeWriteFailures(Object resource, java.util.function.Consumer<String> observer) {
         CaptureHandle handle = (CaptureHandle) resource;
+        handle.writeFailureObserver = observer;
         ProcessorSink sink = handle.sink();
-        if (sink != null) sink.writeFailureObserver = observer;
+        if (sink != null) sink.observeWriteFailures(observer);    // already installed: report at once if failing
     }
 
     @Override
@@ -709,9 +720,44 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
         /** Counted, never swallowed: a destination that fails is a finding, not silence. */
         private long captureFailures;
         private long delegateFailures;
-        /** Write failures in the current recording, and who is told of the first (issue #77, M3: fail open, loudly). */
+        /**
+         * Write failures in the current recording, whether the first has been reported, and who to tell (issue #77, M3:
+         * fail open, loudly). The report is latched separately from the count, so a failure seen before an observer was
+         * attached is still reported when one attaches (review R1).
+         */
         private long sessionCaptureFailures;
-        private volatile java.util.function.Consumer<String> writeFailureObserver;
+        private boolean sessionFailureReported;
+        private String firstSessionFailure;
+        private java.util.function.Consumer<String> writeFailureObserver;
+
+        /** The observer for the recording about to begin; never reports a previous recording's failures. */
+        synchronized void useObserver(java.util.function.Consumer<String> observer) {
+            writeFailureObserver = observer;
+        }
+
+        /** Attach (or replace) the observer; report at once a failure this recording already had. */
+        synchronized void observeWriteFailures(java.util.function.Consumer<String> observer) {
+            writeFailureObserver = observer;
+            if (sessionCaptureFailures > 0 && !sessionFailureReported) reportFirstFailure();
+        }
+
+        private synchronized void writeFailed(Throwable t) {
+            if (++sessionCaptureFailures == 1) {
+                firstSessionFailure = "audit capture write failed for '" + processorName + "': " + t;
+            }
+            if (!sessionFailureReported) reportFirstFailure();
+        }
+
+        private void reportFirstFailure() {
+            java.util.function.Consumer<String> observer = writeFailureObserver;
+            if (observer == null) return;           // reported when an observer attaches
+            sessionFailureReported = true;
+            try {
+                observer.accept(firstSessionFailure);
+            } catch (Throwable observerFailure) {
+                log.log(Level.WARNING, "audit capture write-failure observer failed", observerFailure);
+            }
+        }
         private volatile LogRecordListener previousListener;
         private volatile LogRecordListener captureListener;
         private MongooseCounter recordCounter;
@@ -887,6 +933,8 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             ExcerptAppender a = opened.createAppender();
             this.appender = a;
             this.sessionCaptureFailures = 0;
+            this.sessionFailureReported = false;
+            this.firstSessionFailure = null;
             this.startCycle = a.cycle();
             this.recordCounter = counters.counter("audit." + selector() + ".records");
             this.startedAt = Instant.now();
@@ -1001,14 +1049,7 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
                 captureFailures++;
                 log.log(Level.WARNING, "audit capture write failed for '" + processorName
                         + "' (" + captureFailures + " so far); the record is counted as received", t);
-                java.util.function.Consumer<String> observer = writeFailureObserver;
-                if (++sessionCaptureFailures == 1 && observer != null) {
-                    try {
-                        observer.accept("audit capture write failed for '" + processorName + "': " + t);
-                    } catch (Throwable observerFailure) {
-                        log.log(Level.WARNING, "audit capture write-failure observer failed", observerFailure);
-                    }
-                }
+                writeFailed(t);
             }
             LogRecordListener delegate = previousListener;
             if (delegate != null) {

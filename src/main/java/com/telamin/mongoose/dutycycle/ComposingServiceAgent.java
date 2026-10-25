@@ -77,7 +77,7 @@ public class ComposingServiceAgent extends DynamicCompositeAgent {
         long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
         while (!queue.offer(item)) {
             if (com.telamin.mongoose.control.AgentThreads.isAgentThread() || System.nanoTime() - deadline > 0) {
-                throw new IllegalStateException("service group " + roleName() + ": " + what + " queue is full ("
+                throw new IllegalStateException("service group " + roleName() + ": " + what + " request refused: mailbox full (capacity "
                         + queue.capacity() + ")");
             }
             java.util.concurrent.locks.LockSupport.parkNanos(50_000);

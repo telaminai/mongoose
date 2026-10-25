@@ -26,6 +26,12 @@ public enum FailureKind {
     /** Not admitted within the caller's own deadline. Nothing ran. */
     REFUSED_DEADLINE,
     /**
+     * The request itself is malformed or not this server's to act on (a missing or malformed argument, a handle from
+     * another server). Nothing was attempted; resubmitting it unchanged is refused again. Added in review round 3:
+     * neither capacity ({@code REFUSED_ADMISSION}) nor target state ({@code REFUSED_STATE}) describes it.
+     */
+    REFUSED_INVALID,
+    /**
      * The control processor itself failed (a rule threw, effects did not settle, the processor is wedged) and the
      * driver answered in its place. An engine defect: never acceptable evidence of a healthy run.
      */
@@ -65,7 +71,7 @@ public enum FailureKind {
 
     /** Nothing was applied: the request was turned down before any effect ran. */
     public boolean refusal() {
-        return this == REFUSED_ADMISSION || this == REFUSED_STATE || this == REFUSED_DEADLINE;
+        return this == REFUSED_ADMISSION || this == REFUSED_STATE || this == REFUSED_DEADLINE || this == REFUSED_INVALID;
     }
 
     /** Authored by the driver's safety net because the control processor could not answer: an engine defect. */

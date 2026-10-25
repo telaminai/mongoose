@@ -20,9 +20,35 @@ import java.util.List;
  * @param groupsRunning      groups or cleanup tasks whose successful completion has not been confirmed
  * @param servicesLeftRunning services not confirmed stopped, because a group may still use them, their stop is still
  *                           running, or their stop failed
+ * @param heldNames          processor names still reserved by a dead group or a quarantined processor (issue #77, M4):
+ *                           typed, so an operator need not parse {@code groupsRunning}
  */
 public record StopResult(boolean complete, boolean handedOff, String blockedStartup, List<String> groupsRunning,
-                         List<String> servicesLeftRunning) {
+                         List<String> servicesLeftRunning, List<HeldName> heldNames) {
+
+    /**
+     * A processor name the server still holds after a stop because its owner cannot release it.
+     *
+     * @param reason why it is held: {@code "group dead"} or the quarantine failure
+     */
+    public record HeldName(String group, String name, long generation, String reason) { }
+
+    public StopResult {
+        groupsRunning = groupsRunning == null ? List.of() : List.copyOf(groupsRunning);
+        servicesLeftRunning = servicesLeftRunning == null ? List.of() : List.copyOf(servicesLeftRunning);
+        heldNames = heldNames == null ? List.of() : List.copyOf(heldNames);
+    }
+
+    /** The pre-#77 shape: no held names. */
+    public StopResult(boolean complete, boolean handedOff, String blockedStartup, List<String> groupsRunning,
+                      List<String> servicesLeftRunning) {
+        this(complete, handedOff, blockedStartup, groupsRunning, servicesLeftRunning, List.of());
+    }
+
+    /** This result with {@code names} held. */
+    public StopResult withHeldNames(List<HeldName> names) {
+        return new StopResult(complete, handedOff, blockedStartup, groupsRunning, servicesLeftRunning, names);
+    }
 
     /**
      * The stop's classification in the shared failure taxonomy (issue #77): {@code NONE} when complete,

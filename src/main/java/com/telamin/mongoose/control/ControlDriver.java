@@ -152,6 +152,7 @@ public final class ControlDriver {
 
     public ControlRequest send(ControlRequest request, long admitByNanos) {
         if (request.requestId() < 0) request.assignId(requestIds.incrementAndGet());
+        request.markRepliesWith(this::marked);
         outstanding.add(request);
         if (ended()) {
             refuseTerminal(request);
@@ -211,6 +212,7 @@ public final class ControlDriver {
      */
     public ControlRequest trySend(ControlRequest request) {
         if (request.requestId() < 0) request.assignId(requestIds.incrementAndGet());
+        request.markRepliesWith(this::marked);
         outstanding.add(request);
         if (ended()) {
             refuseTerminal(request);
@@ -504,6 +506,15 @@ public final class ControlDriver {
     }
 
     /**
+     * Mark {@code request}'s replies as this group marks its own (issue #77, review R3): for a request answered without
+     * being sent, such as a broadcast the group could not accept.
+     */
+    public ControlRequest markReplies(ControlRequest request) {
+        request.markRepliesWith(this::marked);
+        return request;
+    }
+
+    /**
      * Fail closed on evidence (issue #77, M3): while the group's control audit has an unacknowledged write failure,
      * every reply is marked {@code evidence = UNVERIFIED}. Nothing is refused because of it.
      */
@@ -650,6 +661,7 @@ public final class ControlDriver {
      */
     void registerUnpublished(ControlRequest request) {
         if (request.requestId() < 0) request.assignId(requestIds.incrementAndGet());
+        request.markRepliesWith(this::marked);
         outstanding.add(request);
     }
 
