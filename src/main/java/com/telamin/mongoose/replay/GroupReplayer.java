@@ -50,6 +50,10 @@ public final class GroupReplayer {
         boolean ended;
         /** The stream records its service changes: they are replayed in position and live ones suppressed. */
         boolean recordsServices;
+        /** Services the stream registers before it ever withdraws them: not given at build, but where it has them. */
+        java.util.Set<String> deferred = java.util.Set.of();
+        /** The clock readings the recorded stop took, checked once the replayed stop has run. */
+        List<Long> stopReads;
 
         Cursor(String name, DataFlow flow, ReplayClock clock) {
             this.name = name;
@@ -88,6 +92,7 @@ public final class GroupReplayer {
         if (!config.covers(name)) return;
         ReplayClock clock = new ReplayClock();
         Cursor cursor = new Cursor(ReplayStreams.key(name, incarnation), flow, clock);
+        int forIncarnation = incarnation;
         cursors.add(cursor);
         scheduler.replay(flow);                          // its timers are the replay's, whatever follows
         String failed = null;
@@ -100,8 +105,13 @@ public final class GroupReplayer {
         }
         if (failed == null) {
             try {
-                cursor.entries = config.store().entries(cursor.name);
-                cursor.recordsServices = cursor.entries.stream().anyMatch(e -> e instanceof ReplayEntry.ServiceChanged);
+                if (forIncarnation > 1 && !config.store().has(cursor.name)) {
+                    failed = "no stream was recorded for " + cursor.name;    // loud, never an instantly complete cursor
+                } else {
+                    cursor.entries = config.store().entries(cursor.name);
+                    cursor.recordsServices = cursor.entries.stream().anyMatch(e -> e instanceof ReplayEntry.ServiceChanged);
+                    cursor.deferred = firstRegistered(cursor.entries);
+                }
             } catch (VirtualMachineError e) {
                 throw e;
             } catch (Throwable t) {
@@ -113,8 +123,42 @@ public final class GroupReplayer {
 
     /** A processor that left its group (stopped, mongoose#71, or a failed start, review of #66): its replay cursor and captures are dropped. */
     public void detach(DataFlow flow) {
+        for (Cursor c : cursors) {
+            if (c.flow != flow || c.stopReads == null) continue;
+            // the replayed stop has run: it must have read the clock as often as the recorded one did
+            int taken = c.clock.taken();
+            if (taken != c.stopReads.size()) {
+                ended.put(c.name, "clock divergence in the replayed stop: it read the clock " + taken
+                        + " time(s), the recorded one " + c.stopReads.size());
+                log.warning("replay of " + c.name + ": " + ended.get(c.name));
+            }
+        }
         cursors.removeIf(c -> c.flow == flow);
         captured.remove(flow);
+    }
+
+    /** Why a stream that has left the group diverged at its end, by stream name. */
+    private final java.util.Map<String, String> ended = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** The services a stream registers before it withdraws them: the processor had them only from that point. */
+    private static java.util.Set<String> firstRegistered(List<ReplayEntry> entries) {
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        java.util.Set<String> deferred = new java.util.HashSet<>();
+        for (ReplayEntry e : entries) {
+            if (e instanceof ReplayEntry.ServiceChanged sc && seen.add(sc.service()) && sc.register()) deferred.add(sc.service());
+        }
+        return deferred;
+    }
+
+    /**
+     * Whether {@code flow} must not be given {@code service} at build (review of PR 6, finding 1): its stream records
+     * the service arriving later, so the replay delivers it there, not before the processor starts.
+     */
+    public boolean defersService(DataFlow flow, String service) {
+        for (Cursor c : cursors) {
+            if (c.flow == flow) return c.deferred.contains(service);
+        }
+        return false;
     }
 
     /**
@@ -228,7 +272,7 @@ public final class GroupReplayer {
         for (Cursor c : cursors) {
             if (c.name.equals(processor)) return c.stopped;
         }
-        return null;
+        return ended.get(processor);
     }
 
     private boolean deliver(Cursor c, ReplayEntry entry) {
@@ -283,18 +327,24 @@ public final class GroupReplayer {
                 return stop(c, "the recorded run failed here: " + f.description());
             }
             case ReplayEntry.Stopped s -> {
-                // the recorded run stopped the processor here: so does the replay, through its group's control processor
-                scheduler.setNow(s.instant());
-                if (!routing.stopProcessor(c.flow)) return stop(c, "the recorded stop could not be replayed");
+                // the recorded run stopped the processor here: so does the replay, through its group's control processor;
+                // the clock holds the recorded stop's readings until the stop runs, and they are checked when it has
+                try {
+                    if (!routing.stopProcessor(c.flow)) return stop(c, "the recorded stop could not be replayed");
+                } catch (IllegalStateException mailboxFull) {
+                    return waiting(c, "the group's mailbox is full: " + mailboxFull.getMessage());
+                }
+                pin(c, s.instant(), s.reads());
+                c.stopReads = s.reads();
                 c.ended = true;
                 return true;
             }
             case ReplayEntry.ServiceChanged sc -> {
-                scheduler.setNow(sc.instant());
-                if (!routing.deliverService(c.flow, sc.service(), sc.register())) {
+                pin(c, sc.instant(), sc.reads());
+                if (!routing.deliverService(c.flow, sc.service(), sc.register(), sc.version())) {
                     return waiting(c, "service " + sc.service() + " is not registered");
                 }
-                return true;
+                return readsMatch(c, sc.reads());
             }
         }
     }

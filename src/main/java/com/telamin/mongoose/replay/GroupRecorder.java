@@ -86,18 +86,29 @@ public final class GroupRecorder {
         byFlow.remove(flow);
     }
 
+    /**
+     * A control action on {@code flow} begins (a stop by request, a service change): its clock readings from now on are
+     * recorded with the entry, as an input's are (review of PR 6, finding 4).
+     */
+    public void beforeControl(DataFlow flow) {
+        Recorded r = byFlow.get(flow);
+        if (r != null) r.clock.arm();
+    }
+
     /** The processor was stopped by a request (not by its group closing): its stream ends here. */
     public void stopped(DataFlow flow) {
         Recorded r = byFlow.get(flow);
         if (r == null || r.broken != null) return;
-        append(r, new ReplayEntry.Stopped(live.getAsLong()));
+        List<Long> reads = r.clock.captured();
+        append(r, new ReplayEntry.Stopped(r.clock.instant(reads), reads));
     }
 
     /** A service was delivered to, or withdrawn from, the running processor, at registry {@code version}. */
     public void serviceChanged(DataFlow flow, String service, boolean register, long version) {
         Recorded r = byFlow.get(flow);
         if (r == null || r.broken != null) return;
-        append(r, new ReplayEntry.ServiceChanged(service, register, version, live.getAsLong()));
+        List<Long> reads = r.clock.captured();
+        append(r, new ReplayEntry.ServiceChanged(service, register, version, r.clock.instant(reads), reads));
     }
 
     /** A ReplayRecord input: pin a recorded processor's clock to its instant; false when {@code flow} is not recorded. */

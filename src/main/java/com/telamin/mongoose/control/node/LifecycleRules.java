@@ -106,7 +106,7 @@ public class LifecycleRules extends EventLogNode {
                 // a capture is uninstalled before the release and closed after it, never waited for
                 List<String> pendingCleanup = new java.util.ArrayList<>();
                 List<ControlEffect> requested = new java.util.ArrayList<>(capture.releaseCapture(reg, req, pendingCleanup));
-                requested.add(new ControlEffect.Release(state.nextOp(req), req, reg.generation, reg.name, true));
+                requested.add(new ControlEffect.Release(state.nextOp(req), req, reg.generation, reg.name, true, true));
                 decide("stopStarted", reg.generation, reg.name, "Started", "Releasing", pendingCleanup,
                         requested.toArray(new ControlEffect[0]));
             }
@@ -141,7 +141,7 @@ public class LifecycleRules extends EventLogNode {
         for (Reg reg : started) {
             reg.lifecycle = Lifecycle.RELEASING;
             requested.addAll(capture.releaseCapture(reg, req, pendingCleanup));
-            requested.add(new ControlEffect.Release(state.nextOp(req), req, reg.generation, reg.name, true));
+            requested.add(new ControlEffect.Release(state.nextOp(req), req, reg.generation, reg.name, true, false));
         }
         chain.outstanding = started.size();
         decide("closeGroup", -1, null, "Running", "Closing", pendingCleanup, requested.toArray(new ControlEffect[0]));
@@ -194,7 +194,7 @@ public class LifecycleRules extends EventLogNode {
         if (reg != null) reg.lifecycle = Lifecycle.FAILED;
         chain.failure = result.reason();
         ControlEffect release = new ControlEffect.Release(state.nextOp(req), req, result.generation(), result.name(),
-                false);
+                false, false);
         // at boot under the fail-fast policy the group's start fails; otherwise the failure is reported and the group
         // carries on
         ControlEffect consequence = chain.failBoot

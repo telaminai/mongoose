@@ -31,6 +31,7 @@ public interface ReplayRouting {
     /**
      * Stop the replayed processor {@code flow} as the recorded run did at this point (a {@code Stopped} entry), through
      * the group's control processor, bound to its registration. @return false if the group cannot (no such processor)
+     * @throws IllegalStateException when the group's mailbox is full: the replay waits and retries
      */
     default boolean stopProcessor(DataFlow flow) {
         return false;
@@ -40,7 +41,7 @@ public interface ReplayRouting {
      * Deliver to, or withdraw from, the replayed processor the service registered as {@code service}, as the recorded
      * run did at this point. @return false while a service to deliver is not registered yet
      */
-    default boolean deliverService(DataFlow flow, String service, boolean register) {
+    default boolean deliverService(DataFlow flow, String service, boolean register, long version) {
         return false;
     }
 }

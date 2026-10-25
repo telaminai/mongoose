@@ -1,47 +1,138 @@
 package com.telamin.mongoose.replay;
 
+import com.telamin.fluxtion.runtime.annotations.runtime.ServiceRegistered;
+import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
+import com.telamin.fluxtion.runtime.output.MessageSink;
 import com.telamin.fluxtion.runtime.service.Service;
+import com.telamin.mongoose.MongooseServer;
+import com.telamin.mongoose.config.EventFeedConfig;
+import com.telamin.mongoose.config.EventProcessorConfig;
+import com.telamin.mongoose.config.EventProcessorGroupConfig;
+import com.telamin.mongoose.config.EventSinkConfig;
+import com.telamin.mongoose.config.MongooseServerConfig;
+import com.telamin.mongoose.connector.memory.InMemoryEventSource;
+import com.telamin.mongoose.connector.memory.InMemoryMessageSink;
 import com.telamin.mongoose.internal.ConfigAwareEventProcessor;
-import com.telamin.mongoose.replay.ReplayRecordingAcceptanceTest.Server;
+import org.agrona.concurrent.BusySpinIdleStrategy;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
-import static com.telamin.mongoose.replay.ReplayRecordingAcceptanceTest.CONTROLS;
-import static com.telamin.mongoose.replay.ReplayRecordingAcceptanceTest.ORDERS;
-import static com.telamin.mongoose.replay.ReplayRecordingAcceptanceTest.PROCESSOR;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Design "Deterministic replay" (control-plane PR 6, decision D3): a processor's stream is keyed by its per-name
- * incarnation, a stop ends a stream and is replayed in position, the next incarnation under the name records and
- * replays a stream of its own, and service changes are recorded per stream and replayed in position.
+ * Design "Deterministic replay" (control-plane PR 6, decision D3), with a processor that is not blind to when a
+ * service arrives nor to the clock in its {@code stop()} (the scenario of the PR 6 review): a processor's stream is
+ * keyed by its per-name build ordinal, a stop ends a stream and is replayed in position with its clock readings, the
+ * next incarnation under the name replays a stream of its own, and a service registered at runtime reaches the replayed
+ * processor where it reached the recorded one, after its start, even when the replay run registered it first.
  */
 class ReplayIdentityTest {
 
-    private static final String GROUP = "processor-agent";
+    static final String ORDERS = "orders", PROCESSOR = "quotes", GROUP = "processor-agent";
+
+    public interface Extra { }
+
+    public static class Handler extends ObjectEventHandlerNode {
+        private MessageSink<String> sink;
+        private boolean started;
+        private int extraAfterStart;
+        private int extraBeforeStart;
+
+        @ServiceRegistered
+        public void sink(MessageSink<String> sink, String name) {
+            this.sink = sink;
+        }
+
+        @ServiceRegistered
+        public void extra(Extra extra, String name) {
+            if (started) extraAfterStart++;
+            else extraBeforeStart++;
+        }
+
+        @Override
+        public void start() {
+            started = true;
+            getContext().subscribeToNamedFeed(ORDERS);
+        }
+
+        @Override
+        public void stop() {
+            emit("stopped time=" + getContext().getClock().getWallClockTime());
+        }
+
+        @Override
+        protected boolean handleEvent(Object event) {
+            if (event instanceof String s && s.startsWith("ord-")) {
+                emit("order=" + s + " extraBefore=" + extraBeforeStart + " extraAfter=" + extraAfterStart);
+            }
+            return true;
+        }
+
+        private void emit(String line) {
+            if (sink != null) sink.accept(line);
+        }
+    }
+
+    record Server(MongooseServer server, InMemoryEventSource<Object> orders, InMemoryMessageSink sink) implements AutoCloseable {
+        GroupReplayer replayer() {
+            return server.replayers().get(GROUP);
+        }
+
+        List<String> sinkLines() {
+            return sink.getMessages().stream().map(String::valueOf).toList();
+        }
+
+        @Override
+        public void close() {
+            server.stop();
+        }
+    }
+
+    static Server boot(ReplayConfig replay) throws Exception {
+        InMemoryEventSource<Object> orders = new InMemoryEventSource<>();
+        orders.setName(ORDERS);
+        orders.setCacheEventLog(true);
+        InMemoryMessageSink sink = new InMemoryMessageSink();
+        MongooseServerConfig config = MongooseServerConfig.builder()
+                .addProcessorGroup(EventProcessorGroupConfig.builder().agentName(GROUP)
+                        .put(PROCESSOR, new EventProcessorConfig(new Handler())).build())
+                .addEventFeed(EventFeedConfig.builder().instance(orders).name(ORDERS).broadcast(true)
+                        .agent("orders-agent", new BusySpinIdleStrategy()).build())
+                .addEventSink(EventSinkConfig.<MessageSink<?>>builder().instance(sink).name("memSink").build())
+                .replay(replay)
+                .build();
+        MongooseServer server = MongooseServer.bootServer(config, rec -> { });
+        return new Server(server, orders, sink);
+    }
 
     private static void reAdd(Server s) {
         s.server().addEventProcessor(PROCESSOR, GROUP, null, () -> {
-            ConfigAwareEventProcessor flow = new ConfigAwareEventProcessor(new ReplayDemoHandler(ORDERS, CONTROLS));
+            ConfigAwareEventProcessor flow = new ConfigAwareEventProcessor(new Handler());
             flow.init();
             return flow;
         });
     }
 
-    private static void awaitGone(Server s) throws InterruptedException {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-        while (registered(s) && System.nanoTime() < deadline) Thread.sleep(5);
-        assertTrue(!registered(s), "the processor left its group");
-    }
-
     private static boolean registered(Server s) {
         return s.server().registeredProcessors().getOrDefault(GROUP, List.of()).stream()
                 .anyMatch(n -> n.name().equals(PROCESSOR));
+    }
+
+    /** The processor's feed subscription is made in start(): published only once a live input arrives. */
+    private static void publishUntilHandled(Server s, String order, int lines) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        s.orders().offer(order);
+        while (s.sinkLines().size() < lines && System.nanoTime() < deadline) Thread.sleep(5);
+        assertTrue(s.sinkLines().size() >= lines, "handled " + order + ": " + s.sinkLines());
     }
 
     private static void awaitTrue(java.util.function.BooleanSupplier c, String what) throws InterruptedException {
@@ -51,49 +142,64 @@ class ReplayIdentityTest {
     }
 
     @Test
-    void aStopAndAReincarnationRecordTwoStreamsThatReplayInPosition() throws Exception {
+    void aStopAndAReincarnationReplayInPositionWithTheirClocksAndServices() throws Exception {
         InMemoryReplayStore store = new InMemoryReplayStore();
         InMemoryEventJournal journal = new InMemoryEventJournal();
         List<String> live;
-        try (Server s = ReplayRecordingAcceptanceTest.boot(ReplayRecordingAcceptanceTest.recording(store, journal))) {
-            s.orders().offer("ord-1");
-            s.await(1);
+        try (Server s = boot(ReplayConfig.record(Set.of(PROCESSOR), Map.of(ORDERS, new JavaSerializationCodec()), journal, store))) {
+            awaitTrue(() -> registered(s), "started");
+            Thread.sleep(200);                                  // the processor subscribes in start()
+            publishUntilHandled(s, "ord-1", 1);
+            Thread.sleep(50);                                   // so the stop's clock reading differs from ord-1's
             s.server().stopProcessor(GROUP, PROCESSOR);
-            awaitGone(s);
+            awaitTrue(() -> !registered(s), "stopped");
+            awaitTrue(() -> s.sinkLines().size() >= 2, "stop() emitted");
             reAdd(s);
-            awaitTrue(() -> registered(s), "the next incarnation started");
-            Thread.sleep(200);                          // it subscribes in start()
-            s.server().registerService(new Service<>(new Object(), Object.class, "extra"));
-            s.orders().offer("ord-2");
-            s.await(2);
-            live = s.lines();
+            awaitTrue(() -> registered(s), "re-added");
+            Thread.sleep(200);
+            s.server().registerService(new Service<>(new Extra() { }, Extra.class, "extra"));   // after start: recorded
+            publishUntilHandled(s, "ord-2", 3);
+            live = s.sinkLines();
         }
+        assertEquals("order=ord-2 extraBefore=0 extraAfter=1", live.get(2), "the recorded run had the service after start");
 
-        // two streams: the first ends with the stop; the second holds the service change and its own order
         List<ReplayEntry> first = store.entries(PROCESSOR);
         List<ReplayEntry> second = store.entries(ReplayStreams.key(PROCESSOR, 2));
-        assertInstanceOf(ReplayEntry.Stopped.class, first.get(first.size() - 1), first.toString());
+        ReplayEntry.Stopped stop = assertInstanceOf(ReplayEntry.Stopped.class, first.get(first.size() - 1), first.toString());
+        assertTrue(!stop.reads().isEmpty(), "the stop's clock readings are recorded with it: " + stop);
         assertTrue(second.stream().anyMatch(e -> e instanceof ReplayEntry.ServiceChanged sc && sc.service().equals("extra")
                 && sc.register()), second.toString());
-        assertTrue(second.stream().anyMatch(e -> e instanceof ReplayEntry.Indexed), second.toString());
-        assertTrue(first.stream().noneMatch(e -> e instanceof ReplayEntry.ServiceChanged sc && sc.service().equals("extra")),
-                "the service change belongs to the incarnation that received it: " + first);
 
-        try (Server s = ReplayRecordingAcceptanceTest.boot(ReplayRecordingAcceptanceTest.replaying(store, journal))) {
-            // the replay stops the first incarnation where the recorded run stopped it
-            awaitGone(s);
-            assertNull(s.replayer().stopped(PROCESSOR), "the first stream replayed to its end: " + s.replayer().stopped(PROCESSOR));
-            List<Object> firstOutputs = s.replayer().outputs(PROCESSOR);
-            assertEquals(live.subList(0, 1), firstOutputs.stream().map(String::valueOf).toList());
+        try (Server s = boot(ReplayConfig.replay(Set.of(PROCESSOR), Map.of(ORDERS, new JavaSerializationCodec()), journal, store))) {
+            // the replay stops the first incarnation where the recorded run did, reading the recorded clock
+            awaitTrue(() -> !registered(s), "the replay stopped the first incarnation");
+            awaitTrue(() -> s.replayer().outputs(PROCESSOR).size() >= 2, "stop() replayed");
+            assertEquals(live.subList(0, 2), s.replayer().outputs(PROCESSOR).stream().map(String::valueOf).toList());
+            assertNull(s.replayer().stopped(PROCESSOR), "no divergence in the replayed stop");
 
-            // the next incarnation attaches to its own stream; the service is registered as in the recorded run
-            s.server().registerService(new Service<>(new Object(), Object.class, "extra"));
+            // registered BEFORE the re-add here: the replay still delivers it where the recorded run had it
+            s.server().registerService(new Service<>(new Extra() { }, Extra.class, "extra"));
             reAdd(s);
-            String second2 = ReplayStreams.key(PROCESSOR, 2);
-            awaitTrue(() -> s.replayer().outputs(second2).size() >= 1 && s.replayer().complete(),
-                    "the second stream replayed: " + s.replayer().outputs(second2) + " stopped=" + s.replayer().stopped(second2));
-            assertNull(s.replayer().stopped(second2));
-            assertEquals(live.subList(1, 2), s.replayer().outputs(second2).stream().map(String::valueOf).toList());
+            String secondKey = ReplayStreams.key(PROCESSOR, 2);
+            awaitTrue(() -> s.replayer().outputs(secondKey).size() >= 1 && s.replayer().complete(),
+                    "the second stream replayed: " + s.replayer().outputs(secondKey) + " " + s.replayer().stopped(secondKey));
+            assertNull(s.replayer().stopped(secondKey));
+            assertEquals(live.subList(2, 3), s.replayer().outputs(secondKey).stream().map(String::valueOf).toList());
+        }
+    }
+
+    @Test
+    void aLaterIncarnationWithNoRecordedStreamIsStoppedLoudly() throws Exception {
+        InMemoryReplayStore store = new InMemoryReplayStore();
+        InMemoryEventJournal journal = new InMemoryEventJournal();
+        try (Server s = boot(ReplayConfig.replay(Set.of(PROCESSOR), Map.of(ORDERS, new JavaSerializationCodec()), journal, store))) {
+            awaitTrue(() -> registered(s), "started");
+            s.server().stopProcessor(GROUP, PROCESSOR);
+            awaitTrue(() -> !registered(s), "stopped");
+            reAdd(s);
+            String secondKey = ReplayStreams.key(PROCESSOR, 2);
+            awaitTrue(() -> s.replayer().stopped(secondKey) != null, "stopped with a reason");
+            assertTrue(s.replayer().stopped(secondKey).contains("no stream was recorded"), s.replayer().stopped(secondKey));
         }
     }
 
@@ -105,15 +211,16 @@ class ReplayIdentityTest {
     }
 
     @Test
-    void theCsvStoreKeepsStopsAndServiceChanges(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) {
-        java.nio.file.Path file = dir.resolve("store.csv");
+    void theCsvStoreKeepsStopsAndServiceChanges(@TempDir Path dir) {
+        Path file = dir.resolve("store.csv");
         try (CsvReplayStore store = new CsvReplayStore(file, new JavaSerializationCodec())) {
-            store.append("p#2", new ReplayEntry.ServiceChanged("extra", true, 7, 100));
-            store.append("p", new ReplayEntry.Stopped(200));
+            store.append("p#2", new ReplayEntry.ServiceChanged("extra", true, 7, 100, List.of(100L)));
+            store.append("p", new ReplayEntry.Stopped(200, List.of()));
         }
         try (CsvReplayStore again = new CsvReplayStore(file, new JavaSerializationCodec())) {
-            assertEquals(List.of(new ReplayEntry.ServiceChanged("extra", true, 7, 100)), again.entries("p#2"));
-            assertEquals(List.of(new ReplayEntry.Stopped(200)), again.entries("p"));
+            assertEquals(List.of(new ReplayEntry.ServiceChanged("extra", true, 7, 100, List.of(100L))), again.entries("p#2"));
+            assertEquals(List.of(new ReplayEntry.Stopped(200, List.of())), again.entries("p"));
+            assertTrue(again.has("p") && !again.has("p#3"), "absent is not empty");
         }
     }
 }

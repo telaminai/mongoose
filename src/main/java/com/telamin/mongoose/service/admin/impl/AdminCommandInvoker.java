@@ -119,7 +119,7 @@ public class AdminCommandInvoker extends AbstractEventToInvocationStrategy {
         }
     }
 
-    /** Shared with the control plane's framing of capture and service changes ({@link com.telamin.mongoose.dispatch.ControlFraming}). */
+    /** Decided once per class ({@link com.telamin.mongoose.dispatch.ControlFraming#implementsTheCycle}). */
     private static boolean implementsTheCycle(Class<?> type) {
         return com.telamin.mongoose.dispatch.ControlFraming.implementsTheCycle(type);
     }

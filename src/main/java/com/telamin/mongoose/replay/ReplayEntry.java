@@ -77,11 +77,11 @@ public sealed interface ReplayEntry {
      * The processor was stopped here (design "Deterministic replay"): the stream ends, and a replay stops the processor
      * at this point; the next incarnation under the name records, and replays, a stream of its own.
      */
-    record Stopped(long instant) implements ReplayEntry { }
+    record Stopped(long instant, List<Long> reads) implements Timed { }
 
     /**
      * A service was delivered to, or withdrawn from, the running processor here, with its registry version. A replay
      * delivers it at this point, and live deliveries to the replayed processor are suppressed.
      */
-    record ServiceChanged(String service, boolean register, long version, long instant) implements ReplayEntry { }
+    record ServiceChanged(String service, boolean register, long version, long instant, List<Long> reads) implements Timed { }
 }

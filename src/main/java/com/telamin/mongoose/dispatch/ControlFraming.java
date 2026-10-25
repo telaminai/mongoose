@@ -10,10 +10,10 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Frames a control action on a data processor in the processor's own audit (design "Record schema"): as its own event
- * cycle, through {@link DataFlow#runInEventCycle}, when the processor implements it, so the action is one audit record
- * and no synthetic event reaches the processor's handlers; otherwise the action runs unframed, as before. Framing never
- * suppresses the action: the cycle's {@code try}/{@code finally} runs it once either way.
+ * Frames an action on a data processor in the processor's own audit: as its own event cycle, through
+ * {@link DataFlow#runInEventCycle}, when the processor implements it; otherwise the action runs unframed. Used for
+ * admin lambdas. Service delivery and audit-listener swaps are not framed: Fluxtion already audits each as a cycle of
+ * its own (an exported service call, an {@code EventLogControlEvent}).
  */
 public final class ControlFraming {
 

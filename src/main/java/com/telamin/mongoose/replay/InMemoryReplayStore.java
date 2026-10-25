@@ -20,6 +20,11 @@ public class InMemoryReplayStore implements ReplayStore {
     }
 
     @Override
+    public boolean has(String processor) {
+        return entries.containsKey(processor);
+    }
+
+    @Override
     public List<ReplayEntry> entries(String processor) {
         return List.copyOf(entries.getOrDefault(processor, List.of()));
     }

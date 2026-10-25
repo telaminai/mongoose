@@ -29,7 +29,12 @@ public sealed interface ControlEffect permits ControlEffect.BuildAndStart, Contr
 
     record BuildAndStart(String opId, long requestId, long generation, String name) implements ControlEffect { }
 
-    record Release(String opId, long requestId, long generation, String name, boolean stopping) implements ControlEffect { }
+    /**
+     * @param stopping the processor is stopped before it is torn down (not after a failed start)
+     * @param byRequest a stop asked for this processor, rather than its group closing: a replay stream ends here
+     */
+    record Release(String opId, long requestId, long generation, String name, boolean stopping, boolean byRequest)
+            implements ControlEffect { }
 
     record ReleaseName(String opId, long requestId, long generation, String name) implements ControlEffect { }
 

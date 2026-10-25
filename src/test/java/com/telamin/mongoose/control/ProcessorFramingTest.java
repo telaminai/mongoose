@@ -2,7 +2,6 @@ package com.telamin.mongoose.control;
 
 import com.telamin.fluxtion.runtime.node.ObjectEventHandlerNode;
 import com.telamin.fluxtion.runtime.service.Service;
-import com.telamin.mongoose.control.event.ProcessorControlEvent;
 import com.telamin.mongoose.control.generated.GroupControlProcessor;
 import com.telamin.mongoose.dispatch.ControlFraming;
 import com.telamin.mongoose.dispatch.EventFlowManager;
@@ -38,19 +37,12 @@ class ProcessorFramingTest {
         }
     }
 
-    /** An interpreted processor that keeps the frames it runs and the events its graph is given. */
+    /** An interpreted processor that keeps the frames it is asked to run. */
     static final class Framed extends ConfigAwareEventProcessor {
         final List<Object> frames = new CopyOnWriteArrayList<>();
-        final List<Object> events = new CopyOnWriteArrayList<>();
 
         Framed(Seeing handler) {
             super(handler);
-        }
-
-        @Override
-        public void onEvent(Object event) {
-            events.add(event);
-            super.onEvent(event);
         }
 
         @Override
@@ -60,24 +52,45 @@ class ProcessorFramingTest {
         }
     }
 
+    /**
+     * Review of PR 6, finding 2: a service delivered at runtime is an exported service call, already one audited cycle;
+     * wrapping it in runInEventCycle nested a second record header. Each record is whole, with one header.
+     */
     @Test
-    void aServiceDeliveredAtRuntimeIsOneFramedCycleAndNeverAnEvent() throws Exception {
+    void aServiceDeliveredAtRuntimeIsOneWellFormedRecordInAGeneratedProcessor() throws Exception {
         ComposingEventProcessorAgent group = new ComposingEventProcessorAgent("framing", new EventFlowManager(), null,
                 new DeadWheelScheduler(), new ConcurrentHashMap<>());
-        Seeing handler = new Seeing();
-        Framed flow = new Framed(handler);
+        GroupControlProcessor generated = new GroupControlProcessor();
+        List<String> records = new CopyOnWriteArrayList<>();
+        generated.setAuditLogProcessor(r -> records.add(r.asCharSequence().toString()));
+        generated.init();
+        generated.setAuditLogLevel(com.telamin.fluxtion.runtime.audit.EventLogControlEvent.LogLevel.INFO);
+        group.onStart();
+        group.addNamedEventProcessor(() -> new NamedEventProcessor("gen", generated));
+        group.doWork();
+        records.clear();
+        group.broadcastServiceRegistered(new Service<>(new Object(), Object.class, "extra"));
+        group.doWork();
+        assertTrue(!records.isEmpty(), "the delivery is on the processor's record");
+        for (String r : records) {
+            int headers = r.split("eventLogRecord:", -1).length - 1;
+            assertTrue(headers == 1, "one header per record, no nested or fragment record: " + r);
+        }
+        group.onClose();
+    }
+
+    @Test
+    void neitherServiceDeliveryNorCaptureIsWrappedInAnExtraFrame() throws Exception {
+        ComposingEventProcessorAgent group = new ComposingEventProcessorAgent("framing2", new EventFlowManager(), null,
+                new DeadWheelScheduler(), new ConcurrentHashMap<>());
+        Framed flow = new Framed(new Seeing());
         flow.init();
         group.onStart();
         group.addNamedEventProcessor(() -> new NamedEventProcessor("p", flow));
         group.doWork();
-        flow.frames.clear();
         group.broadcastServiceRegistered(new Service<>(new Object(), Object.class, "extra"));
         group.doWork();
-        assertTrue(flow.frames.stream().anyMatch(f -> f.toString().equals("control:serviceRegistered extra")),
-                "the delivery ran as one framed cycle: " + flow.frames);
-        assertFalse(flow.events.stream().anyMatch(e -> e instanceof ProcessorControlEvent),
-                "the frame is never dispatched as an event: " + flow.events);
-        assertFalse(handler.seen.stream().anyMatch(e -> e instanceof ProcessorControlEvent), handler.seen.toString());
+        assertTrue(flow.frames.isEmpty(), "no runInEventCycle around an already audited call: " + flow.frames);
         group.onClose();
     }
 
@@ -86,7 +99,7 @@ class ProcessorFramingTest {
         assertFalse(ControlFraming.implementsTheCycle(com.telamin.fluxtion.runtime.DataFlow.class));
         assertTrue(ControlFraming.implementsTheCycle(ConfigAwareEventProcessor.class));
         boolean[] ran = {false};
-        ControlFraming.frame(null, new ProcessorControlEvent("x", null), () -> ran[0] = true);
+        ControlFraming.frame(null, "frame", () -> ran[0] = true);
         assertTrue(ran[0], "framing never suppresses the action");
     }
 

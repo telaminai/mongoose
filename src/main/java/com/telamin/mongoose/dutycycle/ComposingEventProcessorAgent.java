@@ -281,7 +281,8 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         return new ControlRequest(ControlRequest.Kind.BROADCAST,
                 (register ? "register " : "deregister ") + service.serviceName(),
                 id -> new BroadcastIntent(id, service.serviceName(), register, version),
-                new BroadcastPayload(service, register, version));
+                // whether this is a runtime change is decided when it is sent, not when it is applied (review of PR 6, 6)
+                new BroadcastPayload(service, register, version, mongooseServer == null || mongooseServer.isStarted()));
     }
 
     // ------------------------------------------------------------------ audit capture
@@ -318,16 +319,15 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                         : new AuditStopIntent(id, registration.generation(), name, true), null));
     }
 
-    /** An admitted add's incarnation; an add without admission is counted when it is built. */
-    private int incarnationOf(ProcessorRegistration registration, String name) {
-        if (registration != null && registration.incarnation() > 0) return registration.incarnation();
-        return incarnations.computeIfAbsent(name, n -> new AtomicInteger()).incrementAndGet();
-    }
+    /** Per name, the processors built in this group: a replay stream's key. Agent thread only. */
+    private final Map<String, AtomicInteger> builtOrdinals = new HashMap<>();
+    /** Per service, the registry version of the last broadcast applied here. Agent thread only. */
+    private final Map<String, Long> lastServiceVersions = new HashMap<>();
 
     /** What an add needs to perform its effects: never seen by the control processor. */
     private record AddPayload(Supplier<NamedEventProcessor> init, ProcessorRegistration registration) { }
 
-    private record BroadcastPayload(Service<?> service, boolean register, long version) { }
+    private record BroadcastPayload(Service<?> service, boolean register, long version, boolean runtime) { }
 
     // ------------------------------------------------------------------ intents, built on the agent thread
 
@@ -602,12 +602,15 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             // replay: a recorded processor gets a live recording clock, a replayed one a pinned replay clock. Before
             // anything that can subscribe it (services, the feed): a replayed processor's live inputs are muted as
             // each subscription is made, so the replayer must already know it
-            // replay streams are keyed by the per-name incarnation, deterministic given the order of the name's adds
-            int incarnation = incarnationOf(payload.registration(), name);
+            // replay streams are keyed by the per-name build ordinal: the processors of this name built in this group,
+            // so an add refused, cancelled or never built consumes no number (review of PR 6, finding 5)
+            int incarnation = builtOrdinals.computeIfAbsent(name, n -> new AtomicInteger()).incrementAndGet();
             if (recorder != null) recorder.attach(name, incarnation, eventProcessor);
             if (replayer != null) replayer.attach(name, incarnation, eventProcessor);
             eventProcessor.registerService(schedulerService);
             for (Service<?> svc : registeredServices.values()) {
+                // a replayed processor whose stream records this service arriving later gets it there (review of PR 6, 1)
+                if (replayer != null && replayer.defersService(eventProcessor, svc.serviceName())) continue;
                 if (servicesDeliveredTo(eventProcessor).add(svc)) {
                     eventProcessor.registerService(serviceFor(eventProcessor, svc));
                 }
@@ -637,7 +640,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         }
         stepFailures = 0;
         if (registeredEventProcessors.get(named.name()) == named) {
-            release(named, effect.stopping());
+            release(named, effect.stopping(), effect.byRequest());
         } else {
             // built but never registered (a rejected duplicate): tear it down only
             if (named.eventProcessor() instanceof Lifecycle lifecycle) {
@@ -671,12 +674,14 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         }
         DataFlow flow = named.eventProcessor();
         // the services a server registers while it boots (its feeds among them) are configuration, delivered live and
-        // never recorded; a service change is what happens once the server has started
-        boolean runtimeChange = mongooseServer == null || mongooseServer.isStarted();
+        // never recorded; a service change is what was sent once the server had started
+        boolean runtimeChange = payload.runtime();
+        if (payload.version() > 0) lastServiceVersions.put(payload.service().serviceName(), payload.version());
         if (runtimeChange && replayer != null && replayer.suppressesLiveServices(flow)) {
             // replayed from a stream that records its service changes: delivered where the recorded run had it
             return result(effect, ControlOutcome.SUCCEEDED, "replayed: delivered in position");
         }
+        if (runtimeChange && recorder != null) recorder.beforeControl(flow);
         String failure = deliverService(named, payload.service(), payload.register());
         if (runtimeChange && recorder != null) {
             recorder.serviceChanged(flow, payload.service().serviceName(), payload.register(), payload.version());
@@ -743,10 +748,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         if (resources == null || handle == null || named == null) {
             return result(effect, ControlOutcome.FAILED, handle == null ? "unknown resource" : "processor gone");
         }
-        // framed in the processor's own audit: the first record the capture receives is its own installation
-        com.telamin.mongoose.dispatch.ControlFraming.frame(named.eventProcessor(),
-                new com.telamin.mongoose.control.event.ProcessorControlEvent("auditCaptureInstall", effect.opId()),
-                () -> resources.installCapture(handle, named.name(), named.eventProcessor()));
+        // not framed: swapping the audit listener is already its own audited cycle in the processor (an
+        // EventLogControlEvent), and a frame around it would flush to the listener being replaced (review of PR 6, 3)
+        resources.installCapture(handle, named.name(), named.eventProcessor());
         return result(effect, ControlOutcome.SUCCEEDED, null);
     }
 
@@ -758,9 +762,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         }
         NamedEventProcessor named = processorsByGeneration.get(effect.generation());
         DataFlow flow = named == null ? null : named.eventProcessor();
-        com.telamin.mongoose.dispatch.ControlFraming.frame(flow,
-                new com.telamin.mongoose.control.event.ProcessorControlEvent("auditCaptureUninstall", effect.opId()),
-                () -> resources.uninstallCapture(handle, effect.name(), flow));
+        resources.uninstallCapture(handle, effect.name(), flow);
         return result(effect, ControlOutcome.SUCCEEDED, null);
     }
 
@@ -978,14 +980,21 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                 for (NamedEventProcessor np : registeredEventProcessors.values()) {
                     if (np.eventProcessor() != flow) continue;
                     ProcessorRegistration registration = registrations.get(np);
-                    removeEventProcessorByName(np.name(), registration, null);
+                    // never waits on its own full mailbox: the replay retries (review of PR 6, finding 8)
+                    control.trySend(new ControlRequest(ControlRequest.Kind.STOP, "replayed stop " + np.name(),
+                            id -> stopIntent(id, np.name(), registration), registration));
                     return true;
                 }
                 return false;
             }
 
             @Override
-            public boolean deliverService(DataFlow flow, String service, boolean register) {
+            public boolean deliverService(DataFlow flow, String service, boolean register, long version) {
+                Long live = lastServiceVersions.get(service);
+                if (version > 0 && live != null && live != version) {
+                    log.warning("replay delivers service " + service + " recorded at version " + version
+                            + " where this run's registry is at version " + live);
+                }
                 for (NamedEventProcessor np : registeredEventProcessors.values()) {
                     if (np.eventProcessor() != flow) continue;
                     Service<?> svc = register ? registeredServices.get(service) : null;
@@ -1068,9 +1077,13 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
      *       which releases what the server bound to it by name: its audit-capture binding.</li>
      * </ul>
      */
-    private void release(NamedEventProcessor named, boolean stopping) {
+    private void release(NamedEventProcessor named, boolean stopping, boolean byRequest) {
         String name = named.name();
         DataFlow eventProcessor = named.eventProcessor();
+        // a stop by request ends the processor's stream, its clock readings recorded from the moment it begins; its
+        // group closing does not (the run simply ends there). Which it is comes from the control processor's decision
+        boolean recordStop = recorder != null && stopping && byRequest;
+        if (recordStop) recorder.beforeControl(eventProcessor);
         registeredEventProcessors.remove(name, named);
         ProcessorRegistration registration = registrations.remove(named);
         servicesDelivered.remove(eventProcessor);
@@ -1083,10 +1096,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         }
         releaseSubscriptions(name, eventProcessor);
         guarded(name, "failed to cancel its timers", () -> scheduler.cancelTimersOf(eventProcessor));
-        // a stop by request ends the processor's stream; its group closing does not (the run simply ends there)
-        if (recorder != null && stopping && control.state() == ControlDriver.GroupState.RUNNING) {
-            guarded(name, "failed to record its stop", () -> recorder.stopped(eventProcessor));
-        }
+        if (recordStop) guarded(name, "failed to record its stop", () -> recorder.stopped(eventProcessor));
         if (recorder != null) guarded(name, "failed to leave the replay recording", () -> recorder.detach(eventProcessor));
         if (replayer != null) guarded(name, "failed to leave the replay", () -> replayer.detach(eventProcessor));
         if (mongooseServer != null) {
@@ -1159,12 +1169,13 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         }
         com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(eventProcessor);
         try {
-            // framed in the processor's own audit as a control action (design "Record schema")
-            Service<?> given = serviceFor(eventProcessor, svc);
-            com.telamin.mongoose.dispatch.ControlFraming.frame(eventProcessor,
-                    new com.telamin.mongoose.control.event.ProcessorControlEvent(register ? "serviceRegistered" : "serviceDeregistered",
-                            svc.serviceName()),
-                    register ? () -> eventProcessor.registerService(given) : () -> eventProcessor.deRegisterService(given));
+            // not framed: registerService/deRegisterService are exported service calls, already one audited cycle each
+            // in the processor; a runInEventCycle around them nested a second record header (review of PR 6, 2)
+            if (register) {
+                eventProcessor.registerService(serviceFor(eventProcessor, svc));
+            } else {
+                eventProcessor.deRegisterService(serviceFor(eventProcessor, svc));
+            }
             return null;
         } catch (VirtualMachineError fatal) {
             throw fatal;
