@@ -203,6 +203,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         private final java.util.concurrent.atomic.AtomicBoolean held = new java.util.concurrent.atomic.AtomicBoolean(true);
         private volatile Object handle;
         private volatile String closeFailure;
+        private volatile String detachFailure;
         void release() {
             if (held.compareAndSet(true, false)) {
                 handle = null;
@@ -415,13 +416,36 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         return java.util.Collections.unmodifiableMap(failures);
     }
 
+    /** All retained cleanup failures, including a detach that prevented handoff to the physical closer. */
+    public Map<Long, String> captureCleanupFailures() {
+        Map<Long, String> failures = new HashMap<>();
+        captureResourcePermits.forEach((id, permit) -> {
+            if (permit.detachFailure != null) failures.put(id, "detach: " + permit.detachFailure);
+            if (permit.closeFailure != null) failures.put(id, "physical close: " + permit.closeFailure);
+        });
+        return java.util.Collections.unmodifiableMap(failures);
+    }
+
+    private void captureDetachFailed(long id, Throwable failure) {
+        captureDetachFailures.add(id);
+        CaptureResourcePermit permit = captureResourcePermits.get(id);
+        if (permit != null) permit.detachFailure = String.valueOf(failure);
+        signalCaptureResourceCompletion();
+    }
+
+    private void captureDetached(long id) {
+        captureDetachFailures.remove(id);
+        CaptureResourcePermit permit = captureResourcePermits.get(id);
+        if (permit != null) permit.detachFailure = null;
+    }
+
     /** Only a tracked shutdown helper waits here; its caller joins that helper with the shutdown deadline. */
     public boolean awaitCaptureResourceCleanup() throws InterruptedException {
         if (com.telamin.mongoose.control.AgentThreads.isAgentThread()) {
             throw new IllegalStateException("an agent thread cannot wait for physical capture cleanup");
         }
         synchronized (captureResourceCompletion) {
-            while (captureResourceSlots.get() != 0 && captureCloseFailures().isEmpty()) {
+            while (captureResourceSlots.get() != 0 && captureCleanupFailures().isEmpty()) {
                 captureResourceCompletion.wait();
             }
             return captureResourceSlots.get() == 0;
@@ -658,7 +682,8 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         deathCleanupComplete = captureHandles.isEmpty() && captureResourceSlots.get() == 0;
         control.audit().fallback(deathCleanupComplete ? "CleanedUp" : "CleanupPending", "group", roleName(),
                 "processorsLeft", registeredEventProcessors.size(), "captureResourcesLeft", captureResourceSlots.get(),
-                "failedPhysicalCloses", captureCloseFailures().size());
+                "failedPhysicalCloses", captureCloseFailures().size(),
+                "failedCaptureDetaches", captureResourcePermits.values().stream().filter(p -> p.detachFailure != null).count());
     }
 
     /**
@@ -985,9 +1010,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         DataFlow flow = named == null ? null : named.eventProcessor();
         try {
             resources.uninstallCapture(handle, effect.name(), flow);
-            captureDetachFailures.remove(effect.resourceId());
+            captureDetached(effect.resourceId());
         } catch (RuntimeException | Error failed) {
-            captureDetachFailures.add(effect.resourceId());
+            captureDetachFailed(effect.resourceId(), failed);
             throw failed;
         }
         return result(effect, ControlOutcome.SUCCEEDED, null);
@@ -999,16 +1024,35 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         if (handle == null) {
             return result(effect, ControlOutcome.FAILED, "unknown resource");
         }
-        if (captureDetachFailures.contains(effect.resourceId())
-                && !processorsByGeneration.containsKey(effect.generation())) {
-            // Release has finished. A failed live uninstall may have left the listener installed; detach the resource
-            // without calling the released processor. Keep ownership if this fails, for group/death cleanup to retry.
-            captureResources.uninstallCapture(handle, effect.name(), null);
+        if (captureDetachFailures.contains(effect.resourceId())) {
+            if (processorsByGeneration.containsKey(effect.generation())) {
+                return result(effect, ControlOutcome.FAILED, "capture is still attached to a running processor");
+            }
+            // Release has finished: retry without touching the released processor. A failure retains both ownership
+            // and its diagnostic until a later group/death cleanup confirms the detach.
+            String detachOp = effect.opId() + ".detach." + physicalCleanupOps.incrementAndGet();
+            control.audit().fallback("EffectRequested", "group", roleName(), "requestId", effect.requestId(),
+                    "opId", detachOp, "effect", "UninstallCapture", "resourceId", effect.resourceId(),
+                    "generation", effect.generation(), "offline", true, "causeOp", effect.opId());
+            try {
+                captureResources.uninstallCapture(handle, effect.name(), null);
+                captureDetached(effect.resourceId());
+                control.audit().fallback("EffectOutcome", "group", roleName(), "requestId", effect.requestId(),
+                        "opId", detachOp, "effect", "UninstallCapture", "resourceId", effect.resourceId(),
+                        "generation", effect.generation(), "offline", true, "causeOp", effect.opId(), "outcome", "succeeded");
+            } catch (RuntimeException | Error failed) {
+                captureDetachFailed(effect.resourceId(), failed);
+                control.audit().fallback("EffectOutcome", "group", roleName(), "requestId", effect.requestId(),
+                        "opId", detachOp, "effect", "UninstallCapture", "resourceId", effect.resourceId(),
+                        "generation", effect.generation(), "offline", true, "causeOp", effect.opId(),
+                        "outcome", "failed", "reason", String.valueOf(failed));
+                throw failed;
+            }
         }
         if (!captureHandles.remove(effect.resourceId(), handle)) {
             return result(effect, ControlOutcome.FAILED, "resource already released");
         }
-        captureDetachFailures.remove(effect.resourceId());
+        captureDetached(effect.resourceId());
         Runnable close = () -> control.complete(closeResource(effect.requestId(), effect.opId(), effect.resourceId(), handle));
         try {
             captureIo.close(close);
@@ -1095,10 +1139,12 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                     "reason", "released without the control processor");
             try {
                 resources.uninstallCapture(handle, null, null);
+                captureDetached(id);
                 control.audit().fallback("EffectOutcome", "group", roleName(), "requestId", -1, "opId", detachOp,
                         "effect", "UninstallCapture", "outcome", "succeeded", "resourceId", id,
                         "generation", -1, "offline", true);
             } catch (Throwable t) {
+                captureDetachFailed(id, t);
                 control.audit().fallback("EffectOutcome", "group", roleName(), "requestId", -1, "opId", detachOp,
                         "effect", "UninstallCapture", "outcome", "failed", "resourceId", id,
                         "generation", -1, "offline", true, "reason", String.valueOf(t));
@@ -1107,7 +1153,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                 continue;
             }
             if (!captureHandles.remove(id, handle)) continue;
-            captureDetachFailures.remove(id);
+            captureDetached(id);
             String closeOp = "group-close." + id;
             control.audit().fallback("EffectRequested", "group", roleName(), "requestId", -1, "opId", closeOp,
                     "effect", "CloseCapture", "resourceId", id, "generation", -1, "offline", true, "causeOp", detachOp);
@@ -1423,6 +1469,10 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                         guarded(name, "failed to release its server bindings", release.stopping
                                 ? () -> mongooseServer.processorStopped(roleName(), name, eventProcessor)
                                 : () -> mongooseServer.processorDropped(roleName(), name, eventProcessor, release.registration));
+                    } else if (captureResources != null && release.registration != null) {
+                        guarded(name, "failed to release its capture binding", () -> captureResources.processorReleased(
+                                new com.telamin.mongoose.service.audit.AuditCaptureIdentity(
+                                        roleName(), name, release.registration.generation()), eventProcessor));
                     }
                 }
             }

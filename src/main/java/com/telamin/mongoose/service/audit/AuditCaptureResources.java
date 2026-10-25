@@ -35,6 +35,12 @@ public interface AuditCaptureResources {
      */
     void uninstallCapture(Object resource, String processorName, DataFlow dataFlow);
 
+    /**
+     * Forget a registration released by a directly embedded group (without a server). This must not close resources:
+     * their handles remain owned by the group until the ordinary uninstall/close effects finish.
+     */
+    default void processorReleased(AuditCaptureIdentity identity, DataFlow flow) { }
+
     /** Flush and close the resource. */
     void closeCapture(Object resource) throws Exception;
 }

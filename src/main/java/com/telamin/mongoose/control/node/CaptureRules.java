@@ -273,10 +273,15 @@ public class CaptureRules extends EventLogNode {
         boolean ok = c.kind() == CaptureCompletion.Kind.CLOSED;
         state.takeEffectResource(c.opId());
         state.isCleanup(c.opId(), true);
-        Resource r = state.removeResource(c.resourceId());
-        if (r == null) {
+        Resource r = state.resource(c.resourceId());
+        if (r == null || !c.opId().equals(r.closeOp) || r.state == ResourceState.CLOSE_FAILED) {
             decideCompletion("captureCloseUnknown", -1, null, c.resourceId(), note("duplicate", true));
             return;
+        }
+        if (ok) state.removeResource(c.resourceId());
+        else {
+            r.state = ResourceState.CLOSE_FAILED;
+            r.closeFailure = c.reason();
         }
         state.release(c.requestId());
         Reg reg = r.owner < 0 ? null : state.registration(r.owner);
@@ -290,9 +295,9 @@ public class CaptureRules extends EventLogNode {
         if (openedFor != null && c.opId().equals(openedFor.captureCloseOp)) openedFor.captureCloseOp = null;
         long generation = r.owner >= 0 ? r.owner : r.openedFor;
         String name = reg != null ? reg.name : r.openedName;
-        // a failed physical close is recorded and counted, and never blocks anything
+        // A failed physical close settles the operation, but its resource is still owned and consumes budget.
         decideCompletion(ok ? "captureClosed" : "captureCloseFailed", generation, name, c.resourceId(),
-                note("cleared", c.opId()));
+                note("cleared", c.opId(), "retained", !ok));
     }
 
     /**
@@ -402,15 +407,21 @@ public class CaptureRules extends EventLogNode {
                 return true;
             }
             case "CloseCapture" -> {
-                // refused before reaching the closer (an unknown resource): no completion will come
+                // No completion will come, but a failed detach can leave the physical handle in the agent table.
+                // Retain evidence of that unresolved resource instead of pretending a close was completed.
                 state.release(req);
-                Resource r = state.removeResource(res);
+                Resource r = state.resource(res);
+                if (r != null) {
+                    r.state = ResourceState.CLOSE_FAILED;
+                    r.closeFailure = result.reason();
+                }
                 Reg reg = r == null || r.owner < 0 ? null : state.registration(r.owner);
                 if (reg != null && reg.captureResource == r.id) {
                     reg.capture = Capture.OFF;
                     reg.captureResource = -1;
                 }
-                decideCompletion("captureCloseRefused", result.generation(), result.name(), res, note("closed", false));
+                decideCompletion("captureCloseRefused", result.generation(), result.name(), res,
+                        note("closed", false, "retained", r != null, "reason", result.reason() == null ? "unknown" : result.reason()));
                 return true;
             }
             default -> {
@@ -439,7 +450,11 @@ public class CaptureRules extends EventLogNode {
         state.trackEffectResource(effect.opId(), resourceId);
         if (effect instanceof ControlEffect.CloseCapture) {
             Resource resource = state.resource(resourceId);
-            if (resource != null) resource.closeOp = effect.opId();
+            if (resource != null) {
+                resource.closeOp = effect.opId();
+                resource.state = ResourceState.CLOSING;
+                resource.closeFailure = null;
+            }
         }
         return effect;
     }

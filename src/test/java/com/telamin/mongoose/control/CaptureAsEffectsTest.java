@@ -364,7 +364,20 @@ class CaptureAsEffectsTest {
         assertFalse(closeSubmittedDuringStop[0], "nothing handed to the closer before stop finishes");
         assertTrue(resources.installed.isEmpty(), "offline uninstall after release clears the failed live uninstall");
         io.runClose();
+        work();
         assertTrue(resources.findings.isEmpty(), resources.findings.toString());
+        var beforeGroupClose = ControlEvidence.parse(group.control().audit().exportText(), true);
+        var retry = beforeGroupClose.records().stream().filter(r -> r.type().equals("EffectRequested")
+                && "UninstallCapture".equals(r.str("effect")) && Boolean.TRUE.equals(r.fields().get("offline")))
+                .findFirst().orElseThrow();
+        var retryOutcome = beforeGroupClose.records().stream().filter(r -> r.type().equals("EffectOutcome")
+                && retry.str("opId").equals(r.str("opId"))).findFirst().orElseThrow();
+        assertEquals("succeeded", retryOutcome.str("outcome"));
+        assertTrue(beforeGroupClose.records().indexOf(retry) < beforeGroupClose.records().indexOf(retryOutcome));
+        assertEquals(0, group.captureResourcesHeld());
+        assertEquals(0, group.captureResourceSlotsInUse());
+        var validation = ControlInvariants.check(beforeGroupClose);
+        assertTrue(validation.verified(), validation.toString());
         closeAndCheck("capture-release-uninstall-failed");
     }
 
@@ -400,6 +413,13 @@ class CaptureAsEffectsTest {
         work();
         io.runClose();
         work();
+        assertEquals(0, group.captureResourcesHeld(), "handed to the closer");
+        assertEquals(1, group.captureResourceSlotsInUse(), "failed physical close remains owned");
+        assertEquals(1, group.captureCloseFailures().size());
+        assertEquals(1, group.captureCleanupFailures().size());
+        assertEquals(1, group.control().processor().controlState.resources());
+        assertEquals(com.telamin.mongoose.control.node.ControlState.ResourceState.CLOSE_FAILED,
+                group.control().processor().controlState.resource(group.captureCloseFailures().keySet().iterator().next()).state);
         ControlEvidence evidence = closeAndCheck("capture-close-failed", true);
         assertTrue(rules(evidence).contains("captureCloseFailed"), rules(evidence).toString());
     }

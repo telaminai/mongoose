@@ -591,7 +591,7 @@ public final class LifecycleManager {
             }
             if (processors.captureResourcesHeld() != 0 || processors.captureResourceSlotsInUse() != 0) {
                 throw new IllegalStateException("group " + name + " has " + processors.captureResourceSlotsInUse()
-                        + " unresolved physical capture resources; failed closes=" + processors.captureCloseFailures());
+                        + " unresolved physical capture resources; cleanup failures=" + processors.captureCleanupFailures());
             }
         }
     }

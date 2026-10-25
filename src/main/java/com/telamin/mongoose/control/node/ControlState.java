@@ -67,7 +67,7 @@ public class ControlState {
         }
     }
 
-    public enum ResourceState { OPEN, INSTALLED, CLOSING }
+    public enum ResourceState { OPEN, INSTALLED, CLOSING, CLOSE_FAILED }
 
     /** One capture resource the group holds: exactly one owner (a generation, or none for a compensated open). */
     public static final class Resource {
@@ -77,6 +77,8 @@ public class ControlState {
         public final String openedBy;
         /** The close currently outstanding for this resource, independent of the registration's latest capture. */
         public String closeOp;
+        /** Final failed cleanup remains owned; this is not evidence that a physical close succeeded. */
+        public String closeFailure;
         /** The generation and processor it was opened for: its close is recorded against them, owned or not (FM-3). */
         public final long openedFor;
         public final String openedName;
