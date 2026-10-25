@@ -102,6 +102,13 @@ class ReplayControlAndProvenanceTest {
         }
     }
 
+    public static class StartupSpawner extends Spawner {
+        @Override public void start() {
+            super.start();
+            handleEvent("spawn");
+        }
+    }
+
     /** The same program in another class: a replay of Killer's stream into it is not the recorded program. */
     public static class Impostor extends Killer {
     }
@@ -129,10 +136,15 @@ class ReplayControlAndProvenanceTest {
     }
 
     static Server boot(ReplayConfig replay, Supplier<ObjectEventHandlerNode> handler) throws Exception {
+        return boot(replay, handler, false);
+    }
+
+    static Server boot(ReplayConfig replay, Supplier<ObjectEventHandlerNode> handler, boolean isolateStartFailure) throws Exception {
         InMemoryEventSource<Object> orders = new InMemoryEventSource<>();
         orders.setName(ORDERS);
         orders.setCacheEventLog(true);
         MongooseServerConfig config = MongooseServerConfig.builder()
+                .isolateProcessorStartFailuresAtBoot(isolateStartFailure)
                 .addProcessorGroup(EventProcessorGroupConfig.builder().agentName(GROUP)
                         .put(PROCESSOR, new EventProcessorConfig(handler.get()))
                         .put(VICTIM, new EventProcessorConfig(new Quiet())).build())
@@ -203,6 +215,23 @@ class ReplayControlAndProvenanceTest {
             assertFalse(s.running("spawned"), "replay must never execute addEventProcessor on the live controller");
             assertNotNull(s.replayer().stopped(PROCESSOR));
             assertTrue(s.replayer().stopped(PROCESSOR).contains("supplier"));
+        }
+    }
+
+    @Test
+    void startupControlRefusalRemainsVisibleAfterFailedProcessorIsDetached() throws Exception {
+        InMemoryReplayStore store = new InMemoryReplayStore();
+        InMemoryEventJournal journal = new InMemoryEventJournal();
+        try (Server s = boot(record(store, journal), StartupSpawner::new)) {
+            awaitTrue(() -> s.running("spawned"), "the original startup spawned a processor");
+        }
+        try (Server s = boot(replay(store, journal), StartupSpawner::new, true)) {
+            assertFalse(s.running(PROCESSOR), "unsupported startup control caused the replayed add to fail");
+            assertFalse(s.running("spawned"), "unsupported startup control never reached the live controller");
+            assertTrue(s.replayer().complete(), "the failed replay is settled");
+            String why = s.replayer().stopped(PROCESSOR);
+            assertNotNull(why, "detaching the failed processor must preserve its replay refusal");
+            assertTrue(why.contains("supplier"), why);
         }
     }
 

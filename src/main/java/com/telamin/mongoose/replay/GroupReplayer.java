@@ -142,6 +142,9 @@ public final class GroupReplayer {
     public void detach(DataFlow flow) {
         for (Cursor c : cursors) {
             if (c.flow != flow) continue;
+            // A control refusal can fail start() and immediately detach this processor, before replay drains any
+            // entries. Removing the cursor must not erase the refusal and make the settled replay appear successful.
+            if (c.stopped != null) ended.putIfAbsent(c.name, c.stopped);
             if (!c.expectedCalls.isEmpty()) {
                 ended.put(c.name, "the recorded run made control request " + describe(c.expectedCalls.peek())
                         + " that the replay did not");
