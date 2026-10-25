@@ -24,7 +24,6 @@ import com.telamin.mongoose.config.EventSinkConfig;
 import com.telamin.mongoose.config.MongooseServerConfig;
 import com.telamin.mongoose.config.PerformanceMonitoringConfig;
 import com.telamin.mongoose.connector.memory.InMemoryEventSource;
-import com.telamin.mongoose.connector.memory.InMemoryMessageSink;
 import com.telamin.mongoose.control.ControlAuditSink;
 import com.telamin.mongoose.control.ControlReply;
 import com.telamin.mongoose.control.event.ReplyOutcome;
@@ -94,6 +93,12 @@ final class ChaosWorkload implements AutoCloseable {
         Path captureDir;
         ReplayConfig replay;
         long shutdownTimeoutMillis = 30_000;
+        /**
+         * Soak mode: nothing grows with the run's length on the test's side. Requests are checked as they are answered
+         * and forgotten, synchronous calls are aggregated, and released instances are checked and pruned by
+         * {@link #pruneReleased}, so heap samples measure the server, not the ledger.
+         */
+        boolean soak;
     }
 
     static final String GROUP_PREFIX = "chaos-g";
@@ -129,6 +134,8 @@ final class ChaosWorkload implements AutoCloseable {
     /** One built processor instance's own account of what happened to it. */
     static final class Instance {
         static final AtomicLong SERIALS = new AtomicLong();
+        /** Ticks sent before this are not measured (a warm-up); set by a test, read on the group threads. */
+        static volatile long latencyFromNanos = Long.MIN_VALUE;
         final long serial = SERIALS.incrementAndGet();
         final String group;
         final String name;
@@ -148,7 +155,10 @@ final class ChaosWorkload implements AutoCloseable {
         volatile boolean tornDown;
         volatile long received;
         volatile Thread agentThread;
+        volatile long tornDownNanos;
         long slowStartMillis;
+        /** Anchors only: publish-to-handler latency, written on the group's thread. */
+        Histogram latency;
 
         Instance(String group, String name, Kind kind) {
             this.group = group;
@@ -167,13 +177,14 @@ final class ChaosWorkload implements AutoCloseable {
             return TimeUnit.NANOSECONDS.toMillis(end - startedNanos);
         }
 
-        void onTick(Tick t, Histogram latency) {
+        void onTick(Tick t) {
             if (stopEntered) afterStop.incrementAndGet();
             if (tornDown) afterTearDown.incrementAndGet();
             Thread current = Thread.currentThread();
             if (agentThread != null && agentThread != current) wrongThread.incrementAndGet();
             received++;
-            if (latency != null) {
+            Histogram latency = this.latency;
+            if (latency != null && t.sentNanos() >= latencyFromNanos) {
                 long l = System.nanoTime() - t.sentNanos();
                 if (l > 0) latency.recordValue(Math.min(l, latency.getHighestTrackableValue()));
             }
@@ -243,6 +254,7 @@ final class ChaosWorkload implements AutoCloseable {
         @Override
         public void tearDown() {
             me.tearDowns.incrementAndGet();
+            me.tornDownNanos = System.nanoTime();
             me.tornDown = true;
             if (me.kind == Kind.TEARDOWN_THROWS) throw new IllegalStateException("CHAOS tearDown failure of " + me);
         }
@@ -253,7 +265,7 @@ final class ChaosWorkload implements AutoCloseable {
             if (me.kind == Kind.HANDLER_THROWS && random.nextInt(2_000) == 0) {
                 throw new IllegalStateException("CHAOS handler failure of " + me + " on " + t);
             }
-            me.onTick(t, null);
+            me.onTick(t);
             if (me.kind == Kind.HANDLER_SLOW && me.received % 500 == 0) sleep(1);
         }
 
@@ -319,13 +331,14 @@ final class ChaosWorkload implements AutoCloseable {
         @Override
         public void tearDown() {
             me.tearDowns.incrementAndGet();
+            me.tornDownNanos = System.nanoTime();
             me.tornDown = true;
         }
 
         @Override
         protected boolean handleEvent(Object event) {
             if (event instanceof Tick t) {
-                me.onTick(t, null);
+                me.onTick(t);
                 count++;
                 if (emit && sink != null) {
                     sink.accept(me.name + " feed=" + t.feed() + " seq=" + t.seq() + " n=" + count + " services="
@@ -334,6 +347,23 @@ final class ChaosWorkload implements AutoCloseable {
                 }
             }
             return true;
+        }
+    }
+
+    /**
+     * The anchors' sink. Not InMemoryMessageSink: that keeps a CopyOnWriteArrayList, so every message copies the whole
+     * history and a long run's group threads slowed quadratically (it made the first 10-minute chaos run back up).
+     */
+    public static final class LinesSink extends com.telamin.fluxtion.runtime.output.AbstractMessageSink<Object> {
+        private final List<Object> lines = new ArrayList<>();
+
+        @Override
+        protected synchronized void sendToSink(Object value) {
+            if (value != null) lines.add(value);
+        }
+
+        synchronized List<Object> getMessages() {
+            return new ArrayList<>(lines);
         }
     }
 
@@ -375,9 +405,17 @@ final class ChaosWorkload implements AutoCloseable {
     final Settings settings;
     final MongooseServer server;
     final List<InMemoryEventSource<Object>> feeds = new ArrayList<>();
-    final InMemoryMessageSink sink = new InMemoryMessageSink();
+    final LinesSink sink = new LinesSink();
     final MongooseAuditCaptureService capture;
-    final List<Instance> instances = new CopyOnWriteArrayList<>();
+    final ConcurrentLinkedQueue<Instance> instances = new ConcurrentLinkedQueue<>();
+    final Set<AsyncOp> pendingOps = ConcurrentHashMap.newKeySet();
+    final AtomicLong asyncCount = new AtomicLong();
+    final AtomicLong maxAsyncNanos = new AtomicLong();
+    final AtomicLong pruned = new AtomicLong();
+    final Map<String, long[]> syncStats = new ConcurrentHashMap<>();
+    final long bootNanos = System.nanoTime();
+    /** Requests answered after more than 5 s: what, where, when sent (s since boot), how long. */
+    final ConcurrentLinkedQueue<String> slowReplies = new ConcurrentLinkedQueue<>();
     final ConcurrentLinkedQueue<AsyncOp> asyncOps = new ConcurrentLinkedQueue<>();
     final ConcurrentLinkedQueue<SyncOp> syncOps = new ConcurrentLinkedQueue<>();
     final ConcurrentLinkedQueue<String> anomalies = new ConcurrentLinkedQueue<>();
@@ -406,11 +444,12 @@ final class ChaosWorkload implements AutoCloseable {
                 .shutdownTimeoutMillis(settings.shutdownTimeoutMillis);
         for (int g = 0; g < settings.groups; g++) {
             Instance anchor = new Instance(groupName(g), anchorName(g), Kind.ANCHOR);
+            anchor.latency = new Histogram(TimeUnit.SECONDS.toNanos(60), 3);
             anchors[g] = anchor;
             instances.add(anchor);
             builder.addProcessorGroup(EventProcessorGroupConfig.builder().agentName(groupName(g))
                     .idleStrategy(new BusySpinIdleStrategy())
-                    .put(anchorName(g), new EventProcessorConfig(new ChaosNode(anchor, settings.feeds, true))).build());
+                    .put(anchorName(g), new EventProcessorConfig(new ChaosNode(anchor, settings.feeds, settings.replay != null))).build());
         }
         for (int f = 0; f < settings.feeds; f++) {
             InMemoryEventSource<Object> feed = new InMemoryEventSource<>();
@@ -511,11 +550,32 @@ final class ChaosWorkload implements AutoCloseable {
             }
         }
         awaitReplies(replyWaitSeconds);
+        awaitQuiescent(replyWaitSeconds);
+    }
+
+    /**
+     * Wait until no group has a control request outstanding: a synchronous call that timed out leaves its request
+     * queued, still to apply, so quiescence is judged by the groups, not by the callers.
+     */
+    void awaitQuiescent(long seconds) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(seconds);
+        while (outstandingRequests() > 0 && System.nanoTime() < deadline) Thread.sleep(10);
+        if (outstandingRequests() > 0) anomalies.add(outstandingRequests() + " control requests still outstanding after "
+                + seconds + " s of quiescence");
+    }
+
+    void recordSync(String what, long nanos, String outcome) {
+        if (!settings.soak) syncOps.add(new SyncOp(what, nanos, outcome));
+        long[] a = syncStats.computeIfAbsent(what, k -> new long[2]);
+        synchronized (a) {
+            a[0]++;
+            a[1] = Math.max(a[1], nanos);
+        }
     }
 
     void awaitReplies(long seconds) {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(seconds);
-        for (AsyncOp op : asyncOps) {
+        for (AsyncOp op : new ArrayList<>(pendingOps)) {
             long left = deadline - System.nanoTime();
             try {
                 op.future.get(Math.max(1, left), TimeUnit.NANOSECONDS);
@@ -614,7 +674,7 @@ final class ChaosWorkload implements AutoCloseable {
         } catch (IllegalStateException refused) {
             outcome = "ISE";
         }
-        syncOps.add(new SyncOp("addEventProcessor", System.nanoTime() - t0, outcome));
+        recordSync("addEventProcessor", System.nanoTime() - t0, outcome);
         count("sync addEventProcessor " + outcome);
     }
 
@@ -663,7 +723,7 @@ final class ChaosWorkload implements AutoCloseable {
             }
         }
         String what = bounded ? "stopProcessor(g,n,1000)" : "stopProcessor(g,n)";
-        syncOps.add(new SyncOp(what, System.nanoTime() - t0, outcome));
+        recordSync(what, System.nanoTime() - t0, outcome);
         count("sync " + what + " " + outcome);
     }
 
@@ -682,13 +742,13 @@ final class ChaosWorkload implements AutoCloseable {
                 } catch (com.telamin.mongoose.exception.ServiceRegistrationException taken) {
                     outcome = "name taken";
                 }
-                syncOps.add(new SyncOp("registerService", System.nanoTime() - t0, outcome));
+                recordSync("registerService", System.nanoTime() - t0, outcome);
             } else {
                 boolean present = server.registeredServices().containsKey(name);
                 server.removeService(name);
                 if (present) servicesRemoved.incrementAndGet();
                 outcome = present ? "removed" : "absent";
-                syncOps.add(new SyncOp("removeService", System.nanoTime() - t0, outcome));
+                recordSync("removeService", System.nanoTime() - t0, outcome);
             }
             count("service " + outcome);
         } finally {
@@ -715,7 +775,7 @@ final class ChaosWorkload implements AutoCloseable {
             outcome = refused.getClass().getSimpleName();
         }
         String what = start ? "capture.start" : "capture.stop";
-        syncOps.add(new SyncOp(what, System.nanoTime() - t0, outcome));
+        recordSync(what, System.nanoTime() - t0, outcome);
         count(what + " " + outcome);
     }
 
@@ -803,10 +863,21 @@ final class ChaosWorkload implements AutoCloseable {
     private void track(AsyncOp op, java.util.concurrent.CompletionStage<ControlReply> stage) {
         CompletableFuture<ControlReply> future = stage.toCompletableFuture();
         op.future = future;
-        asyncOps.add(op);
+        asyncCount.incrementAndGet();
+        pendingOps.add(op);
+        if (!settings.soak) asyncOps.add(op);
         future.whenComplete((reply, error) -> {
             op.answeredNanos = System.nanoTime();
-            op.answers.incrementAndGet();
+            long took = op.answeredNanos - op.sentNanos;
+            maxAsyncNanos.accumulateAndGet(took, Math::max);
+            if (took > TimeUnit.SECONDS.toNanos(5) && !op.what.startsWith("flood") && slowReplies.size() < 2000) {
+                slowReplies.add(String.format("%s %s/%s sent t=%.1fs took %dms -> %s", op.what, op.group, op.name,
+                        (op.sentNanos - bootNanos) / 1e9, TimeUnit.NANOSECONDS.toMillis(took), reply));
+            }
+            if (op.answers.incrementAndGet() != 1) anomalies.add("request answered more than once: " + op);
+            if (error != null) anomalies.add("request completed exceptionally: " + op + " " + error);
+            pendingOps.remove(op);
+            if (op.what.startsWith("add") && reply != null) checkAddReply(op, reply);
             op.reply = reply;
             op.error = error;
             count(op.what.split(" ")[0] + (op.what.startsWith("flood") ? " flood" : "") + " "
@@ -818,6 +889,23 @@ final class ChaosWorkload implements AutoCloseable {
                 anomalies.add("stop answered APPLIED before its processor was torn down: " + t + " " + op);
             }
         });
+    }
+
+    /** An add's reply agrees with what its processor saw (its start ran on the group's thread before the reply). */
+    private void checkAddReply(AsyncOp op, ControlReply reply) {
+        ReplyOutcome outcome = reply.outcome();
+        Instance built = op.instance;
+        if (outcome == ReplyOutcome.APPLIED) {
+            if (built == null || built.starts.get() != 1 || built.startFailed) {
+                anomalies.add("add answered APPLIED but its processor did not start cleanly: " + op + " " + built);
+            }
+        } else if (outcome == ReplyOutcome.FAILED) {
+            if (built != null && !built.startFailed) {
+                anomalies.add("add answered FAILED but its processor started, or was never started: " + op + " " + built);
+            }
+        } else if (built != null && built.starts.get() > 0) {
+            anomalies.add("add answered " + outcome + " but its processor was started: " + op + " " + built);
+        }
     }
 
     private static String shortReason(String reason) {
@@ -857,35 +945,12 @@ final class ChaosWorkload implements AutoCloseable {
     /** Every check that holds while the server is still running; returns the failures. */
     List<String> checkRunning() {
         List<String> failures = new ArrayList<>(anomalies);
-        // every asynchronous request answered, exactly once
-        long pending = 0;
-        for (AsyncOp op : asyncOps) {
-            if (!op.future.isDone()) {
-                pending++;
-                if (pending <= 5) failures.add("request never answered: " + op);
-            } else if (op.answers.get() != 1) {
-                failures.add("request answered " + op.answers.get() + " times: " + op);
-            }
-            if (op.error != null) failures.add("request completed exceptionally: " + op + " " + op.error);
+        // every asynchronous request answered (exactly once and as its ledger says: checked as each was answered)
+        long pending = pendingOps.size();
+        for (AsyncOp op : pendingOps) {
+            if (failures.size() < 5) failures.add("request never answered: " + op);
         }
         if (pending > 0) failures.add(pending + " requests never answered");
-        // replies agree with what the processors themselves saw
-        for (AsyncOp op : asyncOps) {
-            if (!op.what.startsWith("add") || op.reply == null) continue;
-            ReplyOutcome outcome = op.reply.outcome();
-            Instance built = op.instance;
-            if (outcome == ReplyOutcome.APPLIED) {
-                if (built == null || built.starts.get() != 1 || built.startFailed) {
-                    failures.add("add answered APPLIED but its processor did not start cleanly: " + op + " " + built);
-                }
-            } else if (outcome == ReplyOutcome.FAILED) {
-                if (built != null && !built.startFailed) {
-                    failures.add("add answered FAILED but its processor started: " + op + " " + built);
-                }
-            } else if (built != null && built.starts.get() > 0) {
-                failures.add("add answered " + outcome + " but its processor was started: " + op + " " + built);
-            }
-        }
         // no processor name stays reserved once its processor is gone
         for (String key : namesUsed) {
             String[] parts = key.split("/");
@@ -905,31 +970,48 @@ final class ChaosWorkload implements AutoCloseable {
             }
         }
         // the ledger: each instance started at most once, stopped at most once, torn down at most once; nothing after
-        for (Instance i : instances) {
-            if (i.starts.get() > 1 || i.stops.get() > 1 || i.tearDowns.get() > 1) failures.add("lifecycle repeated: " + i);
-            if (i.afterStop.get() > 0) failures.add("events after stop(): " + i.afterStop + " to " + i);
-            if (i.afterTearDown.get() > 0) failures.add("events after tearDown(): " + i.afterTearDown + " to " + i);
-            if (i.wrongThread.get() > 0) failures.add("events off the group's thread: " + i);
-            if (i.kind == Kind.ANCHOR) continue;
-            if (i.starts.get() == 1 && !i.startFailed && (i.stops.get() != 1 || i.tearDowns.get() != 1)) {
-                failures.add("a started processor was not stopped and torn down once: " + i);
-            }
-            if (i.startFailed && (i.stops.get() != 0 || i.tearDowns.get() != 1)) {
-                failures.add("a processor whose start failed was not torn down once, without a stop: " + i);
-            }
-            if (i.starts.get() == 0 && (i.stops.get() != 0 || i.tearDowns.get() > 1)) {
-                failures.add("a processor never started was stopped: " + i);
-            }
-            boolean shouldReceive = i.kind != Kind.FLOOD && i.kind != Kind.BLOCKER && i.kind != Kind.HANDLER_THROWS
-                    && i.kind != Kind.START_THROWS;
-            if (shouldReceive && i.liveMillis() >= 5_000 && i.received == 0) {
-                failures.add("a processor live for " + i.liveMillis() + " ms received nothing: " + i);
-            }
-        }
+        for (Instance i : instances) checkInstance(i, failures);
         for (Instance a : anchors) {
             if (!a.running()) failures.add("anchor not running: " + a);
         }
         return failures;
+    }
+
+    void checkInstance(Instance i, List<String> failures) {
+        if (i.starts.get() > 1 || i.stops.get() > 1 || i.tearDowns.get() > 1) failures.add("lifecycle repeated: " + i);
+        if (i.afterStop.get() > 0) failures.add("events after stop(): " + i.afterStop + " to " + i);
+        if (i.afterTearDown.get() > 0) failures.add("events after tearDown(): " + i.afterTearDown + " to " + i);
+        if (i.wrongThread.get() > 0) failures.add("events off the group's thread: " + i);
+        if (i.kind == Kind.ANCHOR) return;
+        if (i.starts.get() == 1 && !i.startFailed && (i.stops.get() != 1 || i.tearDowns.get() != 1)) {
+            failures.add("a started processor was not stopped and torn down once: " + i);
+        }
+        if (i.startFailed && (i.stops.get() != 0 || i.tearDowns.get() != 1)) {
+            failures.add("a processor whose start failed was not torn down once, without a stop: " + i);
+        }
+        if (i.starts.get() == 0 && (i.stops.get() != 0 || i.tearDowns.get() > 1)) {
+            failures.add("a processor never started was stopped: " + i);
+        }
+        boolean shouldReceive = i.kind != Kind.FLOOD && i.kind != Kind.BLOCKER && i.kind != Kind.HANDLER_THROWS
+                && i.kind != Kind.START_THROWS;
+        if (shouldReceive && i.liveMillis() >= 5_000 && i.received == 0) {
+            failures.add("a processor live for " + i.liveMillis() + " ms received nothing: " + i);
+        }
+    }
+
+    /**
+     * Soak mode: check and forget every instance torn down more than 5 s ago (so a late event after its tearDown would
+     * have shown), keeping the ledger's size independent of the run's length.
+     */
+    void pruneReleased(List<String> failures) {
+        long cutoff = System.nanoTime() - TimeUnit.SECONDS.toNanos(5);
+        for (var it = instances.iterator(); it.hasNext(); ) {
+            Instance i = it.next();
+            if (i.kind == Kind.ANCHOR || !i.tornDown || i.tornDownNanos > cutoff) continue;
+            checkInstance(i, failures);
+            it.remove();
+            pruned.incrementAndGet();
+        }
     }
 
     /** At quiescence, with no flood having refused a broadcast: every live processor holds exactly the registry's. */
@@ -992,26 +1074,21 @@ final class ChaosWorkload implements AutoCloseable {
 
     String summary() {
         StringBuilder b = new StringBuilder();
-        b.append("feed events offered=").append(feedPublished.get()).append(", instances built=").append(instances.size())
-                .append(", async requests=").append(asyncOps.size()).append(", sync calls=").append(syncOps.size())
+        b.append("feed events offered=").append(feedPublished.get()).append(", instances built=").append(instances.size() + pruned.get())
+                .append(", async requests=").append(asyncCount.get()).append(", sync calls=")
+                .append(syncStats.values().stream().mapToLong(a -> a[0]).sum())
                 .append(", floods=").append(floods.get()).append(" (stop() threw on full mailbox ").append(floodThrew.get())
                 .append(")\n");
         Map<String, Long> sorted = new TreeMap<>();
         outcomes.forEach((k, v) -> sorted.put(k, v.get()));
         sorted.forEach((k, v) -> b.append("  ").append(k).append(": ").append(v).append('\n'));
-        Map<String, long[]> sync = new TreeMap<>();
-        for (SyncOp s : syncOps) {
-            long[] a = sync.computeIfAbsent(s.what(), k -> new long[2]);
-            a[0]++;
-            a[1] = Math.max(a[1], s.nanos());
-        }
-        sync.forEach((k, a) -> b.append("  sync ").append(k).append(": n=").append(a[0]).append(" max=")
+        new TreeMap<>(syncStats).forEach((k, a) -> b.append("  sync ").append(k).append(": n=").append(a[0]).append(" max=")
                 .append(TimeUnit.NANOSECONDS.toMillis(a[1])).append(" ms\n"));
-        long maxAsync = 0;
-        for (AsyncOp op : asyncOps) {
-            if (op.answeredNanos > 0) maxAsync = Math.max(maxAsync, op.answeredNanos - op.sentNanos);
-        }
-        b.append("  slowest async reply: ").append(TimeUnit.NANOSECONDS.toMillis(maxAsync)).append(" ms\n");
+        b.append("  slowest async reply: ").append(TimeUnit.NANOSECONDS.toMillis(maxAsyncNanos.get())).append(" ms; replies over 5 s: ")
+                .append(slowReplies.size()).append('\n');
+        slowReplies.stream().sorted(java.util.Comparator.comparingLong((String r) ->
+                        Long.parseLong(r.replaceAll(".* took ([0-9]+)ms.*", "$1"))).reversed())
+                .limit(15).forEach(r -> b.append("    slow ").append(r).append('\n'));
         Map<Kind, long[]> byKind = new TreeMap<>();
         for (Instance i : instances) {
             long[] a = byKind.computeIfAbsent(i.kind, k -> new long[2]);
@@ -1025,8 +1102,21 @@ final class ChaosWorkload implements AutoCloseable {
 
     long maxSyncMillis() {
         long max = 0;
-        for (SyncOp s : syncOps) max = Math.max(max, s.nanos());
+        for (long[] a : syncStats.values()) max = Math.max(max, a[1]);
         return TimeUnit.NANOSECONDS.toMillis(max);
+    }
+
+    /** Publish-to-handler latency over every anchor, merged. */
+    Histogram anchorLatency() {
+        Histogram all = new Histogram(TimeUnit.SECONDS.toNanos(60), 3);
+        for (Instance a : anchors) all.add(a.latency);
+        return all;
+    }
+
+    String outstandingByGroup() {
+        StringBuilder b = new StringBuilder();
+        StressSupport.groups(server).forEach((k, g) -> b.append(k).append('=').append(g.control().outstanding()).append(' '));
+        return b.toString().trim();
     }
 
     long outstandingRequests() {

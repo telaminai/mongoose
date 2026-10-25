@@ -65,17 +65,20 @@ class ControlPlaneChaosStressTest {
             chaos.startFeeds();
             chaos.startChaos();
             long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(seconds);
-            long nextReport = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
+            long nextReport = System.nanoTime() + TimeUnit.SECONDS.toNanos(Long.getLong("mongoose.stress.reportSeconds", 60));
             while (System.nanoTime() < end) {
                 Thread.sleep(200);
                 if (System.nanoTime() > nextReport) {
-                    nextReport += TimeUnit.SECONDS.toNanos(60);
-                    System.out.printf("chaos t=%ds requests=%d instances=%d outstanding=%d threads=%d anomalies=%d%n",
-                            TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - t0), chaos.asyncOps.size(),
-                            chaos.instances.size(), chaos.outstandingRequests(), StressSupport.threadCount(),
+                    nextReport += TimeUnit.SECONDS.toNanos(Long.getLong("mongoose.stress.reportSeconds", 60));
+                    System.out.printf("chaos t=%ds requests=%d instances=%d outstanding=[%s] threads=%d anomalies=%d%n",
+                            TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - t0), chaos.asyncCount.get(),
+                            chaos.instances.size(), chaos.outstandingByGroup(), StressSupport.threadCount(),
                             chaos.anomalies.size());
                 }
             }
+            java.util.Map<String, Long> byPrefix = new java.util.TreeMap<>();
+            for (String n : StressSupport.liveThreads()) byPrefix.merge(n.replaceAll("[-0-9]+( \\(daemon\\))?$", ""), 1L, Long::sum);
+            System.out.println("threads by name before quiescing: " + byPrefix);
             chaos.stopChaos(60);
             failures.addAll(chaos.checkServiceViews());
             chaos.stopEverything();
