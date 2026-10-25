@@ -6,696 +6,386 @@
 package com.telamin.mongoose.stress;
 
 import com.telamin.fluxtion.runtime.DataFlow;
-import com.telamin.fluxtion.runtime.audit.LogRecord;
-import com.telamin.fluxtion.runtime.audit.LogRecordListener;
 import com.telamin.fluxtion.runtime.input.EventFeed;
+import com.telamin.fluxtion.runtime.lifecycle.Lifecycle;
 import com.telamin.mongoose.MongooseServer;
 import com.telamin.mongoose.config.MongooseServerConfig;
+import com.telamin.mongoose.connector.memory.InMemoryEventSource;
 import com.telamin.mongoose.service.CallBackType;
 import com.telamin.mongoose.service.EventSourceKey;
 import com.telamin.mongoose.service.EventSubscriptionKey;
 import com.telamin.mongoose.service.extension.AbstractEventSourceService;
+import org.HdrHistogram.Histogram;
+import org.agrona.concurrent.BackoffIdleStrategy;
+import org.agrona.concurrent.BusySpinIdleStrategy;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
-import java.lang.management.ManagementFactory;
-import java.lang.management.MemoryMXBean;
-import java.lang.management.MemoryUsage;
-import java.lang.management.ThreadMXBean;
-import java.time.Duration;
-import java.time.Instant;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.concurrent.locks.LockSupport;
-import java.util.stream.Collectors;
+import java.util.function.LongSupplier;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Stress tests for high-volume event scenarios in Fluxtion Server.
- * These tests verify system behavior under extreme load conditions.
+ * High-volume delivery through a real server: several sources, several processor groups, several processors per group,
+ * every processor subscribed to every source. Each event carries its source and a per-source sequence number, and
+ * every processor checks the sequence it receives from each source, so a lost, duplicated or reordered event is seen
+ * where it happens, not inferred from a total.
+ * <p>
+ * Stress only: run with {@code -Dmongoose.stress=true}. Scale: {@code -Dmongoose.stress.eventsPerSource} (default
+ * 1,000,000), {@code .sources} (4), {@code .groups} (3), {@code .processorsPerGroup} (2).
  */
-public class HighVolumeEventStressTest {
+@EnabledIfSystemProperty(named = "mongoose.stress", matches = "true")
+class HighVolumeEventStressTest {
+
+    static final int SOURCES = Integer.getInteger("mongoose.stress.sources", 4);
+    static final int GROUPS = Integer.getInteger("mongoose.stress.groups", 3);
+    static final int PER_GROUP = Integer.getInteger("mongoose.stress.processorsPerGroup", 2);
+    static final long EVENTS_PER_SOURCE = Long.getLong("mongoose.stress.eventsPerSource", 1_000_000L);
+    /** In flight per source, below the 1024-slot reader queue, so a full queue (and its 10 ms drop) never happens. */
+    static final int CREDIT_WINDOW = 512;
+    static final long DEADLINE_SECONDS = Long.getLong("mongoose.stress.highVolume.deadlineSeconds", 600);
 
     private MongooseServer server;
-    private List<TestEventSource> eventSources;
-    private List<TestEventProcessor> eventProcessors;
-    private TestLogRecordListener logRecordListener;
-    private ExecutorService executorService;
-    private ScheduledExecutorService monitoringService;
-    private MongooseServerConfig mongooseServerConfig;
+    private ExecutorService publishers;
 
-    // Stress test parameters
-    private static final int SOURCE_COUNT = 5;
-    private static final int PROCESSOR_COUNT = 3;
-    private static final int EVENTS_PER_SOURCE = 1_000_000;
-    private static final int TOTAL_EVENTS = SOURCE_COUNT * EVENTS_PER_SOURCE;
-    private static final int MONITORING_INTERVAL_MS = 1000;
-    private static final int MAX_TEST_DURATION_SECONDS = 300; // 5 minutes max
-
-    // Metrics
-    private final AtomicLong totalEventsProcessed = new AtomicLong(0);
-    private final AtomicLong totalEventsPublished = new AtomicLong(0);
-    private final List<MetricSnapshot> metricSnapshots = Collections.synchronizedList(new ArrayList<>());
-    private final Map<String, Deque<Long>> latencyHistograms = new ConcurrentHashMap<>();
-    private final AtomicInteger errorCount = new AtomicInteger(0);
-
-    @BeforeEach
-    void setUp() {
-        // Create a log record listener to capture log events
-        logRecordListener = new TestLogRecordListener();
-
-        // Create a minimal app config
-        mongooseServerConfig = new MongooseServerConfig();
-
-        // Create event processors
-        eventProcessors = new ArrayList<>();
-        for (int i = 0; i < PROCESSOR_COUNT; i++) {
-            TestEventProcessor processor = new TestEventProcessor("processor-" + i);
-            eventProcessors.add(processor);
-            mongooseServerConfig.addProcessor(processor, "testHandler-" + i);
-        }
-
-        // Create event sources
-        eventSources = new ArrayList<>();
-        for (int i = 0; i < SOURCE_COUNT; i++) {
-            TestEventSource source = new TestEventSource("source-" + i);
-            eventSources.add(source);
-            mongooseServerConfig.addEventSource(source, "testEventSourceFeed-" + i, true);
-        }
-
-
-        // Create thread pools
-        executorService = Executors.newFixedThreadPool(SOURCE_COUNT);
-        monitoringService = Executors.newSingleThreadScheduledExecutor();
-
-        // Initialize latency histograms
-        for (TestEventSource source : eventSources) {
-            latencyHistograms.put(source.getName(), new ConcurrentLinkedDeque<>());
-        }
+    @BeforeAll
+    static void quietLogs() {
+        StressSupport.quietLogging();
     }
 
     @AfterEach
     void tearDown() {
-        // Shutdown thread pools
-        if (executorService != null) {
-            executorService.shutdownNow();
-        }
-        if (monitoringService != null) {
-            monitoringService.shutdownNow();
-        }
-
-        // Clean up server resources
-        if (server != null) {
-            server.stop();
-        }
-
-        // Print final metrics
-        printFinalMetrics();
+        if (publishers != null) publishers.shutdownNow();
+        if (server != null) server.shutdown();
     }
 
-    /**
-     * Stress test with sustained high event rate.
-     * This test publishes events at a constant high rate from multiple sources.
-     */
-    @Test
-    @Disabled
-    void testSustainedHighEventRate() throws Exception {
-        System.out.println("Running sustained high event rate stress test");
-        System.out.println("Total events to process: " + TOTAL_EVENTS);
+    /** One event: its source, its sequence number in that source (from 0; -1 is a warm-up probe), when it was sent. */
+    public record Tick(int source, long seq, long sentNanos) implements java.io.Serializable { }
 
+    /** Something a test publishes into, one thread per source. */
+    interface Feed {
+        void publish(Tick tick);
 
-        // Start monitoring
-        startMonitoring();
-
-        // Start the server
-        server = MongooseServer.bootServer(mongooseServerConfig, logRecordListener);
-        // Create the server
-//        server.init();
-//        server.start();
-
-        // Create a countdown latch to wait for all events to be processed
-        CountDownLatch completionLatch = new CountDownLatch(TOTAL_EVENTS);
-
-        // Set up event processors to count down the latch
-        for (TestEventProcessor processor : eventProcessors) {
-            processor.setCompletionLatch(completionLatch);
-        }
-
-        // Start publishing events from all sources
-        Instant startTime = Instant.now();
-        List<Future<?>> futures = new ArrayList<>();
-
-        for (TestEventSource source : eventSources) {
-            futures.add(executorService.submit(() -> {
-                try {
-                    for (int i = 0; i < EVENTS_PER_SOURCE; i++) {
-                        TestEvent event = new TestEvent("Event-" + i + "-from-" + source.getName());
-                        long startNanos = System.nanoTime();
-                        source.publishEvent(event);
-                        long endNanos = System.nanoTime();
-
-                        // Record latency
-                        latencyHistograms.get(source.getName()).add(endNanos - startNanos);
-
-                        // Update published count
-                        totalEventsPublished.incrementAndGet();
-
-                        // Small delay to avoid overwhelming the system
-                        if (i % 10000 == 0) {
-                            Thread.sleep(1);
-                        }
-                    }
-                } catch (Exception e) {
-                    System.err.println("Error publishing events from " + source.getName() + ": " + e.getMessage());
-                    errorCount.incrementAndGet();
-                }
-                return null;
-            }));
-        }
-
-        // Wait for all events to be processed or timeout
-        boolean completed = completionLatch.await(MAX_TEST_DURATION_SECONDS, TimeUnit.SECONDS);
-        Instant endTime = Instant.now();
-
-        // Wait for all publishers to complete
-        for (Future<?> future : futures) {
-            future.get(10, TimeUnit.SECONDS);
-        }
-
-        // Stop monitoring
-        stopMonitoring();
-
-        // Calculate results
-        Duration duration = Duration.between(startTime, endTime);
-        double eventsPerSecond = totalEventsProcessed.get() / (duration.toMillis() / 1000.0);
-
-        System.out.println("Test completed: " + (completed ? "All events processed" : "Timed out"));
-        System.out.println("Events published: " + totalEventsPublished.get());
-        System.out.println("Events processed: " + totalEventsProcessed.get());
-        System.out.println("Duration: " + duration.toSeconds() + " seconds");
-        System.out.println("Throughput: " + String.format("%.2f", eventsPerSecond) + " events/second");
-        System.out.println("Error count: " + errorCount.get());
-
-        // Assert that all events were processed
-        assertTrue(completed, "Not all events were processed within the time limit");
-        assertTrue(totalEventsProcessed.get() >= TOTAL_EVENTS * 0.99,
-                "At least 99% of events should be processed");
+        /** Items the feed's publisher dropped on a full reader queue (the 10 ms spin bound). */
+        long dropped();
     }
 
-    /**
-     * Stress test with burst patterns of events.
-     * This test publishes events in bursts with pauses between bursts.
-     */
-    @Test
-    @Disabled
-    void testBurstEventPatterns() throws Exception {
-        System.out.println("Running burst event patterns stress test");
-
-        // Start monitoring
-        startMonitoring();
-
-        // Start the server
-        server.init();
-        server.start();
-
-        // Create a countdown latch to wait for all events to be processed
-        CountDownLatch completionLatch = new CountDownLatch(TOTAL_EVENTS);
-
-        // Set up event processors to count down the latch
-        for (TestEventProcessor processor : eventProcessors) {
-            processor.setCompletionLatch(completionLatch);
-        }
-
-        // Start publishing events in bursts
-        Instant startTime = Instant.now();
-        List<Future<?>> futures = new ArrayList<>();
-
-        int burstSize = EVENTS_PER_SOURCE / 10; // 10 bursts per source
-
-        for (TestEventSource source : eventSources) {
-            futures.add(executorService.submit(() -> {
-                try {
-                    for (int burst = 0; burst < 10; burst++) {
-                        System.out.println("Source " + source.getName() + " starting burst " + (burst + 1));
-
-                        // Publish a burst of events
-                        for (int i = 0; i < burstSize; i++) {
-                            TestEvent event = new TestEvent("Burst-" + burst + "-Event-" + i + "-from-" + source.getName());
-                            long startNanos = System.nanoTime();
-                            source.publishEvent(event);
-                            long endNanos = System.nanoTime();
-
-                            // Record latency
-                            latencyHistograms.get(source.getName()).add(endNanos - startNanos);
-
-                            // Update published count
-                            totalEventsPublished.incrementAndGet();
-                        }
-
-                        // Pause between bursts
-                        if (burst < 9) { // Don't pause after the last burst
-                            Thread.sleep(1000);
-                        }
-                    }
-                } catch (Exception e) {
-                    System.err.println("Error publishing events from " + source.getName() + ": " + e.getMessage());
-                    errorCount.incrementAndGet();
-                }
-                return null;
-            }));
-        }
-
-        // Wait for all events to be processed or timeout
-        boolean completed = completionLatch.await(MAX_TEST_DURATION_SECONDS, TimeUnit.SECONDS);
-        Instant endTime = Instant.now();
-
-        // Wait for all publishers to complete
-        for (Future<?> future : futures) {
-            future.get(10, TimeUnit.SECONDS);
-        }
-
-        // Stop monitoring
-        stopMonitoring();
-
-        // Calculate results
-        Duration duration = Duration.between(startTime, endTime);
-        double eventsPerSecond = totalEventsProcessed.get() / (duration.toMillis() / 1000.0);
-
-        System.out.println("Test completed: " + (completed ? "All events processed" : "Timed out"));
-        System.out.println("Events published: " + totalEventsPublished.get());
-        System.out.println("Events processed: " + totalEventsProcessed.get());
-        System.out.println("Duration: " + duration.toSeconds() + " seconds");
-        System.out.println("Throughput: " + String.format("%.2f", eventsPerSecond) + " events/second");
-        System.out.println("Error count: " + errorCount.get());
-
-        // Assert that all events were processed
-        assertTrue(completed, "Not all events were processed within the time limit");
-        assertTrue(totalEventsProcessed.get() >= TOTAL_EVENTS * 0.99,
-                "At least 99% of events should be processed");
-    }
-
-    /**
-     * Stress test with increasing event rate until system degradation.
-     * This test gradually increases the event rate until the system shows signs of degradation.
-     */
-    @Test
-    @Disabled
-    void testIncreasingEventRate() throws Exception {
-        System.out.println("Running increasing event rate stress test");
-
-        // Start monitoring
-        startMonitoring();
-
-        // Start the server
-        server.init();
-        server.start();
-
-        // Create a countdown latch to wait for all events to be processed
-        CountDownLatch completionLatch = new CountDownLatch(TOTAL_EVENTS);
-
-        // Set up event processors to count down the latch
-        for (TestEventProcessor processor : eventProcessors) {
-            processor.setCompletionLatch(completionLatch);
-        }
-
-        // Start publishing events with increasing rate
-        Instant startTime = Instant.now();
-        List<Future<?>> futures = new ArrayList<>();
-
-        int phases = 10;
-        int eventsPerPhase = EVENTS_PER_SOURCE / phases;
-
-        for (TestEventSource source : eventSources) {
-            futures.add(executorService.submit(() -> {
-                try {
-                    for (int phase = 0; phase < phases; phase++) {
-                        System.out.println("Source " + source.getName() + " starting phase " + (phase + 1) +
-                                " with rate multiplier " + (phase + 1));
-
-                        // Calculate delay between events (decreasing with each phase)
-                        long delayNanos = 1_000_000 / (phase + 1); // Start with 1ms, decrease with each phase
-
-                        // Publish events for this phase
-                        for (int i = 0; i < eventsPerPhase; i++) {
-                            TestEvent event = new TestEvent("Phase-" + phase + "-Event-" + i + "-from-" + source.getName());
-                            long startNanos = System.nanoTime();
-                            source.publishEvent(event);
-                            long endNanos = System.nanoTime();
-
-                            // Record latency
-                            latencyHistograms.get(source.getName()).add(endNanos - startNanos);
-
-                            // Update published count
-                            totalEventsPublished.incrementAndGet();
-
-                            // Delay between events (decreasing with each phase)
-                            if (delayNanos > 0) {
-                                long sleepNanos = delayNanos - (System.nanoTime() - endNanos);
-                                if (sleepNanos > 0) {
-                                    LockSupport.parkNanos(sleepNanos);
-                                }
-                            }
-                        }
-                    }
-                } catch (Exception e) {
-                    System.err.println("Error publishing events from " + source.getName() + ": " + e.getMessage());
-                    errorCount.incrementAndGet();
-                }
-                return null;
-            }));
-        }
-
-        // Wait for all events to be processed or timeout
-        boolean completed = completionLatch.await(MAX_TEST_DURATION_SECONDS, TimeUnit.SECONDS);
-        Instant endTime = Instant.now();
-
-        // Wait for all publishers to complete
-        for (Future<?> future : futures) {
-            future.get(10, TimeUnit.SECONDS);
-        }
-
-        // Stop monitoring
-        stopMonitoring();
-
-        // Calculate results
-        Duration duration = Duration.between(startTime, endTime);
-        double eventsPerSecond = totalEventsProcessed.get() / (duration.toMillis() / 1000.0);
-
-        System.out.println("Test completed: " + (completed ? "All events processed" : "Timed out"));
-        System.out.println("Events published: " + totalEventsPublished.get());
-        System.out.println("Events processed: " + totalEventsProcessed.get());
-        System.out.println("Duration: " + duration.toSeconds() + " seconds");
-        System.out.println("Throughput: " + String.format("%.2f", eventsPerSecond) + " events/second");
-        System.out.println("Error count: " + errorCount.get());
-
-        // Assert that a significant portion of events were processed
-        // Note: This test may not process all events due to intentional system overload
-        assertTrue(totalEventsProcessed.get() >= TOTAL_EVENTS * 0.8,
-                "At least 80% of events should be processed");
-    }
-
-    /**
-     * Starts the monitoring service to collect metrics at regular intervals.
-     */
-    private void startMonitoring() {
-        monitoringService.scheduleAtFixedRate(this::collectMetrics,
-                0, MONITORING_INTERVAL_MS, TimeUnit.MILLISECONDS);
-    }
-
-    /**
-     * Stops the monitoring service.
-     */
-    private void stopMonitoring() {
-        monitoringService.shutdown();
-        try {
-            monitoringService.awaitTermination(5, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-    }
-
-    /**
-     * Collects metrics about the system state.
-     */
-    private void collectMetrics() {
-        try {
-            // Get memory usage
-            MemoryMXBean memoryBean = ManagementFactory.getMemoryMXBean();
-            MemoryUsage heapMemory = memoryBean.getHeapMemoryUsage();
-            MemoryUsage nonHeapMemory = memoryBean.getNonHeapMemoryUsage();
-
-            // Get CPU usage
-            ThreadMXBean threadBean = ManagementFactory.getThreadMXBean();
-            int threadCount = threadBean.getThreadCount();
-
-            // Create a snapshot
-            MetricSnapshot snapshot = new MetricSnapshot(
-                    Instant.now(),
-                    totalEventsPublished.get(),
-                    totalEventsProcessed.get(),
-                    heapMemory.getUsed(),
-                    nonHeapMemory.getUsed(),
-                    threadCount,
-                    errorCount.get()
-            );
-
-            // Add to the list
-            metricSnapshots.add(snapshot);
-
-            // Print current metrics
-            System.out.println(String.format(
-                    "[%s] Published: %d, Processed: %d, Heap: %.2f MB, Threads: %d, Errors: %d",
-                    snapshot.timestamp,
-                    snapshot.eventsPublished,
-                    snapshot.eventsProcessed,
-                    snapshot.heapMemoryUsed / (1024.0 * 1024.0),
-                    snapshot.threadCount,
-                    snapshot.errorCount
-            ));
-        } catch (Exception e) {
-            System.err.println("Error collecting metrics: " + e.getMessage());
-        }
-    }
-
-    /**
-     * Prints final metrics and analysis.
-     */
-    private void printFinalMetrics() {
-        if (metricSnapshots.isEmpty()) {
-            System.out.println("No metrics collected");
-            return;
-        }
-
-        System.out.println("\n===== FINAL METRICS =====");
-
-        // Calculate throughput over time
-        List<Double> throughputs = new ArrayList<>();
-        for (int i = 1; i < metricSnapshots.size(); i++) {
-            MetricSnapshot prev = metricSnapshots.get(i - 1);
-            MetricSnapshot curr = metricSnapshots.get(i);
-
-            long eventsDelta = curr.eventsProcessed - prev.eventsProcessed;
-            double timeDeltaSeconds = Duration.between(prev.timestamp, curr.timestamp).toMillis() / 1000.0;
-
-            if (timeDeltaSeconds > 0) {
-                throughputs.add(eventsDelta / timeDeltaSeconds);
-            }
-        }
-
-        // Calculate latency statistics
-        Map<String, LongSummaryStatistics> latencyStats = new HashMap<>();
-        for (Map.Entry<String, Deque<Long>> entry : latencyHistograms.entrySet()) {
-            latencyStats.put(entry.getKey(),
-                    entry.getValue().stream().collect(Collectors.summarizingLong(Long::longValue)));
-        }
-
-        // Print throughput statistics
-        if (!throughputs.isEmpty()) {
-            DoubleSummaryStatistics throughputStats =
-                    throughputs.stream().collect(Collectors.summarizingDouble(Double::doubleValue));
-
-            System.out.println("\nThroughput Statistics (events/second):");
-            System.out.println("  Min: " + String.format("%.2f", throughputStats.getMin()));
-            System.out.println("  Max: " + String.format("%.2f", throughputStats.getMax()));
-            System.out.println("  Avg: " + String.format("%.2f", throughputStats.getAverage()));
-        }
-
-        // Print latency statistics
-        System.out.println("\nLatency Statistics (nanoseconds):");
-        for (Map.Entry<String, LongSummaryStatistics> entry : latencyStats.entrySet()) {
-            LongSummaryStatistics stats = entry.getValue();
-            System.out.println("  " + entry.getKey() + ":");
-            System.out.println("    Min: " + stats.getMin() + " ns (" + (stats.getMin() / 1000) + " µs)");
-            System.out.println("    Max: " + stats.getMax() + " ns (" + (stats.getMax() / 1000) + " µs)");
-            System.out.println("    Avg: " + String.format("%.2f", stats.getAverage()) +
-                    " ns (" + String.format("%.2f", stats.getAverage() / 1000) + " µs)");
-        }
-
-        // Print memory usage trend
-        if (metricSnapshots.size() >= 2) {
-            MetricSnapshot first = metricSnapshots.get(0);
-            MetricSnapshot last = metricSnapshots.get(metricSnapshots.size() - 1);
-
-            double initialHeapMB = first.heapMemoryUsed / (1024.0 * 1024.0);
-            double finalHeapMB = last.heapMemoryUsed / (1024.0 * 1024.0);
-            double heapDeltaMB = finalHeapMB - initialHeapMB;
-
-            System.out.println("\nMemory Usage:");
-            System.out.println("  Initial Heap: " + String.format("%.2f", initialHeapMB) + " MB");
-            System.out.println("  Final Heap: " + String.format("%.2f", finalHeapMB) + " MB");
-            System.out.println("  Delta: " + String.format("%.2f", heapDeltaMB) + " MB");
-        }
-
-        System.out.println("\nError Count: " + errorCount.get());
-        System.out.println("===== END METRICS =====\n");
-    }
-
-    /**
-     * A simple event class for testing.
-     */
-    public static class TestEvent {
-        private final String message;
-        private final long timestamp;
-
-        public TestEvent(String message) {
-            this.message = message;
-            this.timestamp = System.nanoTime();
-        }
-
-        public String getMessage() {
-            return message;
-        }
-
-        public long getTimestamp() {
-            return timestamp;
-        }
-
-        @Override
-        public String toString() {
-            return "TestEvent_In{message='" + message + "', timestamp=" + timestamp + '}';
-        }
-    }
-
-    /**
-     * A test event source that can publish events.
-     */
-    private static class TestEventSource extends AbstractEventSourceService<TestEvent> {
-        public TestEventSource(String name) {
+    /** A source published from the caller's thread (no agent). */
+    static final class DirectSource extends AbstractEventSourceService<Tick> implements Feed {
+        DirectSource(String name) {
             super(name);
         }
 
-        public void publishEvent(TestEvent event) {
-            if (output != null) {
-                output.publish(event);
-            }
+        @Override
+        public void publish(Tick tick) {
+            output.publish(tick);
+        }
+
+        @Override
+        public long dropped() {
+            return output.droppedCount();
+        }
+    }
+
+    /** A source hosted on its own agent thread: offered from the caller, published by its agent. */
+    static final class AgentSource extends InMemoryEventSource<Tick> implements Feed {
+        @Override
+        public void publish(Tick tick) {
+            offer(tick);
+        }
+
+        @Override
+        public long dropped() {
+            return output.droppedCount();
         }
     }
 
     /**
-     * A test event processor that processes TestEvents.
+     * Subscribes to every source in {@code start()} and checks each source's sequence. All state is written on its
+     * group's thread; the progress array is read by publishers (credit) and by the test after quiescence.
      */
-    private static class TestEventProcessor implements DataFlow {
-        private final String name;
-        private final List<TestEvent> processedEvents = new ArrayList<>();
-        private volatile CountDownLatch completionLatch;
-        private List<EventFeed> eventFeeds = new ArrayList<>();
+    static final class CheckingProcessor implements DataFlow, Lifecycle {
+        final String name;
+        final int sources;
+        final List<EventFeed> feeds = new ArrayList<>();
+        /** Next expected sequence per source: published with release semantics for the publishers' credit check. */
+        final AtomicLongArray next;
+        final long[] duplicatesOrReordered;
+        final long[] gaps;
+        final AtomicLongArray probes;
+        final Histogram latency = new Histogram(TimeUnit.SECONDS.toNanos(10), 3);
+        volatile long received;
+        /** When positive, the handler stalls 20 ms every this many events: a slow consumer, so its queue fills. */
+        long stallEvery;
 
-        public TestEventProcessor(String name) {
+        CheckingProcessor(String name, int sources) {
             this.name = name;
+            this.sources = sources;
+            this.next = new AtomicLongArray(sources);
+            this.duplicatesOrReordered = new long[sources];
+            this.gaps = new long[sources];
+            this.probes = new AtomicLongArray(sources);
         }
 
-        public void setCompletionLatch(CountDownLatch completionLatch) {
-            this.completionLatch = completionLatch;
+        @Override public void init() { }
+        @Override public void tearDown() { }
+        @Override public void stop() { }
+
+        @Override
+        public void addEventFeed(EventFeed feed) {
+            feeds.add(feed);
         }
 
-        public void handleTestEvent(TestEvent event) {
-            // Only store a subset of events to avoid memory issues
-            if (processedEvents.size() < 1000) {
-                processedEvents.add(event);
-            }
-
-            // Count down the latch if provided
-            if (completionLatch != null) {
-                completionLatch.countDown();
+        @Override
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        public void start() {
+            for (int s = 0; s < sources; s++) {
+                EventSubscriptionKey<Object> key = new EventSubscriptionKey<>(new EventSourceKey<>(sourceName(s)),
+                        CallBackType.ON_EVENT_CALL_BACK);
+                for (EventFeed feed : feeds) feed.subscribe(this, key);
             }
         }
 
         @Override
         public void onEvent(Object event) {
-            if (event instanceof TestEvent) {
-                handleTestEvent((TestEvent) event);
+            if (!(event instanceof Tick t)) return;
+            int s = t.source();
+            if (t.seq() < 0) {
+                probes.lazySet(s, probes.get(s) + 1);
+                return;
             }
-        }
-
-        @Override
-        public void addEventFeed(EventFeed eventFeed) {
-            eventFeeds.add(eventFeed);
-        }
-
-        @Override
-        public void init() {
-        }
-
-        @Override
-        public void start() {
-            EventSubscriptionKey<Object> subscriptionKey = new EventSubscriptionKey<>(
-                    new EventSourceKey<>("testEventSourceFeed-0"),
-                    CallBackType.ON_EVENT_CALL_BACK
-            );
-
-            eventFeeds.forEach(feed -> {
-                feed.subscribe(this, subscriptionKey);
-            });
-
-            // Subscribe to all event sources
-            for (int i = 1; i < SOURCE_COUNT; i++) {
-                EventSubscriptionKey<Object> key = new EventSubscriptionKey<>(
-                        new EventSourceKey<>("testEventSourceFeed-" + i),
-                        CallBackType.ON_EVENT_CALL_BACK
-                );
-
-                eventFeeds.forEach(feed -> {
-                    feed.subscribe(this, key);
-                });
+            long expected = next.get(s);
+            if (t.seq() == expected) {
+                next.lazySet(s, expected + 1);
+            } else if (t.seq() < expected) {
+                duplicatesOrReordered[s]++;
+            } else {
+                gaps[s] += t.seq() - expected;
+                next.lazySet(s, t.seq() + 1);
             }
-        }
-
-        @Override
-        public void tearDown() {
+            long l = System.nanoTime() - t.sentNanos();
+            if (l > 0) latency.recordValue(Math.min(l, latency.getHighestTrackableValue()));
+            received++;
+            if (stallEvery > 0 && received % stallEvery == 0) LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(20));
         }
     }
 
-    /**
-     * A test log record listener that captures log records.
-     */
-    private static class TestLogRecordListener implements LogRecordListener {
-        private final List<LogRecord> logRecords = new ArrayList<>();
+    static String sourceName(int s) {
+        return "hv-source-" + s;
+    }
 
-        @Override
-        public void processLogRecord(LogRecord logRecord) {
-            // Only store a subset of log records to avoid memory issues
-            if (logRecords.size() < 1000) {
-                logRecords.add(logRecord);
-            }
-        }
-
-        public List<LogRecord> getLogRecords() {
-            return logRecords;
+    record Rig(List<Feed> feeds, List<List<CheckingProcessor>> groups) {
+        List<CheckingProcessor> all() {
+            return groups.stream().flatMap(List::stream).toList();
         }
     }
 
-    /**
-     * A snapshot of system metrics at a point in time.
-     */
-    private static class MetricSnapshot {
-        private final Instant timestamp;
-        private final long eventsPublished;
-        private final long eventsProcessed;
-        private final long heapMemoryUsed;
-        private final long nonHeapMemoryUsed;
-        private final int threadCount;
-        private final int errorCount;
+    private Rig boot(boolean agentHostedSources) {
+        MongooseServerConfig config = new MongooseServerConfig();
+        List<Feed> feeds = new ArrayList<>();
+        for (int s = 0; s < SOURCES; s++) {
+            if (agentHostedSources) {
+                AgentSource src = new AgentSource();
+                src.setName(sourceName(s));
+                config.addEventSourceWorker(src, sourceName(s), false, "hv-feed-agent-" + s, new BackoffIdleStrategy());
+                feeds.add(src);
+            } else {
+                DirectSource src = new DirectSource(sourceName(s));
+                config.addEventSource(src, sourceName(s), false);
+                feeds.add(src);
+            }
+        }
+        List<List<CheckingProcessor>> groups = new ArrayList<>();
+        for (int g = 0; g < GROUPS; g++) {
+            List<CheckingProcessor> members = new ArrayList<>();
+            for (int p = 0; p < PER_GROUP; p++) {
+                CheckingProcessor processor = new CheckingProcessor("hv-g" + g + "-p" + p, SOURCES);
+                members.add(processor);
+                config.addProcessor("hv-group-" + g, processor, processor.name);
+            }
+            groups.add(members);
+        }
+        config.getEventHandlers().forEach(g -> g.setIdleStrategy(new BusySpinIdleStrategy()));
+        server = MongooseServer.bootServer(config, rec -> { });
+        return new Rig(feeds, groups);
+    }
 
-        public MetricSnapshot(
-                Instant timestamp,
-                long eventsPublished,
-                long eventsProcessed,
-                long heapMemoryUsed,
-                long nonHeapMemoryUsed,
-                int threadCount,
-                int errorCount) {
-            this.timestamp = timestamp;
-            this.eventsPublished = eventsPublished;
-            this.eventsProcessed = eventsProcessed;
-            this.heapMemoryUsed = heapMemoryUsed;
-            this.nonHeapMemoryUsed = nonHeapMemoryUsed;
-            this.threadCount = threadCount;
-            this.errorCount = errorCount;
+    /** Probe each source until every processor has seen it: the subscriptions made in start() are in place. */
+    private static void warmUp(Rig rig) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+        while (true) {
+            boolean all = true;
+            for (CheckingProcessor p : rig.all()) {
+                for (int s = 0; s < SOURCES; s++) all &= p.probes.get(s) > 0;
+            }
+            if (all) return;
+            assertTrue(System.nanoTime() < deadline, "processors never subscribed to every source");
+            for (int s = 0; s < SOURCES; s++) rig.feeds().get(s).publish(new Tick(s, -1, System.nanoTime()));
+            Thread.sleep(1);
+        }
+    }
+
+    /** The least progress any processor has made on source {@code s}. */
+    private static long minProgress(Rig rig, int s) {
+        long min = Long.MAX_VALUE;
+        for (CheckingProcessor p : rig.all()) min = Math.min(min, p.next.get(s));
+        return min;
+    }
+
+    private interface Pacer {
+        /** Called before publishing {@code seq} on source {@code s}. */
+        void beforePublish(int s, long seq) throws InterruptedException;
+    }
+
+    private long publishAll(Rig rig, Pacer pacer) throws Exception {
+        publishers = Executors.newFixedThreadPool(SOURCES);
+        long t0 = System.nanoTime();
+        List<Future<?>> done = new ArrayList<>();
+        for (int s = 0; s < SOURCES; s++) {
+            int source = s;
+            Feed feed = rig.feeds().get(s);
+            done.add(publishers.submit(() -> {
+                for (long seq = 0; seq < EVENTS_PER_SOURCE; seq++) {
+                    pacer.beforePublish(source, seq);
+                    feed.publish(new Tick(source, seq, System.nanoTime()));
+                }
+                return null;
+            }));
+        }
+        for (Future<?> f : done) f.get(DEADLINE_SECONDS, TimeUnit.SECONDS);
+        return t0;
+    }
+
+    /** Wait until every processor has accounted for every event of every source (handled, or missed as a gap). */
+    private static void awaitAccounted(Rig rig) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(DEADLINE_SECONDS);
+        LongSupplier last = () -> {
+            long sum = 0;
+            for (CheckingProcessor p : rig.all()) sum += p.received;
+            return sum;
+        };
+        long previous = -1;
+        long stillSince = System.nanoTime();
+        while (true) {
+            boolean all = true;
+            for (int s = 0; s < SOURCES; s++) all &= minProgress(rig, s) >= EVENTS_PER_SOURCE;
+            if (all) return;
+            long now = last.getAsLong();
+            if (now != previous) {
+                previous = now;
+                stillSince = System.nanoTime();
+            } else if (System.nanoTime() - stillSince > TimeUnit.SECONDS.toNanos(5)) {
+                // nothing moved for 5 s: whatever is missing will not come (it was dropped at the tail of a source)
+                return;
+            }
+            assertTrue(System.nanoTime() < deadline, "events still undelivered at the deadline");
+            Thread.sleep(5);
+        }
+    }
+
+    private static void report(String test, Rig rig, long t0) {
+        double secs = (System.nanoTime() - t0) / 1e9;
+        long deliveries = rig.all().stream().mapToLong(p -> p.received).sum();
+        long published = EVENTS_PER_SOURCE * SOURCES;
+        Histogram all = new Histogram(TimeUnit.SECONDS.toNanos(10), 3);
+        rig.all().forEach(p -> all.add(p.latency));
+        long dropped = rig.feeds().stream().mapToLong(Feed::dropped).sum();
+        System.out.printf("%n[%s] sources=%d groups=%d processors=%d published=%,d deliveries=%,d dropped=%,d in %.2fs:"
+                        + " %,.0f published/s, %,.0f deliveries/s; publish->handler latency us p50=%.1f p99=%.1f p99.9=%.1f max=%.1f%n",
+                test, SOURCES, GROUPS, GROUPS * PER_GROUP, published, deliveries, dropped, secs, published / secs,
+                deliveries / secs, all.getValueAtPercentile(50) / 1e3, all.getValueAtPercentile(99) / 1e3,
+                all.getValueAtPercentile(99.9) / 1e3, all.getMaxValue() / 1e3);
+    }
+
+    /** No event lost, duplicated or reordered, for every processor and every source. */
+    private static void assertExactlyOnce(Rig rig) {
+        for (CheckingProcessor p : rig.all()) {
+            for (int s = 0; s < SOURCES; s++) {
+                assertEquals(0, p.duplicatesOrReordered[s], p.name + " source " + s + ": duplicated or reordered events");
+                assertEquals(0, p.gaps[s], p.name + " source " + s + ": events never delivered");
+                assertEquals(EVENTS_PER_SOURCE, p.next.get(s), p.name + " source " + s + ": events delivered");
+            }
+            assertEquals(EVENTS_PER_SOURCE * SOURCES, p.received, p.name + ": events handled");
+        }
+        for (Feed f : rig.feeds()) assertEquals(0, f.dropped(), "a publisher dropped events");
+    }
+
+    /**
+     * Sustained maximum rate with a credit window per source (publish at most {@value #CREDIT_WINDOW} ahead of the
+     * slowest processor), so no reader queue ever fills: every event must reach every processor exactly once, in order.
+     */
+    @Test
+    void sustainedRate_directSources_everyEventDeliveredExactlyOnceInOrder() throws Exception {
+        Rig rig = boot(false);
+        warmUp(rig);
+        long t0 = publishAll(rig, (s, seq) -> {
+            while (seq - minProgress(rig, s) >= CREDIT_WINDOW) Thread.onSpinWait();
+        });
+        awaitAccounted(rig);
+        report("sustained/direct", rig, t0);
+        assertExactlyOnce(rig);
+    }
+
+    /** As the sustained test, with every source hosted on its own agent thread (offer, then published by the agent). */
+    @Test
+    void sustainedRate_agentHostedSources_everyEventDeliveredExactlyOnceInOrder() throws Exception {
+        Rig rig = boot(true);
+        warmUp(rig);
+        long t0 = publishAll(rig, (s, seq) -> {
+            while (seq - minProgress(rig, s) >= CREDIT_WINDOW) Thread.onSpinWait();
+        });
+        awaitAccounted(rig);
+        report("sustained/agent-hosted", rig, t0);
+        assertExactlyOnce(rig);
+    }
+
+    /**
+     * Unthrottled bursts of 50,000 per source with 50 ms pauses, and one processor that stalls 20 ms every 100,000
+     * events. Its group's reader queues fill and the publisher's
+     * documented policy is then to drop the item for that queue after a 10 ms spin (the source's {@code SlowConsumerStrategy}, BACKOFF by default, is
+     * not consulted by the publisher). So: never a duplicate or a reorder,
+     * every processor of a group sees the same gaps (they share one reader queue per source), and per source the gaps
+     * over all groups add up exactly to what the publisher counted as dropped.
+     */
+    @Test
+    void unthrottledBursts_noDuplicatesNoReorder_andEveryMissingEventIsACountedDrop() throws Exception {
+        Rig rig = boot(false);
+        // one slow consumer in group 0: its group's reader queues fill, the other groups' do not
+        rig.groups().get(0).get(0).stallEvery = 100_000;
+        warmUp(rig);
+        long t0 = publishAll(rig, (s, seq) -> {
+            if (seq > 0 && seq % 50_000 == 0) LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(50));
+        });
+        awaitAccounted(rig);
+        report("bursts/unthrottled", rig, t0);
+        for (CheckingProcessor p : rig.all()) {
+            for (int s = 0; s < SOURCES; s++) {
+                assertEquals(0, p.duplicatesOrReordered[s], p.name + " source " + s + ": duplicated or reordered events");
+            }
+        }
+        for (int s = 0; s < SOURCES; s++) {
+            long gapsOverGroups = 0;
+            for (List<CheckingProcessor> group : rig.groups()) {
+                long g0 = group.get(0).gaps[s] + (EVENTS_PER_SOURCE - group.get(0).next.get(s));
+                for (CheckingProcessor p : group) {
+                    assertEquals(g0, p.gaps[s] + (EVENTS_PER_SOURCE - p.next.get(s)),
+                            p.name + " source " + s + ": processors sharing a reader queue missed different events");
+                }
+                gapsOverGroups += g0;
+            }
+            assertEquals(rig.feeds().get(s).dropped(), gapsOverGroups,
+                    "source " + s + ": every event missing from a group is one its publisher counted as dropped");
         }
     }
 }
