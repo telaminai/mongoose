@@ -917,7 +917,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                 try {
                     CaptureCompletion done;
                     try {
-                        Object handle = Objects.requireNonNull(resources.openCapture(name), "capture open returned null");
+                        Object handle = Objects.requireNonNull(resources.openCaptureScoped(
+                                new com.telamin.mongoose.service.audit.AuditCaptureIdentity(roleName(), name, effect.generation())),
+                                "capture open returned null");
                         long id = captureResourceIds.incrementAndGet();
                         resourcePermit.handle = handle;
                         captureResourcePermits.put(id, resourcePermit);

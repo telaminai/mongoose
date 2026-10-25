@@ -452,7 +452,7 @@ public class MongooseServer implements MongooseServerController {
     public void processorDropped(String groupName, String processorName, DataFlow eventProcessor, ProcessorRegistration registration) {
         log.info("processor '" + processorName + "' dropped from group '" + groupName + "' after a failed start");
         try {
-            releaseProcessorBindings(processorName, eventProcessor);
+            releaseProcessorBindings(groupName, processorName, eventProcessor);
         } finally {
             if (registration != null) reservedProcessorNames.remove(new ProcessorName(groupName, processorName), registration);
         }
@@ -473,7 +473,7 @@ public class MongooseServer implements MongooseServerController {
         // touching the instance (mongoose#71), rather than left open for a processor that has gone
         // routed capture (design "Audit capture"): the group's control processor already uninstalled the capture and
         // handed it to the closer as part of the stop; the service only forgets the instance (and, unrouted, stops)
-        auditCaptureService.processorStopped(processorName, eventProcessor);
+        auditCaptureService.processorStopped(groupName, processorName, eventProcessor);
         if (!(auditCaptureService instanceof com.telamin.mongoose.service.audit.AuditCaptureResources)) {
             // a capture service no group routes: stopped here, as before (review of PR 5, finding 5)
             auditCaptureService.stop(processorName);
@@ -484,8 +484,8 @@ public class MongooseServer implements MongooseServerController {
      * Release what the server bound to a processor that left its group, stopped or dropped: its audit-capture binding.
      * Anything else the server binds per processor is to be released here too, so both paths release it.
      */
-    private void releaseProcessorBindings(String processorName, DataFlow eventProcessor) {
-        auditCaptureService.detach(processorName, eventProcessor);
+    private void releaseProcessorBindings(String groupName, String processorName, DataFlow eventProcessor) {
+        auditCaptureService.detach(groupName, processorName, eventProcessor);
     }
 
     /**
@@ -1450,7 +1450,7 @@ public class MongooseServer implements MongooseServerController {
         try {
             request = composingEventProcessorAgentRunner.group().addNamedEventProcessor(() -> {
                 try {
-                    return buildNamedEventProcessor(processorName, feedConsumer, composingEventProcessorAgentRunner);
+                    return buildNamedEventProcessor(processorName, feedConsumer, composingEventProcessorAgentRunner, registration);
                 } catch (RuntimeException | Error e) {
                     reservedProcessorNames.remove(reservation, registration);
                     throw e;
@@ -1493,6 +1493,17 @@ public class MongooseServer implements MongooseServerController {
             }
 
             @Override
+            public com.telamin.mongoose.control.ControlRequest sendScoped(
+                    com.telamin.mongoose.service.audit.AuditCaptureIdentity identity, boolean start) {
+                var entry = admitted(identity.selector());
+                if (entry == null || entry.getValue().generation() != identity.generation()) return null;
+                var runner = composingEventProcessorAgents.get(entry.getKey().group());
+                if (runner == null) return null;
+                return start ? runner.group().auditStart(identity.name(), entry.getValue())
+                        : runner.group().auditStop(identity.name(), entry.getValue());
+            }
+
+            @Override
             public boolean safeToWait(String processorName) {
                 var entry = admitted(processorName);
                 return entry != null && MongooseServer.this.safeToWait(entry.getKey().group());
@@ -1506,8 +1517,8 @@ public class MongooseServer implements MongooseServerController {
      */
     private java.util.Map.Entry<ProcessorName, ProcessorRegistration> admitted(String processorName) {
         int slash = processorName.indexOf('/');
-        String group = slash > 0 ? processorName.substring(0, slash) : null;
-        String name = slash > 0 ? processorName.substring(slash + 1) : processorName;
+        String group = slash >= 0 ? com.telamin.mongoose.service.audit.AuditCaptureIdentity.decode(processorName.substring(0, slash)) : null;
+        String name = slash >= 0 ? com.telamin.mongoose.service.audit.AuditCaptureIdentity.decode(processorName.substring(slash + 1)) : processorName;
         java.util.Map.Entry<ProcessorName, ProcessorRegistration> found = null;
         java.util.List<String> groups = new java.util.ArrayList<>();
         for (var entry : reservedProcessorNames.entrySet()) {
@@ -1525,7 +1536,7 @@ public class MongooseServer implements MongooseServerController {
 
     /** Build a processor from its supplier and wire it into the server (audit, perf monitor, capture). */
     private NamedEventProcessor buildNamedEventProcessor(String processorName, Supplier<DataFlow> feedConsumer,
-                                                         ComposingEventProcessorAgentRunner composingEventProcessorAgentRunner) {
+                                                         ComposingEventProcessorAgentRunner composingEventProcessorAgentRunner, ProcessorRegistration registration) {
         DataFlow eventProcessor = feedConsumer.get();
         eventProcessor.setAuditLogProcessor(logRecordListener);
         // Auto-bind the PerformanceMonitorAudit (if present) to the YAML
@@ -1543,22 +1554,35 @@ public class MongooseServer implements MongooseServerController {
         // and restore it on stop. Taken here, at attach: logRecordListener is a static that each
         // bootServer call overwrites, so reading it later would restore another server's listener.
         // mongoose#46: the capture service changes this processor's audit sink on the group's own thread
-        auditCaptureService.attach(eventProcessor, processorName, logRecordListener,
-                composingEventProcessorAgentRunner.group()::runOnAgentThread);
-        if (auditCaptureConfig != null && auditCaptureConfig.getAutoStart() != null
-                && auditCaptureConfig.getAutoStart().contains(processorName)) {
-            try {
-                auditCaptureService.start(processorName);     // on the group's thread: sent, applied after the add
-            } catch (RuntimeException notSent) {
-                // a capture that cannot be started is not a reason to fail the processor's add (review of PR 5, finding 6)
-                log.warning("audit-capture autoStart for '" + processorName + "' was not sent: " + notSent);
+        var captureIdentity = new com.telamin.mongoose.service.audit.AuditCaptureIdentity(
+                composingEventProcessorAgentRunner.group().roleName(), processorName, registration.generation());
+        try {
+            auditCaptureService.attachScoped(eventProcessor, captureIdentity, logRecordListener,
+                    composingEventProcessorAgentRunner.group()::runOnAgentThread);
+            if (auditCaptureConfig != null && auditCaptureConfig.getAutoStart() != null
+                    && (auditCaptureConfig.getAutoStart().contains(processorName)
+                        || auditCaptureConfig.getAutoStart().contains(captureIdentity.selector()))) {
+                try {
+                    auditCaptureService.startScoped(captureIdentity);     // on the group's thread: sent, applied after the add
+                } catch (RuntimeException notSent) {
+                    // a capture that cannot be started is not a reason to fail the processor's add (review of PR 5, finding 6)
+                    log.warning("audit-capture autoStart for '" + processorName + "' was not sent: " + notSent);
+                }
             }
+            if (isStarted()) {
+                log.info("init event processor in already started server processor:'" + eventProcessor + "'");
+    //                eventProcessor.setAuditLogLevel(EventLogControlEvent.LogLevel.INFO);
+            }
+            return new NamedEventProcessor(processorName, eventProcessor);
+        } catch (RuntimeException | Error failed) {
+            // Until the wrapper is returned the group cannot own/release this attachment (e.g. user toString throws).
+            try {
+                auditCaptureService.detach(captureIdentity.group(), processorName, eventProcessor);
+            } catch (RuntimeException | Error cleanupFailed) {
+                if (cleanupFailed != failed) failed.addSuppressed(cleanupFailed);
+            }
+            throw failed;
         }
-        if (isStarted()) {
-            log.info("init event processor in already started server processor:'" + eventProcessor + "'");
-//                eventProcessor.setAuditLogLevel(EventLogControlEvent.LogLevel.INFO);
-        }
-        return new NamedEventProcessor(processorName, eventProcessor);
     }
 
     /**
