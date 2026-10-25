@@ -23,7 +23,8 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -109,7 +110,7 @@ class ReviewReplayServiceInterceptionTest {
     }
 
     @Test
-    void aServiceTheRecordedProcessorRegisteredIsReplayedInPosition() throws Exception {
+    void aServiceRegistrationFromTheReplayIsRefusedWithoutMutatingTheLiveRegistry() throws Exception {
         InMemoryReplayStore store = new InMemoryReplayStore();
         InMemoryEventJournal journal = new InMemoryEventJournal();
         try (Server s = boot(ReplayConfig.record(Set.of(PROCESSOR), Map.of(ORDERS, new JavaSerializationCodec()), journal, store))) {
@@ -124,8 +125,10 @@ class ReviewReplayServiceInterceptionTest {
                 .withDeliveryTimeout(Duration.ofMillis(500)))) {
             awaitTrue(() -> s.replayer().complete(), "replay finished one way or another");
             String stopped = s.replayer().stopped(PROCESSOR);
-            assertNull(stopped, "the recorded run's own registration cannot be replayed: " + stopped);
-            assertEquals(List.of("got extra"), s.replayer().outputs(PROCESSOR).stream().map(String::valueOf).toList());
+            assertNotNull(stopped, "registry reconstruction requires an isolated replay registry");
+            assertTrue(stopped.contains("registry mutation registerService"), stopped);
+            assertFalse(s.server().registeredServices().containsKey("extra"), "no live registration or injection");
+            assertTrue(s.replayer().outputs(PROCESSOR).isEmpty());
         }
     }
 }

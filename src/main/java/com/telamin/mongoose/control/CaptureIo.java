@@ -5,7 +5,7 @@
 package com.telamin.mongoose.control;
 
 import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -38,9 +38,24 @@ public interface CaptureIo {
     final class Shared implements CaptureIo {
         static final Shared INSTANCE = new Shared();
 
-        private final java.util.concurrent.ExecutorService openers = Executors.newCachedThreadPool(daemon("mongoose-capture-open"));
+        /** Shared across servers: blocked opens cannot create unlimited helper threads or queued tasks. */
+        private final java.util.concurrent.ExecutorService openers = newOpenExecutor(8, 64);
+
+        static java.util.concurrent.ThreadPoolExecutor newOpenExecutor(int workers, int queueCapacity) {
+            var executor = new java.util.concurrent.ThreadPoolExecutor(workers, workers, 60, TimeUnit.SECONDS,
+                    new java.util.concurrent.ArrayBlockingQueue<>(queueCapacity), daemon("mongoose-capture-open"),
+                    new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
+            executor.allowCoreThreadTimeOut(true);
+            return executor;
+        }
         private final java.util.concurrent.ExecutorService closer = Executors.newSingleThreadExecutor(daemon("mongoose-capture-closer"));
-        private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor(daemon("mongoose-capture-timer"));
+        private final ScheduledThreadPoolExecutor timer = newTimer();
+
+        static ScheduledThreadPoolExecutor newTimer() {
+            var timer = new ScheduledThreadPoolExecutor(1, daemon("mongoose-capture-timer"));
+            timer.setRemoveOnCancelPolicy(true);
+            return timer;
+        }
 
         private Shared() {
         }

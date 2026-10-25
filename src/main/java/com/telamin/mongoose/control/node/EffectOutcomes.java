@@ -63,6 +63,7 @@ public class EffectOutcomes extends EventLogNode {
             ControlAudit.record(auditLog, state, "EffectOutcome", "opId", result.opId(), "effect", result.effect(),
                     "outcome", result.outcome().name().toLowerCase(), "generation", result.generation(),
                     "name", result.name(), "reason", result.reason(),
+                    "resourceId", state.effectResource(result.opId()) < 0 ? null : state.effectResource(result.opId()),
                     // an effect outcome after its request's reply is cleanup the reply never waited for
                     "cleanup", state.isCleanup(result.opId(), false) || state.chain(result.requestId()) == null
                             ? Boolean.TRUE : null);

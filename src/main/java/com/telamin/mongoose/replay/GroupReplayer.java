@@ -240,7 +240,6 @@ public final class GroupReplayer {
      */
     private com.telamin.fluxtion.runtime.service.Service<?> intercepted(Cursor cursor,
                                                                         com.telamin.fluxtion.runtime.service.Service<?> service) {
-        Object target = service.instance();
         return ControlInterception.wrap(service, (method, args, m, raw) -> {
             controlRequests.computeIfAbsent(cursor.name, n -> new CopyOnWriteArrayList<>()).add(method + args);
             if (!ownThread.getAsBoolean()) {
@@ -273,7 +272,11 @@ public final class GroupReplayer {
                 throw new IllegalStateException(why);
             }
             if (ControlInterception.REGISTRY.contains(method)) {
-                return ControlInterception.invoke(m, target, raw);    // the registry the stream names must exist
+                // The server registry is shared with unreplayed processors. Matching text does not authorize real
+                // injection, withdrawal, stop callbacks or feed setup. These require an isolated replay registry.
+                String why = "registry mutation " + method + " requires an isolated replay registry; not executed";
+                stop(cursor, why);
+                throw new UnsupportedOperationException(why);
             }
             return null;
         });

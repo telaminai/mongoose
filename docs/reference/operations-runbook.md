@@ -65,8 +65,8 @@ that names the group and the processor. Before this, boot went ahead and the dup
 
 ## Shutdown
 
-`MongooseServer.shutdown()` (and `stop()`, which calls it) runs an ordered, **bounded** shutdown and returns a
-`StopResult` saying what it achieved. The full contract is in
+`MongooseServer.shutdown()` runs an ordered, **bounded** shutdown and returns a `StopResult` saying what it achieved.
+`stop()` delegates to it and discards the result; inspect `lastStopResult()` or call `shutdown()` when you need it. The full contract is in
 [Control-plane contracts: Shutdown](control-plane-contracts.md#shutdown). In operational terms:
 
 1. **Feeds stop.** Agent groups that host only event sources close. Event sources that share a group with other
@@ -97,7 +97,8 @@ first unfinished phase. A service whose `stop()` threw is not called again, and 
 
 **Called from an agent thread.** When `stop()` or `shutdown()` is called on one of the server's own agent threads (a
 processor's event handler, an admin command, an agent-hosted service), it cannot wait for that thread to close. It
-starts the shutdown on a new `mongoose-server-stop` thread and returns at once, with `handedOff() == true`. To wait
+starts the shutdown on a new `mongoose-server-stop` thread and returns at once. `shutdown()` returns a result with
+`handedOff() == true`; the void `stop()` does not return that result. To wait
 for the shutdown, call `server.awaitStopped(timeout, unit)` from another thread. `awaitStopped` returns `true` only
 once a stop has completed.
 

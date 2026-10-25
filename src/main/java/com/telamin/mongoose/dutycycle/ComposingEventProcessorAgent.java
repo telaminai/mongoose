@@ -181,6 +181,25 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     private volatile int captureOpenLimit = 8;
     private final java.util.concurrent.atomic.AtomicInteger opensInFlight = new java.util.concurrent.atomic.AtomicInteger();
     private final ConcurrentHashMap<Long, Object> captureHandles = new ConcurrentHashMap<>();
+    /** Includes queued opens, installed captures, handed-off closes and unresolved failed physical closes. */
+    private volatile int captureResourceLimit = 1024;
+    private final AtomicInteger captureResourceSlots = new AtomicInteger();
+    private final Object captureResourceCompletion = new Object();
+    private final ConcurrentHashMap<Long, CaptureResourcePermit> captureResourcePermits = new ConcurrentHashMap<>();
+    private final AtomicLong physicalCleanupOps = new AtomicLong();
+
+    private final class CaptureResourcePermit {
+        private final java.util.concurrent.atomic.AtomicBoolean held = new java.util.concurrent.atomic.AtomicBoolean(true);
+        private volatile Object handle;
+        private volatile String closeFailure;
+        void release() {
+            if (held.compareAndSet(true, false)) {
+                handle = null;
+                captureResourceSlots.decrementAndGet();
+                signalCaptureResourceCompletion();
+            }
+        }
+    }
     /** Resources whose live detach failed: retry without the instance only after its release. */
     private final java.util.Set<Long> captureDetachFailures = ConcurrentHashMap.newKeySet();
     private final ConcurrentHashMap<String, com.telamin.mongoose.control.CaptureIo.Cancellable> openTimeouts = new ConcurrentHashMap<>();
@@ -243,7 +262,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         return addNamedEventProcessor(initFunction, registration, Long.MAX_VALUE);
     }
 
-    /** As above, admitted by {@code admitByNanos} or answered {@code REFUSED}: one deadline for admission and reply. */
+    /** As above, admitted within the server call's absolute deadline, including its later reply wait. */
     public ControlRequest addNamedEventProcessor(Supplier<NamedEventProcessor> initFunction, ProcessorRegistration registration,
                                                  long admitByNanos) {
         Objects.requireNonNull(initFunction, "initFunction is null");
@@ -331,24 +350,13 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         return control.trySend(broadcastRequest(service, register, version));
     }
 
-    /** Remember the instance a versioned broadcast carries, as it is sent, so a replay can deliver exactly it. */
-    private void rememberServiceVersion(Service<?> service, boolean register, long version) {
-        if (version <= 0) return;
-        lastServiceVersions.merge(service.serviceName(), version, Math::max);
-        if (!register) return;
-        var versions = serviceHistory.computeIfAbsent(service.serviceName(), n -> new java.util.LinkedHashMap<>() {
-            @Override
-            protected boolean removeEldestEntry(Map.Entry<Long, Service<?>> eldest) {
-                return size() > SERVICE_VERSIONS_REMEMBERED;
-            }
-        });
-        synchronized (versions) {
-            versions.put(version, service);
-        }
-    }
-
     private ControlRequest broadcastRequest(Service<?> service, boolean register, long version) {
-        rememberServiceVersion(service, register, version);
+        if (version > 0) {
+            // Publication exists even when no processor currently receives a DeliverService effect. Keep the exact
+            // wrapper with its version, rather than combining a version with a later registry lookup during replay.
+            publishedServices.compute(service.serviceName(), (name, previous) -> previous == null || version > previous.version()
+                    ? new PublishedService(version, register ? service : null) : previous);
+        }
         return new ControlRequest(ControlRequest.Kind.BROADCAST,
                 (register ? "register " : "deregister ") + service.serviceName(),
                 id -> new BroadcastIntent(id, service.serviceName(), register, version),
@@ -379,9 +387,63 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         return opensInFlight.get();
     }
 
+    /** Maximum admitted physical capture resources, including closes still queued or failed; default 1024. */
+    public void setCaptureResourceLimit(int limit) {
+        if (limit < 1) throw new IllegalArgumentException("resource limit must be positive: " + limit);
+        captureResourceLimit = limit;
+    }
+
+    public int captureResourceSlotsInUse() { return captureResourceSlots.get(); }
+
+    /** Failed closes remain owned and consume budget; the adapter's close is not blindly retried. */
+    public Map<Long, String> captureCloseFailures() {
+        Map<Long, String> failures = new HashMap<>();
+        captureResourcePermits.forEach((id, permit) -> {
+            if (permit.closeFailure != null) failures.put(id, permit.closeFailure);
+        });
+        return java.util.Collections.unmodifiableMap(failures);
+    }
+
+    /** Only a tracked shutdown helper waits here; its caller joins that helper with the shutdown deadline. */
+    public boolean awaitCaptureResourceCleanup() throws InterruptedException {
+        if (com.telamin.mongoose.control.AgentThreads.isAgentThread()) {
+            throw new IllegalStateException("an agent thread cannot wait for physical capture cleanup");
+        }
+        synchronized (captureResourceCompletion) {
+            while (captureResourceSlots.get() != 0 && captureCloseFailures().isEmpty()) {
+                captureResourceCompletion.wait();
+            }
+            return captureResourceSlots.get() == 0;
+        }
+    }
+
+    private void signalCaptureResourceCompletion() {
+        synchronized (captureResourceCompletion) {
+            captureResourceCompletion.notifyAll();
+        }
+    }
+
+    private CaptureResourcePermit admitCaptureResource() {
+        int current;
+        do {
+            current = captureResourceSlots.get();
+            if (current >= captureResourceLimit) return null;
+        } while (!captureResourceSlots.compareAndSet(current, current + 1));
+        return new CaptureResourcePermit();
+    }
+
     /** How long an open may take before its audit start is answered Failed; 30 s by default. */
     public void setCaptureOpenTimeout(java.time.Duration timeout) {
         this.captureOpenTimeoutMillis = timeout.toMillis();
+    }
+
+    private boolean admitCaptureOpen() {
+        int current;
+        do {
+            current = opensInFlight.get();
+            if (current >= captureOpenLimit) return false;
+        } while (!opensInFlight.compareAndSet(current, current + 1));
+        return true;
     }
 
     /**
@@ -403,20 +465,10 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
 
     /** Per name, the processors built in this group: a replay stream's key. Agent thread only. */
     private final Map<String, AtomicInteger> builtOrdinals = new HashMap<>();
-    /** Per service, the registry version of the last broadcast sent to this group. */
-    private final Map<String, Long> lastServiceVersions = new ConcurrentHashMap<>();
-    /**
-     * Per service, the instances this group has been sent, by registry version, so a replay delivers the recorded
-     * version and never the current one in its place (follow-up review, finding 3). Bounded per name. Recorded when a
-     * broadcast is sent to the group, whatever processors it holds (fix review 1), so read under the map's lock.
-     */
-    private final Map<String, java.util.LinkedHashMap<Long, Service<?>>> serviceHistory = new ConcurrentHashMap<>();
-    static final int SERVICE_VERSIONS_REMEMBERED = 32;
-
-    /** What handing a processor a service did: delivered, skipped (it already held it), or delivered with a failure. */
-    private record Delivery(boolean delivered, String failure) {
-        static final Delivery SKIPPED = new Delivery(false, null);
-    }
+    /** Per service, the registry version of the last broadcast applied here. Agent thread only. */
+    /** Latest published registry binding per name; a removed incarnation does not retain its service object. */
+    private record PublishedService(long version, Service<?> service) { }
+    private final ConcurrentHashMap<String, PublishedService> publishedServices = new ConcurrentHashMap<>();
 
     /** What an add needs to perform its effects: never seen by the control processor. */
     private record AddPayload(Supplier<NamedEventProcessor> init, ProcessorRegistration registration) { }
@@ -590,9 +642,10 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             registration.releaseName();
         }
         registrationsByGeneration.clear();
-        deathCleanupComplete = captureHandles.isEmpty();
+        deathCleanupComplete = captureHandles.isEmpty() && captureResourceSlots.get() == 0;
         control.audit().fallback(deathCleanupComplete ? "CleanedUp" : "CleanupPending", "group", roleName(),
-                "processorsLeft", registeredEventProcessors.size(), "captureResourcesLeft", captureHandles.size());
+                "processorsLeft", registeredEventProcessors.size(), "captureResourcesLeft", captureResourceSlots.get(),
+                "failedPhysicalCloses", captureCloseFailures().size());
     }
 
     /**
@@ -771,7 +824,6 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         // the services a server registers while it boots (its feeds among them) are configuration, delivered live and
         // never recorded; a service change is what was sent once the server had started
         boolean runtimeChange = payload.runtime();
-        // (the version history is recorded when the broadcast is sent: see rememberServiceVersion)
         if (replayer != null && (runtimeChange && replayer.suppressesLiveServices(flow)
                 || replayer.suppressesLiveService(flow, payload.service().serviceName()))) {
             // replayed from a stream that records its service changes: delivered where the recorded run had it. A
@@ -781,18 +833,14 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                     : result(effect, ControlOutcome.FAILED, "replayed: withdrawn in position by the stream, not yet");
         }
         if (runtimeChange && recorder != null) recorder.beforeControl(flow);
-        Delivery delivery = deliverService(named, payload.service(), payload.register());
+        ServiceDelivery delivery = deliverService(named, payload.service(), payload.register());
         if (runtimeChange && recorder != null) {
-            // only a change that reached the processor is a position in its stream: one it already held was skipped
-            // live and must not move it on replay (follow-up review, finding 4); a failed callback ends what the
-            // stream can reproduce
             String name = payload.service().serviceName();
             if (delivery.failure() != null) recorder.serviceFailed(flow, name, delivery.failure());
-            else if (delivery.delivered()) recorder.serviceChanged(flow, name, payload.register(), payload.version());
+            else if (delivery.invoked()) recorder.serviceChanged(flow, name, payload.register(), payload.version());
             else recorder.discardControl(flow);
         }
-        return result(effect, delivery.failure() == null ? ControlOutcome.SUCCEEDED : ControlOutcome.FAILED,
-                delivery.failure());
+        return result(effect, delivery.failure() == null ? ControlOutcome.SUCCEEDED : ControlOutcome.FAILED, delivery.failure());
     }
 
     private EffectResult runTask(ControlEffect.RunTask effect) {
@@ -813,51 +861,78 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         if (resources == null) {
             return result(effect, ControlOutcome.FAILED, "audit capture is not enabled");
         }
+        CaptureResourcePermit initialResourcePermit = admitCaptureResource();
+        if (initialResourcePermit == null) return result(effect, ControlOutcome.FAILED, "physical capture resource limit reached");
+        if (!admitCaptureOpen()) {
+            initialResourcePermit.release();
+            return result(effect, ControlOutcome.FAILED, "unresolved capture open limit reached");
+        }
+        var firstExecution = new java.util.concurrent.atomic.AtomicBoolean(true);
         long root = effect.requestId();
         String op = effect.opId();
         String name = effect.name();
-        if (opensInFlight.incrementAndGet() > captureOpenLimit) {
-            int inFlight = opensInFlight.decrementAndGet();
-            return result(effect, ControlOutcome.FAILED, inFlight + " physical capture opens are still in flight (limit "
-                    + captureOpenLimit + "): a helper has not returned");
-        }
         var io = captureIo;
-        com.telamin.mongoose.control.CaptureIo.Cancellable timeout;
+        var permitHeld = new java.util.concurrent.atomic.AtomicBoolean(true);
+        Runnable releasePermit = () -> {
+            if (permitHeld.compareAndSet(true, false)) opensInFlight.decrementAndGet();
+        };
         try {
-            timeout = io.schedule(() -> {
+            var timeoutFired = new java.util.concurrent.atomic.AtomicBoolean();
+            var timeout = io.schedule(() -> {
+                timeoutFired.set(true);
                 openTimeouts.remove(op);
                 control.complete(new CaptureCompletion(root, op, completionIds.incrementAndGet(),
                         CaptureCompletion.Kind.TIMED_OUT, -1, null));
             }, captureOpenTimeoutMillis);
-        } catch (RuntimeException refused) {
-            opensInFlight.decrementAndGet();        // nothing was started: the permit is returned (FM-5)
-            return result(effect, ControlOutcome.FAILED, "the open's timeout could not be scheduled: " + refused);
-        }
-        openTimeouts.put(op, timeout);
-        try {
+            openTimeouts.put(op, timeout);
+            // A zero-delay/custom timer may fire before its cancellation handle was published.
+            if (timeoutFired.get()) openTimeouts.remove(op, timeout);
             io.open(() -> {
-                CaptureCompletion done;
-                try {
-                    Object handle = resources.openCapture(name);
-                    long id = captureResourceIds.incrementAndGet();
-                    captureHandles.put(id, handle);
-                    done = new CaptureCompletion(root, op, completionIds.incrementAndGet(), CaptureCompletion.Kind.OPENED, id, null);
-                } catch (Throwable t) {
-                    done = new CaptureCompletion(root, op, completionIds.incrementAndGet(), CaptureCompletion.Kind.OPEN_FAILED,
-                            -1, String.valueOf(t));
+                // A custom helper that repeats a task creates another resource; it needs its own slot.
+                boolean initial = firstExecution.compareAndSet(true, false);
+                if (!initial && !admitCaptureOpen()) {
+                    control.audit().fallback("CaptureDuplicateSuppressed", "group", roleName(), "requestId", root,
+                            "opId", op, "reason", "unresolved capture open limit reached");
+                    return;
                 }
-                var pendingTimeout = openTimeouts.remove(op);
-                if (pendingTimeout != null) pendingTimeout.cancel();
+                Runnable releaseThisOpen = initial ? releasePermit : () -> opensInFlight.decrementAndGet();
+                CaptureResourcePermit resourcePermit = initial ? initialResourcePermit : admitCaptureResource();
+                if (resourcePermit == null) {
+                    releaseThisOpen.run();
+                    control.audit().fallback("CaptureDuplicateSuppressed", "group", roleName(), "requestId", root,
+                            "opId", op, "reason", "physical capture resource limit reached");
+                    return;
+                }
                 try {
+                    CaptureCompletion done;
+                    try {
+                        Object handle = Objects.requireNonNull(resources.openCapture(name), "capture open returned null");
+                        long id = captureResourceIds.incrementAndGet();
+                        resourcePermit.handle = handle;
+                        captureResourcePermits.put(id, resourcePermit);
+                        captureHandles.put(id, handle);
+                        done = new CaptureCompletion(root, op, completionIds.incrementAndGet(), CaptureCompletion.Kind.OPENED, id, null);
+                    } catch (Throwable t) {
+                        resourcePermit.release();
+                        done = new CaptureCompletion(root, op, completionIds.incrementAndGet(), CaptureCompletion.Kind.OPEN_FAILED,
+                                -1, String.valueOf(t));
+                    }
+                    var pendingTimeout = openTimeouts.remove(op);
+                    if (pendingTimeout != null) pendingTimeout.cancel();
                     control.complete(done);
                 } finally {
-                    opensInFlight.decrementAndGet();    // the physical operation has finished, whatever its request did
+                    releaseThisOpen.run();
                 }
             });
-        } catch (RuntimeException rejected) {
-            opensInFlight.decrementAndGet();
+        } catch (RuntimeException | Error rejected) {
             var pendingTimeout = openTimeouts.remove(op);
-            if (pendingTimeout != null) pendingTimeout.cancel();
+            try {
+                if (pendingTimeout != null) pendingTimeout.cancel();
+            } finally {
+                initialResourcePermit.release();
+                releasePermit.run();
+            }
+            if (rejected instanceof Error fatal) throw fatal;
             return result(effect, ControlOutcome.FAILED, "the open could not be handed to a helper: " + rejected);
         }
         return result(effect, ControlOutcome.PENDING, null);
@@ -922,8 +997,13 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     private CaptureCompletion closeResource(long root, String op, long resourceId, Object handle) {
         try {
             captureResources.closeCapture(handle);
+            CaptureResourcePermit permit = captureResourcePermits.remove(resourceId);
+            if (permit != null) permit.release();
             return new CaptureCompletion(root, op, completionIds.incrementAndGet(), CaptureCompletion.Kind.CLOSED, resourceId, null);
         } catch (Throwable t) {
+            CaptureResourcePermit permit = captureResourcePermits.get(resourceId);
+            if (permit != null) permit.closeFailure = String.valueOf(t);
+            signalCaptureResourceCompletion();
             return new CaptureCompletion(root, op, completionIds.incrementAndGet(), CaptureCompletion.Kind.CLOSE_FAILED,
                     resourceId, String.valueOf(t));
         }
@@ -939,7 +1019,6 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         switch (c.kind()) {
             case OPENED -> {
                 Object handle = captureHandles.remove(c.resourceId());
-                CaptureCompletion closed = handle == null ? null : closeResource(c.requestId(), c.opId(), c.resourceId(), handle);
                 // the open's final outcome, then the compensating close: as the control processor would have recorded
                 // an open its timeout already settled has had its final outcome: this one is a duplicate. The group has
                 // ended, so its control state no longer changes and is read safely here
@@ -947,16 +1026,23 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                 audit.fallback("EffectOutcome", "group", roleName(), "requestId", c.requestId(), "opId", c.opId(),
                         "effect", "OpenCapture", "outcome", "succeeded", "stale", true, "resourceId", c.resourceId(),
                         "duplicate", settled ? Boolean.TRUE : null);
-                audit.fallback("CaptureCompensated", "group", roleName(), "opId", c.opId(), "resourceId", c.resourceId(),
-                        "closed", closed != null && closed.kind() == CaptureCompletion.Kind.CLOSED);
-                // the compensating close's own outcome, with the physical failure's reason when it failed: an attempted
-                // close is not a successful one (follow-up review, finding 8)
-                if (closed != null) {
-                    audit.fallback("EffectOutcome", "group", roleName(), "requestId", c.requestId(),
-                            "opId", "orphan-close." + c.resourceId(), "effect", "CloseCapture",
-                            "outcome", closed.kind() == CaptureCompletion.Kind.CLOSED ? "succeeded" : "failed",
-                            "resourceId", c.resourceId(), "reason", closed.reason());
+                if (handle == null) {
+                    audit.fallback("CaptureCompensated", "group", roleName(), "requestId", c.requestId(),
+                            "opId", c.opId(), "resourceId", c.resourceId(), "duplicate", true,
+                            "closed", false, "reason", "resource already handed to a closer");
+                    break;
                 }
+                String closeOp = c.requestId() + ".orphan-close." + c.resourceId();
+                audit.fallback("EffectRequested", "group", roleName(), "requestId", c.requestId(), "opId", closeOp,
+                        "effect", "CloseCapture", "resourceId", c.resourceId(), "causeOp", c.opId());
+                CaptureCompletion closed = closeResource(c.requestId(), closeOp, c.resourceId(), handle);
+                audit.fallback("EffectOutcome", "group", roleName(), "requestId", c.requestId(), "opId", closeOp,
+                        "effect", "CloseCapture", "resourceId", c.resourceId(), "causeOp", c.opId(),
+                        "outcome", closed.kind() == CaptureCompletion.Kind.CLOSED ? "succeeded" : "failed",
+                        "reason", closed.reason());
+                audit.fallback("CaptureCompensated", "group", roleName(), "requestId", c.requestId(),
+                        "opId", closeOp, "resourceId", c.resourceId(), "causeOp", c.opId(),
+                        "closed", closed.kind() == CaptureCompletion.Kind.CLOSED, "reason", closed.reason());
             }
             case CLOSED, CLOSE_FAILED -> audit.fallback("EffectOutcome", "group", roleName(), "requestId", c.requestId(),
                     "opId", c.opId(), "effect", "CloseCapture", "outcome", c.kind() == CaptureCompletion.Kind.CLOSED
@@ -979,21 +1065,33 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         for (Long id : new ArrayList<>(captureHandles.keySet())) {
             Object handle = captureHandles.get(id);
             if (handle == null) continue;
-            boolean closed = false;
+            String detachOp = "group-detach." + id + "." + physicalCleanupOps.incrementAndGet();
+            control.audit().fallback("EffectRequested", "group", roleName(), "requestId", -1, "opId", detachOp,
+                    "effect", "UninstallCapture", "resourceId", id, "generation", -1, "offline", true,
+                    "reason", "released without the control processor");
             try {
                 resources.uninstallCapture(handle, null, null);
-                if (!captureHandles.remove(id, handle)) continue;
-                captureDetachFailures.remove(id);
-                resources.closeCapture(handle);
-                closed = true;
-            } catch (VirtualMachineError fatal) {
-                throw fatal;
+                control.audit().fallback("EffectOutcome", "group", roleName(), "requestId", -1, "opId", detachOp,
+                        "effect", "UninstallCapture", "outcome", "succeeded", "resourceId", id,
+                        "generation", -1, "offline", true);
             } catch (Throwable t) {
-                reportCloseFailure("<capture " + id + ">", "could not be closed", t);
+                control.audit().fallback("EffectOutcome", "group", roleName(), "requestId", -1, "opId", detachOp,
+                        "effect", "UninstallCapture", "outcome", "failed", "resourceId", id,
+                        "generation", -1, "offline", true, "reason", String.valueOf(t));
+                if (t instanceof VirtualMachineError fatal) throw fatal;
+                reportCloseFailure("<capture " + id + ">", "could not be detached", t);
+                continue;
             }
-            control.audit().fallback("EffectOutcome", "group", roleName(), "opId", "group-close." + id,
-                    "effect", "CloseCapture", "outcome", closed ? "succeeded" : "failed", "resourceId", id,
-                    "reason", "released without the control processor");
+            if (!captureHandles.remove(id, handle)) continue;
+            captureDetachFailures.remove(id);
+            String closeOp = "group-close." + id;
+            control.audit().fallback("EffectRequested", "group", roleName(), "requestId", -1, "opId", closeOp,
+                    "effect", "CloseCapture", "resourceId", id, "generation", -1, "offline", true, "causeOp", detachOp);
+            CaptureCompletion closed = closeResource(-1, closeOp, id, handle);
+            control.audit().fallback("EffectOutcome", "group", roleName(), "requestId", -1, "opId", closeOp,
+                    "effect", "CloseCapture", "outcome", closed.kind() == CaptureCompletion.Kind.CLOSED ? "succeeded" : "failed",
+                    "resourceId", id, "generation", -1, "offline", true, "causeOp", detachOp,
+                    "reason", closed.reason());
         }
     }
 
@@ -1143,62 +1241,41 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
 
             @Override
             public String deliverService(DataFlow flow, String service, boolean register, long version) {
-                NamedEventProcessor np = null;
-                for (NamedEventProcessor candidate : registeredEventProcessors.values()) {
-                    if (candidate.eventProcessor() == flow) np = candidate;
-                }
-                if (np == null) return "wait:the replayed processor is not running";
-                Service<?> svc = null;
-                if (register) {
-                    // the recorded version, never the current one in its place (follow-up review, finding 3)
-                    var versions = serviceHistory.get(service);
-                    if (version > 0 && versions != null) {
-                        synchronized (versions) {
-                            svc = versions.get(version);
+                for (NamedEventProcessor np : registeredEventProcessors.values()) {
+                    if (np.eventProcessor() != flow) continue;
+                    Service<?> svc = register ? registeredServices.get(service) : null;
+                    if (register && version > 0) {
+                        PublishedService published = publishedServices.get(service);
+                        if (published == null && svc == null) return "wait:service " + service + " is not registered";
+                        if (published == null) {
+                            return "no registry binding identifies recorded service " + service + " at version " + version;
+                        }
+                        if (published.version() < version) {
+                            return "wait:service " + service + " version " + version + " is not registered yet";
+                        }
+                        // A retained historical Java object may already have been stopped. Only the currently live,
+                        // versioned binding can be injected; reconstructing old incarnations needs an isolated registry.
+                        if (published.version() != version || svc != published.service() || svc == null) {
+                            return "recorded service " + service + " at version " + version
+                                    + " is unavailable; current published version is " + published.version();
                         }
                     }
-                    if (svc == null) {
-                        Long live = lastServiceVersions.get(service);
-                        if (version > 0 && live != null) {
-                            if (live < version) {
-                                return "wait:service " + service + " version " + version
-                                        + " is not registered in this run yet (it is at version " + live + ")";
-                            }
-                            return "service " + service + " version " + version + " cannot be reproduced: this run's"
-                                    + " registry is at version " + live + " and no longer holds the recorded instance";
+                    if (!register) {
+                        for (Service<?> held : servicesDeliveredTo(flow)) {
+                            if (held.serviceName().equals(service)) svc = held;
                         }
-                        if (version > 0) {
-                            // no version history here (a service configured at boot, never broadcast with a version):
-                            // the recorded instance cannot be verified, so it is refused, never substituted (fix review 1)
-                            if (registeredServices.get(service) == null) {
-                                return "wait:service " + service + " version " + version + " is not registered";
-                            }
-                            return "service " + service + " version " + version + " cannot be verified: this run has no"
-                                    + " version history for it, so the recorded instance cannot be reproduced";
-                        }
-                        svc = registeredServices.get(service);
-                        if (svc == null) return "wait:service " + service + " is not registered";
+                        if (svc == null) return "recorded withdrawal of service " + service
+                                + " has no delivered incarnation";
                     }
-                } else {
-                    for (Service<?> held : servicesDeliveredTo(flow)) {
-                        if (held.serviceName().equals(service)) svc = held;
+                    if (svc == null) return "wait:service " + service + " is not registered";
+                    ServiceDelivery delivery = ComposingEventProcessorAgent.this.deliverService(np, svc, register);
+                    if (!delivery.invoked() || delivery.failure() != null) {
+                        return "recorded service callback for " + service + " was not delivered: "
+                                + (delivery.failure() == null ? "already held" : delivery.failure());
                     }
-                    if (svc == null) {
-                        // the recorded run withdrew it here; the replayed processor never held it (fix review 2)
-                        return "service " + service + " was not held: the recorded run withdrew it here";
-                    }
+                    return null;
                 }
-                Delivery delivery = ComposingEventProcessorAgent.this.deliverService(np, svc, register);
-                if (delivery.failure() != null) {
-                    // a replayed callback that fails is a divergence, never a success (follow-up review, finding 5)
-                    return "service " + service + " " + (register ? "registration" : "deregistration")
-                            + " callback failed during replay: " + delivery.failure();
-                }
-                if (!delivery.delivered() && register) {
-                    return "service " + service + " was already held: it reached the processor before its recorded"
-                            + " position";
-                }
-                return null;
+                return "wait:the replayed processor is not running";
             }
 
             @Override
@@ -1369,6 +1446,8 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         return replayer == null ? service : replayer.serviceFor(eventProcessor, service);
     }
 
+    private record ServiceDelivery(boolean invoked, String failure) { }
+
     /**
      * Hand one processor a service (de)registration. A processor that throws is reported and keeps running; the
      * broadcast still reaches every other processor in the group (mongoose#57).
@@ -1377,14 +1456,14 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
      * delivered: a later broadcast of the same service is not offered to that processor again, and a later deregister
      * of it does reach the processor. Likewise a {@code deRegisterService} that throws counts as done.
      *
-     * @return delivered, skipped (already held, or not held to withdraw), or delivered with the callback's failure
+     * @return whether the callback ran, and its failure if it threw; a skipped broadcast is not a processor input
      */
-    private Delivery deliverService(NamedEventProcessor np, Service<?> svc, boolean register) {
+    private ServiceDelivery deliverService(NamedEventProcessor np, Service<?> svc, boolean register) {
         DataFlow eventProcessor = np.eventProcessor();
         // each service once (mongoose#60 item 1): a register the processor already has - it joined after the service
         // was in the registry - is skipped, and a deregister reaches only a processor that was handed the service
         if (register ? !servicesDeliveredTo(eventProcessor).add(svc) : !servicesDeliveredTo(eventProcessor).remove(svc)) {
-            return Delivery.SKIPPED;
+            return new ServiceDelivery(false, null);
         }
         com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(eventProcessor);
         try {
@@ -1395,13 +1474,13 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             } else {
                 eventProcessor.deRegisterService(serviceFor(eventProcessor, svc));
             }
-            return new Delivery(true, null);
+            return new ServiceDelivery(true, null);
         } catch (VirtualMachineError fatal) {
             throw fatal;
         } catch (Throwable t) {
             reportProcessorFailure(np.name(), (register ? "failed to register" : "failed to deregister")
                     + " service '" + svc.serviceName() + "'", t);
-            return new Delivery(true, String.valueOf(t));
+            return new ServiceDelivery(true, String.valueOf(t));
         } finally {
             com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
         }

@@ -132,6 +132,9 @@ public final class ControlEvidence {
                 out.add(new Requested(op, m.group(2), Long.parseLong(m.group(3)), d.seq(), requestId));
             }
         }
+        for (Rec r : ofType("EffectRequested")) {
+            out.add(new Requested(r.str("opId"), r.str("effect"), r.num("generation"), r.seq(), r.requestId()));
+        }
         return out;
     }
 }

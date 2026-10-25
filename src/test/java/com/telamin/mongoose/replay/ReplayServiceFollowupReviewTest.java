@@ -26,9 +26,11 @@ class ReplayServiceFollowupReviewTest {
         boolean started;
         boolean failRegistration;
         int rate;
+        boolean readClock;
+        ClockStrategy clock;
         public void init() { }
         public void addEventFeed(EventFeed feed) { }
-        public void setClockStrategy(ClockStrategy strategy) { }
+        public void setClockStrategy(ClockStrategy strategy) { clock = strategy; }
         public void onEvent(Object event) { }
         public void start() { started = true; trace.add("start:" + rate); }
         public void stop() { }
@@ -38,6 +40,7 @@ class ReplayServiceFollowupReviewTest {
             if (failRegistration) throw new IllegalStateException("registration failed during replay");
             rate = r.value();
             trace.add("register:" + rate + ":" + started);
+            if (readClock) trace.add("time:" + clock.getWallClockTime());
         }
         public void deRegisterService(Service<?> s) {
             if (s.instance() instanceof Rate r) { trace.add("deregister:" + r.value()); rate = 0; }
@@ -52,7 +55,7 @@ class ReplayServiceFollowupReviewTest {
                     : ReplayConfig.record(Set.of("p"), Map.of(), null, store);
             var scheduler = new ReplayScheduler();
             group = new ComposingEventProcessorAgent("g", new EventFlowManager(), null, scheduler, services,
-                    replay ? null : new GroupRecorder(cfg, () -> 1L),
+                    replay ? null : new GroupRecorder(cfg, new java.util.concurrent.atomic.AtomicLong(100)::incrementAndGet),
                     replay ? routing -> new GroupReplayer(cfg, routing, scheduler) : null);
         }
         void start(Probe probe) {
@@ -107,8 +110,32 @@ class ReplayServiceFollowupReviewTest {
             rig.start(replayed);
             rig.broadcast(replacement, true, 3); // explicitly tell the group which registry version is available
             rig.finishReplay();
-            assertTrue(rig.group.replayer().stopped("p") != null || live.trace.equals(replayed.trace),
-                    "service replay must match or explicitly fail: recorded=" + live.trace + ", replayed=" + replayed.trace);
+            assertNotNull(rig.group.replayer().stopped("p"), "an unavailable historical incarnation must stop replay");
+            assertTrue(rig.group.replayer().stopped("p").contains("version 1 is unavailable"));
+            assertEquals(List.of("start:0"), replayed.trace, "replacement must never substitute for the old object");
+        }
+    }
+
+    @Test void aPreviouslyPublishedButWithdrawnIncarnationCannotBeResurrectedFromHistory() throws Exception {
+        var store = new InMemoryReplayStore();
+        store.append("p", new ReplayEntry.ServiceChanged("rate", true, 1, 100, List.of()));
+        var oldService = rate(1);
+        var replacement = rate(2);
+        var replayed = new Probe();
+        try (var rig = new Rig(store, true, null)) {
+            rig.start(replayed);
+            // All three publications precede the next agent turn. A historical object can still be referenced by
+            // queued broadcasts, but the registry has withdrawn it (and may already have stopped its lifecycle).
+            rig.services.put("rate", oldService);
+            rig.group.broadcastService(oldService, true, 1);
+            rig.services.remove("rate");
+            rig.group.broadcastService(oldService, false, 2);
+            rig.services.put("rate", replacement);
+            rig.group.broadcastService(replacement, true, 3);
+            rig.finishReplay();
+            assertNotNull(rig.group.replayer().stopped("p"));
+            assertTrue(rig.group.replayer().stopped("p").contains("version 1 is unavailable"));
+            assertEquals(List.of("start:0"), replayed.trace, "a withdrawn historical binding is not a live service");
         }
     }
 
@@ -123,8 +150,66 @@ class ReplayServiceFollowupReviewTest {
         replayed.failRegistration = true;
         try (var rig = new Rig(store, true, service)) {
             rig.start(replayed);
+            rig.broadcast(service, true, 1);
             rig.finishReplay();
             assertNotNull(rig.group.replayer().stopped("p"), "a failed callback must not count as a successful replay");
+            assertTrue(rig.group.replayer().stopped("p").contains("registration failed during replay"));
         }
     }
+    @Test void exactServiceIncarnationsReplayInOrderWithTheirRecordedClocks() throws Exception {
+        var store = new InMemoryReplayStore();
+        var oldService = rate(1);
+        var replacement = rate(2);
+        var live = new Probe();
+        live.readClock = true;
+        try (var rig = new Rig(store, false, null)) {
+            rig.start(live);
+            rig.broadcast(oldService, true, 1);
+            rig.broadcast(oldService, false, 2);
+            rig.broadcast(replacement, true, 3);
+        }
+        var replayed = new Probe();
+        replayed.readClock = true;
+        try (var rig = new Rig(store, true, null)) {
+            rig.start(replayed);
+            rig.broadcast(oldService, true, 1);
+            rig.broadcast(oldService, false, 2);
+            rig.broadcast(replacement, true, 3);
+            rig.finishReplay();
+            assertNull(rig.group.replayer().stopped("p"));
+            assertEquals(live.trace, replayed.trace);
+        }
+    }
+
+    @Test void aFailedLiveServiceCallbackIsRecordedAsFailureRatherThanSuccessfulChange() throws Exception {
+        var store = new InMemoryReplayStore();
+        var service = rate(1);
+        var live = new Probe();
+        live.failRegistration = true;
+        try (var rig = new Rig(store, false, null)) {
+            rig.start(live);
+            rig.broadcast(service, true, 1);
+        }
+        assertInstanceOf(ReplayEntry.Failed.class, store.entries("p").getFirst());
+        assertTrue(store.entries("p").stream().noneMatch(e -> e instanceof ReplayEntry.ServiceChanged));
+        try (var rig = new Rig(store, true, null)) {
+            rig.start(new Probe());
+            rig.finishReplay();
+            assertNotNull(rig.group.replayer().stopped("p"));
+        }
+    }
+
+    @Test void anUnknownPositiveServiceVersionCannotSilentlyUseAConfiguredObject() throws Exception {
+        var store = new InMemoryReplayStore();
+        store.append("p", new ReplayEntry.ServiceChanged("rate", true, 7, 100, List.of()));
+        var replayed = new Probe();
+        try (var rig = new Rig(store, true, rate(7))) {
+            rig.start(replayed);
+            rig.finishReplay();
+            assertNotNull(rig.group.replayer().stopped("p"));
+            assertTrue(rig.group.replayer().stopped("p").contains("no registry binding identifies recorded service"));
+            assertEquals(List.of("start:0"), replayed.trace);
+        }
+    }
+
 }

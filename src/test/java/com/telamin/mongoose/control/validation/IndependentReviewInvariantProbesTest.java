@@ -30,12 +30,12 @@ class IndependentReviewInvariantProbesTest {
         String text = audit(
                 "record: Decision, requestId: 1, rule: started, name: p, generation: 7, effects: ''",
                 "record: Decision, requestId: 2, rule: captureOpened, generation: 7, resourceId: 41, effects: ''",
-                "record: EffectOutcome, requestId: 2, opId: '2.1', effect: InstallCapture, outcome: succeeded, generation: 7",
+                "record: EffectOutcome, requestId: 2, opId: '2.1', effect: InstallCapture, outcome: succeeded, generation: 7, resourceId: 41",
                 "record: EffectOutcome, requestId: 3, opId: '3.1', effect: UninstallCapture, outcome: failed, generation: 7, resourceId: 41",
                 "record: EffectOutcome, requestId: 3, opId: '3.2', effect: UninstallCapture, outcome: succeeded, generation: 7, resourceId: 41",
                 "record: EffectOutcome, requestId: 3, opId: '3.3', effect: CloseCapture, outcome: succeeded, resourceId: 41",
                 "record: Decision, requestId: 4, rule: captureOpened, generation: 7, resourceId: 42, effects: ''",
-                "record: EffectOutcome, requestId: 4, opId: '4.1', effect: InstallCapture, outcome: succeeded, generation: 7",
+                "record: EffectOutcome, requestId: 4, opId: '4.1', effect: InstallCapture, outcome: succeeded, generation: 7, resourceId: 42",
                 "record: Decision, requestId: 5, rule: released, name: p, generation: 7, effects: ''",
                 "record: EffectOutcome, requestId: 5, opId: '5.1', effect: CloseCapture, outcome: succeeded, resourceId: 42");
         var result = ControlInvariants.check(ControlEvidence.parse(text, true));

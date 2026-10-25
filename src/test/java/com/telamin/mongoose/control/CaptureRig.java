@@ -107,9 +107,8 @@ final class CaptureRig {
     static final class Res {
         final int serial;
         final String processor;
-        /** Close attempts: exactly one per resource, whether or not it succeeded. */
+        int closeAttempts;
         int closes;
-        /** Attempts that failed: closes - closeFailures succeeded. */
         int closeFailures;
         final List<DataFlow> installedOn = new ArrayList<>();
 
@@ -175,11 +174,31 @@ final class CaptureRig {
         public void closeCapture(Object resource) {
             Res r = (Res) resource;
             if (installed.containsValue(r)) findings.add(r + " closed while installed");
-            r.closes++;
+            r.closeAttempts++;
             if (failCloses) {
                 r.closeFailures++;
                 throw new IllegalStateException("simulated close failure of " + r);
             }
+            r.closes++;
+        }
+
+        /** Every resource has one accounted attempt; failures are explicit, not successful closes. */
+        String accountingErrors() {
+            StringBuilder b = new StringBuilder();
+            for (Res r : opened) {
+                if (r.closeAttempts != 1 || r.closes + r.closeFailures != 1) {
+                    b.append(r).append(" attempts=").append(r.closeAttempts).append(" successes=").append(r.closes)
+                            .append(" failures=").append(r.closeFailures).append("; ");
+                }
+            }
+            if (!installed.isEmpty()) b.append("still installed: ").append(installed.values());
+            if (!findings.isEmpty()) b.append("findings: ").append(findings);
+            return b.toString();
+        }
+
+        java.util.Set<Long> failedCloseResources() {
+            return opened.stream().filter(r -> r.closeFailures != 0).map(r -> (long) r.serial)
+                    .collect(java.util.stream.Collectors.toSet());
         }
 
         /** Every resource opened has been closed exactly once and nothing is installed. */

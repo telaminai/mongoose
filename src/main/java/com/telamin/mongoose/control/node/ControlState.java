@@ -75,6 +75,8 @@ public class ControlState {
         public long owner;
         public ResourceState state;
         public final String openedBy;
+        /** The close currently outstanding for this resource, independent of the registration's latest capture. */
+        public String closeOp;
         /** The generation and processor it was opened for: its close is recorded against them, owned or not (FM-3). */
         public final long openedFor;
         public final String openedName;
@@ -338,6 +340,15 @@ public class ControlState {
         return resources.size();
     }
 
+    /** All closes for this generation, including earlier captures no longer held by its current capture state. */
+    public List<String> pendingCaptureCloses(long generation) {
+        List<String> pending = new ArrayList<>();
+        for (Resource resource : resources.values()) {
+            if (resource.openedFor == generation && resource.closeOp != null) pending.add(resource.closeOp);
+        }
+        return pending;
+    }
+
     public int pendingOpens() {
         return pendingOpens.size();
     }
@@ -346,6 +357,11 @@ public class ControlState {
 
     public void trackEffectResource(String opId, long resourceId) {
         effectResources.put(opId, resourceId);
+    }
+
+    /** Read by the outcome auditor before the capture rule consumes the association. */
+    public long effectResource(String opId) {
+        return effectResources.getOrDefault(opId, -1L);
     }
 
     /** The resource a capture effect acted on, once its final result is in; -1 for any other effect. */

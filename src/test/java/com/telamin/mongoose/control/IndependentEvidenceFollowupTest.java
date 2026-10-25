@@ -56,8 +56,9 @@ class IndependentEvidenceFollowupTest {
         resources.failCloses=true; io.runOpen();
         String text=group.control().audit().exportText();
         var result=ControlInvariants.check(ControlEvidence.parse(text,true));
-        assertTrue(result.ok(),"the current validator claims no violations: "+result);
-        assertEquals("",resources.leaks(),"the ledger counts attempts as closes even when the close throws");
+        assertFalse(result.verified(),"failed physical closure must not receive an invariant PASS: "+result);
+        assertEquals("",resources.accountingErrors(),"each failed attempt must still be accounted for");
+        assertFalse(resources.leaks().isEmpty(),"a thrown close does not establish physical closure");
         assertTrue(text.contains("simulated close failure"),"actual physical-close failure is discarded: "+text);
     }
     /**

@@ -581,8 +581,17 @@ public final class LifecycleManager {
                 log.log(java.util.logging.Level.WARNING, "composing " + kind + " " + name + " failed its post-death cleanup", t);
                 throw new IllegalStateException("group cleanup failed: " + name, t);
             }
-            if (processors.captureResourcesHeld() != 0) {
-                throw new IllegalStateException("group " + name + " still holds " + processors.captureResourcesHeld() + " capture resources");
+            try {
+                // This is already a tracked helper: the stop caller's deadline bounds its join, while ordinary
+                // asynchronous closes get the remaining budget to finish instead of causing a spurious incomplete stop.
+                if (processors.captureResourcesHeld() == 0) processors.awaitCaptureResourceCleanup();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("interrupted awaiting physical capture cleanup: " + name, interrupted);
+            }
+            if (processors.captureResourcesHeld() != 0 || processors.captureResourceSlotsInUse() != 0) {
+                throw new IllegalStateException("group " + name + " has " + processors.captureResourceSlotsInUse()
+                        + " unresolved physical capture resources; failed closes=" + processors.captureCloseFailures());
             }
         }
     }

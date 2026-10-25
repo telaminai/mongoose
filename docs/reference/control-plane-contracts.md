@@ -52,7 +52,7 @@ public enum ReplyOutcome { APPLIED, REFUSED, FAILED, NOT_RUNNING }
 
 | Outcome | Meaning | Typical `reason` values (from the code) |
 | --- | --- | --- |
-| `APPLIED` | The change is **complete**, not just accepted. A stop of a processor that has already gone is also `APPLIED`. | `started`, `stopped`, `alreadyStopped`, `releasing`, `cancelled` (a stop overtook its add), `recording`, `not recording`, `delivered`, `ignored: stale version N` |
+| `APPLIED` | The requested transition has finished, not just been accepted. For a stop, release was attempted and the name freed; reported lifecycle callback failures do not imply callback success. A processor already gone is also `APPLIED`. | `started`, `stopped`, `alreadyStopped`, `releasing`, `cancelled` (a stop overtook its add), `recording`, `not recording`, `delivered`, `ignored: stale version N` |
 | `REFUSED` | Nothing changed. The request was turned down before any effect ran. | `name in use`, `cancelled` (the add was cancelled by an earlier stop), `no such processor`, `not started yet`, `mailbox full`, `not admitted within its deadline: mailbox full`, `handle belongs to another server`, `no such group` |
 | `FAILED` | The request was accepted and acted on, but its effect did not complete. | the start failure's text; `open timed out`; `open failed: ...`; `delivered with failures: ...`; `group died: ...`; `control processor threw: ...` |
 | `NOT_RUNNING` | The group, or the server, is closing, closed or dead. The request was not applied. | `group closed`, `server is stopping` |
@@ -64,9 +64,16 @@ one registration. `name` is the processor name, or `null`.
 
 - Every request that reaches a group gets exactly **one** final reply. This includes a group that closes or dies while
   the request is queued: the request is answered `NOT_RUNNING` or `FAILED`, never left pending.
-- Requests to one group are decided in the order the group accepted them.
-- `APPLIED` means done. For an add it means the processor has started. For a stop it means the processor has been
-  stopped and torn down, and its name is free.
+- Mailbox requests to one group are decided in queue publication order. Concurrent callers have no ordering before
+  publication; asynchronous effect completions use a separate queue. A later request can finish before an earlier
+  request waiting for I/O.
+- For an add, `APPLIED` means the processor started. For a stop it means its release attempt finished and its name
+  is free. The ordinary stop/teardown failure policy reports callback failures and continues release; this reply
+  does not prove every callback succeeded. Physical capture closure can still be pending.
+
+A shared daemon checker detects a captured agent thread that terminated without closing, even when no later
+sender or shutdown call arrives. It joins the thread before completing claimed requests; unstarted groups are not
+judged dead. Legacy low-level reply callbacks must not block.
 
 **Not guaranteed**
 
@@ -83,10 +90,11 @@ agent groups. Mongoose marks it when the group starts and clears the mark after 
 
 **Guaranteed**
 
-- No control method waits, sleeps or backs off on an agent thread. A method that would wait queues its request and
-  returns instead.
-- A full mailbox on an agent thread is refused at once (`IllegalStateException`, or a `REFUSED` reply for
-  `addProcessor`). It never blocks.
+- Processor mailbox admission and reply waiting never sleep or back off on an agent thread. A method that would
+  await a reply queues its request and returns instead. This is not a promise that arbitrary service preparation or
+  lifecycle callbacks cannot block: those may run synchronously, and registry publication still takes a short lock.
+- A full mailbox on an agent thread is refused at once. Stage APIs return `REFUSED`; void add follows its failure
+  policy. Lower-level send methods can throw `IllegalStateException`. There is no capacity backoff.
 - `ControlReplies.await` throws `IllegalStateException` if called on an agent thread.
 
 Waiting is also skipped, for the same reason, on the thread running `MongooseServer.start()`, on the server's stop
@@ -94,8 +102,10 @@ thread and its helpers, and when the target group has not started (it cannot ans
 
 ### Timeouts detach
 
-A void control method waits at most [`controlWaitMillis`](#configuration-keys) (default 10 000 ms). If no reply comes
-in time, it logs a warning and returns. **The request is not cancelled. It still applies later.** Its outcome is
+A void processor control call shares one [`controlWaitMillis`](#configuration-keys) deadline (default 10 000 ms)
+between admission and waiting for its reply. Service-change reply waits use the same configuration setting. If an
+admitted request has no reply in time, the caller logs a warning and returns. **Timing out after admission does not
+cancel the request.** A full-mailbox admission that expires is instead `REFUSED` and will never apply. Outcomes are
 recorded in the [control audit](#control-audit).
 
 ### Where reply stages complete
@@ -152,8 +162,8 @@ Adds a processor to a group, creating the group (and starting its thread, if the
 
 **Guaranteed**
 
-- The name is reserved at once, before the call returns ("admission"). A second add of the same name in the same
-  group throws `IllegalArgumentException` at once, whether or not the group has started.
+- An admitted add reserves the name before the call returns. A second add of the same name in the same group
+  throws `IllegalArgumentException`, whether or not the group has started. Refusal releases any temporary reservation.
 - Off an agent thread, on a running group, the call waits up to `controlWaitMillis` for the add's reply.
 - With the default `addFailurePolicy: REPORT`, an add that is refused or whose `start()` fails is logged and
   reported, and the call returns normally. With `THROW`, see [addFailurePolicy](#addfailurepolicy).
@@ -188,7 +198,7 @@ Adds a processor and returns its outcome as a stage, without waiting for it.
 
 - Never throws for a duplicate name or a stopping server. Those come back as a completed `reply`: `REFUSED` (`name in
   use`) or `NOT_RUNNING` (`server is stopping`).
-- `handle` names exactly the registration this add admitted. It is built before the add is sent, so a stop through it
+- `handle` names exactly the registration this add admitted, so a stop through it
   can never reach a later processor with the same name.
 - `handle` is `null` when the add was refused before admission.
 - `reply` completes `APPLIED` (`started`) once the processor has started, or `FAILED` once a failed processor has been
@@ -196,9 +206,9 @@ Adds a processor and returns its outcome as a stage, without waiting for it.
 
 **Not guaranteed**
 
-- "Without waiting" refers to the outcome. Admission itself can back off for up to the group's full-mailbox timeout
-  (10 s) when that group's mailbox (4096 requests) is full, off an agent thread. A mailbox that stays full gives a
-  `REFUSED` reply, not an exception.
+- Admission does not back off: a full mailbox is refused immediately (`REFUSED`, null handle). A server admission
+  lock unavailable at the attempt is answered `NOT_RUNNING`. Creating a new group still performs synchronous setup;
+  this is not a hard execution-time guarantee.
 
 **Example**
 
@@ -263,8 +273,8 @@ public ProcessorHandle processorHandle(String groupName, String processorName)  
 
 **Failure modes**
 
-- The handle's group mailbox is full: off an agent thread the call backs off up to the full-mailbox timeout (10 s);
-  then, or at once on an agent thread, it throws `IllegalStateException`. The processor keeps running.
+- The handle's group mailbox is full: admission is refused immediately with a `REFUSED` reply. The processor keeps
+  running and its name stays reserved.
 
 `processorHandle(group, name)` returns a handle for whatever is admitted under the name at the moment you ask. Prefer
 the handle from `addProcessor`, which cannot name a replacement.
@@ -351,6 +361,8 @@ public void registerService(Service<?>... services)
 **Failure modes**
 
 - Server stopping: `IllegalStateException`; nothing is registered.
+- The same physical instance is currently being stopped by an earlier removal: `ServiceRegistrationException`.
+  Registration and claiming that stop are serialized; the stop callback itself runs outside the publication lock.
 - A `@ServiceRegistered` handler that throws is reported; the processor keeps running; the other processors still
   receive the service.
 
@@ -390,7 +402,8 @@ and `shutdown()` stops it after every processor group has closed. A warning says
 - Every registration or removal of a service name gets the next **version** for that name.
 - A group applies a broadcast only if its version is newer than the last it applied for that service. An older one is
   answered `APPLIED` with reason `ignored: stale version N` and changes nothing. So concurrent register and remove of
-  one service end, in every group, in the registry's final state.
+  one service cannot make an older delivered broadcast overwrite a newer delivered one. A group that missed a
+  broadcast because its mailbox was full is reported; version checks alone do not repair that missed delivery.
 - The **service lock** covers only the name reservation, the registry change and the non-blocking broadcast
   publication. Injection, `start()`, `stop()`, waiting, and reporting to `ErrorReporting` all run outside it. A slow
   service callback therefore never stalls other service changes.
@@ -440,7 +453,8 @@ One deadline, `shutdownTimeoutMillis` (default 30 000 ms), covers the whole stop
 4. Close every processor group, each from its own tracked helper thread.
 5. **Only if every processor group closed**: close the service agent groups, then stop the registered services
    (including removed services the server still owns), each on a helper thread.
-6. Close any audit capture a group's closer had not reached (`stopAll()`).
+6. Run the capture service's final `stopAll()` cleanup. A group with unresolved physical capture resource permits
+   remains incomplete before this phase; a failed physical close is not silently counted as closed.
 
 **Guaranteed**
 
@@ -455,7 +469,8 @@ When a stop runs out of time, the server stays `STOPPING` and `complete` is `fal
 resume.** A resumed stop:
 
 - starts from the first unfinished phase;
-- re-joins the helper threads already started, never starting a second close of the same group;
+- re-joins helpers still running; retries unfinished group cleanup after a failed helper exits without repeating
+  processor lifecycle callbacks already attempted;
 - does not call a service `stop()` that already failed again. Its side effects are unknown, so it stays in
   `servicesLeftRunning`.
 
@@ -515,8 +530,8 @@ agent thread.
 
 **stop, guaranteed**
 
-- Returns once the capture is uninstalled from the processor. The queue is closed afterwards, asynchronously, exactly
-  once.
+- On a thread allowed to wait, returns once the capture is uninstalled from the processor. The queue is handed to
+  the closer afterwards for one close attempt; failures are recorded as unresolved resources.
 - Stopping a processor that is not recording is a no-op.
 - Stopping or removing the processor stops its capture as part of the release.
 
@@ -551,14 +566,21 @@ one group addresses that processor. A name admitted in **several** groups is amb
 `IllegalArgumentException` naming the groups, and you address one as `group/name`. A processor never inherits a capture
 recording another processor of the same name in a different group.
 
-### The open in-flight limit
+### Open and resource limits
 
 Each group allows at most **8** physical opens in flight by default. An open that timed out still holds its permit
-until its helper returns. While the limit is held, further audit starts fail (`FAILED`, reason `N physical capture
-opens are still in flight (limit 8)`). Every resource that a late helper returns is closed exactly once.
+until its helper returns. While the limit is held, further audit starts fail (`FAILED`, reason
+`unresolved capture open limit reached`). Every resource that a late helper returns is scheduled for one close attempt. A failed close is reported and
+retained as unresolved ownership, not claimed to be closed.
 
-The limit is set per group with `ComposingEventProcessorAgent.setCaptureOpenLimit(int)`, and the open timeout with
-`setCaptureOpenTimeout(Duration)`. `MongooseServer` does not expose its groups, and neither setting is a server
+Separately, each group reserves at most **1024** physical capture resource slots by default, including opens,
+installed captures, queued closes and failed closes. A slot is returned after confirmed closure or an open that
+produced no resource. Failed closes retain their slots and are not blindly retried. This bounds resource retention
+when the closer stalls; it is not just an open-concurrency limit. `captureResourceSlotsInUse()` and
+`captureCloseFailures()` expose unresolved physical ownership. Shutdown remains incomplete while it exists.
+
+Set the limits with `ComposingEventProcessorAgent.setCaptureOpenLimit(int)` and `setCaptureResourceLimit(int)`,
+and the open timeout with `setCaptureOpenTimeout(Duration)`. `MongooseServer` does not expose its groups, and neither setting is a server
 configuration key. See [configuration keys](#configuration-keys).
 
 ### Deprecated: attach(..., Executor) and stopAll()
@@ -566,8 +588,9 @@ configuration key. See [configuration keys](#configuration-keys).
 - `attach(DataFlow, String, LogRecordListener, Executor)` is deprecated. The server still calls it, but with routing
   in place the group installs and uninstalls captures itself. The executor is used only by a capture service that no
   server routes.
-- `stopAll()` is deprecated. Each group closes its captures as it closes. The server still calls `stopAll()` once at
-  the end of a complete stop, to close any resource a closer had not reached.
+- `stopAll()` is deprecated. Each group closes its captures as it closes. The server calls `stopAll()` only after
+  group capture operations have completed successfully, for any residual service-owned resources. It does not race
+  a blocked group closer or treat a failed physical close as complete.
 
 ### AuditCaptureResources, for implementers
 
@@ -660,7 +683,7 @@ server boots are configuration: they are not recorded.
 | `Failed` | Stops the processor's replay |
 | `Stopped` | Stops the processor through its group's control processor, at this point, with the recorded clock readings |
 | `ServiceChanged` | Delivers or withdraws the service at this point. Live deliveries of services the stream records are suppressed for this processor. A service the stream registers later is not given at build |
-| `ControlCall` | Expected. The replayed processor must make the same request before its next input completes. It is answered with the recorded outcome and **never executed**, except registry requests (`registerService`, `registerEventSource`, `removeService`), which are matched and then executed so the registry later entries name exists. Calls the processor made in `start()` are expected before its first input |
+| `ControlCall` | The processor must make the same supported request in position; its recorded outcome is returned without executing the live control action. Registry mutations (`registerService`, `registerEventSource`, `removeService`) and supplier-based adds stop replay instead, even if matched. Calls made in `start()` are expected before the first input |
 
 A replayed processor's live inputs are muted, and what it sends to `MessageSink` services is captured
 (`outputs(processor)`), not delivered. Other services it was given are live.
@@ -684,27 +707,34 @@ A replay stops **one processor's** replay, never the group or the server, and re
 | A control request the recorded run did not make here, or made with different arguments | `control request ... was not made by the recorded run here` / `control request differs` | Divergence |
 | The recorded run made a control request the replay did not | `the recorded run made control request` | Divergence |
 | The replayed processor calls `addEventProcessor` | `addEventProcessor supplier cannot be verified from the recording` | The supplier is executable code that the recording cannot identify. It is never run against the live server. The call also throws `UnsupportedOperationException` into the processor |
+| The replayed processor calls `registerService`, `registerEventSource` or `removeService` | `registry mutation` | Stops and throws `UnsupportedOperationException`; a separate replay registry is required to avoid changing resources shared with unreplayed processors |
 | The recorded control call failed | `recorded control exception cannot be reconstructed` | Only the exception's text was recorded; its type and payload cannot be rebuilt, and a processor may branch on them. The call also throws `IllegalStateException` into the processor |
 | A control request made off the processor's agent thread | `control request ... made off the processor's thread` | Outside the input order, so not reproducible |
 | The recorded stop could not be replayed | `the recorded stop could not be replayed` | The processor is no longer in the group |
 
-**Service changes** are replayed with the recorded instance, or the replay says why it cannot (fixed in `0dea3b3`):
+**Service changes** require the recorded positive version to match the currently published live binding. A retained
+historical object may already have been stopped and cannot be resurrected from a cache:
 
 | Situation | Reason starts with | What happens |
 | --- | --- | --- |
 | The recorded service version is not registered in this run yet | (waits) | The entry waits for the broadcast of that version, then stops after `deliveryTimeout` with `entry N could not be delivered within` |
-| This run's registry has moved past the recorded version and no longer holds that instance | `service S version V cannot be reproduced` | Stops. The current instance is never substituted |
-| A replayed `@ServiceRegistered` or `@ServiceDeregistered` callback throws | `service S registration callback failed during replay` | Stops. A failed callback is never counted as delivered |
-| The processor already held the service when the entry is replayed | `service S was already held` | Stops: it reached the processor before its recorded position |
-| The recorded run withdrew a service the replayed processor never held | `service S was not held` | Stops: the withdrawal cannot be reproduced |
-| The replay run has no version history for the service (for example it was configured at boot and never broadcast with a version) | `service S version V cannot be verified` | Stops. An instance whose identity with the recorded one cannot be checked is never delivered in its place |
+| This run's registry has moved past the recorded version or the binding is no longer live | `recorded service S at version V is unavailable` | Stops. Neither the latest instance nor a historical stopped object is substituted |
+| A configured object has no published identity for a positive recorded version | `no registry binding identifies recorded service` | Stops; logging a warning is insufficient to establish equivalence |
+| A replayed `@ServiceRegistered` or `@ServiceDeregistered` callback throws | `recorded service callback for S was not delivered` | Stops. A failed callback is never counted as delivered |
+| The processor already held the service when the entry is replayed | `recorded service callback for S was not delivered` | Stops: it reached the processor before its recorded position |
+| The recorded run withdrew a service the replayed processor never held | `recorded withdrawal of service S has no delivered incarnation` | Stops: the withdrawal cannot be reproduced |
 
 Only deliveries that reached the processor are recorded. A broadcast it already held (skipped live) records nothing, and
 a delivery whose callback failed records a `Failed` entry, past which the stream is not reproducible.
 
-Versions are remembered when a broadcast is sent to the group, whatever processors it holds, and the last 32 versions
-per service name are kept. In a replay, a withdrawal the stream records is not confirmed to its sender until the stream
-delivers it, so `removeService` keeps the instance meanwhile (until shutdown if the stream never withdraws it).
+**Limitations:** unversioned legacy entries still use configuration-based lookup; they cannot prove incarnation
+equivalence. Positive recorded versions fail closed when publication identity is missing. Version numbers identify
+bindings within the configured run, not a build, service state or cross-machine identity proof.
+
+In a replay, a withdrawal the stream records is not confirmed to its sender until the stream delivers it, so
+`removeService` keeps the instance meanwhile (until shutdown if the stream never withdraws it). A replayed processor's
+registry requests (`registerService`, `registerEventSource`, `removeService`) are never executed against the live
+server: the replay stops, because they need an isolated replay registry.
 
 `complete()` with a `null` `stopped(...)` means every entry was delivered. It does not prove the run was reproduced.
 Compare `outputs(processor)` or the audit logs.
@@ -722,12 +752,13 @@ Records are kept in memory, per group, in a bounded ring (`ControlAuditSink`, 10
 | `Decision` | For each rule that fires, before any effect it requests is performed | `rule` (for example `stopStarted`, `captureOpenedStale`), `from` and `to` states, `effects` (each as `opId Effect(generation)`), notes such as `pendingCleanup`, `stale`, `duplicate` |
 | `EffectOutcome` | For each effect's result, pending or final | `opId` (`requestId.n`), `effect`, `outcome` (`pending`, `succeeded`, `failed`), `reason`, `cleanup` when it arrives after the request was answered |
 | `Reply` | For each final reply | `opId`, `outcome`, `generation`, `name` |
-| Fallback records (`controlFallback:`) | Written by the group itself, when the control processor cannot write: `Anomaly`, `Dead`, `NotRunning`, `Refused`, `Failed`, `EffectOutcome`, `CaptureOrphan`, `CaptureCompensated`, `CleanupPending`, `CleanedUp` | coarser, not framed by Fluxtion |
+| Fallback records (`controlFallback:`) | Written by the group itself, when the control processor cannot write: `Anomaly`, `Dead`, `NotRunning`, `Refused`, `Failed`, `EffectRequested`, `EffectOutcome`, `CaptureOrphan`, `CaptureCompensated`, `CleanupPending`, `CleanedUp` | coarser, not framed by Fluxtion |
 
 Every control-processor record carries `record`, `seq` (group-local, gap-free while the sink works), `requestId` and
 `rootId`. Records caused by another record also carry `causeSeq`; records caused by an effect carry `causeOp`.
-**All records for one request share its `rootId`**: input, decisions, effects, pending and final outcomes,
-compensation, late completions and the reply.
+**Control-processor records for one request share its `rootId`**: input, decisions, effects, pending and final
+outcomes, compensation, late completions and the reply. Fallback cleanup uses its available resource and operation
+identities; see [reading it](#reading-it).
 
 Data processors keep their own Fluxtion audit. The control audit does not record what happens inside them.
 
@@ -755,7 +786,10 @@ if (v.permitsInvariantPass()) { /* COMPLETE */ }
 - The sidecar holds `format: mongoose-control-audit`, `version: 1`, the `sha256` of the exact exported bytes,
   `total`, `retained`, `dropped`, `sinkFailures` and `complete`.
 - `verify(path)` returns `COMPLETE`, `INCOMPLETE` or `UNKNOWN`. A missing, malformed, inconsistent or mismatched
-  sidecar is `UNKNOWN`. Only `COMPLETE` permits an invariant pass.
+  sidecar is `UNKNOWN`. `COMPLETE` is necessary, not sufficient, for an invariant pass: it establishes export
+  completeness, not correct behaviour. The test validator requires `ControlInvariants.Result.verified()`, which
+  rejects both violations and unverifiable evidence; `ok()` alone is insufficient. Failed physical closes remain
+  unverifiable even in a complete export and must agree with the resource ledger.
 - `exportText()` returns the raw YAML with no manifest.
 - Copy both files together. The hash detects accidental change or a mismatched pair. It is **not** a signature and does
   not authenticate a pair rewritten on purpose.
@@ -765,7 +799,9 @@ if (v.permitsInvariantPass()) { /* COMPLETE */ }
 ### Reading it
 
 The export is a sequence of YAML documents, one per record, each preceded by `---`. To follow one request, select the
-records with its `rootId` and read them in `seq` order.
+records with its `rootId`. Control records have `seq`, fallback records have a separate `fallbackSeq`; preserve
+export order when comparing them. Fallback cleanup can instead link by `opId`, `resourceId` and generation, and may
+not carry the original request's `rootId`. Include these resource-linked records when checking physical cleanup.
 
 To investigate in the Fluxtion audit-log analyser, the design ("Investigating through the analyser") pairs three
 artefacts:
@@ -796,6 +832,7 @@ outcomes per `opId`, and `topology` and `source` name the rule node that decided
 | `shutdownDrainTimeoutMillis` | `2000` | The drain phase of `shutdown()`, within `shutdownTimeoutMillis` | YAML, setter or builder (unchanged) |
 | Capture open timeout | 30 s | How long one audit-capture open may take | Per group only: `ComposingEventProcessorAgent.setCaptureOpenTimeout(Duration)`. Not a server key |
 | Capture open limit | 8 | Physical capture opens in flight per group | Per group only: `ComposingEventProcessorAgent.setCaptureOpenLimit(int)`. Not a server key |
+| Capture resource limit | 1024 | Open, installed, closing or failed-close resource slots per group | Per group only: `ComposingEventProcessorAgent.setCaptureResourceLimit(int)`. Not a server key |
 | Full-mailbox timeout | 10 s | How long a producer backs off on a full group mailbox, off agent threads | Per group only: `ComposingEventProcessorAgent.setControlQueueFullTimeout(Duration)` |
 
 `controlWaitMillis` and `addFailurePolicy` have no builder method in this build. Set them on the config object or in
@@ -813,14 +850,15 @@ These are deliberate non-guarantees in this build:
 
 - A void control method that times out has **not** failed. Its request still applies.
 - A stage dependent attached after completion runs on the attaching thread. That thread can be an agent thread.
-- "Never waits" for `addProcessor` and `stopProcessor(handle)` refers to the outcome. Admission can still back off for
-  up to the full-mailbox timeout when the group's mailbox is full.
+- `addProcessor` and `stopProcessor(handle)` never back off for mailbox capacity, but synchronous setup and JVM
+  scheduling do not have a hard real-time bound.
 - `stopProcessor(group, name)` stops what was admitted under the name **at call time**, not at the time it is applied.
 - A removed service whose withdrawal no group confirmed is stopped only by `shutdown()`.
 - `removeService` during shutdown is silently ignored. It does not throw.
 - A `StopResult` that is not complete leaves the server `STOPPING`. Nothing resumes it unless `shutdown()` is called
   again.
-- Replay does not detect hidden inputs, service-version substitution, failed replayed service callbacks or skipped
-  deliveries. See [when a replay stops](#when-a-replay-stops).
+- Replay does not detect arbitrary hidden inputs or prove service state/build equivalence. It refuses unavailable
+  positive service versions and failed callbacks; new recordings omit skipped duplicate deliveries. See
+  [when a replay stops](#when-a-replay-stops).
 - Provenance compares class names. It does not identify a build, a configuration or a generated-graph fingerprint.
 - The control-audit manifest detects accidental change. It is not a signature.

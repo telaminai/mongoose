@@ -53,8 +53,9 @@ With control interception on (the default), each control request a replayed proc
 
 - `stopService`, `startService` and `stopProcessor` are **never executed** in a replay, so a replay never changes the
   live server a second time.
-- `registerService`, `registerEventSource` and `removeService` are matched and **then executed**, so the services
-  that later `ServiceChanged` entries name exist in the replay server.
+- `registerService`, `registerEventSource` and `removeService` stop replay and throw `UnsupportedOperationException`,
+  even when matched. Executing them would change resources shared with unreplayed processors; they require a
+  separate replay registry.
 - Requests the processor made in `start()` are recorded before its first input and expected before its first
   replayed input.
 - A request the recorded run did not make, or made with different arguments, stops the replay, and so does a
@@ -223,8 +224,10 @@ Sample code:
   divergence. `replayers().get(group).stopped(processor)` gives the reason. A replay failure stops that processor's
   replay; it does not end the server. The full list is in
   [When a replay stops](../../reference/control-plane-contracts.md#when-a-replay-stops).
-- **Not detected yet:** a service recorded at one registry version is replayed with whatever the replay server holds
-  under that name; a replayed service callback that throws is treated as delivered. Neither stops the replay.
+- **Service changes:** a positive recorded version must match the currently published live binding. Replay waits
+  for a future version, but refuses a missing identity or a past version, including cached objects already withdrawn.
+  A failed replay callback stops replay. New recordings omit skipped duplicates and mark failed callbacks.
+  Unversioned legacy entries retain configuration-based lookup and cannot establish incarnation equivalence.
 - **A recording is refused over a recording.** `RECORD` needs an empty journal and store: a second run numbers its
   items from 1 again. A store in the earlier six-field CSV format is read, never appended to. A torn last CSV line (a
   crash mid-write) is set aside with a warning; the file is still read,

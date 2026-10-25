@@ -64,7 +64,8 @@ handler threw), the server keeps owning the service and `shutdown()` stops it.
 
 `MongooseAuditCaptureService.start` (and `audit.start`) now opens the Chronicle queue on an I/O helper and installs it
 on the processor's thread. It returns once the capture is recording. An open has its own 30 s timeout, and each group
-allows at most 8 opens in flight; beyond that, starts fail. `stop` returns once the capture is uninstalled, and the
+allows at most 8 opens in flight and 1024 unresolved physical resource slots; beyond either limit, starts fail.
+Failed closes retain their resource slots and leave shutdown incomplete. `stop` returns once the capture is uninstalled, and the
 queue closes afterwards. [Contract](../reference/control-plane-contracts.md#audit-capture)
 
 *Replaces the 1.0.33 note* "Audit start/stop (#74): applied on the processor's agent thread ... (bounded 5 s)". The
@@ -82,8 +83,9 @@ Each group installs, uninstalls and closes its captures itself. Both still work.
   replay and must be migrated.
 - RECORD now records `Stopped`, `ServiceChanged` (with versions), `ControlCall` entries and each stream's provenance.
 - REPLAY intercepts control requests from replayed processors: they are matched and answered with the recorded
-  outcome, never executed (registry requests are executed after matching). A replayed `addEventProcessor`, a recorded
-  failed control call, or a mismatch stops that processor's replay.
+  outcome without executing the live action. Registry mutations (`registerService`, `registerEventSource`,
+  `removeService`) are refused because they require an isolated replay registry. A replayed `addEventProcessor`, a
+  recorded failed control call, or a mismatch also stops that processor's replay.
 - New `ReplayConfig.withControlInterception(boolean)` and `withProvenance(boolean)`, both on by default.
 
 [Contract](../reference/control-plane-contracts.md#record-and-replay)
@@ -110,8 +112,9 @@ applies)`.
 
 Review findings on PR #76 that are still open are listed in the PR. Those that affect callers:
 
-- A replay does not stop when a recorded service version is unavailable, when a replayed service callback throws, or
-  when a recorded service delivery was a skipped duplicate.
+- Replay refuses unavailable or unidentified positive service versions and failed service callbacks. New recordings
+  omit skipped duplicates. Unversioned legacy entries and arbitrary hidden inputs still lack identity/equivalence
+  guarantees. Registry mutations require a separate replay registry and currently stop replay.
   [Details](../reference/control-plane-contracts.md#when-a-replay-stops)
 - End-to-end throughput measured about 12% lower than the base on one machine (prediction P7 in
   `docs/design/control-plane-predictions.md`). The cause is not established, and it is to be rerun on Linux with

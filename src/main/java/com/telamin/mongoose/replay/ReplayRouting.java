@@ -39,7 +39,8 @@ public interface ReplayRouting {
 
     /**
      * Deliver to, or withdraw from, the replayed processor the service registered as {@code service}, as the recorded
-     * run did at this point, with the recorded instance (by registry version).
+     * run did at this point. A positive version must identify the currently live registry binding;
+     * an unavailable historical incarnation or an unverified configured object cannot substitute for it.
      *
      * @return null once delivered; {@code "wait:<why>"} while it cannot be yet; otherwise why the replay cannot
      *         reproduce it (a version no longer available, a callback that failed), which stops the replay

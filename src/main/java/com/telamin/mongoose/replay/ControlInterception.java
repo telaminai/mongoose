@@ -29,9 +29,9 @@ public final class ControlInterception {
             "registerEventSource", "removeService", "addEventProcessor");
 
     /**
-     * Requests that change the service registry: in a replay they are matched and then executed, so the registry the
-     * stream's later entries name (a {@code ServiceChanged}) exists; delivery to replayed processors stays suppressed
-     * and is replayed in position (final review, finding 2). Every other change is never executed in a replay.
+     * Requests that change the shared service registry. Replay refuses these after matching: executing them could
+     * inject into, withdraw from or stop resources used by unreplayed processors. Reconstructing their effects needs
+     * a separate replay registry; the live registry is never used for that purpose.
      */
     static final Set<String> REGISTRY = Set.of("registerService", "registerEventSource", "removeService");
 
