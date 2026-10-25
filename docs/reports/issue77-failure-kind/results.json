@@ -3,7 +3,7 @@
     "name": "baseline",
     "exitCode": 0,
     "caughtBy": [],
-    "tests": 101,
+    "tests": 120,
     "failures": 0,
     "errors": 0,
     "skipped": 0
@@ -15,7 +15,7 @@
       "ControlScenarioHarnessTest",
       "GeneratedProcessorFailureIsolationTest"
     ],
-    "tests": 101,
+    "tests": 120,
     "failures": 6,
     "errors": 0,
     "skipped": 0
@@ -27,7 +27,7 @@
       "CaptureAsEffectsTest",
       "ControlScenarioHarnessTest"
     ],
-    "tests": 101,
+    "tests": 120,
     "failures": 21,
     "errors": 0,
     "skipped": 0
@@ -38,11 +38,13 @@
     "caughtBy": [
       "CaptureAsEffectsTest",
       "ControlScenarioHarnessTest",
+      "FailureKindQuarantineTest",
       "GeneratedProcessorFailureIsolationTest",
-      "ReplayIdentityTest"
+      "ReplayIdentityTest",
+      "Review77ProbesTest"
     ],
-    "tests": 101,
-    "failures": 26,
+    "tests": 120,
+    "failures": 28,
     "errors": 0,
     "skipped": 0
   },
@@ -53,7 +55,7 @@
       "CaptureAsEffectsTest",
       "ControlScenarioHarnessTest"
     ],
-    "tests": 101,
+    "tests": 120,
     "failures": 3,
     "errors": 0,
     "skipped": 0
@@ -64,7 +66,7 @@
     "caughtBy": [
       "ControlScenarioHarnessTest"
     ],
-    "tests": 101,
+    "tests": 120,
     "failures": 1,
     "errors": 0,
     "skipped": 0
@@ -75,7 +77,7 @@
     "caughtBy": [
       "ControlScenarioHarnessTest"
     ],
-    "tests": 101,
+    "tests": 120,
     "failures": 7,
     "errors": 0,
     "skipped": 0
@@ -85,10 +87,11 @@
     "exitCode": 1,
     "caughtBy": [
       "CaptureAsEffectsTest",
-      "ControlScenarioHarnessTest"
+      "ControlScenarioHarnessTest",
+      "FailureKindFlowTest"
     ],
-    "tests": 101,
-    "failures": 18,
+    "tests": 120,
+    "failures": 22,
     "errors": 0,
     "skipped": 0
   },
@@ -100,8 +103,8 @@
       "ControlScenarioHarnessTest",
       "FailureKindFlowTest"
     ],
-    "tests": 101,
-    "failures": 46,
+    "tests": 120,
+    "failures": 42,
     "errors": 0,
     "skipped": 0
   },
@@ -111,7 +114,7 @@
     "caughtBy": [
       "GeneratedProcessorFailureIsolationTest"
     ],
-    "tests": 101,
+    "tests": 120,
     "failures": 2,
     "errors": 0,
     "skipped": 0
@@ -120,11 +123,12 @@
     "name": "deadline-kind-dropped",
     "exitCode": 1,
     "caughtBy": [
+      "ControlTerminationAndAdmissionTest",
       "FailureKindFlowTest"
     ],
-    "tests": 101,
+    "tests": 120,
     "failures": 1,
-    "errors": 0,
+    "errors": 1,
     "skipped": 0
   },
   {
@@ -133,8 +137,87 @@
     "caughtBy": [
       "CaptureAsEffectsTest"
     ],
-    "tests": 101,
+    "tests": 120,
     "failures": 1,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "capture-rule-drops-effect-kind",
+    "exitCode": 1,
+    "caughtBy": [
+      "FailureKindQuarantineTest",
+      "Review77ProbesTest"
+    ],
+    "tests": 120,
+    "failures": 2,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "service-rule-drops-effect-kind",
+    "exitCode": 1,
+    "caughtBy": [
+      "FailureKindQuarantineTest"
+    ],
+    "tests": 120,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "detach-retry-marked-leftover",
+    "exitCode": 1,
+    "caughtBy": [
+      "Review77ProbesTest"
+    ],
+    "tests": 120,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "replay-mismatch-prefix-dropped",
+    "exitCode": 1,
+    "caughtBy": [
+      "IndependentReviewReplayProbesTest"
+    ],
+    "tests": 120,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "driver-rule-failure-relabelled",
+    "exitCode": 1,
+    "caughtBy": [
+      "FailureKindFlowTest"
+    ],
+    "tests": 120,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "driver-fallback-relabelled",
+    "exitCode": 1,
+    "caughtBy": [
+      "FailureKindFlowTest"
+    ],
+    "tests": 120,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "stop-result-kinds-swapped",
+    "exitCode": 1,
+    "caughtBy": [
+      "BoundedShutdownTest",
+      "FailureKindFlowTest"
+    ],
+    "tests": 120,
+    "failures": 3,
     "errors": 0,
     "skipped": 0
   },
@@ -144,7 +227,7 @@
     "caughtBy": [
       "ReplayIdentityTest"
     ],
-    "tests": 101,
+    "tests": 120,
     "failures": 1,
     "errors": 0,
     "skipped": 0

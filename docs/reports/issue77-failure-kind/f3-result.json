@@ -1,0 +1,11 @@
+{
+  "seeds": 200,
+  "oldSha": "dfbfdd9",
+  "newSha": "73b1488",
+  "oldCases": 200,
+  "newCases": 200,
+  "oldCaught": 157,
+  "newCaught": 157,
+  "caughtOnlyByNew": 0,
+  "escapes": []
+}
