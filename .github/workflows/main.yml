@@ -39,4 +39,13 @@ jobs:
           restore-keys: ${{ runner.os }}-m2
 
       - name: Build project with Maven
-        run: mvn -B package --file pom.xml
+        run: mvn -B -ntp -Dmaven.test.redirectTestOutputToFile=true package --file pom.xml
+
+      - name: Retain test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-java-${{ matrix.java }}
+          path: target/surefire-reports/
+          retention-days: 14
+          if-no-files-found: ignore

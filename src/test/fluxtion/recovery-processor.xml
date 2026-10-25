@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- fluxtion-builder -->
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="http://www.springframework.org/schema/beans https://www.springframework.org/schema/beans/spring-beans.xsd">
+    <bean id="handler" class="com.telamin.mongoose.recovery.RecoveryProbeNode"/>
+    <bean id="fluxtionSpringConfig" class="com.telamin.fluxtion.builder.extern.spring.FluxtionSpringConfig">
+        <property name="nodeBeans"><list><value>handler</value></list></property>
+        <property name="logLevel" value="INFO"/>
+    </bean>
+</beans>

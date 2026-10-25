@@ -1,7 +1,9 @@
 # RC release procedure
 
 Targets: **Mongoose 1.0.33-rc1** (`v1.0.33-rc1`) and **mongoose-plugins 1.0.46-rc1** (`v1.0.46-rc1`).
-Runtime: **Fluxtion 1.1.2**. Upstream failed-cycle recovery is outside this candidate.
+Target pairing: **Fluxtion runtime 1.1.3** and **compiler/BOM 1.0.80**. Resolve the published artifacts,
+regenerate the control processor and freeze new commits before qualification. Earlier runtime 1.1.2 results
+are baseline evidence only.
 Status: preparation; publication requires successful qualification and the approvals below.
 
 ## Existing mechanics and the RC adaptation
@@ -30,7 +32,7 @@ Approve this explicit adaptation before pushing the release tags. Never print re
    and jar checksum so a preview cannot be mistaken for a published artifact.
 5. On the exact plugin SHA run the entire Java 21 reactor with `mvn -o -fae clean verify`. Require every module
    to succeed and no new skips. Include both admin fixes (#40 and #41), the startup cache boundary migration and
-   schema checks. Keep the dependency tree proving Mongoose RC and runtime 1.1.2.
+   schema checks. Keep the dependency tree proving Mongoose RC and runtime 1.1.3.
 6. Publish evidence on a separate evidence branch or as release assets. Do not append an evidence commit and
    then tag it as though it were the previously tested SHA. Preserve full logs and report failures/flakes.
 
@@ -56,3 +58,17 @@ Post the Mongoose tag, SHA, evidence and known limits on PR #76, including:
 
 Any test failure, flaky result, unruled review finding or proposal to weaken assertions stops publication until
 resolved. Release qualification does not replace the [client migration checklist](client-migration-1.0.33.md).
+
+## Retrying an unchanged qualified tag
+
+If publication fails because of publishing tooling, keep the RC tag fixed. The manually dispatched
+`prerelease.yml` accepts an existing `release_tag` and its full `expected_sha`, checks both against
+the checkout/POM, and publishes that checkout. It uses checksum-verified Maven 3.9.11 because the
+tagged Central publisher 0.10.0 is incompatible with Maven 3.10 staging metadata. The initial
+1.0.33-rc1 attempt was rejected with "Bundle has content that does NOT have a .pom file"; its
+upload did not publish. See [the publisher compatibility notes](https://central.sonatype.org/publish/publish-portal-maven/).
+
+Merge a workflow-only correction through a PR, then dispatch from main with the original qualified
+tag and SHA. No source/POM changes or tag moves are permitted in this retry. The workflow repeats
+Java 21 tests, package generation, signing and publication, and retains the generated bundle for inspection.
+A successful workflow still requires independent clean-cache artifact resolution before release completion.

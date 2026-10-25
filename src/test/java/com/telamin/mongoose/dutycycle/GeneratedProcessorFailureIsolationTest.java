@@ -88,8 +88,8 @@ class GeneratedProcessorFailureIsolationTest {
         flow.failAudit = true;
         queue.offer(new RunIntent(1)); queue.offer(new RunIntent(2));
         assertEquals(2, reader.doWork());
-        assertEquals(before + 1, flow.calls.get(), "no retry enters the wedged graph");
-        assertEquals(1, flow.failures.get());
+        assertEquals(before + 1, flow.calls.get(), "no retry re-enters the failed graph");
+        assertEquals(2, flow.failures.get(), "the failing auditor is called once on dispatch and once by failed-cycle cleanup");
         assertEquals(2, good.get(), "healthy subscriber receives both inputs exactly once");
         assertEquals(2, first.get(), "earlier subscriber must not receive a duplicate after the failure");
         assertEquals(2, reader.listenerCount());
@@ -186,9 +186,11 @@ class GeneratedProcessorFailureIsolationTest {
             scheduler.scheduleAtTime(System.currentTimeMillis() + 100, laterCalls::incrementAndGet);
         }
         finally { ProcessorContext.removeCurrentProcessor(); }
+        int before = flow.calls.get();
         flow.failAudit = true;
         assertDoesNotThrow(() -> { for (int i = 0; i < 1000; i++) scheduler.doWork(); });
-        assertEquals(1, flow.failures.get());
+        assertEquals(before, flow.calls.get(), "the failing audit prologue prevents the timer's event handler from running");
+        assertEquals(2, flow.failures.get(), "the failing auditor is called once on dispatch and once by failed-cycle cleanup");
         assertEquals(0, scheduler.cancelTimersOf(flow), "remaining owned timer was already cancelled");
         assertEquals(0, laterCalls.get());
         assertNull(ProcessorContext.currentProcessor());
@@ -478,13 +480,15 @@ class GeneratedProcessorFailureIsolationTest {
                 }
             };
             flow.start(); flow.failAudit = true;
+            int before = flow.calls.get();
             var queue = new OneToOneConcurrentArrayQueue<Object>(8);
             var reader = new EventQueueToEventProcessorAgent(queue, new EventToOnEventInvokeStrategy(), "pooled-failure");
             reader.registerProcessor(flow);
             Msg first = pool.acquire(), second = pool.acquire();
             queue.offer(first); queue.offer(second);
             reader.doWork(); reader.onClose();
-            assertEquals(1, flow.failures.get());
+            assertEquals(before + 1, flow.calls.get(), "the pooled input is not retried");
+            assertEquals(2, flow.failures.get(), "the failing auditor is called once on dispatch and once by failed-cycle cleanup");
             assertEquals(0, first.tracker.currentRefCount());
             assertEquals(0, second.tracker.currentRefCount());
             assertEquals(2, pool.availableCount());
