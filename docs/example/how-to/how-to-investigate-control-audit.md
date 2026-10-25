@@ -104,3 +104,22 @@ A complete log plus no observed violations is still weaker than a complete, inde
 For a worked request with exact record indexes, graph, saved focus and a shareable analyser bundle, follow the
 [late capture completion case study](../../case-studies/control-audit-investigation.md). The
 [control-plane contracts](../../reference/control-plane-contracts.md) describe identity and evidence limits.
+
+## Inspect retained capture resources without waiting for the group
+
+```text
+control.group.status trading
+```
+
+This returns the control state, outstanding request count, `captureResourcesHeld`, `captureResourceSlotsInUse`,
+`captureCloseFailures` and `captureCleanupFailures`. It does not use the group mailbox or wait for the group to
+make progress, so it can help when shutdown is incomplete. For embedded callers use
+`server.controlGroupStatus("trading")`.
+
+Held resources have not been handed off to the closer. Slots also include admitted opens, queued closes and
+failed physical closes. Failure maps are keyed by resource ID: `captureCloseFailures` contains physical close
+failures only; `captureCleanupFailures` also includes detach failures and labels the stage. Link these IDs to
+`CleanupPending` and the exported control records. A failed physical close is retained and is not automatically
+retried. Counts and maps are individually thread-safe but are not an atomic cross-field snapshot; re-read after
+progress or quiescence before drawing a leak conclusion. Zero ownership counters are not proof of external
+resource release by arbitrary plugin code. See the [shutdown runbook](../../operations/shutdown-runbook.md).

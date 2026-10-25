@@ -1414,6 +1414,26 @@ public class MongooseServer implements MongooseServerController {
         return audit;
     }
 
+    /** A weakly consistent diagnostic view: fields can advance independently while a group runs. */
+    public record ControlGroupStatus(String group, com.telamin.mongoose.control.ControlDriver.GroupState state,
+                                     int outstandingRequests, int captureResourcesHeld, int captureResourceSlotsInUse,
+                                     Map<Long, String> captureCloseFailures, Map<Long, String> captureCleanupFailures) {
+        public ControlGroupStatus {
+            captureCloseFailures = Map.copyOf(captureCloseFailures);
+            captureCleanupFailures = Map.copyOf(captureCleanupFailures);
+        }
+    }
+
+    /** Non-blocking counters and failure snapshots; does not enter the group's mailbox or wait for its thread. */
+    public ControlGroupStatus controlGroupStatus(String groupName) {
+        var runner = composingEventProcessorAgents.get(Objects.requireNonNull(groupName, "groupName"));
+        if (runner == null) throw new IllegalArgumentException("unknown processor group: " + groupName);
+        var group = runner.group();
+        return new ControlGroupStatus(groupName, group.control().state(), group.control().outstanding(),
+                group.captureResourcesHeld(), group.captureResourceSlotsInUse(),
+                group.captureCloseFailures(), group.captureCleanupFailures());
+    }
+
     /** Waiting is safe only off agent/lifecycle threads, on a group whose thread is running. */
     private boolean safeToWait(String groupName) {
         if (!controlCallerMayWait()) return false;

@@ -76,6 +76,12 @@ class ControlAuditAdminExportTest {
         try {
             server.addEventProcessor("quotes", "trading", null, ControlAuditAdminExportTest::processor);
             Commands commands = admin(server);
+            AgentThreads.enter(server);
+            try {
+                String resources = commands.call("control.group.status", "trading");
+                assertTrue(resources.contains("captureResourceSlotsInUse=0"), resources);
+                assertTrue(resources.contains("captureCleanupFailures={}"), resources);
+            } finally { AgentThreads.exit(); }
             Path target = directory.resolve("investigation");
             String response = commands.call("control.audit.export", "trading", target.toString());
             assertTrue(response.contains("job="), response);
@@ -108,6 +114,7 @@ class ControlAuditAdminExportTest {
         String status = awaitFinished(commands);
         assertTrue(status.contains("FAILED") && status.contains("unknown processor group: missing"), status);
         assertFalse(Files.exists(target));
+        assertTrue(commands.call("control.group.status", "missing").contains("unknown processor group"));
     }
 
     @Test void synchronousExportRefusesAgentThreadBeforeAnyIo() {

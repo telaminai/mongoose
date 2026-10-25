@@ -136,6 +136,23 @@ public class MongooseServerAdmin implements Lifecycle {
         registry.registerCommand("audit.list", this::auditList);
         registry.registerCommand("control.audit.export", this::controlAuditExport);
         registry.registerCommand("control.audit.export.status", this::controlAuditExportStatus);
+        registry.registerCommand("control.group.status", this::controlGroupStatus);
+    }
+
+    private void controlGroupStatus(List<String> args, Consumer<String> out, Consumer<String> err) {
+        if (args.size() != 2) {
+            err.accept("usage: control.group.status <group>");
+            return;
+        }
+        if (!(serverController instanceof com.telamin.mongoose.MongooseServer server)) {
+            err.accept("control group status requires a MongooseServer");
+            return;
+        }
+        try {
+            out.accept(server.controlGroupStatus(args.get(1)).toString());
+        } catch (IllegalArgumentException failed) {
+            err.accept(failed.getMessage());
+        }
     }
 
     private void controlAuditExport(List<String> args, Consumer<String> out, Consumer<String> err) {
