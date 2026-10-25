@@ -70,7 +70,7 @@ jobs:
           echo "$RUNNER_TEMP/apache-maven-3.9.11/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/apache-maven-3.9.11/bin/mvn" --version
       - name: Publish the tagged version to Central
-        run: mvn -B -P release clean deploy
+        run: mvn -B -ntp -Dmaven.test.redirectTestOutputToFile=true -P release clean deploy
         env:
           MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
           MAVEN_CENTRAL_TOKEN: ${{ secrets.OSSRH_TOKEN }}
