@@ -1,0 +1,11 @@
+{
+  "commit": "49246452e5eb9879529880f264150c094547ad24",
+  "tag": "v1.0.33-rc1",
+  "workflow": "https://github.com/telaminai/mongoose/actions/runs/40240510501",
+  "emptySettings": true,
+  "initiallyEmptyMavenCache": true,
+  "sha256": {
+    "mongoose-1.0.33-rc1.jar": "12d3659af1420e364ce84a7d1b433a99831c3b4c72e6d95ecbe8fb6142f9da1d",
+    "mongoose-1.0.33-rc1.pom": "58834df655f95cdb91f29ec7debc9f6255bc30a0314e3c709c8c9f918c0c5700"
+  }
+}
