@@ -1107,7 +1107,8 @@ public class MongooseServer implements MongooseServerController {
 
     /**
      * Stop exactly the processor a handle names, never a later one under the same name, and return the outcome without
-     * waiting. A handle whose processor has gone is answered {@code APPLIED} ("alreadyStopped").
+     * waiting. A handle whose processor has gone is answered {@code APPLIED} ("alreadyStopped"); a stop the group's full
+     * mailbox would not take is answered {@code REFUSED}, and the processor keeps running.
      */
     public java.util.concurrent.CompletionStage<com.telamin.mongoose.control.ControlReply> stopProcessor(ProcessorHandle handle) {
         var processorAgent = composingEventProcessorAgents.get(handle.group());
@@ -1117,8 +1118,18 @@ public class MongooseServer implements MongooseServerController {
         }
         ProcessorName reservation = new ProcessorName(handle.group(), handle.name());
         ProcessorRegistration registration = handle.registration();
-        return com.telamin.mongoose.control.ControlReplies.isolated(processorAgent.group().removeEventProcessorByName(
-                handle.name(), registration, () -> reservedProcessorNames.remove(reservation, registration)), replyExecutor);
+        com.telamin.mongoose.control.ControlRequest request;
+        try {
+            request = processorAgent.group().removeEventProcessorByName(
+                    handle.name(), registration, () -> reservedProcessorNames.remove(reservation, registration));
+        } catch (IllegalStateException notQueued) {
+            // a full mailbox: the request was refused unapplied. Answered, as addProcessor answers, never thrown at a
+            // caller told this returns the outcome (found by the chaos stress test)
+            return java.util.concurrent.CompletableFuture.completedFuture(new com.telamin.mongoose.control.ControlReply(
+                    -1, com.telamin.mongoose.control.event.ReplyOutcome.REFUSED, String.valueOf(notQueued.getMessage()),
+                    handle.generation(), handle.name()));
+        }
+        return com.telamin.mongoose.control.ControlReplies.isolated(request, replyExecutor);
     }
 
     /**

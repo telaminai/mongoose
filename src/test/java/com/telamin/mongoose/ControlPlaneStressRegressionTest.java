@@ -113,6 +113,32 @@ class ControlPlaneStressRegressionTest {
      * no longer be found by name, so a stop-everything sweep missed it.
      */
     @Test
+    void aStopRefusedOnAFullMailbox_keepsTheRunningProcessorsName() throws Exception {
+        Proc victim = new Proc(false);
+        ProcessorHandle handle = bootWithVictim(victim);
+        Proc blocker = holdAndFill();
+
+        ControlReply refused;
+        try {
+            refused = await(server.stopProcessor(handle));
+        } catch (IllegalStateException thrown) {
+            throw new AssertionError("stopProcessor(handle) must answer a full mailbox REFUSED, not throw: " + thrown, thrown);
+        }
+        assertEquals(ReplyOutcome.REFUSED, refused.outcome(), refused.toString());
+        blocker.release.countDown();
+
+        assertEquals(0, victim.stops.get(), "the refused stop did not stop it");
+        ProcessorHandle current = server.processorHandle("g", "victim");
+        assertNotNull(current, "the running processor keeps its name");
+        assertSame(handle.generation(), current.generation());
+        AddedProcessor again = server.addProcessor("victim", "g", null, () -> new Proc(false));
+        assertEquals(ReplyOutcome.REFUSED, await(again.reply()).outcome(), "its name is still in use");
+        assertEquals(ReplyOutcome.APPLIED, await(server.stopProcessor(current)).outcome());
+        assertEquals(1, victim.stops.get());
+    }
+
+    /** As above, by name with a bounded wait: the refused stop is reported and the name stays with its processor. */
+    @Test
     void aStopByNameRefusedOnAFullMailbox_keepsTheRunningProcessorsName() throws Exception {
         Proc victim = new Proc(false);
         ProcessorHandle handle = bootWithVictim(victim);
