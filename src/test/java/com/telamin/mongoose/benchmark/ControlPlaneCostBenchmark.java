@@ -18,7 +18,8 @@ import org.agrona.concurrent.BusySpinIdleStrategy;
 
 import java.util.Arrays;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 
 /**
  * The control plane's cost on the event path (design prediction P7): an idle duty cycle ({@code doWork()} with an
@@ -37,21 +38,31 @@ public class ControlPlaneCostBenchmark {
         @Override public void tearDown() { }
     }
 
-    /** A counter alone on its cache lines: no false sharing with whatever the server allocated beside it. */
-    static final class Padded {
+    static class CounterLeadingPadding {
         long p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15;
-        final AtomicLong value = new AtomicLong();
+    }
+
+    static class CounterValue extends CounterLeadingPadding {
+        volatile long value;
+    }
+
+    /** Pad the actual mutable field, not a reference to a separately allocated AtomicLong. */
+    static final class PaddedCounter extends CounterValue {
         long q1, q2, q3, q4, q5, q6, q7, q8, q9, q10, q11, q12, q13, q14, q15;
+        private static final VarHandle VALUE;
+        static {
+            try {
+                VALUE = MethodHandles.lookup().findVarHandle(CounterValue.class, "value", long.class);
+            } catch (ReflectiveOperationException e) {
+                throw new ExceptionInInitializerError(e);
+            }
+        }
+        long get() { return (long) VALUE.getVolatile(this); }
+        void lazySet(long value) { VALUE.setRelease(this, value); }
     }
 
     public static final class Counter extends ObjectEventHandlerNode {
-        static final long[] GAP = new long[64];
-        static final AtomicLong COUNT;
-        static final long[] GAP2 = new long[64];
-        static {
-            new Padded();
-            COUNT = new Padded().value;
-        }
+        static final PaddedCounter COUNT = new PaddedCounter();
         @Override public void start() { getContext().subscribeToNamedFeed("feed"); }
         @Override protected boolean handleEvent(Object event) { COUNT.lazySet(COUNT.get() + 1); return true; }
     }

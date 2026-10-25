@@ -32,6 +32,11 @@ public final class ControlInvariants {
             return violations.isEmpty();
         }
 
+        /** No counterexample is weaker than a verified result when evidence is missing or cleanup failed. */
+        public boolean verified() {
+            return ok() && unverifiable.isEmpty();
+        }
+
         @Override
         public String toString() {
             return "violations=" + violations + (unverifiable.isEmpty() ? "" : " unverifiable=" + unverifiable);
@@ -146,7 +151,7 @@ public final class ControlInvariants {
             for (Rec o : evidence.ofType("EffectOutcome")) {
                 // a fallback record has no seq to order by; a failed physical close is recorded and never blocks a reply
                 if (o.requestId() == reply.requestId() && !o.fallback() && o.seq() < reply.seq()
-                        && "failed".equals(o.str("outcome")) && !"DeliverService".equals(o.str("effect"))
+                        && "failed".equals(o.str("outcome"))
                         && !"CloseCapture".equals(o.str("effect"))) {
                     violations.add("I8 request " + reply.requestId() + " replied APPLIED after a failed "
                             + o.str("effect") + " (" + o.str("opId") + ")");
@@ -174,7 +179,7 @@ public final class ControlInvariants {
                 .filter(d -> "closeGroup".equals(d.str("rule")) || "closeEmpty".equals(d.str("rule")))
                 .mapToLong(Rec::seq).min().orElse(Long.MAX_VALUE);
         for (Requested q : requested) {
-            if (q.decisionSeq() > closingFrom && Set.of("BuildAndStart", "OpenCapture", "InstallCapture").contains(q.effect())) {
+            if (q.decisionSeq() >= closingFrom && Set.of("BuildAndStart", "OpenCapture", "InstallCapture").contains(q.effect())) {
                 violations.add("I7 " + q.effect() + " " + q.opId() + " requested after the group decided to close (seq "
                         + closingFrom + ")");
             }
@@ -194,25 +199,36 @@ public final class ControlInvariants {
                         + " requested after its release began (decision seq " + from + ")");
             }
         }
-        // I4: every capture resource opened (accepted or compensated) is closed exactly once; duplicate and unknown
-        // completions and refused closes do not count as opens
+        // I4: account for physical resources, including a new resource arriving after its open timed out. A duplicate
+        // completion for an existing resource is not a second allocation. Failed closes do not prove physical closure.
         Map<Long, Integer> opened = new HashMap<>();
         Map<Long, Integer> closed = new HashMap<>();
+        Set<Long> failedClose = new HashSet<>();
         for (Rec d : evidence.ofType("Decision")) {
             String rule = d.str("rule");
             if ("captureOpened".equals(rule) || "captureOpenedStale".equals(rule)) opened.merge(d.num("resourceId"), 1, Integer::sum);
         }
+        Set<Long> acceptedResources = Set.copyOf(opened.keySet());
         for (Rec r : evidence.records()) {
+            if ("EffectOutcome".equals(r.type()) && "OpenCapture".equals(r.str("effect"))
+                    && "succeeded".equals(r.str("outcome")) && r.num("resourceId") >= 0) {
+                opened.putIfAbsent(r.num("resourceId"), 1);
+            }
             boolean closeOutcome = "EffectOutcome".equals(r.type()) && "CloseCapture".equals(r.str("effect"))
-                    && !"pending".equals(r.str("outcome")) && r.num("resourceId") >= 0
+                    && "succeeded".equals(r.str("outcome")) && r.num("resourceId") >= 0
                     && !Boolean.TRUE.equals(r.fields().get("duplicate"));
             if (closeOutcome) closed.merge(r.num("resourceId"), 1, Integer::sum);
+            if ("EffectOutcome".equals(r.type()) && "CloseCapture".equals(r.str("effect"))
+                    && "failed".equals(r.str("outcome")) && r.num("resourceId") >= 0
+                    && !Boolean.TRUE.equals(r.fields().get("duplicate"))) failedClose.add(r.num("resourceId"));
         }
         opened.forEach((resource, n) -> {
             if (n > 1) violations.add("I4/I14 resource " + resource + " accepted as opened " + n + " times");
             int c = closed.getOrDefault(resource, 0);
             if (c > 1) violations.add("I4 resource " + resource + " closed " + c + " times");
-            if (c == 0 && evidence.complete()) violations.add("I4 resource " + resource + " opened and never closed");
+            if (c == 0 && failedClose.contains(resource)) {
+                unverifiable.add("I4/I11 resource " + resource + " close failed; physical closure is not established");
+            } else if (c == 0 && evidence.complete()) violations.add("I4 resource " + resource + " opened and never closed");
         });
         // I14: a duplicate completion has no effect: it installs nothing, and never closes a resource accepted as opened
         // (only the duplicate's own extra resource, which no decision accepted, may be closed)
@@ -223,7 +239,7 @@ public final class ControlInvariants {
                 if (effects != null && effects.contains("InstallCapture")) {
                     violations.add("I14 duplicate completion (seq " + d.seq() + ") installed a capture: " + effects);
                 }
-                if (effects != null && effects.contains("CloseCapture") && opened.containsKey(d.num("resourceId"))) {
+                if (effects != null && effects.contains("CloseCapture") && acceptedResources.contains(d.num("resourceId"))) {
                     violations.add("I14 duplicate completion (seq " + d.seq() + ") closed resource " + d.num("resourceId")
                             + ", which was accepted as opened");
                 }
@@ -233,18 +249,22 @@ public final class ControlInvariants {
         // closed more often than it was opened; with a complete record, opened - closed - live = 0 at the end means none
         // is left live (checked as I4's "never closed")
         java.util.List<Rec> ordered = new java.util.ArrayList<>(evidence.records());
-        ordered.removeIf(Rec::fallback);
-        ordered.sort(java.util.Comparator.comparingLong(Rec::seq));
+        // Export order includes fallback records, which have no graph seq. Sorting by seq would move all fallback
+        // effects before their inputs and invent an order that never happened.
         Map<Long, Integer> openedSoFar = new HashMap<>();
         Map<Long, Integer> closedSoFar = new HashMap<>();
         for (Rec r : ordered) {
             String rule = r.str("rule");
             if ("Decision".equals(r.type()) && ("captureOpened".equals(rule) || "captureOpenedStale".equals(rule))) {
-                openedSoFar.merge(r.num("resourceId"), 1, Integer::sum);
+                openedSoFar.putIfAbsent(r.num("resourceId"), 1);
+            }
+            if ("EffectOutcome".equals(r.type()) && "OpenCapture".equals(r.str("effect"))
+                    && "succeeded".equals(r.str("outcome")) && r.num("resourceId") >= 0) {
+                openedSoFar.putIfAbsent(r.num("resourceId"), 1);
             }
             boolean close = "EffectOutcome".equals(r.type()) && "CloseCapture".equals(r.str("effect"))
-                    && !"pending".equals(r.str("outcome")) && !Boolean.TRUE.equals(r.fields().get("duplicate"))
-                    && r.num("resourceId") >= 0 && opened.containsKey(r.num("resourceId"));
+                    && "succeeded".equals(r.str("outcome")) && !Boolean.TRUE.equals(r.fields().get("duplicate"))
+                    && r.num("resourceId") >= 0;
             if (close) {
                 long id = r.num("resourceId");
                 int c = closedSoFar.merge(id, 1, Integer::sum);
@@ -259,6 +279,8 @@ public final class ControlInvariants {
         java.util.Set<Long> startedGens = new java.util.HashSet<>();
         java.util.Set<Long> releasedGens = new java.util.HashSet<>();
         Map<Long, Integer> installedOn = new HashMap<>();
+        Map<Long, Long> resourceOwners = new HashMap<>();
+        Set<Long> physicallyClosed = new HashSet<>();
         java.util.Set<Long> failedUninstall = new java.util.HashSet<>();
         for (Rec r : ordered) {
             String rule = r.str("rule");
@@ -276,6 +298,7 @@ public final class ControlInvariants {
                 releasedGens.add(gen);
             }
             if ("EffectOutcome".equals(r.type()) && "succeeded".equals(r.str("outcome"))) {
+                long resource = r.num("resourceId");
                 if ("InstallCapture".equals(r.str("effect"))) {
                     if (!startedGens.contains(gen) || releasedGens.contains(gen)) {
                         violations.add("I12 capture installed (seq " + r.seq() + ") on generation " + gen
@@ -284,8 +307,31 @@ public final class ControlInvariants {
                     if (installedOn.merge(gen, 1, Integer::sum) > 1) {
                         violations.add("I12 a second capture installed (seq " + r.seq() + ") on generation " + gen);
                     }
+                    if (resource >= 0) {
+                        Long owner = resourceOwners.putIfAbsent(resource, gen);
+                        if (owner != null) violations.add("I12 resource " + resource + " installed again on generation "
+                                + gen + " while owned by " + owner);
+                        if (physicallyClosed.contains(resource)) violations.add("I12 closed resource " + resource + " installed");
+                    } else {
+                        unverifiable.add("I12 InstallCapture " + r.str("opId") + " has no resource identity");
+                    }
                 } else if ("UninstallCapture".equals(r.str("effect"))) {
-                    installedOn.merge(gen, -1, Integer::sum);
+                    if (installedOn.getOrDefault(gen, 0) <= 0) {
+                        violations.add("I12 generation " + gen + " uninstalled a capture without an installation");
+                    } else installedOn.merge(gen, -1, Integer::sum);
+                    if (resource >= 0 && !resourceOwners.remove(resource, gen)) {
+                        violations.add("I12 resource " + resource + " uninstalled by generation " + gen + " without ownership");
+                    }
+                    failedUninstall.remove(gen);
+                } else if ("CloseCapture".equals(r.str("effect")) && resource >= 0
+                        && !Boolean.TRUE.equals(r.fields().get("duplicate"))) {
+                    physicallyClosed.add(resource);
+                    Long owner = resourceOwners.remove(resource);
+                    if (owner != null && !failedUninstall.contains(owner)) {
+                        violations.add("I12 resource " + resource + " closed while installed on generation " + owner);
+                    } else if (owner != null) {
+                        unverifiable.add("I12 resource " + resource + " closed after failed uninstall; successful detachment is not recorded");
+                    }
                 }
             }
         }

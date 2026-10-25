@@ -342,6 +342,11 @@ public class ControlState {
         effectResources.put(opId, resourceId);
     }
 
+    /** Read by the outcome auditor before the capture rule consumes the association. */
+    public long effectResource(String opId) {
+        return effectResources.getOrDefault(opId, -1L);
+    }
+
     /** The resource a capture effect acted on, once its final result is in; -1 for any other effect. */
     public long takeEffectResource(String opId) {
         Long id = effectResources.remove(opId);
