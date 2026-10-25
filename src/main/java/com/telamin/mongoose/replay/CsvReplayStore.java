@@ -34,6 +34,8 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
     private final Path file;
     private final EventCodec codec;
     private final Map<String, List<ReplayEntry>> entries = new ConcurrentHashMap<>();
+    /** How each stream began: a BEGAN line, kept beside the entries, never among them. */
+    private final Map<String, Provenance> provenance = new ConcurrentHashMap<>();
     private final BufferedWriter out;
     /** A torn last line found on opening, or null: the file is then read, and never appended to. */
     private String torn;
@@ -62,6 +64,11 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
                     if (lines.get(i).isEmpty()) continue;
                     List<String> f = Csv.split(lines.get(i));
                     if (f.size() != fields) throw new IllegalArgumentException(file + " line " + (i + 1) + " has " + f.size() + " fields, not " + fields);
+                    if (fields == 8 && "BEGAN".equals(f.get(1))) {
+                        provenance.put(f.get(0), new Provenance(f.get(2), f.get(3), Integer.parseInt(f.get(4)),
+                                Long.parseLong(f.get(5))));
+                        continue;
+                    }
                     add(f.get(0), fields == 8 ? parse(f) : parse6(f));
                 }
             }
@@ -96,8 +103,34 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
     }
 
     @Override
+    public synchronized void began(String processor, Provenance p) {
+        if (torn != null) throw Csv.tornRefusal(file, torn);
+        if (earlierFormat) return;          // an earlier-format file is read, never appended to
+        String line = Csv.field(processor) + ",BEGAN," + Csv.field(p.processorClass()) + "," + Csv.field(p.handlerClass())
+                + "," + p.incarnation() + "," + p.instant() + ",,";
+        try {
+            out.write(line);
+            out.newLine();
+            out.flush();
+        } catch (IOException e) {
+            throw new UncheckedIOException("cannot append to replay store " + file, e);
+        }
+        provenance.put(processor, p);
+    }
+
+    @Override
+    public Provenance provenance(String processor) {
+        return provenance.get(processor);
+    }
+
+    @Override
+    public boolean has(String processor) {
+        return entries.containsKey(processor) || provenance.containsKey(processor);   // a BEGAN line proves it existed
+    }
+
+    @Override
     public boolean holdsRecording() {
-        return torn != null || earlierFormat || entries.values().stream().anyMatch(l -> !l.isEmpty());
+        return torn != null || earlierFormat || !provenance.isEmpty() || entries.values().stream().anyMatch(l -> !l.isEmpty());
     }
 
     @Override
@@ -119,6 +152,20 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
             case ReplayEntry.AdminInvoked a -> "ADMIN," + Csv.field(a.command()) + ",,," + a.instant() + ","
                     + encode(new ArrayList<>(a.args())) + "," + reads(a.reads());
             case ReplayEntry.Failed f -> "FAILED," + Csv.field(f.source()) + ",,," + f.instant() + "," + encode(f.description()) + ",";
+            case ReplayEntry.Stopped s -> "STOPPED,,,," + s.instant() + ",," + reads(s.reads());
+            case ReplayEntry.ServiceChanged c -> "SERVICE," + Csv.field(c.service()) + "," + (c.register() ? "register" : "deregister")
+                    + "," + c.version() + "," + c.instant() + ",," + reads(c.reads());
+            case ReplayEntry.ControlCall cc -> {
+                // Keep ordinary/legacy rows unchanged. A multiline exception is data, not a CSV field: put its
+                // UTF-8 bytes in the unused sequence slot. A distinct kind makes older readers fail closed
+                // instead of misreading an encoded failure as a successful empty outcome.
+                boolean multiline = cc.outcome().indexOf('\n') >= 0 || cc.outcome().indexOf('\r') >= 0;
+                String outcome = multiline ? "" : Csv.field(cc.outcome());
+                String encodedOutcome = multiline ? "outcome-base64:"
+                        + Base64.getEncoder().encodeToString(cc.outcome().getBytes(StandardCharsets.UTF_8)) : "";
+                yield (multiline ? "CONTROL64," : "CONTROL,") + Csv.field(cc.method()) + "," + outcome + "," + encodedOutcome + ","
+                        + cc.instant() + "," + encode(new ArrayList<>(cc.args())) + ",";
+            }
         };
     }
 
@@ -133,8 +180,18 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
             case "TIMER" -> new ReplayEntry.TimerFired(Long.parseLong(seq), instant, reads);
             case "ADMIN" -> new ReplayEntry.AdminInvoked(source, List.copyOf((List<String>) decode(payload)), instant, reads);
             case "FAILED" -> new ReplayEntry.Failed(source, (String) decode(payload), instant);
+            case "STOPPED" -> new ReplayEntry.Stopped(instant, reads);
+            case "SERVICE" -> new ReplayEntry.ServiceChanged(source, "register".equals(route), Long.parseLong(seq), instant, reads);
+            case "CONTROL" -> new ReplayEntry.ControlCall(source, List.copyOf((List<String>) decode(payload)), route, instant);
+            case "CONTROL64" -> new ReplayEntry.ControlCall(source, List.copyOf((List<String>) decode(payload)), controlOutcome(seq), instant);
             default -> throw new IllegalArgumentException(file + ": an unknown entry kind " + kind);
         };
+    }
+
+    private static String controlOutcome(String encoded) {
+        String prefix = "outcome-base64:";
+        if (!encoded.startsWith(prefix)) throw new IllegalArgumentException("unknown control outcome encoding");
+        return new String(Base64.getDecoder().decode(encoded.substring(prefix.length())), StandardCharsets.UTF_8);
     }
 
     /** The six-field format: no route, and the instant was the first reading (a cycle always recorded one). */

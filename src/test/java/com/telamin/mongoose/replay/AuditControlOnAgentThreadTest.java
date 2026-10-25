@@ -322,6 +322,9 @@ class AuditControlOnAgentThreadTest {
 
             assertEquals(List.of("out:audit: RECORDING quotes"), replies.get(), "the admin start was applied");
             assertTrue(tookMs.get() < 3_000, "and not held up behind a lock the agent thread needed: " + tookMs.get() + " ms");
+            // capture is opened off the group's thread and installed once open (design "Audit capture")
+            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!rig.capture().isRecording("late") && System.nanoTime() < until) Thread.sleep(5);
             assertTrue(rig.capture().isRecording("late"), "the autoStart on the agent thread was applied too");
             assertTrue(rig.capture().isRecording("quotes"));
         } finally {

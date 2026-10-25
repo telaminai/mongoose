@@ -34,10 +34,10 @@ Advantages of agent execution
 
 - Single-threaded event handling: Processors execute events on a dedicated agent thread, avoiding external
   synchronization inside handlers.
-- Uniform lifecycle and observability: Agents participate in the server lifecycle (
-  `init → start → startComplete → stop → tearDown`) and are visible with consistent names, logs, and metrics.
-- Backpressure and dispatch integration: Publishing to processors uses Mongoose’s queues and policies (
-  `EventToQueuePublisher`), ensuring safe cross-thread handoff.
+- Lifecycle and observability: Agents participate in server startup and shutdown and expose names, logs and metrics.
+  Callback sequences differ between processors, feeds and services.
+- Dispatch integration: Publishing uses `EventToQueuePublisher` and group queues. Full-queue retries can end in
+  counted drops; see [overload behaviour](event-flow.md#publisher-serialisation-and-slow-subscribers).
 - Tunable latency and CPU use: Idle strategies (busy spin, yielding, backoff, sleeping) can be chosen per agent group;
   see [threading-model.md](threading-model.md#10-idle-strategies-and-host-environment-impact).
 
@@ -60,7 +60,8 @@ Trade-offs
 
 Mongoose provides several agent types and ways to host components:
 
-- Processor Agent Groups: Host one or more `StaticEventProcessor` instances. All event handlers run here.
+- Processor Agent Groups: Host application processors and one generated Fluxtion control processor. The latter
+  decides lifecycle changes; business events keep their own dispatch path. See [built with Fluxtion](built-with-fluxtion.md).
 - Service Agent Groups: Host worker services and optional agent-hosted event sources.
 - Scheduler Agent: Runs the deadline wheel (`DeadWheelScheduler`) for timed tasks.
 
@@ -129,7 +130,8 @@ Hybrid approach:
   library-managed IO threads). Either way, they publish into processor queues.
 - Services: Can be agent-hosted (cooperative `doWork()` in a service agent group) or run on their own threads if they
   are external/blocked; publish back to processors for state changes.
-- Sinks: Can be agent-hosted (as services) or run on their own threads, consuming outputs produced by processors.
+- Sinks: A synchronous sink method runs on its caller’s thread. A sink implementation may enqueue work for a
+  service agent or its own worker; that handoff is not automatic.
 
 Small diagram
 
@@ -174,10 +176,10 @@ through `ErrorReporting` at `ERROR`:
 
 | Failure | What happens |
 |---|---|
-| `start()` throws, processor added after the server started | Reported. The processor is dropped: its `tearDown()` runs, and its subscriptions, timers, replay bindings and audit-capture binding are released. The group runs on. |
+| `start()` throws, processor added after the server started | Reported. The processor is dropped: its `tearDown()` runs, and its subscriptions, timers, replay bindings and audit-capture binding are released. The group runs on. `addProcessor`'s reply is `FAILED`; the void `addEventProcessor` returns, or throws `ProcessorStartException` with `addFailurePolicy: THROW` ([contract](../reference/control-plane-contracts.md#addfailurepolicy)). |
 | `start()` throws while the server boots | **The boot fails** (default). The processor is dropped as above, and the group's start fails with a `ProcessorStartException` naming the group and the processor, which goes to the agent error handler. Set `isolateProcessorStartFailuresAtBoot: true` (YAML, `MongooseServerConfig` or its builder) to isolate it instead: reported, dropped, and the server boots without it. |
 | `stop()` / `tearDown()` throws | Reported. The processor is still removed and its subscriptions released. |
-| `@ServiceRegistered` / `@ServiceDeregistered` handler throws | Reported. The processor keeps running; the broadcast still reaches the other processors. |
+| `@ServiceRegistered` / `@ServiceDeregistered` handler throws | Reported. The processor keeps running; the broadcast still reaches the other processors. A service whose withdrawal a `@ServiceDeregistered` handler failed is not stopped by `removeService`; the server keeps it until shutdown ([contract](../reference/control-plane-contracts.md#removeservice)). |
 | A timer callback throws | Reported, naming the processor. The other timers fire. |
 
 Every `Throwable` is caught on these paths except `VirtualMachineError` (`OutOfMemoryError`, `StackOverflowError`, ...),

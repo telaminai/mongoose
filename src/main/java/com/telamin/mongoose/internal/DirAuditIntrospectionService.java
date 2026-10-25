@@ -36,9 +36,19 @@ public final class DirAuditIntrospectionService implements MongooseAuditIntrospe
 
     private final AuditCaptureConfig config;
     private final ChronicleAuditCaptureService captureService;
-    private final AtomicReference<List<AuditSinkHandle>> cachedList = new AtomicReference<>();
+    private record CachedSnapshot(List<AuditSinkHandle> entries) { }
+    // Each invalidation has a distinct token, including when the previous snapshot was already empty.
+    private final AtomicReference<CachedSnapshot> cachedList = new AtomicReference<>(new CachedSnapshot(null));
+    private final Runnable beforeCachePublish;
 
     public DirAuditIntrospectionService(AuditCaptureConfig config, ChronicleAuditCaptureService captureService) {
+        this(config, captureService, () -> { });
+    }
+
+    // Allows deterministic tests to invalidate between the filesystem snapshot and its publication.
+    DirAuditIntrospectionService(AuditCaptureConfig config, ChronicleAuditCaptureService captureService,
+                                Runnable beforeCachePublish) {
+        this.beforeCachePublish = beforeCachePublish;
         this.config = config;
         this.captureService = captureService;
         // The cache's own comment says it "is invalidated on each live-sink mutation reported by the
@@ -49,17 +59,24 @@ public final class DirAuditIntrospectionService implements MongooseAuditIntrospe
 
     /** Drop the cached listAvailable() snapshot — call on capture roll / janitor sweep. */
     public void invalidate() {
-        cachedList.set(null);
+        cachedList.set(new CachedSnapshot(null));
     }
 
     @Override
     public List<AuditSinkHandle> listAvailable() {
-        List<AuditSinkHandle> cached = cachedList.get();
+        CachedSnapshot observed = cachedList.get();
+        List<AuditSinkHandle> cached = observed.entries();
         if (cached == null) {
             List<AuditSinkHandle> fresh = walk();
-            // Race-safe: if another walk landed first, just discard ours.
-            cachedList.compareAndSet(null, fresh);
-            cached = cachedList.get() == null ? fresh : cachedList.get();
+            beforeCachePublish.run();
+            if (cachedList.compareAndSet(observed, new CachedSnapshot(fresh))) {
+                cached = fresh;
+            } else {
+                // A concurrent mutation must not have its invalidation overwritten by this earlier walk.
+                // Returning this one stale snapshot is allowed; the next read rebuilds if no newer walk won.
+                List<AuditSinkHandle> newer = cachedList.get().entries();
+                cached = newer == null ? fresh : newer;
+            }
         }
         return withLiveCounters(cached);
     }
@@ -77,11 +94,11 @@ public final class DirAuditIntrospectionService implements MongooseAuditIntrospe
      * map lookup per entry and keeps the walk cached, which is what the cache was for.
      */
     private List<AuditSinkHandle> withLiveCounters(List<AuditSinkHandle> snapshot) {
-        Map<String, AuditSinkHandle> live = captureService.liveSinks();
+        Map<String, AuditSinkHandle> live = liveById();
         if (live.isEmpty()) return snapshot;
         List<AuditSinkHandle> out = new ArrayList<>(snapshot.size());
         for (AuditSinkHandle h : snapshot) {
-            AuditSinkHandle fresh = live.get(h.processorName());
+            AuditSinkHandle fresh = live.get(h.id());
             out.add(fresh != null ? fresh : h);
         }
         return List.copyOf(out);
@@ -89,7 +106,7 @@ public final class DirAuditIntrospectionService implements MongooseAuditIntrospe
 
     @Override
     public AuditSinkHandle currentSink(String processorName) {
-        return captureService.liveSinks().get(processorName);
+        return captureService.currentSink(processorName);
     }
 
     @Override
@@ -97,17 +114,40 @@ public final class DirAuditIntrospectionService implements MongooseAuditIntrospe
         return captureService.liveSinks();
     }
 
+    private Map<String, AuditSinkHandle> liveById() {
+        Map<String, AuditSinkHandle> out = new HashMap<>();
+        for (AuditSinkHandle handle : captureService.liveSinks().values()) out.put(handle.id(), handle);
+        return out;
+    }
+
     private List<AuditSinkHandle> walk() {
-        Path root = Path.of(config.getDirectory());
+        Path root = Path.of(config.getDirectory()).toAbsolutePath().normalize();
         if (!Files.isDirectory(root)) {
             return Collections.emptyList();
         }
-        Map<String, AuditSinkHandle> live = captureService.liveSinks();
+        Map<String, AuditSinkHandle> live = liveById();
         List<AuditSinkHandle> out = new ArrayList<>();
         try (Stream<Path> entries = Files.list(root)) {
             entries.filter(Files::isDirectory).forEach(procDir -> {
-                String name = procDir.getFileName().toString();
-                AuditSinkHandle liveHandle = live.get(name);
+                String id = procDir.getFileName().toString();
+                String name = id;
+                Instant openedAt = Instant.EPOCH;
+                Path metadata = procDir.resolve(".mongoose-capture.properties");
+                if (Files.isRegularFile(metadata)) {
+                    java.util.Properties properties = new java.util.Properties();
+                    try (var reader = Files.newBufferedReader(metadata)) {
+                        properties.load(reader);
+                        if ("1".equals(properties.getProperty("schema"))) {
+                            name = properties.getProperty("processor", id);
+                            String opened = properties.getProperty("openedAt");
+                            if (opened != null) {
+                                try { openedAt = Instant.parse(opened); }
+                                catch (java.time.format.DateTimeParseException invalid) { /* older/malformed metadata uses mtime */ }
+                            }
+                        }
+                    } catch (IOException ignored) { /* retain the unique directory id when metadata is unreadable */ }
+                }
+                AuditSinkHandle liveHandle = live.get(id);
                 if (liveHandle != null) {
                     // Live capture — handle from the service has authoritative
                     // recordCount + lastWriteAt; reuse verbatim.
@@ -131,11 +171,11 @@ public final class DirAuditIntrospectionService implements MongooseAuditIntrospe
                     // best effort — handle still emitted with size=so-far
                 }
                 out.add(new AuditSinkHandle(
-                        name, name, procDir,
+                        id, name, procDir,
                         -1L,       // cycle: unknown from a closed dir walk
                         size,
                         -1L,       // recordCount: -1 = needs a tailer walk; deferred
-                        Instant.EPOCH,           // startedAt: unknown without metadata file
+                        openedAt,                // older metadata falls back to last-write ordering in history lookup
                         lastModified,
                         false));
             });
@@ -152,7 +192,7 @@ public final class DirAuditIntrospectionService implements MongooseAuditIntrospe
         for (Map.Entry<String, AuditSinkHandle> e : live.entrySet()) {
             boolean present = false;
             for (AuditSinkHandle h : out) {
-                if (h.processorName().equals(e.getKey())) { present = true; break; }
+                if (h.id().equals(e.getKey())) { present = true; break; }
             }
             if (!present) {
                 out.add(0, e.getValue());
@@ -160,7 +200,7 @@ public final class DirAuditIntrospectionService implements MongooseAuditIntrospe
         }
         Map<String, AuditSinkHandle> deduped = new HashMap<>();
         for (AuditSinkHandle h : out) {
-            deduped.putIfAbsent(h.processorName(), h);
+            deduped.putIfAbsent(h.id(), h);
         }
         return Collections.unmodifiableList(new ArrayList<>(deduped.values()));
     }

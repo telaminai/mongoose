@@ -59,6 +59,14 @@ MongooseServerConfig app = MongooseServerConfig.builder()
 var server = com.telamin.mongoose.MongooseServer.bootServer(app, logRecordListener);
 ```
 
+## Documentation
+
+- [Main documentation site](https://telaminai.github.io/mongoose/)
+- [Control-plane contracts](docs/reference/control-plane-contracts.md): what adding and stopping processors,
+  services, shutdown, audit capture and replay guarantee, and how each fails
+- [Glossary](docs/reference/glossary.md)
+- [Release notes for unreleased changes](docs/release/release-notes-unreleased.md)
+
 ## License
 
 AGPL-3.0-only. See LICENSE for details.

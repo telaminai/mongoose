@@ -21,6 +21,8 @@ public interface EventSource<T> {
 
     enum EventWrapStrategy {SUBSCRIPTION_NOWRAP, SUBSCRIPTION_NAMED_EVENT, BROADCAST_NOWRAP, BROADCAST_NAMED_EVENT}
 
+    /** @deprecated Ignored by the publisher. All values use bounded spin then drop; blocking policy is tracked in issue #77. */
+    @Deprecated
     enum SlowConsumerStrategy {DISCONNECT, EXIT_PROCESS, BACKOFF}
 
     /**
@@ -53,10 +55,12 @@ public interface EventSource<T> {
     }
 
     /**
-     * Configure the strategy used when consumers cannot keep up with event rate.
+     * Retained for source compatibility; does not change publisher overload behaviour.
+     * @deprecated Ignored: all values use bounded spin then drop. See issue #77 for the future policy.
      *
      * @param slowConsumerStrategy slow consumer handling strategy
      */
+    @Deprecated
     default void setSlowConsumerStrategy(SlowConsumerStrategy slowConsumerStrategy) {
     }
 

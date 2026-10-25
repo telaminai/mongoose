@@ -84,6 +84,39 @@ class AuditCaptureFanOutTest {
         return c;
     }
 
+    /**
+     * Review of control-plane PR 5, finding 2: a processor whose listener cannot be restored must not leave the sink
+     * recording into a queue that is then closed. The capture stops first; the failed restore is logged.
+     */
+    @Test
+    void anUninstallWhoseRestoreThrowsStillStopsTheSink(@TempDir Path dir) throws Exception {
+        AtomicReference<LogRecordListener> installed = new AtomicReference<>();
+        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+        DataFlow flow = (DataFlow) java.lang.reflect.Proxy.newProxyInstance(DataFlow.class.getClassLoader(),
+                new Class<?>[]{DataFlow.class}, (proxy, method, args) -> {
+                    if (method.getName().equals("setAuditLogProcessor")) {
+                        if (calls.incrementAndGet() > 1) throw new IllegalStateException("simulated: restore refused");
+                        installed.set((LogRecordListener) args[0]);
+                        return null;
+                    }
+                    return switch (method.getName()) {
+                        case "hashCode" -> System.identityHashCode(proxy);
+                        case "equals" -> proxy == args[0];
+                        case "toString" -> "refusingStub";
+                        default -> defaultValue(method.getReturnType());
+                    };
+                });
+        ChronicleAuditCaptureService svc = new ChronicleAuditCaptureService(config(dir), counters());
+        svc.attach(flow, "p", r -> { });
+        Object resource = svc.openCapture("p");
+        svc.installCapture(resource, "p", flow);
+        assertTrue(svc.isRecording("p"));
+        svc.uninstallCapture(resource, "p", flow);          // the restore throws inside: logged, not thrown
+        assertFalse(svc.isRecording("p"), "the sink stopped recording although the restore failed");
+        svc.closeCapture(resource);
+        installed.get().processLogRecord(record("after-close"));   // the stale listener writes nothing, throws nothing
+    }
+
     /** MA-5.1 and MA-5.2 — fan out while recording, restore on stop. */
     @Test
     void recordsReachBothDestinationsAndTheListenerIsRestoredOnStop(@TempDir Path dir) {

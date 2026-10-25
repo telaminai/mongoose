@@ -38,6 +38,14 @@ Operational guidance for running Mongoose Server in production. Tailor values to
 - Apply backpressure via publishers or drop/shape non‑critical traffic where acceptable.
 - Consider lowering batch sizes to reduce latency tails during incidents.
 
+**Current publisher limit:** `EventToQueuePublisher` retries a full destination queue for about 10 ms, then drops
+that queue's copy and increments its drop count. This is a delivery loss, not reliable blocking back-pressure.
+One queued copy can feed several processors, so missed processor deliveries can exceed the queue-copy drop count.
+The wait holds the feed's publication lock; one stalled subscriber can therefore delay other subscribers.
+Monitor drops and pace sources within consumer capacity when loss is unacceptable. The explicit overflow-policy
+design is tracked in [#77](https://github.com/telaminai/mongoose/issues/77); the control-plane changes do not change
+this existing policy. A successful bounded-load delivery test does not establish losslessness under overload.
+
 ## Failure handling
 - Startup failures: fail fast if critical services or feeds do not initialize.
 - Runtime errors in handlers: log with context; consider circuit breakers for flaky integrations.
@@ -64,7 +72,10 @@ example, two `eventHandlers` entries with the same `agentName` and the same hand
 that names the group and the processor. Before this, boot went ahead and the duplicate was at most logged.
 
 ## Shutdown
-`MongooseServer.stop()` runs an ordered shutdown, once:
+
+`MongooseServer.shutdown()` runs an ordered, **bounded** shutdown and returns a `StopResult` saying what it achieved.
+`stop()` delegates to it and discards the result; inspect `lastStopResult()` or call `shutdown()` when you need it. The full contract is in
+[Control-plane contracts: Shutdown](control-plane-contracts.md#shutdown). In operational terms:
 
 1. **Feeds stop.** Agent groups that host only event sources close. Event sources that share a group with other
    services are taken off that group, and the other services keep running. Every event source is then stopped and
@@ -74,23 +85,34 @@ that names the group and the processor. Before this, boot went ahead and the dup
    and a warning gives the count.
 3. **Processors stop.** Each processor group runs `@Stop` and then `@TearDown` for its processors, on the group's own
    thread.
-4. **Services stop.** The remaining service agent groups close, and then the registered services stop.
+4. **Services stop**, but only if every processor group closed. The remaining service agent groups close, and then
+   the registered services stop.
 
-Shutdown latency: the drain adds up to `shutdownDrainTimeoutMillis` to `stop()` whenever events are still queued
-(no wait when the queues are already empty). Lower it, or set it to `0` to skip the drain, if fast shutdown matters
-more than delivering queued events:
+The whole stop is bounded by `shutdownTimeoutMillis` (default **30000 ms**):
 
 ```yaml
+shutdownTimeoutMillis: 20000      # default 30000: stop() returns, complete or not, within about this long
 shutdownDrainTimeoutMillis: 500   # default 2000; 0 or less does not wait
 ```
 
-or `MongooseServerConfig.builder().shutdownDrainTimeoutMillis(500)`.
+or `MongooseServerConfig.builder().shutdownTimeoutMillis(20000).shutdownDrainTimeoutMillis(500)`.
 
-When `stop()` is called on an ordinary thread, it returns once the server has stopped. A call that races a stop
-already in progress also waits for it to finish. When it is called on one of the server's own agent threads (a
-processor's event handler, an admin command, an agent-hosted service), it can't wait for that thread to close.
-Instead it starts the shutdown on a new `mongoose-server-stop` thread and returns at once. To wait for the shutdown
-to finish, call `server.awaitStopped(timeout, unit)` from another thread.
+**When a stop does not complete.** If something does not stop in time (a processor's `stop()` that blocks, a
+service that never returns), `shutdown()` returns a `StopResult` with `complete() == false`, naming the groups
+(`groupsRunning`) and services (`servicesLeftRunning`) still running. The server stays `STOPPING`, and no service is
+stopped while any processor group is still running. **Call `shutdown()` again to resume**: it carries on from the
+first unfinished phase. A service whose `stop()` threw is not called again, and stays listed.
+
+**Called from an agent thread.** When `stop()` or `shutdown()` is called on one of the server's own agent threads (a
+processor's event handler, an admin command, an agent-hosted service), it cannot wait for that thread to close. It
+starts the shutdown on a new `mongoose-server-stop` thread and returns at once. `shutdown()` returns a result with
+`handedOff() == true`; the void `stop()` does not return that result. To wait
+for the shutdown, call `server.awaitStopped(timeout, unit)` from another thread. `awaitStopped` returns `true` only
+once a stop has completed.
+
+Shutdown latency: the drain adds up to `shutdownDrainTimeoutMillis` whenever events are still queued (no wait when
+the queues are already empty). Lower it, or set it to `0` to skip the drain, if fast shutdown matters more than
+delivering queued events.
 
 ## Deployment checklist
 - JVM flags: consistent flags across environments; enable GC, heap, and JIT logging for diagnostics.
@@ -118,6 +140,7 @@ to finish, call `server.awaitStopped(timeout, unit)` from another thread.
 - "Backlogs growing": observe queue depths; scale out, adjust batching, or shed load.
 
 ## References
-- Troubleshooting and FAQ: guide/troubleshooting.md
-- Benchmarks and methodology: reports/server-benchmarks-and-performance.md
-- Threading model: architecture/threading-model.md
+- Control-plane contracts: [control-plane-contracts.md](control-plane-contracts.md)
+- Troubleshooting and FAQ: [troubleshooting.md](troubleshooting.md)
+- Benchmarks and methodology: [server-benchmarks-and-performance.md](../reports/server-benchmarks-and-performance.md)
+- Threading model: [threading-model.md](../architecture/threading-model.md)

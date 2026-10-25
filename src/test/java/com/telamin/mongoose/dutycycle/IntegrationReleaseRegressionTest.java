@@ -155,7 +155,8 @@ class IntegrationReleaseRegressionTest {
             assertTrue(held.await(5, TimeUnit.SECONDS));
             AtomicInteger built = new AtomicInteger();
             for (int i = 0; i < ComposingEventProcessorAgent.CONTROL_QUEUE_CAPACITY; i++) {
-                s.addEventProcessor("DEMO-" + i, "DEMO", null, () -> { built.incrementAndGet(); return new Proc(); });
+                // the non-waiting add: the void add now waits for each outcome, so it would block on the held group
+                s.addProcessor("DEMO-" + i, "DEMO", null, () -> { built.incrementAndGet(); return new Proc(); });
             }
             AtomicInteger rejectedSupplierCalls = new AtomicInteger();
             assertThrows(IllegalStateException.class, () -> s.addEventProcessor("RETRY", "DEMO", null, () -> {
@@ -407,13 +408,15 @@ class IntegrationReleaseRegressionTest {
 
     private static WeakReference<ProcessorRegistration> rejectStartAndConsumeItsStop(ComposingEventProcessorAgent group)
             throws Exception {
-        for (int i = 0; i < ComposingEventProcessorAgent.CONTROL_QUEUE_CAPACITY; i++) {
-            String name = "fill-" + i;
-            group.addNamedEventProcessor(() -> new NamedEventProcessor(name, new Proc()));
-        }
+        // one ordered mailbox now carries starts and stops alike, so the stop is sent before the mailbox fills: it must
+        // still be consumed, and the add rejected behind it must leave no retained registration
         ProcessorRegistration rejected = new ProcessorRegistration(); AtomicInteger built = new AtomicInteger();
         AtomicInteger acknowledged = new AtomicInteger();
         group.removeEventProcessorByName("DEMO-rejected", rejected, acknowledged::incrementAndGet);
+        for (int i = 0; i < ComposingEventProcessorAgent.CONTROL_QUEUE_CAPACITY - 1; i++) {
+            String name = "fill-" + i;
+            group.addNamedEventProcessor(() -> new NamedEventProcessor(name, new Proc()));
+        }
         assertThrows(IllegalStateException.class, () -> group.addNamedEventProcessor(() -> {
             built.incrementAndGet(); return new NamedEventProcessor("DEMO-rejected", new Proc());
         }, rejected), "the full start queue rejects this enqueue on its own thread");

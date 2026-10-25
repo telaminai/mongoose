@@ -32,6 +32,10 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     private final Logger logger;
     private com.telamin.mongoose.dispatch.RetryPolicy retryPolicy = com.telamin.mongoose.dispatch.RetryPolicy.defaultProcessingPolicy();
     private Runnable unsubscribeAction;
+    private ProcessorDispatchException terminalFailure;
+    /** Last receiver removed: leave queued commands/resources for onClose, never drain into an empty strategy. */
+    private boolean drainDisabled;
+    private java.util.function.BiConsumer<DataFlow, Throwable> processorFailureHandler;
     /** The source this queue drains (spec-replay-recording R2: an entry names its source). */
     private final String sourceName;
     /** The configured route (callback type) this queue delivers by: an entry names it (review of 90f0d9b, finding 4). */
@@ -84,6 +88,8 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
 
     @Override
     public int doWork() {
+        if (terminalFailure != null) throw terminalFailure;
+        if (drainDisabled) return 0;
         int processed = 0;
         // Batch up to a fixed number of events per tick to reduce per-event overhead
         final int batchLimit = 64;
@@ -175,6 +181,9 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                             eventToInvokeStrategy.processEvent(event);
                         }
                         done = true;
+                    } catch (ProcessorDispatchException fatal) {
+                        terminalFailure = fatal;
+                        throw fatal;
                     } catch (VirtualMachineError fatal) {
                         throw fatal;        // OutOfMemoryError, StackOverflowError, ...: never retried or swallowed (as #57)
                     } catch (Throwable t) {
@@ -198,6 +207,57 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                                 if (recorder != null) recorder.failed(sourceName, delivered(event), t, failed);
                             }
                             from = at;
+                        }
+                        // Generated graphs are not retry-safe after a throw: processing/callback state may be
+                        // wedged and a retry can return normally without dispatching anything. This is failure-only.
+                        boolean unsafe = ProcessorDispatchException.requiresIsolation(failed);
+                        if (failed == null) {
+                            synchronized (subscribed) {
+                                unsafe = subscribed.stream().anyMatch(ProcessorDispatchException::requiresIsolation);
+                            }
+                        }
+                        if (unsafe) {
+                            var failure = new ProcessorDispatchException(failed, "event dispatch", t);
+                            if (failed == null || at < 0) {
+                                terminalFailure = failure; // opaque strategy: cannot safely identify one target
+                                java.util.List<DataFlow> candidates;
+                                synchronized (subscribed) { candidates = java.util.List.copyOf(subscribed); }
+                                for (DataFlow candidate : candidates) {
+                                    if (!ProcessorDispatchException.requiresIsolation(candidate)) continue;
+                                    try {
+                                        if (processorFailureHandler != null) processorFailureHandler.accept(candidate, failure);
+                                        else deregisterProcessor(candidate);
+                                    } catch (VirtualMachineError fatal) {
+                                        throw fatal;
+                                    } catch (Throwable isolationFailure) {
+                                        if (isolationFailure != failure) failure.addSuppressed(isolationFailure);
+                                    }
+                                }
+                                throw failure;
+                            }
+                            try {
+                                if (processorFailureHandler != null) processorFailureHandler.accept(failed, failure);
+                                else {
+                                    deregisterProcessor(failed);
+                                    com.telamin.mongoose.service.error.ErrorReporting.report(
+                                            "EventQueueToEventProcessorAgent:" + name,
+                                            "generated processor quarantined; no retry: " + failure.getMessage(), failure,
+                                            com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
+                                }
+                            } catch (VirtualMachineError fatal) {
+                                throw fatal;
+                            } catch (Throwable isolationFailure) {
+                                if (isolationFailure != failure) failure.addSuppressed(isolationFailure);
+                                terminalFailure = failure;
+                                throw failure;
+                            }
+                            if (drainDisabled) return processed + 1; // finally releases this input; close owns backlog
+                            // Isolation removes this target from the strategy. Its successor shifts into this index.
+                            // Earlier processors already received the event and must not see it again.
+                            from = at;
+                            failingAt = -1;
+                            attempt = 0;
+                            continue;
                         }
                         attempt++;
                         String warnMsg = "event processing failed: agent=" + name +
@@ -304,7 +364,18 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     /** REPLAY mode: deliver a recorded input to {@code target} alone, as this queue delivered it (R5). */
     @Override
     public void replayTo(DataFlow target, Object event) {
-        eventToInvokeStrategy.processEventFor(target, event);
+        boolean owned = subscribed.contains(target);
+        try {
+            eventToInvokeStrategy.processEventFor(target, event);
+        } catch (VirtualMachineError fatal) {
+            throw fatal;
+        } catch (RuntimeException | Error failure) {
+            if (owned && ProcessorDispatchException.requiresIsolation(target)) {
+                if (processorFailureHandler != null) processorFailureHandler.accept(target, failure);
+                else deregisterProcessor(target);
+            }
+            throw failure; // the replay must also report its divergence
+        }
     }
 
     @Override
@@ -314,6 +385,16 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
         // references held by its abandoned backlog, including wrappers, rather than exhaust the source's pool.
         Object event;
         while ((event = inputQueue.poll()) != null) {
+            Object payload = delivered(event);
+            if (payload instanceof com.telamin.mongoose.service.admin.impl.AdminCommand command) {
+                try {
+                    command.refuseUnavailable("its processor route closed before dispatch");
+                } catch (VirtualMachineError fatal) {
+                    throw fatal;
+                } catch (Throwable refused) {
+                    logger.warning("failed to deliver abandoned admin command refusal: " + refused);
+                }
+            }
             PoolTracker<?> tracker = trackerOf(event);
             if (tracker != null) {
                 try {
@@ -344,6 +425,12 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
         return this;
     }
 
+    /** Group-owned isolation; invoked on the group's thread only after a generated processor throws. */
+    public EventQueueToEventProcessorAgent withProcessorFailureHandler(java.util.function.BiConsumer<DataFlow, Throwable> handler) {
+        processorFailureHandler = handler;
+        return this;
+    }
+
     /**
      * Provide an unsubscribe action to be called when listenerCount() drops to zero.
      */
@@ -357,6 +444,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
         logger.info("registerProcessor: " + eventProcessor);
         eventToInvokeStrategy.registerProcessor(eventProcessor);
         subscribed.add(eventProcessor);
+        drainDisabled = false;
         logger.info("listener count:" + listenerCount());
         return listenerCount();
     }
@@ -367,6 +455,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
         eventToInvokeStrategy.deregisterProcessor(eventProcessor);
         subscribed.remove(eventProcessor);
         int listeners = listenerCount();
+        if (listeners < 1) drainDisabled = true;
         if (listeners < 1 && unsubscribeAction != null) {
             try {
                 unsubscribeAction.run();

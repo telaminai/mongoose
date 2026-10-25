@@ -1,0 +1,50 @@
+[
+  {
+    "name": "baseline",
+    "exitCode": 0,
+    "tests": 37,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "missing-stop-reply",
+    "exitCode": 1,
+    "tests": 37,
+    "failures": 18,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "applied-without-release-renamed-rule",
+    "exitCode": 1,
+    "tests": 37,
+    "failures": 19,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "missing-stale-open-close",
+    "exitCode": 1,
+    "tests": 37,
+    "failures": 2,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "skip-terminal-sweep",
+    "exitCode": 1,
+    "tests": 37,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "drop-claimed-stop",
+    "exitCode": 1,
+    "tests": 37,
+    "failures": 7,
+    "errors": 0,
+    "skipped": 0
+  }
+]

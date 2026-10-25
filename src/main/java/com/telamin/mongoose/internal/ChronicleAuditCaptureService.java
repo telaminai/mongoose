@@ -9,6 +9,7 @@ import com.telamin.fluxtion.runtime.audit.LogRecord;
 import com.telamin.fluxtion.runtime.audit.LogRecordListener;
 import com.telamin.mongoose.config.AuditCaptureConfig;
 import com.telamin.mongoose.service.audit.AuditSinkHandle;
+import com.telamin.mongoose.service.audit.AuditCaptureIdentity;
 import com.telamin.mongoose.service.audit.MongooseAuditCaptureService;
 import com.telamin.mongoose.service.counters.MongooseCounter;
 import com.telamin.mongoose.service.counters.MongooseCountersService;
@@ -24,6 +25,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 /**
@@ -61,11 +63,106 @@ import java.util.logging.Level;
  * {@code stop} the previous listener is restored.
  */
 @Log
-public final class ChronicleAuditCaptureService implements MongooseAuditCaptureService {
+public final class ChronicleAuditCaptureService implements MongooseAuditCaptureService,
+        com.telamin.mongoose.service.audit.AuditCaptureResources {
 
     private final AuditCaptureConfig config;
     private final MongooseCountersService counters;
-    private final ConcurrentHashMap<String, ProcessorSink> sinks = new ConcurrentHashMap<>();
+    private final Object attachmentLock = new Object();
+    private final ConcurrentHashMap<String, ProcessorSink> sinks = new ConcurrentHashMap<>(); // standalone compatibility
+    private final ConcurrentHashMap<AuditCaptureIdentity, ProcessorSink> ownedSinks = new ConcurrentHashMap<>();
+    private final java.util.Map<DataFlow, ProcessorSink> legacyAttachments = new java.util.IdentityHashMap<>();
+    // Bounded diagnostics only: retired processors and their listeners are never retained here.
+    private final java.util.Map<String, Boolean> retiredSelectors = new java.util.LinkedHashMap<>();
+
+    private void rememberRetired(ProcessorSink sink) {
+        synchronized (retiredSelectors) {
+            retiredSelectors.put(sink.processorName, Boolean.TRUE);
+            retiredSelectors.put(sink.selector(), Boolean.TRUE);
+            while (retiredSelectors.size() > 512) retiredSelectors.remove(retiredSelectors.keySet().iterator().next());
+        }
+    }
+
+    private boolean recentlyRetired(String selector) {
+        synchronized (retiredSelectors) { return retiredSelectors.containsKey(selector); }
+    }
+
+    private java.util.List<ProcessorSink> attachedSinks() {
+        var all = new java.util.ArrayList<>(sinks.values());
+        all.addAll(ownedSinks.values());
+        synchronized (legacyAttachments) { all.addAll(legacyAttachments.values()); }
+        return all;
+    }
+
+    /** Resolve a selector only while unique; an old resource is never looked up by name. */
+    private ProcessorSink selectedSink(String selector) {
+        ProcessorSink found = null;
+        java.util.List<String> choices = new java.util.ArrayList<>();
+        int matches = 0;
+        for (ProcessorSink sink : attachedSinks()) {
+            if (!sink.isAttached() && !sink.isRecording()) continue;
+            int slash = selector.indexOf('/');
+            boolean match = sink.identity != null && slash >= 0
+                    ? sink.identity.group().equals(AuditCaptureIdentity.decode(selector.substring(0, slash)))
+                        && sink.identity.name().equals(AuditCaptureIdentity.decode(selector.substring(slash + 1)))
+                    : sink.processorName.equals(selector);
+            if (!match) continue;
+            if (found == sink) continue;
+            matches++;
+            choices.add(sink.selector());
+            found = sink;
+        }
+        if (matches > 1) throw new IllegalArgumentException("ambiguous audit processor '" + selector
+                + "': use one of " + choices.stream().distinct().sorted().toList());
+        return found;
+    }
+
+    /** A single live lookup accepts the same selectors as start/stop. */
+    public AuditSinkHandle currentSink(String selector) {
+        ProcessorSink sink = selectedSink(selector);
+        return sink != null && sink.isRecording() ? sink.handle() : null;
+    }
+
+    /**
+     * Design "Audit capture" (control-plane PR 5): once a server routes capture through its processor groups, start and
+     * stop are requests to the group's control processor, which opens, installs, uninstalls and closes through the
+     * {@link com.telamin.mongoose.service.audit.AuditCaptureResources} methods below. Unrouted (no server, as in a unit
+     * test), the service changes the sink itself, as before.
+     */
+    public interface CaptureRouter {
+        /** Send an audit start or stop for the processor admitted as {@code processorName}; null if none is. */
+        com.telamin.mongoose.control.ControlRequest send(String processorName, boolean start);
+
+        /** Send only to the specified registration. Legacy routers may decline scoped requests. */
+        default com.telamin.mongoose.control.ControlRequest sendScoped(AuditCaptureIdentity identity, boolean start) {
+            throw new UnsupportedOperationException("router does not support registration-scoped capture");
+        }
+
+        /** Whether the calling thread may wait for a reply from that processor's group. */
+        boolean safeToWait(String processorName);
+    }
+
+    private volatile CaptureRouter router;
+    /** Opened resources not yet closed: whoever removes one closes it, so each is closed exactly once. */
+    private final java.util.Set<CaptureHandle> openResources = ConcurrentHashMap.newKeySet();
+
+    /** A capture resource: the queue opened for a processor's sink. Opaque to the group that holds it. */
+    private static final class CaptureHandle {
+        private volatile ProcessorSink sink;
+        private final ChronicleQueue queue;
+        CaptureHandle(ProcessorSink sink, ChronicleQueue queue) { this.sink = sink; this.queue = queue; }
+        ProcessorSink sink() { return sink; }
+        ChronicleQueue queue() { return queue; }
+        synchronized void bind(ProcessorSink target) {
+            if (sink != null && sink != target) throw new IllegalArgumentException("capture belongs to another registration");
+            sink = target;
+        }
+    }
+
+    public void routeThrough(CaptureRouter router) {
+        this.router = router;
+    }
+
     /** Told when the set of live sinks changes, so a listing cache can drop its snapshot. */
     private volatile Runnable liveSinkMutation = () -> { };
 
@@ -79,7 +176,15 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
         this.liveSinkMutation = listener == null ? () -> { } : listener;
     }
 
+    private final java.util.function.Function<Path, ChronicleQueue> queueBuilder;
+
     public ChronicleAuditCaptureService(AuditCaptureConfig config, MongooseCountersService counters) {
+        this(config, counters, path -> SingleChronicleQueueBuilder.binary(path).rollCycle(RollCycles.FAST_DAILY).build());
+    }
+
+    ChronicleAuditCaptureService(AuditCaptureConfig config, MongooseCountersService counters,
+                                java.util.function.Function<Path, ChronicleQueue> queueBuilder) {
+        this.queueBuilder = java.util.Objects.requireNonNull(queueBuilder);
         this.config = config;
         this.counters = counters;
         try {
@@ -103,26 +208,72 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
     @Override
     public void attach(DataFlow dataFlow, String processorName, LogRecordListener configuredListener,
                        java.util.concurrent.Executor onAgentThread) {
-        // Hold a weak reference to the DataFlow keyed by name so start()
-        // can install a listener later. Idempotent — re-attach replaces.
-        sinks.compute(processorName, (k, existing) -> {
-            if (existing == null) {
-                ProcessorSink created = new ProcessorSink(dataFlow, processorName);
-                created.configuredListener = configuredListener;
-                created.onAgentThread = onAgentThread;
-                return created;
+        if (router != null) {
+            synchronized (attachmentLock) {
+                synchronized (legacyAttachments) {
+                    ProcessorSink existing = legacyAttachments.get(dataFlow);
+                    if (existing != null) {
+                        if (!existing.processorName.equals(processorName) || existing.configuredListener != configuredListener) {
+                            throw new IllegalStateException("processor already attached with another name or listener");
+                        }
+                        return;
+                    }
+                    requireUnownedFlow(dataFlow, null);
+                    ProcessorSink sink = new ProcessorSink(dataFlow, processorName, null, true);
+                    sink.configuredListener = configuredListener;
+                    sink.onAgentThread = onAgentThread;
+                    legacyAttachments.put(dataFlow, sink);
+                }
             }
-            // Re-attach: take the listener again. The server may have replaced it, and a re-registered
-            // processor is a NEW DataFlow whose listener is the one just installed on it.
-            // MA-5.4. If the sink is ALREADY recording, the new DataFlow has the server's listener on
-            // it and nothing else — so its records would reach the console and never the queue, while
-            // start() returned early on isRecording() and the sink kept answering "recording: true".
-            // Measured on a live server: 3 events after a re-registration reached the listener, the
-            // capture recordCount stayed at 23, and the export held none of them. Adopt the new flow.
-            existing.reattach(dataFlow, configuredListener, onAgentThread);
-            liveSinkMutation.run();
-            return existing;
-        });
+            return;
+        }
+        ProcessorSink sink;
+        for (;;) {
+            sink = sinks.computeIfAbsent(processorName, n -> new ProcessorSink(null, n));
+            // Never acquire a sink monitor while holding the admission lock: listener callbacks can re-enter attach.
+            synchronized (sink) {
+                synchronized (attachmentLock) {
+                    if (sinks.get(processorName) != sink) continue;
+                    requireUnownedFlow(dataFlow, sink);
+                    sink.reattach(dataFlow, configuredListener, onAgentThread);
+                }
+            }
+            break;
+        }
+        // User/agent callbacks happen outside the attachment admission lock.
+        sink.reinstallCapture();
+        liveSinkMutation.run();
+    }
+
+    private void requireUnownedFlow(DataFlow flow, ProcessorSink allowed) {
+        for (ProcessorSink other : attachedSinks()) {
+            if (other != allowed && other.dataFlow == flow) {
+                throw new IllegalStateException("processor instance already belongs to capture owner " + other.selector());
+            }
+        }
+    }
+
+    @Override
+    public void startScoped(AuditCaptureIdentity identity) {
+        CaptureRouter routed = router;
+        if (routed != null) routedChange(routed, identity.selector(), true, routed.sendScoped(identity, true));
+        else {
+            startSink(ownedSinks.get(identity), identity.selector());
+        }
+    }
+
+    @Override
+    public void attachScoped(DataFlow flow, AuditCaptureIdentity identity, LogRecordListener listener,
+                       java.util.concurrent.Executor executor) {
+        synchronized (attachmentLock) {
+            requireUnownedFlow(flow, null);
+            ProcessorSink sink = new ProcessorSink(flow, identity.name(), identity, true);
+            sink.configuredListener = listener;
+            sink.onAgentThread = executor;
+            if (ownedSinks.putIfAbsent(identity, sink) != null) {
+                throw new IllegalStateException("capture registration already attached: " + identity);
+            }
+        }
     }
 
     /**
@@ -139,7 +290,15 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
      */
     @Override
     public void start(String processorName) {
-        ProcessorSink sink = sinks.get(processorName);
+        CaptureRouter routed = router;
+        if (routed != null) {
+            routedChange(routed, processorName, true);
+            return;
+        }
+        startSink(selectedSink(processorName), processorName);
+    }
+
+    private void startSink(ProcessorSink sink, String processorName) {
         if (sink == null) {
             throw new IllegalArgumentException(
                     "no processor named '" + processorName + "' attached to the audit-capture service");
@@ -149,7 +308,7 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             return;
         }
         sink.requireAttached("start");
-        ChronicleQueue opened = sink.openQueue(config);
+        ChronicleQueue opened = openQueue(sink);
         boolean[] adopted = {false};
         try {
             sink.applyOnAgent("start", () -> adopted[0] = sink.beginRecording(opened, counters));
@@ -170,7 +329,12 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
      */
     @Override
     public void stop(String processorName) {
-        ProcessorSink sink = sinks.get(processorName);
+        CaptureRouter routed = router;
+        if (routed != null) {
+            routedChange(routed, processorName, false);
+            return;
+        }
+        ProcessorSink sink = selectedSink(processorName);
         if (sink == null || !sink.isRecording()) {
             return;
         }
@@ -185,8 +349,224 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
         }
     }
 
+    /**
+     * A start or stop as a request to the processor's group: waited for where the caller may wait, bounded as before; a
+     * request the group has not begun applying when the bound runs out is cancelled, so nothing changes later.
+     */
+    private void routedChange(CaptureRouter routed, String processorName, boolean start) {
+        routedChange(routed, processorName, start, routed.send(processorName, start));
+    }
+
+    private void routedChange(CaptureRouter routed, String processorName, boolean start,
+                              com.telamin.mongoose.control.ControlRequest request) {
+        String what = start ? "start" : "stop";
+        if (request == null) {
+            if (!start) return;                 // nothing admitted under the name: nothing records it
+            if (sinks.containsKey(processorName) || recentlyRetired(processorName)) {
+                throw new IllegalArgumentException("audit start for '" + processorName
+                        + "' refused: the processor has left its group");
+            }
+            throw new IllegalArgumentException("no processor named '" + processorName
+                    + "' attached to the audit-capture service");
+        }
+        if (!routed.safeToWait(processorName)) {
+            // an agent thread, or a group not running yet: it applies later; its outcome is logged, never lost
+            request.reply().whenComplete((r, e) -> {
+                if (e != null || r == null || !r.applied()) {
+                    log.warning("audit " + what + " for '" + processorName + "' was not applied: " + (e != null ? e : r));
+                }
+            });
+            return;
+        }
+        com.telamin.mongoose.control.ControlReply reply =
+                com.telamin.mongoose.control.ControlReplies.await(request, TimeUnit.SECONDS.toMillis(APPLY_TIMEOUT_SECONDS));
+        if (reply == null && Thread.currentThread().isInterrupted()) {
+            // interrupted, not timed out: the request still applies; nothing is cancelled (final review, finding 7)
+            throw new IllegalStateException("audit " + what + " for '" + processorName + "': interrupted while waiting"
+                    + " for it to be applied; it still applies");
+        }
+        if (reply == null) {
+            if (request.cancel("audit " + what + " not applied within " + APPLY_TIMEOUT_SECONDS + "s")) {
+                throw new IllegalStateException("audit " + what + " for '" + processorName + "' was not applied on its"
+                        + " agent thread within " + APPLY_TIMEOUT_SECONDS + "s before it started; it was cancelled, and"
+                        + " nothing changed");
+            }
+            // being applied: an open takes what it takes, bounded by its own timeout
+            reply = com.telamin.mongoose.control.ControlReplies.await(request, OPEN_WAIT_MILLIS);
+            if (reply == null) {
+                throw new IllegalStateException("audit " + what + " for '" + processorName + "' is still being applied"
+                        + " after " + OPEN_WAIT_MILLIS + " ms");
+            }
+        }
+        switch (reply.outcome()) {
+            case APPLIED -> { }
+            case NOT_RUNNING -> {
+                // the group has ended, and closed its captures as it did: nothing records the processor any more
+                if (start) throw new IllegalStateException("audit start for '" + processorName + "' refused: its group"
+                        + " is not running (" + reply.reason() + ")");
+            }
+            case REFUSED -> {
+                if ("no such processor".equals(reply.reason())) {
+                    throw new IllegalArgumentException("audit " + what + " for '" + processorName
+                            + "' refused: the processor has left its group");
+                }
+                throw new IllegalStateException("audit " + what + " for '" + processorName + "' refused: " + reply.reason());
+            }
+            default -> throw new IllegalStateException("audit " + what + " for '" + processorName + "' "
+                    + reply.outcome() + ": " + reply.reason());
+        }
+    }
+
+    /** How long a routed start waits once its open is in progress: the group's open timeout, with a margin. */
+    static final long OPEN_WAIT_MILLIS = 35_000;
+
+    // ------------------------------------------------------------------ AuditCaptureResources: the group's hands
+
+    private ChronicleQueue openQueue(ProcessorSink sink) {
+        try {
+            return sink.openQueue(config, queueBuilder);
+        } catch (RuntimeException | Error failure) {
+            // A concurrent listing may have cached the directory while the builder was opening it.
+            try { liveSinkMutation.run(); }
+            catch (RuntimeException | Error observerFailure) {
+                if (observerFailure != failure) failure.addSuppressed(observerFailure);
+            }
+            throw failure;
+        }
+    }
+
+    @Override
+    public Object openCapture(String processorName) {
+        // Legacy routed callers supply the exact instance only at install. Never guess its owner or share its path.
+        ProcessorSink sink = router == null
+                ? sinks.computeIfAbsent(processorName, n -> new ProcessorSink(null, n)) : null;
+        ProcessorSink opener = sink == null ? new ProcessorSink(null, processorName, null, true) : sink;
+        CaptureHandle handle = new CaptureHandle(sink, openQueue(opener));
+        openResources.add(handle);
+        return handle;
+    }
+
+    @Override
+    public Object openCaptureScoped(AuditCaptureIdentity identity) {
+        ProcessorSink sink = ownedSinks.get(identity);
+        if (sink == null) {
+            // Direct group embeddings may still use the original attach API. Defer exact instance binding;
+            // do not fall back to a different scoped generation with the same name.
+            boolean legacy = sinks.containsKey(identity.name());
+            synchronized (legacyAttachments) {
+                legacy |= legacyAttachments.values().stream().anyMatch(s -> s.processorName.equals(identity.name()));
+            }
+            if (!legacy) throw new IllegalArgumentException("capture registration is not attached: " + identity);
+            var opener = new ProcessorSink(null, identity.name(), identity, true);
+            CaptureHandle handle = new CaptureHandle(null, openQueue(opener));
+            openResources.add(handle);
+            return handle;
+        }
+        sink.requireAttached("open");
+        CaptureHandle handle = new CaptureHandle(sink, openQueue(sink));
+        openResources.add(handle);
+        return handle;
+    }
+
+    @Override
+    public void installCapture(Object resource, String processorName, DataFlow dataFlow) {
+        CaptureHandle handle = (CaptureHandle) resource;
+        if (!openResources.contains(handle)) throw new IllegalArgumentException("capture is closed or belongs to another service");
+        ProcessorSink sink = handle.sink();
+        if (sink == null) {
+            synchronized (legacyAttachments) { sink = legacyAttachments.get(dataFlow); }
+            if (sink == null) sink = sinks.get(processorName);
+        }
+        if (sink == null || sink.dataFlow != dataFlow || !sink.processorName.equals(processorName)) {
+            throw new IllegalArgumentException("capture does not belong to this processor instance");
+        }
+        handle.bind(sink);
+        if (!sink.beginRecording(handle.queue(), counters)) {
+            throw new IllegalStateException("audit capture of '" + processorName + "' is already recording");
+        }
+        liveSinkMutation.run();
+        log.info("audit-capture STARTED for processor '" + sink.selector() + "' at " + sink.path());
+    }
+
+    @Override
+    public void uninstallCapture(Object resource, String processorName, DataFlow dataFlow) {
+        CaptureHandle handle = (CaptureHandle) resource;
+        if (handle.sink() == null) return; // never installed
+        // endRecording stops recording before it restores the listener, and logs a failed restore rather than throw:
+        // a release may therefore close the queue right after an uninstall, whatever the restore did (final review, 10)
+        if (handle.sink().endRecordingOf(handle.queue(), dataFlow, dataFlow == null)) {
+            liveSinkMutation.run();
+            log.info("audit-capture STOPPED for processor '" + processorName + "'");
+        }
+    }
+
+    @Override
+    public void closeCapture(Object resource) {
+        CaptureHandle handle = (CaptureHandle) resource;
+        if (openResources.remove(handle)) handle.queue().close();
+    }
+
+    @Override
+    public void processorReleased(AuditCaptureIdentity identity, DataFlow flow) {
+        ProcessorSink sink = ownedSinks.get(identity);
+        if (sink != null && sink.dataFlow == flow) {
+            sink.forget(flow);
+            if (ownedSinks.remove(identity, sink)) rememberRetired(sink);
+        }
+        forgetLegacyBinding(identity.name(), flow);
+        sink = sinks.get(identity.name());
+        if (sink != null && sink.dataFlow == flow) {
+            sink.forget(flow);
+            if (sinks.remove(identity.name(), sink)) rememberRetired(sink);
+        }
+        liveSinkMutation.run();
+    }
+
+    private void forgetLegacyBinding(String name, DataFlow flow) {
+        ProcessorSink sink;
+        synchronized (legacyAttachments) { sink = legacyAttachments.get(flow); }
+        if (sink == null || !sink.processorName.equals(name)) return;
+        sink.forget(flow);
+        synchronized (legacyAttachments) {
+            if (legacyAttachments.remove(flow, sink)) rememberRetired(sink);
+        }
+    }
+
+    private void forgetRouted(String group, String name, DataFlow flow) {
+        for (var entry : ownedSinks.entrySet()) {
+            AuditCaptureIdentity owner = entry.getKey();
+            ProcessorSink sink = entry.getValue();
+            if ((group == null || owner.group().equals(group)) && owner.name().equals(name) && sink.dataFlow == flow) {
+                if (router == null) {
+                    ChronicleQueue queue = sink.applyOnAgent("detach", sink::endRecording);
+                    if (queue != null) {
+                        CaptureHandle handle = openResources.stream().filter(h -> h.queue() == queue).findFirst().orElse(null);
+                        if (handle == null) queue.close(); else closeCapture(handle);
+                    }
+                }
+                sink.forget(flow);
+                if (ownedSinks.remove(owner, sink)) rememberRetired(sink);
+            }
+        }
+        forgetLegacyBinding(name, flow);
+        liveSinkMutation.run();
+    }
+
+    @Override
+    public void detach(String group, String name, DataFlow flow) {
+        forgetRouted(group, name, flow);
+        if (router == null) detach(name, flow);
+    }
+
+    @Override
+    public void processorStopped(String group, String name, DataFlow flow) {
+        forgetRouted(group, name, flow);
+        if (router == null) processorStopped(name, flow);
+    }
+
     @Override
     public void detach(String processorName, DataFlow dataFlow) {
+        if (router != null) { forgetRouted(null, processorName, dataFlow); return; }
         ProcessorSink sink = sinks.get(processorName);
         if (sink == null || sink.dataFlow != dataFlow) {
             return;
@@ -206,17 +586,28 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
     /**
      * The processor left its group normally (stopped and torn down). Nothing is installed on that instance again:
      * {@code start} is refused until a processor is added under the name, and {@code stop} closes the capture without
-     * touching it. A capture still recording carries on into a processor re-added under the name (MA-5.4).
+     * touching it. A group-owned capture remains owned by its resource handle until that group closes it;
+     * an unmanaged standalone capture ends here and never carries into a replacement.
      */
     @Override
     public void processorStopped(String processorName, DataFlow dataFlow) {
+        if (router != null) { forgetRouted(null, processorName, dataFlow); return; }
         ProcessorSink sink = sinks.get(processorName);
-        if (sink != null) sink.forget(dataFlow);
+        if (sink == null || sink.dataFlow != dataFlow) return;
+        sink.forget(dataFlow);
+        if (openResources.stream().anyMatch(handle -> handle.sink() == sink && handle.queue() == sink.queue)) {
+            return; // its group owns uninstall/physical close; do not close its queue behind the handle
+        }
+        ChronicleQueue released = sink.endRecordingIfGone();
+        if (released != null) {
+            released.close();
+            liveSinkMutation.run();
+        }
     }
 
     @Override
     public boolean isRecording(String processorName) {
-        ProcessorSink sink = sinks.get(processorName);
+        ProcessorSink sink = selectedSink(processorName);
         return sink != null && sink.isRecording();
     }
 
@@ -226,9 +617,11 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
      */
     public java.util.Map<String, AuditSinkHandle> liveSinks() {
         java.util.Map<String, AuditSinkHandle> out = new java.util.HashMap<>();
-        for (ProcessorSink s : sinks.values()) {
+        for (ProcessorSink s : attachedSinks()) {
             if (s.isRecording()) {
-                out.put(s.processorName, s.handle());
+                AuditSinkHandle handle = s.handle();
+                String key = s.identity == null && router != null ? s.selector() + "@" + handle.id() : s.selector();
+                out.put(key, handle);
             }
         }
         return out;
@@ -241,12 +634,25 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
      */
     @Override
     public void stopAll() {
-        for (java.util.Map.Entry<String, ProcessorSink> entry : sinks.entrySet()) {
-            String name = entry.getKey();
+        if (router != null) {
+            // routed: every group closed its captures as it closed; close any resource a closer had not reached
+            for (CaptureHandle handle : openResources.toArray(new CaptureHandle[0])) {
+                try {
+                    if (handle.sink() != null) {
+                        handle.sink().endRecordingOf(handle.queue(), null, true);
+                    }
+                    closeCapture(handle);
+                } catch (RuntimeException e) {
+                    log.log(Level.WARNING, "audit-capture could not close '" + handle.queue().fileAbsolutePath() + "'", e);
+                }
+            }
+            return;
+        }
+        for (ProcessorSink sink : attachedSinks()) {
+            String name = sink.selector();
             try {
                 // at server stop the processors have stopped and their groups have closed: forget each instance, so
                 // the capture is ended without touching it and without waiting on a group thread that has gone
-                ProcessorSink sink = entry.getValue();
                 DataFlow flow = sink.dataFlow;
                 if (flow != null) sink.forget(flow);
                 stop(name);
@@ -282,6 +688,8 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
     /** Per-processor state holder — keeps the wiring local. */
     private static final class ProcessorSink {
         private final String processorName;
+        private final AuditCaptureIdentity identity;
+        private final boolean uniquePath;
         /** The live processor; null once it has left its group ({@link #forget}). */
         private volatile DataFlow dataFlow;
         /** mongoose#46: the processor's agent thread; the processor is only driven from it. */
@@ -299,13 +707,22 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
         private MongooseCounter recordCounter;
         private volatile Instant startedAt;
         private volatile Instant lastWriteAt;
+        private Path lastCapturePath;
         private volatile int startCycle;
         private final java.util.concurrent.atomic.AtomicLong recordCount = new java.util.concurrent.atomic.AtomicLong();
 
         ProcessorSink(DataFlow dataFlow, String processorName) {
+            this(dataFlow, processorName, null, false);
+        }
+
+        ProcessorSink(DataFlow dataFlow, String processorName, AuditCaptureIdentity identity, boolean uniquePath) {
             this.dataFlow = dataFlow;
             this.processorName = processorName;
+            this.identity = identity;
+            this.uniquePath = uniquePath;
         }
+
+        String selector() { return identity == null ? processorName : identity.selector(); }
 
         boolean isRecording() {
             return queue != null;
@@ -347,8 +764,8 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
                 size = -1;
             }
             return new AuditSinkHandle(
-                    processorName,
-                    processorName,
+                    p != null ? p.getFileName().toString() : processorName,
+                    selector(),
                     p,
                     queue == null ? -1 : startCycle,
                     size,
@@ -378,17 +795,68 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
         }
 
         /** Opened on the caller's thread: the file I/O stays off the processor's thread. */
-        ChronicleQueue openQueue(AuditCaptureConfig cfg) {
-            Path procDir = Path.of(cfg.getDirectory(), processorName);
+        ChronicleQueue openQueue(AuditCaptureConfig cfg, java.util.function.Function<Path, ChronicleQueue> builder) {
+            Path procDir = null;
+            boolean createdDirectory = false;
             try {
-                Files.createDirectories(procDir);
-            } catch (IOException e) {
-                throw new RuntimeException(
-                        "could not create audit dir " + procDir + ": " + e.getMessage(), e);
+                Path root = Path.of(cfg.getDirectory());
+                Files.createDirectories(root);
+                if (uniquePath) {
+                    procDir = Files.createTempDirectory(root, "capture-");
+                    createdDirectory = true;
+                } else {
+                    procDir = root.resolve(processorName);
+                    Files.createDirectories(procDir.getParent());
+                    try {
+                        Files.createDirectory(procDir);
+                        createdDirectory = true;
+                    } catch (java.nio.file.FileAlreadyExistsException existing) {
+                        if (!Files.isDirectory(procDir)) throw existing;
+                    }
+                    if (Files.exists(procDir.resolve(".mongoose-capture.properties"))) {
+                        throw new IllegalArgumentException("standalone capture cannot reuse a routed capture directory: " + procDir);
+                    }
+                }
+                if (uniquePath) {
+                    java.util.Properties metadata = new java.util.Properties();
+                    metadata.setProperty("schema", "1");
+                    metadata.setProperty("processor", selector());
+                    metadata.setProperty("openedAt", Instant.now().toString());
+                    if (identity != null) {
+                        metadata.setProperty("group", identity.group());
+                        metadata.setProperty("name", identity.name());
+                        metadata.setProperty("generation", Long.toString(identity.generation()));
+                    }
+                    try (var writer = Files.newBufferedWriter(procDir.resolve(".mongoose-capture.properties"))) {
+                        metadata.store(writer, "Mongoose capture owner");
+                    }
+                }
+                return java.util.Objects.requireNonNull(builder.apply(procDir), "capture builder returned null");
+            } catch (IOException failed) {
+                RuntimeException failure = new RuntimeException("could not open audit capture under " + cfg.getDirectory(), failed);
+                if (createdDirectory) removeFailedOpenDirectory(procDir, failure, uniquePath);
+                throw failure;
+            } catch (RuntimeException | Error failed) {
+                if (createdDirectory) removeFailedOpenDirectory(procDir, failed, uniquePath);
+                throw failed;
             }
-            return SingleChronicleQueueBuilder.binary(procDir)
-                    .rollCycle(RollCycles.FAST_DAILY)
-                    .build();
+        }
+
+        /** Only an exclusively created directory is ours to remove; never erase an existing recording. */
+        private static void removeFailedOpenDirectory(Path directory, Throwable failure, boolean exclusive) {
+            // A legacy name directory can be shared with another opener, even if this attempt created it.
+            // Only remove it atomically if empty; never walk/delete somebody else's live or historical files.
+            if (!exclusive) {
+                try { Files.deleteIfExists(directory); }
+                catch (java.nio.file.DirectoryNotEmptyException retained) { /* shared/partial files remain for inspection */ }
+                catch (IOException | RuntimeException cleanupFailed) { failure.addSuppressed(cleanupFailed); }
+                return;
+            }
+            try (var entries = Files.walk(directory)) {
+                for (Path entry : entries.sorted(java.util.Comparator.reverseOrder()).toList()) Files.deleteIfExists(entry);
+            } catch (IOException | RuntimeException cleanupFailed) {
+                failure.addSuppressed(cleanupFailed);
+            }
         }
 
         /**
@@ -409,8 +877,11 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             ExcerptAppender a = opened.createAppender();
             this.appender = a;
             this.startCycle = a.cycle();
-            this.recordCounter = counters.counter("audit." + processorName + ".records");
+            this.recordCounter = counters.counter("audit." + selector() + ".records");
             this.startedAt = Instant.now();
+            Path openedPath = Path.of(opened.fileAbsolutePath());
+            if (!openedPath.equals(lastCapturePath)) { recordCount.set(0); lastWriteAt = null; }
+            lastCapturePath = openedPath;
             this.previousListener = configuredListener;
             this.captureListener = this::onRecordFanOut;
             this.queue = opened;                        // recording from here: the listener is being installed
@@ -431,17 +902,31 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
          * audit entirely, MA-5b), and release the queue, which the caller closes. Null when not recording.
          */
         synchronized ChronicleQueue endRecording() {
+            return endRecording(false);
+        }
+
+        private ChronicleQueue endRecording(boolean reportGeneratedFailure) {
             ChronicleQueue q = queue;
             if (q == null) {
                 return null;
             }
-            DataFlow flow = dataFlow;
-            if (flow != null) {
-                flow.setAuditLogProcessor(previousListener != null ? previousListener : NoOpLogRecordListener.INSTANCE);
-            }
+            // stop recording first, so a restore that throws can never leave the sink half-recording into a queue that is
+            // about to close (review of PR 5, finding 2): the capture listener, if it stays installed, writes nothing
             this.appender = null;
             this.captureListener = null;
             this.queue = null;
+            DataFlow flow = dataFlow;
+            if (flow != null) {
+                try {
+                    flow.setAuditLogProcessor(previousListener != null ? previousListener : NoOpLogRecordListener.INSTANCE);
+                } catch (RuntimeException failed) {
+                    if (reportGeneratedFailure && com.telamin.mongoose.dutycycle.ProcessorDispatchException.requiresIsolation(flow)) {
+                        throw failed; // the group must quarantine a graph that may now be wedged
+                    }
+                    log.log(Level.WARNING, "audit capture of '" + processorName + "' stopped, but the configured listener"
+                            + " could not be restored", failed);
+                }
+            }
             return q;
         }
 
@@ -460,12 +945,28 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             this.dataFlow = flow;
             this.onAgentThread = agent;
             if (configured != null) this.configuredListener = configured;
+        }
+
+        void reinstallCapture() {
+            DataFlow flow = dataFlow;
+            java.util.concurrent.Executor agent = onAgentThread;
             LogRecordListener capture = captureListener;
             if (capture != null && flow != null) {
                 com.telamin.mongoose.dutycycle.AgentHandoff.submit(agent, () -> {
                     if (dataFlow == flow && captureListener == capture) flow.setAuditLogProcessor(capture);
                 });
             }
+        }
+
+        /** Routed uninstall: end recording only if it is {@code q} that records (never another capture). */
+        synchronized boolean endRecordingOf(ChronicleQueue q, DataFlow expected, boolean gone) {
+            if (queue != q) return false; // an older session cannot forget or restore this session's instance
+            if (expected != null && dataFlow != expected) {
+                throw new IllegalArgumentException("capture does not belong to this processor instance");
+            }
+            if (gone) dataFlow = null;
+            endRecording(true);
+            return true;
         }
 
         /** {@code flow} left its group: nothing is installed on it again. Ignored for any other instance. */

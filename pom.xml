@@ -4,14 +4,16 @@
 
     <groupId>com.telamin</groupId>
     <artifactId>mongoose</artifactId>
-    <version>1.0.33-SNAPSHOT</version>
+    <version>1.0.33-rc1</version>
     <name>telamin :: mongoose</name>
 
     <properties>
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <fluxtion.version>1.1.0</fluxtion.version>
+        <fluxtion.version>1.1.3</fluxtion.version>
+        <!-- Compiler 1.0.80 and runtime 1.1.3 supply failed-cycle cleanup. Builder is used only by regen. -->
+        <fluxtion.builder.version>1.0.80</fluxtion.builder.version>
     </properties>
     <description>
         A high-performance opinionated event processing server, connecting event source and event sinks to event handlers
@@ -43,6 +45,13 @@
 
     <dependencyManagement>
         <dependencies>
+            <dependency>
+                <groupId>com.telamin.fluxtion</groupId>
+                <artifactId>fluxtion-bom</artifactId>
+                <version>${fluxtion.builder.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
             <!-- Chronicle BOM aligns chronicle-queue's transitive deps
                  (chronicle-core, chronicle-bytes, posix, …) so the
                  mongoose pom's dependencyConvergence rule is satisfied.
@@ -252,6 +261,89 @@
     </build>
 
     <profiles>
+        <!--
+          regen: regenerate the group control processor from its Spring XML design
+          (src/main/fluxtion/control/control-processor.xml). The builder and the LOCAL source generator
+          are put on the classpath here, so generation needs no API key and no network. The generated
+          source is committed under src/main/java/com/telamin/mongoose/control/generated; the default
+          build never resolves the builder.
+
+              mvn -o -Pregen process-classes
+
+          Offline, Maven may refuse a cached builder artifact recorded against another repository id; add
+          -Daether.enhancedLocalRepository.trackingFilename=__none__ to accept the cached copy.
+        -->
+        <profile>
+            <id>regen</id>
+            <dependencies>
+                <dependency>
+                    <groupId>com.telamin.fluxtion</groupId>
+                    <artifactId>fluxtion-builder</artifactId>
+                    <version>${fluxtion.builder.version}</version>
+                    <scope>provided</scope>
+                </dependency>
+                <dependency>
+                    <groupId>com.telamin.fluxtion</groupId>
+                    <artifactId>fluxtion-generator-core</artifactId>
+                    <version>${fluxtion.builder.version}</version>
+                    <scope>provided</scope>
+                </dependency>
+                <dependency>
+                    <groupId>org.springframework</groupId>
+                    <artifactId>spring-context</artifactId>
+                    <version>6.2.3</version>
+                    <scope>provided</scope>
+                </dependency>
+            </dependencies>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>build-helper-maven-plugin</artifactId>
+                        <version>3.6.0</version>
+                        <executions>
+                            <execution>
+                                <id>add-graph-source</id>
+                                <phase>generate-sources</phase>
+                                <goals><goal>add-source</goal></goals>
+                                <configuration>
+                                    <sources><source>src/graph/java</source></sources>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.1.0</version>
+                        <executions>
+                            <execution>
+                                <id>generate-control-processor</id>
+                                <phase>process-classes</phase>
+                                <goals><goal>java</goal></goals>
+                                <configuration>
+                                    <mainClass>com.telamin.mongoose.control.graph.GenerateControlProcessor</mainClass>
+                                    <classpathScope>compile</classpathScope>
+                                    <arguments>
+                                        <argument>${project.basedir}</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>generate-recovery-test-processor</id>
+                                <phase>process-test-classes</phase>
+                                <goals><goal>java</goal></goals>
+                                <configuration>
+                                    <mainClass>com.telamin.mongoose.control.graph.GenerateRecoveryTestProcessor</mainClass>
+                                    <classpathScope>test</classpathScope>
+                                    <arguments><argument>${project.basedir}</argument></arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
         <profile>
             <id>release</id>
             <activation>

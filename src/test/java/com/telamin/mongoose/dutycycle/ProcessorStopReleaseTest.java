@@ -204,7 +204,8 @@ class ProcessorStopReleaseTest {
             MongooseAuditCaptureService audit = (MongooseAuditCaptureService)
                     server.registeredServices().get(MongooseAuditCaptureService.SERVICE_NAME).instance();
             await(() -> first.started, "p started");
-            assertTrue(audit.isRecording("p"), "auto-started capture records p");
+            // capture is opened off the group's thread and installed once open (design "Audit capture")
+            await(() -> audit.isRecording("p"), "auto-started capture records p");
 
             server.stopProcessor("g", "p");
             await(() -> first.tornDown, "p torn down");
@@ -217,7 +218,7 @@ class ProcessorStopReleaseTest {
             Proc second = new Proc(-1).noSubscription();
             addWhenTheNameIsFree(server, second);
             await(() -> second.started, "p added again");
-            assertTrue(audit.isRecording("p"), "auto-start binds and records the processor added again");
+            await(() -> audit.isRecording("p"), "auto-start binds and records the processor added again");
         } finally {
             server.stop();
         }

@@ -1,144 +1,63 @@
-# Mongoose server Event Flow Architecture
+# Event flow
 
-## Introduction
+A source publishes through `EventToQueuePublisher`. `EventFlowManager` establishes the routes, then the publisher
+writes directly to the queues read by processor groups. See the
+[event delivery sequence](sequence-diagrams/event-processing.md) for the thread boundary.
 
-The event flow architecture is a core aspect of the Mongoose server framework. It defines how events are generated, routed, and processed throughout the system. This document provides a detailed explanation of the event flow architecture, including the components involved and their interactions.
+## Subscriptions and queues
 
-## Event Flow Components
+A subscription identifies a feed and callback type. The group creates or reuses a reader and registers the processor
+with its invocation strategy. The dispatch queue is keyed by feed and subscribing group, not by individual processor.
+Several processors can therefore consume the same queued item in one group.
 
-The event flow architecture consists of the following key components:
+Feed delivery uses `OneToOneConcurrentArrayQueue`. Multiple publication callers are safe because the publisher
+serialises writes. The control mailbox uses `ManyToOneConcurrentArrayQueue` and has a separate completion queue.
+Sink registrations also use many-to-one queues. These queues serve different purposes; they do not establish one
+server-wide event order.
 
-1. **EventSource** - Generates events from external or internal sources
-2. **EventFlowManager** - Routes events between sources and processors
-3. **EventToQueuePublisher** - Publishes events to queues
-4. **EventQueueToEventProcessor** - Consumes events from queues and forwards them to processors
-5. **EventProcessor** - Processes events according to business logic
+When a processor leaves, its reader registration is removed. An empty reader is retired and its queued pooled
+references are released. Source unsubscription occurs only when no group reads that subscription key.
 
-### Component Interaction Diagram
+## Wrapping and ownership
 
-```
-┌───────────────┐     ┌───────────────────────────────────────────┐
-│               │     │             EventFlowManager              │
-│  EventSource  │────▶│                                           │
-│               │     │  ┌───────────────┐    ┌───────────────┐   │
-└───────────────┘     │  │EventToQueue   │───▶│EventQueue     │   │
-                      │  │Publisher      │    │               │   │
-                      │  └───────────────┘    └───────────────┘   │
-                      │                              │            │
-                      └──────────────────────────────│────────────┘
-                                                     │
-                                                     ▼
-                      ┌──────────────────────────────────────────┐
-                      │      EventQueueToEventProcessor          │
-                      │                                          │
-                      │  ┌───────────────┐    ┌───────────────┐  │
-                      │  │EventToInvoke  │───▶│EventProcessor │  │
-                      │  │Strategy       │    │               │  │
-                      │  └───────────────┘    └───────────────┘  │
-                      │                                          │
-                      └──────────────────────────────────────────┘
-```
+`EventWrapStrategy` selects subscription or broadcast routing, with either raw inputs or `NamedFeedEvent` wrappers.
+The invocation strategy selects `onEvent` or a configured callback route.
 
-## Event Flow Process
-
-The event flow process in Mongoose server follows these steps:
-
-1. **Event Generation**: An EventSource generates an event, which could be from an external system, a timer, or another internal component.
-
-2. **Event Publication**: The EventSource publishes the event to the EventFlowManager through the EventToQueuePublisher.
-
-3. **Event Routing**: The EventFlowManager routes the event to the appropriate event queues based on subscriptions.
-
-4. **Event Consumption**: The EventQueueToEventProcessor consumes events from the queue.
-
-5. **Event Processing**: The EventToInvokeStrategy determines how to invoke the EventProcessor with the event, and the EventProcessor processes the event.
-
-6. **Result Handling**: The result of the event processing may generate new events, which can be fed back into the system.
-
-## Subscription Model
-
-Mongoose server uses a subscription model to connect event sources with event processors:
-
-1. **EventSubscriptionKey**: Identifies a subscription between an event source and a processor.
-
-2. **Subscribe/Unsubscribe**: Processors can subscribe to or unsubscribe from event sources.
-
-3. **Callback Types**: Different callback types determine how events are processed (e.g., OnEvent, custom callbacks).
-
-### Subscription Diagram
-
-```
-┌───────────────┐                          ┌───────────────┐
-│               │  1. Register             │               │
-│  EventSource  │◀─────────────────────────│ MongooseServer│
-│               │                          │               │
-└───────┬───────┘                          └───────────────┘
-        │                                          ▲
-        │                                          │
-        │                                          │
-        │                                          │
-        │                                  ┌───────┴───────┐
-        │                                  │               │
-        │  2. Subscribe                    │ EventProcessor│
-        └─────────────────────────────────▶│               │
-                                           └───────────────┘
-```
-
-## Event Types and Wrapping
-
-Mongoose server supports different event wrapping strategies:
-
-1. **SUBSCRIPTION_NOWRAP**: Events are passed directly to subscribers without wrapping.
-2. **SUBSCRIPTION_NAMED_EVENT**: Events are wrapped with source information before passing to subscribers.
-3. **BROADCAST_NOWRAP**: Events are broadcast to all subscribers without wrapping.
-4. **BROADCAST_NAMED_EVENT**: Events are wrapped and broadcast to all subscribers.
-
-## Slow Consumer Handling
-
-Mongoose server provides strategies for handling slow consumers:
-
-1. **DISCONNECT**: Disconnect slow consumers to prevent system slowdown.
-2. **EXIT_PROCESS**: Exit the process if a consumer is too slow.
-3. **BACKOFF**: Implement backoff strategies to give slow consumers time to catch up.
+For pooled inputs, publication transfers the origin reference to the publisher. Each offered queue obtains a
+reference; a dropped offer releases it. The publisher releases the origin after offering to all targets, and a
+reader releases its queue reference after dispatch. The final release returns the object. Do not retain an event
+without acquiring ownership or copying it. See [object pooling](object_pooling.md).
 
 ## Publisher serialisation and slow subscribers
 
-Each subscriber's read queue is a single-producer `OneToOneConcurrentArrayQueue`, but an
-`EventToQueuePublisher` can be called from several threads (a `HandlerPipe` sink is published to by every
-processor that uses it, and a source's `startComplete` replays its cache while its own thread may publish).
-Since the fix for #51 every publisher serialises its dispatch on one lock: `publish`, `cache`, `publishReplay`,
-`dispatchCachedEventLog`/`startComplete`, `addTargetQueue`, `removeTargetQueueByName` and the `getEventLog()`
-snapshot all take it. Uncontended this costs a monitor enter/exit per publish.
+A publisher lock covers publication, cache replay and target changes. It remains held while a full target queue is
+retried for about 10 ms; after that, the copy for that queue is dropped, reported and counted in `droppedCount()`.
+Other queues can still receive their copies. A queue copy may serve several processors.
 
-**Release note: a slow subscriber now throttles every publisher of the same feed.** The lock is held through the
-bounded spin on a full subscriber queue (about 10 ms per full queue, after which the item is dropped for that queue,
-logged and counted in `EventToQueuePublisher.droppedCount()`). It cannot be released during the spin, because that
-is what keeps one producer per queue. So while one subscriber's queue stays full, each publish on that feed, from
-any thread, can take up to ~10 ms per full queue, delivery to the feed's other subscribers is delayed by the same
-amount, and a thread waiting for the lock (another publisher, or a subscribe/unsubscribe calling
-`addTargetQueue`/`removeTargetQueueByName`) can wait up to N x 10 ms with N callers queued ahead of it. The wait is
-always bounded. Before the fix concurrent publishers did not wait for each other, but they could overwrite each
-other's slots and silently lose events. With replay journalling enabled (RECORD mode), each item's encode and journal
-append also run under the lock, to keep the journal in sequence order, so a slow journal slows the feed's publishers
-in the same way. Size subscriber queues and keep handlers fast enough that a queue does not stay full.
+A slow target delays other targets and callers using the same publisher. The bounded queue-offer retry does
+**not** establish a hard end-to-end bound on lock acquisition, mapping, journalling or the whole publish call.
+In RECORD mode, encoding and journal append also happen under this lock to preserve journal sequence order.
 
-## Queue Implementation
+`SlowConsumerStrategy` exposes `DISCONNECT`, `EXIT_PROCESS` and `BACKOFF`, but this publisher does not consult the
+configured value. Do not treat those names as implemented overload policies. Current behaviour is bounded offer
+retry followed by a counted drop; a lossless application must supply its own suitable ingestion policy.
 
-The event queues in Mongoose server are implemented using:
+## Processing failures
 
-1. **ManyToOneConcurrentArrayQueue**: For multiple producers and a single consumer.
-2. **OneToOneConcurrentArrayQueue**: For a single producer and a single consumer.
+The reader's default `RetryPolicy` permits three attempts for `RuntimeException`, with backoff starting at 5 ms.
+When a strategy identifies the failing processor, retries resume there and skip that processor after exhaustion,
+without replaying already successful processors. A legacy strategy that cannot identify the failure retries the
+whole dispatch. Retried handlers must account for effects they may already have performed.
 
-These queue implementations provide thread-safe communication between components running in different threads.
+Backoff runs on the group thread and delays its other work. Exhausted failures are reported through `ErrorReporting`.
+This is a specific dispatch retry mechanism, not a transactional rollback or a universal recovery policy.
 
-## Error Handling
+## Recording and replay
 
-Error handling in the event flow follows these patterns:
+Recording captures each processor's supported deliveries and clock observations; replay mutes its live inputs and
+captures `MessageSink` output. Other injected services can still be live. Stream provenance, build ordinals,
+service identity and intercepted control calls constrain what can be reproduced. Unsupported operations or
+mismatches stop the affected replay with a reason.
 
-1. **Global Error Handler**: Catches and handles errors at the system level.
-2. **Retry Mechanisms**: Implements exponential backoff for retrying failed operations.
-3. **Error Events**: Generates error events that can be processed by error handlers.
-
-## Conclusion
-
-The event flow architecture of Mongoose server provides a flexible and efficient mechanism for routing events between sources and processors. Its subscription-based model allows for dynamic configuration of event flows, while its queue-based implementation ensures thread-safe communication between components.
+See [record and replay contracts](../reference/control-plane-contracts.md#record-and-replay). Neither a successful
+control audit investigation nor an empty input queue proves deterministic replay or completed external output.

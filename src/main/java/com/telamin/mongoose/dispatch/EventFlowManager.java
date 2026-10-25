@@ -67,6 +67,14 @@ public class EventFlowManager {
     // settles to the chosen impl before any publisher / agent loop reads it, so
     // hot-path call sites stay monomorphic and the no-op JIT-inlines away.
     private MongooseCountersService countersService = NoOpCountersService.INSTANCE;
+    private com.telamin.mongoose.service.health.MongooseHealthService healthService;
+    private final ConcurrentHashMap<EventSourceKey_Subscriber<?>, QueueDropCheck> queueDropChecks = new ConcurrentHashMap<>();
+
+    /** Bind before subscriptions are created, like the counters service. */
+    public void setHealthService(com.telamin.mongoose.service.health.MongooseHealthService healthService) {
+        this.healthService = healthService;
+    }
+
     private static final Logger LOG = Logger.getLogger(EventFlowManager.class.getName());
     private final AtomicBoolean stopped = new AtomicBoolean();
 
@@ -314,7 +322,24 @@ public class EventFlowManager {
 
         // add as a target to the source
         String name = buildSubscriptionName(subscriber, eventSourceKey, type);
-        sourcePublisher.queuePublisher().addTargetQueue(eventQueue, name);
+        String path = queuePathFor(keySubscriber);
+        var drops = countersService.queueDropCounter(path);
+        var groupAudit = subscriber instanceof com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent group
+                ? group.control().audit() : null;
+        sourcePublisher.queuePublisher().addTargetQueue(eventQueue, name, drops, groupAudit, subscriber.roleName(), path);
+        if (healthService != null) {
+            queueDropChecks.compute(keySubscriber, (key, existing) -> {
+                if (existing == null) existing = new QueueDropCheck(healthService.registerCheck(eventSourceKey.sourceName(),
+                    "queue-drops:" + path, ctx -> {
+                        if (!ctx.countersOperational()) return com.telamin.mongoose.service.health.HealthStatus.unknown("counters disabled");
+                        long count = drops.get();
+                        return count == 0 ? com.telamin.mongoose.service.health.HealthStatus.up()
+                                : com.telamin.mongoose.service.health.HealthStatus.degraded(count + " item(s) dropped by queue " + path);
+                    }));
+                existing.bindings.add(name);
+                return existing;
+            });
+        }
 
         Runnable unsubscribe = createUnsubscribeAction(sourcePublisher, name, keySubscriber);
 
@@ -381,6 +406,12 @@ public class EventFlowManager {
         return () -> {
             sourcePublisher.queuePublisher().removeTargetQueueByName(name);
             subscriberKeyToQueueMap.remove(keySubscriber);
+            queueDropChecks.computeIfPresent(keySubscriber, (key, check) -> {
+                check.bindings.remove(name);
+                if (!check.bindings.isEmpty()) return check;
+                check.handle.close();
+                return null;
+            });
         };
     }
 
@@ -402,6 +433,13 @@ public class EventFlowManager {
         } catch (IOException ex) {
             System.err.println("problem logging event queues, exception:" + ex);
         }
+    }
+
+    /** Multiple callback bindings can share one physical queue and one health check. Mutated only in map.compute. */
+    private static final class QueueDropCheck {
+        final com.telamin.mongoose.service.health.MongooseHealthService.HealthCheckHandle handle;
+        final java.util.Set<String> bindings = new java.util.HashSet<>();
+        QueueDropCheck(com.telamin.mongoose.service.health.MongooseHealthService.HealthCheckHandle handle) { this.handle = handle; }
     }
 
     private static final class ReaderCount {

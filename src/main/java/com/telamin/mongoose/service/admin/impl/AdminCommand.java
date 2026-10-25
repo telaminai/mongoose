@@ -165,7 +165,14 @@ public class AdminCommand {
             return;
         }
         try {
-            targetQueue.publish(invocation);
+            if (targetQueue.getTargetQueues().isEmpty()) {
+                invocation.refuseUnavailable("its processor route is unavailable");
+            } else {
+                targetQueue.publish(invocation);
+                // Quarantine/stop may detach the route between admission and publication.
+                if (targetQueue.getTargetQueues().isEmpty())
+                    invocation.refuseUnavailable("its processor route was removed during publication");
+            }
             invocation.awaitOutcome();
         } finally {
             admission.release();                                // safe at a timeout: the running invocation is its own
@@ -286,6 +293,18 @@ public class AdminCommand {
      * Answer the caller with {@code message} and release it, without running the command: its processor could not
      * run it. The invoker calls it for anything that fails before the command runs, so a caller is never left waiting.
      */
+    /** Refuse queued work when its processor route disappears; a claimed command keeps its own outcome. */
+    public void refuseUnavailable(String cause) {
+        if (!claim()) return;
+        String why = "admin command '" + commandName() + "' did not run: " + cause + "; it will not run";
+        try {
+            com.telamin.mongoose.service.error.ErrorReporting.report("AdminCommandInvoker", why, null,
+                    com.telamin.mongoose.service.error.ErrorEvent.Severity.WARNING);
+        } finally {
+            refuse(why);
+        }
+    }
+
     public void refuse(String message) {
         try {
             reply(errOutput, message);

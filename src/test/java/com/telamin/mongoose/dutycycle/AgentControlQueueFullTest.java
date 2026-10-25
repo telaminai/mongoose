@@ -136,7 +136,10 @@ class AgentControlQueueFullTest {
         server.start();
         try {
             await(() -> stalling.started && fine.started, "both started");
-            server.registerService(new Service<>(new Object(), Object.class, "stall"));
+            // registerService now waits (bounded) for every group's reply, so the stalling registration runs aside
+            Thread stallRegistration = new Thread(() -> server.registerService(new Service<>(new Object(), Object.class, "stall")));
+            stallRegistration.setDaemon(true);
+            stallRegistration.start();
             assertTrue(stalling.stalled.await(5, TimeUnit.SECONDS), "the stalled group's thread is blocked");
             ComposingEventProcessorAgent stalledGroup = stalling.group;
             stalledGroup.setControlQueueFullTimeout(Duration.ofMillis(200));

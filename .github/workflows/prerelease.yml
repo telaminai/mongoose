@@ -1,0 +1,52 @@
+name: Publish qualified Mongoose pre-release
+
+on:
+  push:
+    tags:
+      - 'v*-rc*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prerelease-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify exact release version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PYTHON'
+          import os, re, xml.etree.ElementTree as ET
+          version = ET.parse('pom.xml').getroot().find('{http://maven.apache.org/POM/4.0.0}version').text
+          assert re.fullmatch(r'\d+\.\d+\.\d+-rc\d+', version), version
+          assert os.environ['RELEASE_TAG'] == 'v' + version, 'tag/POM mismatch'
+          PYTHON
+          git log -1 --format='%H %s'
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'adopt'
+          server-id: central
+          server-username: MAVEN_USERNAME
+          server-password: MAVEN_CENTRAL_TOKEN
+          gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          gpg-passphrase: MAVEN_GPG_PASSPHRASE
+      - name: Publish the tagged version to Central
+        run: mvn -B -P release clean deploy
+        env:
+          MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
+          MAVEN_CENTRAL_TOKEN: ${{ secrets.OSSRH_TOKEN }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: prerelease-test-reports
+          path: target/surefire-reports/

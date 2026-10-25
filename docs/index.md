@@ -1,5 +1,11 @@
 # Mongoose Server
 
+!!! warning "Pre-release documentation"
+    This documentation targets **1.0.33-rc1**, pending publication and qualification.
+    See the [release notes](release/release-notes-1.0.33-rc1.md) and
+    [client migration checklist](release/client-migration-1.0.33.md) before adopting it.
+
+
 Mongoose Server is a high‑performance, event‑driven library for building scalable event processing applications fast.
 It wires sources, processors, sinks, and services for you, handling threading and lifecycle behind the scenes, so you
 can focus on business logic.
@@ -27,6 +33,9 @@ standalone single‑server app — the same APIs support both.
   make operational control simpler.
 
 ### Performance at a glance
+
+These are historical measurements, not qualification results for 1.0.33-rc1. Pinned-core Linux testing of this
+candidate remains open; measure with your workload and audit profile before adopting a performance budget.
 
 - At 1 million messages/second, latency statistics:
     - Avg ≈ 270 nanos (0.00027 ms), p99.999 ≈ 81 µs, Max ≈ 90.1 µs.
@@ -60,14 +69,17 @@ Run the one-file example to see events flowing through a handler:
 
 - GitHub project: [HelloMongoose](https://github.com/telaminai/hellomongoose)
 
-### Micro Glossary:
+### Micro glossary
 
 - **Event feed**: A source of events (e.g., in‑memory, file, Kafka).
-- **Processor**: Executes your handler on its own agent thread.
+- **Processor**: Runs your handler on its group's agent thread.
+- **Group**: A named set of processors that share one agent thread.
 - **Handler**: Your business logic function that receives events.
 - **Agent**: A named execution thread with a configurable idle strategy.
 - **Idle strategy**: Controls how an agent waits (e.g., BusySpin for ultra‑low latency).
 - **Broadcast**: When true, each event is delivered to all processors.
+
+Full definitions, including the control-plane terms, are in the [glossary](reference/glossary.md).
 
 ### Example code:
 
@@ -138,6 +150,13 @@ GitHub repository [mongoose-examples](https://github.com/telaminai/mongoose-exam
 - See [Examples](guide/file-and-memory-feeds-example.md) for quick hands-on guidance.
 - See [Plugins](example/plugin/writing-a-message-sink-plugin.md) for advice on writing plugins.
 - Use [How-to guides](example/how-to/how-to-subscribing-to-named-event-feeds.md) for common tasks and extensions.
+
+## Contracts and reference
+
+- Control-plane contracts (adding and stopping processors, services, shutdown, audit capture, replay) →
+  [reference/control-plane-contracts.md](reference/control-plane-contracts.md)
+- Glossary → [reference/glossary.md](reference/glossary.md)
+- Release notes for unreleased changes → [release/release-notes-unreleased.md](release/release-notes-unreleased.md)
 
 ## Architecture and threading model for internals
 

@@ -27,4 +27,25 @@ public interface ReplayRouting {
 
     /** The admin command registered under {@code name} (by the replayed processor), or null until it is. */
     AdminCommand adminCommand(String name);
+
+    /**
+     * Stop the replayed processor {@code flow} as the recorded run did at this point (a {@code Stopped} entry), through
+     * the group's control processor, bound to its registration. @return false if the group cannot (no such processor)
+     * @throws IllegalStateException when the group's mailbox is full: the replay waits and retries
+     */
+    default boolean stopProcessor(DataFlow flow) {
+        return false;
+    }
+
+    /**
+     * Deliver to, or withdraw from, the replayed processor the service registered as {@code service}, as the recorded
+     * run did at this point. A positive version must identify the currently live registry binding;
+     * an unavailable historical incarnation or an unverified configured object cannot substitute for it.
+     *
+     * @return null once delivered; {@code "wait:<why>"} while it cannot be yet; otherwise why the replay cannot
+     *         reproduce it (a version no longer available, a callback that failed), which stops the replay
+     */
+    default String deliverService(DataFlow flow, String service, boolean register, long version) {
+        return "wait:service delivery is not supported by this group";
+    }
 }

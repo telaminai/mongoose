@@ -18,9 +18,18 @@ theme:
     - search.suggest
     - search.highlight
   palette:
+    - scheme: default
+      primary: blue
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
     - scheme: slate
       primary: blue
       accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
 
 markdown_extensions:
   - pymdownx.superfences
@@ -53,15 +62,18 @@ plugins:
   - awesome-pages
   - macros
 
+extra_css:
+  - stylesheets/architecture.css
+
 extra:
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/telaminai
   # Define variables here
-  source_root: https://github.com/telaminai/mongoose/tree/main/src
+  source_root: https://github.com/telaminai/mongoose/tree/feature/control-plane/src
   example_root: https://github.com/telaminai/mongoose-examples/tree/main
-  mongoose_version: 1.0.25
-  release_date: "2026-06-16"
+  mongoose_version: 1.0.33-rc1
+  release_date: "RC pending publication"
 
 nav:
   - Home:
@@ -99,6 +111,7 @@ nav:
           - Pipe messages between handlers: example/how-to/how-to-handler-pipe.md
           - Event replay and synthetic time: example/how-to/how-to-replay.md
           - Record and replay a processor: example/how-to/how-to-record-and-replay-a-processor.md
+          - Investigate control audit: example/how-to/how-to-investigate-control-audit.md
           - Write a custom EventToInvokeStrategy: example/how-to/how-to-writing-a-custom-event-to-invoke-strategy.md
           - Event source read strategy: guide/read-strategy.md
           - Zero‑GC object pooling: example/how-to/how-to-object-pool.md
@@ -107,22 +120,33 @@ nav:
   - Reference guide:
       - Glossary: reference/glossary.md
       - Architecture and design:
-          - Doc description: architecture/index.md
+          - Start here: architecture/index.md
           - Overview: architecture/overview.md
-          - Components: architecture/components.md
+          - Components and ownership: architecture/components.md
+          - Mongoose built with Fluxtion: architecture/built-with-fluxtion.md
           - Event flow: architecture/event-flow.md
           - Sequence diagrams:
               - Overview: architecture/sequence-diagrams/index.md
               - Sequence event subscription: architecture/sequence-diagrams/event-subscription.md
               - Sequence event processing: architecture/sequence-diagrams/event-processing.md
+              - Control requests: architecture/sequence-diagrams/control-request.md
+              - Audit capture: architecture/sequence-diagrams/audit-capture.md
+              - Shutdown: architecture/sequence-diagrams/shutdown.md
+          - Case study - control audit investigation: case-studies/control-audit-investigation.md
+          - Deployment: architecture/deployment.md
           - Agent Execution: architecture/agent-execution.md
           - Threading model: architecture/threading-model.md
           - Object pooling: architecture/object_pooling.md
           - Server control: architecture/server-control.md
       - Reference:
+          - Control plane contracts: reference/control-plane-contracts.md
+          - Release notes (1.0.33-rc1): release/release-notes-1.0.33-rc1.md
+          - Client migration checklist: release/client-migration-1.0.33.md
+          - RC release procedure: release/rc-release-procedure.md
           - Troubleshooting and FAQ: reference/troubleshooting.md
           - Comparisons: reference/comparisons.md
           - Modulith suitability: reference/modulith-suitability.md
           - Operations runbook: reference/operations-runbook.md
+          - Shutdown runbook: operations/shutdown-runbook.md
           - API Reference: https://javadoc.io/doc/com.telamin/mongoose/latest/index.html
       - Server benchmarks and performance: reports/server-benchmarks-and-performance.md
