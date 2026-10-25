@@ -301,7 +301,7 @@ class ControlScenarioHarnessTest {
             // helpers still holding work finish after the close: their completions are orphans, compensated
             io.runAll();
             script.add("io drained");
-            assertEquals("", captures.leaks(), "seed " + seed + ": capture ledger\n" + script);
+            assertEquals("", captures.accountingErrors(), "seed " + seed + ": capture ledger\n" + script);
             assertEquals(0, group.captureResourcesHeld(), "seed " + seed + ": capture resources held\n" + script);
 
             // ---- ledger verdict: every instance started at most once, released exactly once if it started
@@ -342,6 +342,12 @@ class ControlScenarioHarnessTest {
             // ---- audit verdict, from the exported record alone
             ControlAuditSink audit = group.control().audit();
             ControlEvidence evidence = ControlEvidence.parse(audit.exportText(), audit.isComplete());
+            Set<Long> recordedCloseFailures = evidence.ofType("EffectOutcome").stream()
+                    .filter(r -> "CloseCapture".equals(r.str("effect")) && "failed".equals(r.str("outcome"))
+                            && !Boolean.TRUE.equals(r.fields().get("duplicate")) && r.num("resourceId") >= 0)
+                    .map(r -> r.num("resourceId")).collect(java.util.stream.Collectors.toSet());
+            assertEquals(captures.failedCloseResources(), recordedCloseFailures,
+                    "seed " + seed + ": physical ledger and audited close failures disagree\n" + script);
             ControlInvariants.Result result = ControlInvariants.check(evidence);
             if (!result.ok()) {
                 Path out = Path.of("target/control-audit/harness-seed-" + seed + ".yaml");
