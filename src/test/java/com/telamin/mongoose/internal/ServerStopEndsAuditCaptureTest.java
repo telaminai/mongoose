@@ -45,6 +45,9 @@ class ServerStopEndsAuditCaptureTest {
         MongooseServer server = MongooseServer.bootServer(cfg, rec -> { });
         MongooseAuditCaptureService svc = (MongooseAuditCaptureService)
                 server.registeredServices().get(MongooseAuditCaptureService.SERVICE_NAME).instance();
+        // capture is opened off the group's thread and installed once open (design "Audit capture"): wait for it
+        long until = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+        while (!svc.isRecording("p") && System.nanoTime() < until) Thread.sleep(5);
         assertTrue(svc.isRecording("p"), "precondition: autoStart is recording p");
 
         server.stop();
