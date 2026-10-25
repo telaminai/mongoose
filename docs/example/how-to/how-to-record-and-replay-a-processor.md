@@ -48,23 +48,30 @@ event cycle, so its entry carries that cycle's readings: a `DefaultEventProcesso
 
 ### Control requests a replayed processor makes
 
-A failed controller call records its exception as text. Replay refuses to claim a match for that failure: it stops
-with a reconstruction diagnostic, even if the processor catches the substitute exception. Exception types and
-payloads can change the processor's branch and are not reconstructed from arbitrary exception text. Leading
-recorded controller calls are matched during processor startup. Provenance currently compares processor and handler
-class names; it does not authenticate a build, configuration, or generated graph fingerprint.
+With control interception on (the default), each control request a replayed processor makes is matched against the
+`ControlCall` the recorded run made at that point, and answered with the recorded outcome:
 
-Replay also refuses `registerService`, `registerEventSource`, and `removeService`, even when they match recorded
-requests. They would change the registry and resources shared with unreplayed processors. Reconstructing these
-requests requires a separate replay registry; Mongoose does not execute them against the live server.
+- `stopService`, `startService` and `stopProcessor` are **never executed** in a replay, so a replay never changes the
+  live server a second time.
+- `registerService`, `registerEventSource` and `removeService` stop replay and throw `UnsupportedOperationException`,
+  even when matched. Executing them would change resources shared with unreplayed processors; they require a
+  separate replay registry.
+- Requests the processor made in `start()` are recorded before its first input and expected before its first
+  replayed input.
+- A request the recorded run did not make, or made with different arguments, stops the replay, and so does a
+  recorded request the replay does not make.
 
-Service-change entries represent callbacks that actually ran, excluding broadcasts skipped because the processor
-already received that service while being built. A failed callback records a failure marker; a replay callback that
-throws stops replay. For positive service versions, replay requires the exact published version and current service
-wrapper. It waits for a later version that has not arrived and refuses a historical or unidentified incarnation;
-it never substitutes the latest service object for an older one. Unversioned legacy changes retain their existing
-configuration-based lookup. Earlier recordings containing skipped callbacks cannot be repaired without additional
-provenance.
+Three cases always stop the replay:
+
+- `addEventProcessor`. Its supplier is executable code, and the recording does not identify the supplier's build and
+  configuration well enough to reproduce or validate it. It is never run against the live server, and the call throws
+  `UnsupportedOperationException` into the processor.
+- A recorded call that failed. Only its exception's text was recorded, and exception types and payloads can change
+  the processor's branch. The replay stops even if the processor catches the substitute `IllegalStateException`.
+- A request made off the processor's own agent thread, which is outside its input order.
+
+Provenance compares processor and handler class names. It does not authenticate a build, configuration, or generated
+graph fingerprint.
 
 ### Stream identity when a processor is replaced
 
@@ -217,8 +224,10 @@ Sample code:
   divergence. `replayers().get(group).stopped(processor)` gives the reason. A replay failure stops that processor's
   replay; it does not end the server. The full list is in
   [When a replay stops](../../reference/control-plane-contracts.md#when-a-replay-stops).
-- **Not detected yet:** a service recorded at one registry version is replayed with whatever the replay server holds
-  under that name; a replayed service callback that throws is treated as delivered. Neither stops the replay.
+- **Service changes:** a positive recorded version must match the currently published live binding. Replay waits
+  for a future version, but refuses a missing identity or a past version, including cached objects already withdrawn.
+  A failed replay callback stops replay. New recordings omit skipped duplicates and mark failed callbacks.
+  Unversioned legacy entries retain configuration-based lookup and cannot establish incarnation equivalence.
 - **A recording is refused over a recording.** `RECORD` needs an empty journal and store: a second run numbers its
   items from 1 again. A store in the earlier six-field CSV format is read, never appended to. A torn last CSV line (a
   crash mid-write) is set aside with a warning; the file is still read,
