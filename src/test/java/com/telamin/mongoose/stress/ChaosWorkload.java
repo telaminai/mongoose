@@ -542,15 +542,17 @@ final class ChaosWorkload implements AutoCloseable {
     /** Stop the admin and flood threads, and wait for every asynchronous reply (failing loudly if one hangs). */
     void stopChaos(long replyWaitSeconds) throws InterruptedException {
         running.set(false);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(replyWaitSeconds);
         for (Thread t : threads) {
             if (t.getName().startsWith("chaos-admin") || t.getName().startsWith("chaos-flood")) {
-                t.join(120_000);
+                long remaining = deadline - System.nanoTime();
+                if (remaining > 0) t.join(Math.max(1, TimeUnit.NANOSECONDS.toMillis(remaining)));
                 if (t.isAlive()) anomalies.add("admin thread " + t.getName() + " did not finish: hung in\n"
                         + StressSupport.dumpThreads());
             }
         }
-        awaitReplies(replyWaitSeconds);
-        awaitQuiescent(replyWaitSeconds);
+        awaitReplies(Math.max(0, TimeUnit.NANOSECONDS.toSeconds(deadline - System.nanoTime())));
+        awaitQuiescent(Math.max(0, TimeUnit.NANOSECONDS.toSeconds(deadline - System.nanoTime())));
     }
 
     /**
@@ -921,6 +923,7 @@ final class ChaosWorkload implements AutoCloseable {
 
     /** Stop every processor the chaos left running (not the anchors), by handle, and wait for each reply. */
     void stopEverything() throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
         List<CompletableFuture<ControlReply>> replies = new ArrayList<>();
         for (String key : namesUsed) {
             String[] parts = key.split("/");
@@ -929,7 +932,8 @@ final class ChaosWorkload implements AutoCloseable {
             AsyncOp op = stopByHandle(h, latestAdd.get(key));
             if (op != null) replies.add(op.future);
         }
-        for (CompletableFuture<ControlReply> f : replies) f.get(60, TimeUnit.SECONDS);
+        for (CompletableFuture<ControlReply> f : replies)
+            f.get(Math.max(1, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
         // the anchors keep running, so a capture started on one is still (legitimately) held: stop it
         if (settings.captures) {
             for (int g = 0; g < settings.groups; g++) {

@@ -38,7 +38,7 @@ class ControlPlaneSoakTest {
         String previousCapacity = System.getProperty(capacityProperty);
         if (previousCapacity == null) System.setProperty(capacityProperty, "400000");
         long seconds = Long.getLong("mongoose.soak.seconds", 600);
-        assertTrue(seconds > 0 && seconds <= 1200, "soak duration must be 1..1200 seconds");
+        assertTrue(seconds > 0 && seconds <= 900, "soak duration must be 1..900 seconds");
         ChaosWorkload.Settings settings = new ChaosWorkload.Settings();
         settings.soak = true;
         settings.seed = Long.getLong("mongoose.soak.seed", 20261025L);
@@ -96,14 +96,27 @@ class ControlPlaneSoakTest {
                 failures.addAll(workload.checkRunning());
             } finally {
                 workload.running.set(false);
-                workload.stopFeeds();
-                long shutdownStart = System.nanoTime();
-                StopResult result = workload.shutdown();
-                long shutdownMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - shutdownStart);
-                System.out.println("SOAK shutdownMillis=" + shutdownMillis + " result=" + result);
-                if (!result.complete()) failures.add("incomplete shutdown: " + result);
-                if (shutdownMillis > settings.shutdownTimeoutMillis + 2000)
-                    failures.add("shutdown exceeded deadline allowance: " + shutdownMillis + "ms");
+                workload.feeding.set(false);
+                boolean interrupted = Thread.interrupted();
+                try {
+                    try {
+                        workload.stopFeeds();
+                    } finally {
+                        try {
+                            long shutdownStart = System.nanoTime();
+                            StopResult result = workload.shutdown();
+                            long shutdownMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - shutdownStart);
+                            System.out.println("SOAK shutdownMillis=" + shutdownMillis + " result=" + result);
+                            if (!result.complete()) failures.add("incomplete shutdown: " + result);
+                            if (shutdownMillis > settings.shutdownTimeoutMillis + 2000)
+                                failures.add("shutdown exceeded deadline allowance: " + shutdownMillis + "ms");
+                        } finally {
+                            joinActors(workload, failures);
+                        }
+                    }
+                } finally {
+                    if (interrupted) Thread.currentThread().interrupt();
+                }
             }
             failures.addAll(workload.checkAfterShutdown());
             failures.addAll(workload.checkAudits(audits));
@@ -124,6 +137,26 @@ class ControlPlaneSoakTest {
         } finally {
             if (previousCapacity == null) System.clearProperty(capacityProperty);
             else System.setProperty(capacityProperty, previousCapacity);
+        }
+    }
+
+    /** A timeout must still shut down the server and account for the harness's own daemon threads. */
+    private static void joinActors(ChaosWorkload workload, List<String> failures) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        boolean interrupted = Thread.interrupted();
+        try {
+            for (Thread actor : workload.threads) {
+                while (actor.isAlive() && System.nanoTime() < deadline) {
+                    try {
+                        actor.join(Math.max(1, TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime())));
+                    } catch (InterruptedException e) {
+                        interrupted = true;
+                    }
+                }
+                if (actor.isAlive()) failures.add("soak actor did not finish: " + actor.getName());
+            }
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
         }
     }
 
