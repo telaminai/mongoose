@@ -18,6 +18,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -35,6 +36,7 @@ import java.util.stream.LongStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.fail;
 
 /**
@@ -151,6 +153,7 @@ class ControlScenarioHarnessTest {
         group.setAuditCaptureResources(captures);
         Reservations reservations = new Reservations();
         List<LedgerProc> all = new ArrayList<>();
+        Map<LedgerProc, Integer> stopsDuringClose = new IdentityHashMap<>();
         Map<String, Integer> serials = new HashMap<>();
         Map<ProcessorRegistration, LedgerProc> procOf = new IdentityHashMap<>();
         List<ProcessorRegistration> everAdmitted = new ArrayList<>();
@@ -179,7 +182,7 @@ class ControlScenarioHarnessTest {
                 String name = names[random.nextInt(names.length)];
                 if (!started && (op == 9 || step == steps / 3)) {
                     started = true;
-                    closed = startOrClose(group, script);
+                    closed = startOrClose(group, script, all, stopsDuringClose);
                 } else if (op < 3) {
                     // admission and enqueue are two steps on two threads in the server: a stop can land between them
                     ProcessorRegistration reg = reservations.admit(name);
@@ -287,17 +290,15 @@ class ControlScenarioHarnessTest {
             }
             if (!started) {
                 started = true;
-                closed = startOrClose(group, script);
+                closed = startOrClose(group, script, all, stopsDuringClose);
             }
             if (!closed && random.nextBoolean()) {
                 // half the runs close with requests still queued: the close must answer them through the rules
                 for (int i = 0; i < 200 && !group.control().isEmpty(); i++) group.doWork();
                 script.add("drained");
             }
-            Map<LedgerProc, Integer> stopsBeforeClose = new IdentityHashMap<>();
-            for (LedgerProc p : all) stopsBeforeClose.put(p, p.stops.get());
             if (!closed) {
-                group.onClose();
+                closeAndRecordStops(group, all, stopsDuringClose);
                 closed = true;
                 script.add("close");
             }
@@ -320,10 +321,8 @@ class ControlScenarioHarnessTest {
                     assertEquals(0, p.stops.get(), "seed " + seed + ": " + who + " failed to start but was stopped\n" + script);
                 }
                 // rule 7: a stop affects only the registration it was bound to; a stale stop never stops a replacement
-                if (stopsBeforeClose.get(p) > 0) {
-                    assertTrue(legitimatelyStopped.contains(p), "seed " + seed + ": " + who
-                            + " was stopped before the close, but no stop was bound to its registration\n" + script);
-                }
+                assertStopOrigin(p, stopsDuringClose, legitimatelyStopped,
+                        "seed " + seed + ": " + who + "\n" + script);
             }
             // scenario expectation from the rules table (stopBeforeAdd, addCancelled): an add whose stop was sent
             // before the add was queued never starts and never runs its processor
@@ -372,15 +371,79 @@ class ControlScenarioHarnessTest {
     }
 
     /** Start the group; a boot failure under fail-fast closes it, as Agrona does when onStart throws. */
-    private static boolean startOrClose(ComposingEventProcessorAgent group, List<String> script) {
+    private static boolean startOrClose(ComposingEventProcessorAgent group, List<String> script,
+                                        List<LedgerProc> all, Map<LedgerProc, Integer> stopsDuringClose) {
         try {
             group.onStart();
             script.add("start");
             return false;
         } catch (ProcessorStartException e) {
-            group.onClose();
+            closeAndRecordStops(group, all, stopsDuringClose);
             script.add("start failed fast, group closed");
             return true;
+        }
+    }
+
+    /** Count only callbacks inside the actual close call, including the early fail-fast close. */
+    private static void closeAndRecordStops(ComposingEventProcessorAgent group, List<LedgerProc> all,
+                                            Map<LedgerProc, Integer> stopsDuringClose) {
+        Map<LedgerProc, Integer> before = new IdentityHashMap<>();
+        for (LedgerProc proc : all) before.put(proc, proc.stops.get());
+        try {
+            group.onClose();
+        } finally {
+            for (LedgerProc proc : all) {
+                int duringClose = proc.stops.get() - before.get(proc);
+                if (duringClose != 0) stopsDuringClose.merge(proc, duringClose, Integer::sum);
+            }
+        }
+    }
+
+    private static void assertStopOrigin(LedgerProc proc, Map<LedgerProc, Integer> stopsDuringClose,
+                                         Set<LedgerProc> legitimatelyStopped, String context) {
+        if (proc.stops.get() > stopsDuringClose.getOrDefault(proc, 0)) {
+            assertTrue(legitimatelyStopped.contains(proc),
+                    "stop outside a recorded group close has no bound request: " + context);
+        }
+    }
+
+    @ParameterizedTest(name = "fail-fast closure regression seed {0}")
+    @ValueSource(longs = {4127, 4182, 4197})
+    void failFastClosureSeedsKeepLedgerAndAuditInvariants(long seed) throws Exception {
+        generatedScenarioKeepsLedgerAndAuditInvariants(seed);
+    }
+
+    @Test
+    void failFastCleanupIsRecordedButDoesNotAuthorizeEarlierStops() {
+        ComposingEventProcessorAgent group = new ComposingEventProcessorAgent("close-origin", new EventFlowManager(),
+                null, new DeadWheelScheduler(), new ConcurrentHashMap<>());
+        group.setIsolateStartFailuresAtBoot(false);
+        LedgerProc alreadyStopped = new LedgerProc("early", 1, false, false);
+        LedgerProc closed = new LedgerProc("closed", 1, false, false);
+        LedgerProc failed = new LedgerProc("failed", 1, true, false);
+        List<LedgerProc> all = List.of(alreadyStopped, closed, failed);
+        Map<LedgerProc, Integer> closeStops = new IdentityHashMap<>();
+        ProcessorRegistration early = new ProcessorRegistration("early");
+        group.addNamedEventProcessor(() -> new NamedEventProcessor("early", alreadyStopped), early);
+        group.removeEventProcessorByName("early", early, null);
+        group.addNamedEventProcessor(() -> new NamedEventProcessor("closed", closed), new ProcessorRegistration("closed"));
+        group.addNamedEventProcessor(() -> new NamedEventProcessor("failed", failed), new ProcessorRegistration("failed"));
+        List<String> script = new ArrayList<>();
+        try {
+            assertTrue(startOrClose(group, script, all, closeStops));
+            assertEquals(1, alreadyStopped.stops.get());
+            assertEquals(0, closeStops.getOrDefault(alreadyStopped, 0));
+            assertEquals(1, closed.stops.get());
+            assertEquals(1, closeStops.get(closed));
+            assertEquals(0, failed.stops.get());
+            assertStopOrigin(closed, closeStops, Set.of(), script.toString());
+            // Deliberately omit the early stop from the independent command ledger: the later boot failure must not
+            // excuse it. A broad "group failed fast" exemption would incorrectly pass this negative control.
+            assertThrows(AssertionError.class,
+                    () -> assertStopOrigin(alreadyStopped, closeStops, Set.of(), script.toString()));
+            assertStopOrigin(alreadyStopped, closeStops, Set.of(alreadyStopped), script.toString());
+        } finally {
+            group.onClose();
         }
     }
 
