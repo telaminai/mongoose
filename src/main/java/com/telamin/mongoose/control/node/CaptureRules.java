@@ -480,7 +480,8 @@ public class CaptureRules extends EventLogNode {
 
     /**
      * True for a record written after its request's reply (compensation, a late completion): the reply never waited for
-     * it, so invariant I11 does not apply to it. Null otherwise, so the field is left out.
+     * it, so the post-reply sequencing check (I15) does not apply to it. Resource invariants still apply.
+     * Null otherwise, so the field is left out.
      */
     private Boolean cleanup() {
         // a command's own decision is never cleanup, even when it answers at once with no chain (review of PR 5, 4)

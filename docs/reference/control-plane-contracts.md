@@ -361,6 +361,8 @@ public void registerService(Service<?>... services)
 **Failure modes**
 
 - Server stopping: `IllegalStateException`; nothing is registered.
+- The same physical instance is currently being stopped by an earlier removal: `ServiceRegistrationException`.
+  Registration and claiming that stop are serialized; the stop callback itself runs outside the publication lock.
 - A `@ServiceRegistered` handler that throws is reported; the processor keeps running; the other processors still
   receive the service.
 
@@ -400,7 +402,8 @@ and `shutdown()` stops it after every processor group has closed. A warning says
 - Every registration or removal of a service name gets the next **version** for that name.
 - A group applies a broadcast only if its version is newer than the last it applied for that service. An older one is
   answered `APPLIED` with reason `ignored: stale version N` and changes nothing. So concurrent register and remove of
-  one service end, in every group, in the registry's final state.
+  one service cannot make an older delivered broadcast overwrite a newer delivered one. A group that missed a
+  broadcast because its mailbox was full is reported; version checks alone do not repair that missed delivery.
 - The **service lock** covers only the name reservation, the registry change and the non-blocking broadcast
   publication. Injection, `start()`, `stop()`, waiting, and reporting to `ErrorReporting` all run outside it. A slow
   service callback therefore never stalls other service changes.
@@ -559,8 +562,8 @@ thread, `start` returns before the capture is installed, so that line means "req
 ### Open and resource limits
 
 Each group allows at most **8** physical opens in flight by default. An open that timed out still holds its permit
-until its helper returns. While the limit is held, further audit starts fail (`FAILED`, reason `N physical capture
-opens are still in flight (limit 8)`). Every resource that a late helper returns is scheduled for one close attempt. A failed close is reported and
+until its helper returns. While the limit is held, further audit starts fail (`FAILED`, reason
+`unresolved capture open limit reached`). Every resource that a late helper returns is scheduled for one close attempt. A failed close is reported and
 retained as unresolved ownership, not claimed to be closed.
 
 Separately, each group reserves at most **1024** physical capture resource slots by default, including opens,
@@ -578,8 +581,9 @@ configuration key. See [configuration keys](#configuration-keys).
 - `attach(DataFlow, String, LogRecordListener, Executor)` is deprecated. The server still calls it, but with routing
   in place the group installs and uninstalls captures itself. The executor is used only by a capture service that no
   server routes.
-- `stopAll()` is deprecated. Each group closes its captures as it closes. The server still calls `stopAll()` once at
-  the end of a complete stop, to close any resource a closer had not reached.
+- `stopAll()` is deprecated. Each group closes its captures as it closes. The server calls `stopAll()` only after
+  group capture operations have completed successfully, for any residual service-owned resources. It does not race
+  a blocked group closer or treat a failed physical close as complete.
 
 ### AuditCaptureResources, for implementers
 
