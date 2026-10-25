@@ -34,8 +34,10 @@ public final class LifecycleManager {
     private final StopProgress progress = new StopProgress();
     /** The helper threads a stop closes groups and stops services on: a stop called from one cannot wait for itself. */
     private final Set<Thread> stopHelpers = ConcurrentHashMap.newKeySet();
+    private final Map<Thread, Throwable> helperFailures = new ConcurrentHashMap<>();
     /** A stop may first ask an in-progress synchronous startup callback to return. */
     private volatile Runnable cancelStartup;
+    private Thread startupCancellation;
     /**
      * Runners whose thread has been started (review of #69). Agrona's losing {@code run()} still marks the runner closed,
      * so a second start of the same runner would report it closed while its real thread runs.
@@ -295,6 +297,14 @@ public final class LifecycleManager {
         }
     }
 
+    /** Never-started groups still need terminal replies; close them on tracked helpers within the same deadline. */
+    public synchronized com.telamin.mongoose.StopResult closeBeforeStart(
+            ConcurrentHashMap<String, ? extends GroupRunner> groups, long deadline) {
+        java.util.List<String> running = closeAll("unstarted processor agent", "processor:", groups, deadline);
+        return running.isEmpty() ? com.telamin.mongoose.StopResult.completed()
+                : com.telamin.mongoose.StopResult.incomplete(null, running, java.util.List.of());
+    }
+
     private com.telamin.mongoose.StopResult stopPhases(ConcurrentHashMap<String, ? extends GroupRunner> composingEventProcessorAgents,
                                                        ConcurrentHashMap<String, ? extends GroupRunner> composingServiceAgents,
                                                        Map<String, Service<?>> registeredServices,
@@ -306,12 +316,12 @@ public final class LifecycleManager {
         // lock means the last synchronous startup effect has returned, and all later ones see stopped == true
         if (!progress.fenced) {
             Runnable cancel = cancelStartup;
-            if (cancel != null) {
-                try {
-                    cancel.run();
-                } catch (Throwable t) {
-                    log.log(java.util.logging.Level.WARNING, "in-progress startup could not be cancelled", t);
-                }
+            if (cancel != null && startupCancellation == null) {
+                startupCancellation = helper(cancel, "mongoose-cancel-startup");
+            }
+            if (startupCancellation != null && !join(startupCancellation, deadline)) {
+                return com.telamin.mongoose.StopResult.incomplete("startup cancellation has not returned",
+                        new java.util.ArrayList<>(composingEventProcessorAgents.keySet()), servicesNotStopped(registeredServices));
             }
             boolean fenced = false;
             try {
@@ -446,6 +456,11 @@ public final class LifecycleManager {
                                             long deadline) {
         groups.forEach((k, v) -> {
             String key = prefix + k;
+            Thread previous = progress.helpers.get(key);
+            if (previous != null && !previous.isAlive() && helperFailures.remove(previous) != null) {
+                progress.helpers.remove(key);
+                stopHelpers.remove(previous);
+            }
             if (progress.closed.contains(key) || progress.helpers.containsKey(key)) return;
             progress.helpers.put(key, helper(() -> closeGroup(kind, k, v), "mongoose-stop-" + k));
         });
@@ -470,6 +485,7 @@ public final class LifecycleManager {
             try {
                 work.run();
             } catch (Throwable failed) {
+                helperFailures.put(Thread.currentThread(), failed);
                 log.log(java.util.logging.Level.WARNING, name + " failed", failed);
             }
         }, name);
@@ -499,11 +515,12 @@ public final class LifecycleManager {
 
     private boolean join(Thread helper, long deadline) {
         try {
-            helper.join(Math.max(1, remainingMillis(deadline)));
+            long left = deadline - System.nanoTime();
+            if (helper.isAlive() && left > 0) java.util.concurrent.TimeUnit.NANOSECONDS.timedJoin(helper, left);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
-        if (helper.isAlive()) return false;
+        if (helper.isAlive() || helperFailures.containsKey(helper)) return false;
         stopHelpers.remove(helper);
         return true;
     }
@@ -526,6 +543,7 @@ public final class LifecycleManager {
                     t -> log.warning("composing " + kind + " " + name + " still closing, retrying: thread " + t.getName()));
         } catch (Throwable t) {
             log.log(java.util.logging.Level.WARNING, "composing " + kind + " " + name + " failed to close", t);
+            throw t;
         }
         // a group whose thread died never ran onClose (Agrona's close() returns at once for it): release what it held
         // here, now that its thread has ended, so its processors are stopped and its requests answered
@@ -535,6 +553,10 @@ public final class LifecycleManager {
                 processors.cleanupAfterDeath();
             } catch (Throwable t) {
                 log.log(java.util.logging.Level.WARNING, "composing " + kind + " " + name + " failed its post-death cleanup", t);
+                throw new IllegalStateException("group cleanup failed: " + name, t);
+            }
+            if (processors.captureResourcesHeld() != 0) {
+                throw new IllegalStateException("group " + name + " still holds " + processors.captureResourcesHeld() + " capture resources");
             }
         }
     }
