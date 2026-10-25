@@ -1154,9 +1154,10 @@ public class MongooseServer implements MongooseServerController {
             String groupName,
             IdleStrategy idleStrategy,
             Supplier<DataFlow> feedConsumer) throws IllegalArgumentException {
+        long deadline = controlDeadline(controlWaitMillis());
         // admission against shutdown (design "Bounded shutdown"): agent threads never wait for the lock
         java.util.concurrent.locks.Lock read = admission.readLock();
-        boolean locked = isServerAgentThread(Thread.currentThread()) ? read.tryLock() : lockUninterruptibly(read);
+        boolean locked = lockControlAdmission(read, deadline);
         if (!locked || isStopRequested()) {
             if (locked) read.unlock();
             throw new IllegalStateException("server is stopping: event processor '" + processorName + "' was not added to group '"
@@ -1164,12 +1165,12 @@ public class MongooseServer implements MongooseServerController {
         }
         com.telamin.mongoose.control.ControlRequest request;
         try {
-            request = admitEventProcessor(processorName, groupName, idleStrategy, feedConsumer).request();
+            request = admitEventProcessor(processorName, groupName, idleStrategy, feedConsumer, deadline).request();
         } finally {
             read.unlock();
         }
         // design PR 3: wait for the outcome where waiting is safe; a timeout detaches, the add still applies
-        com.telamin.mongoose.control.ControlReply reply = awaitWhereSafe(groupName, request);
+        com.telamin.mongoose.control.ControlReply reply = awaitWhereSafe(groupName, request, deadline);
         if (reply == null || reply.applied()) {
             return;
         }
@@ -1197,14 +1198,14 @@ public class MongooseServer implements MongooseServerController {
     public AddedProcessor addProcessor(
             String processorName, String groupName, IdleStrategy idleStrategy, Supplier<DataFlow> feedConsumer) {
         java.util.concurrent.locks.Lock read = admission.readLock();
-        boolean locked = isServerAgentThread(Thread.currentThread()) ? read.tryLock() : lockUninterruptibly(read);
+        boolean locked = read.tryLock();
         try {
             if (!locked || isStopRequested()) {
                 return refusedAdd(processorName, com.telamin.mongoose.control.event.ReplyOutcome.NOT_RUNNING, "server is stopping");
             }
             Admission admission;
             try {
-                admission = admitEventProcessor(processorName, groupName, idleStrategy, feedConsumer);
+                admission = admitEventProcessor(processorName, groupName, idleStrategy, feedConsumer, System.nanoTime());
             } catch (IllegalArgumentException duplicate) {
                 return refusedAdd(processorName, com.telamin.mongoose.control.event.ReplyOutcome.REFUSED, "name in use");
             } catch (IllegalStateException notQueued) {
@@ -1213,7 +1214,10 @@ public class MongooseServer implements MongooseServerController {
                         String.valueOf(notQueued.getMessage()));
             }
             // the handle of exactly this add's registration, not whatever answers to the name by the time it is asked for
-            return new AddedProcessor(new ProcessorHandle(processorHandleOwner, groupName, admission.registration()),
+            var immediate = admission.request().reply().getNow(null);
+            boolean refused = immediate != null && (immediate.outcome() == com.telamin.mongoose.control.event.ReplyOutcome.REFUSED
+                    || immediate.outcome() == com.telamin.mongoose.control.event.ReplyOutcome.NOT_RUNNING);
+            return new AddedProcessor(refused ? null : new ProcessorHandle(processorHandleOwner, groupName, admission.registration()),
                     com.telamin.mongoose.control.ControlReplies.isolated(admission.request(), replyExecutor));
         } finally {
             if (locked) read.unlock();
@@ -1254,7 +1258,7 @@ public class MongooseServer implements MongooseServerController {
         // the name is freed by the control processor's ReleaseName effect once the stop is applied; never by the reply,
         // which a stop refused for a full mailbox also completes (final review, finding 4)
         return com.telamin.mongoose.control.ControlReplies.isolated(processorAgent.group().removeEventProcessorByName(
-                handle.name(), registration, null), replyExecutor);
+                handle.name(), registration, null, System.nanoTime()), replyExecutor);
     }
 
     /**
@@ -1262,23 +1266,22 @@ public class MongooseServer implements MongooseServerController {
      * commands use 1 s). Returns the reply, or null if it did not come in time or nothing was admitted under the name.
      */
     public com.telamin.mongoose.control.ControlReply stopProcessor(String groupName, String processorName, long waitMillis) {
-        // one deadline for admission and the reply (follow-up review, finding 7)
-        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(Math.max(0, waitMillis));
-        com.telamin.mongoose.control.ControlRequest request = sendStop(groupName, processorName, deadline);
-        if (request == null) return null;
-        if (request.reply().isDone()) return request.reply().getNow(null);     // refused at admission
-        if (!safeToWait(groupName)) return null;
-        long left = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
-        return left <= 0 ? null : com.telamin.mongoose.control.ControlReplies.await(request, left);
+        long deadline = controlDeadline(waitMillis);
+        return awaitWhereSafe(groupName, sendStop(groupName, processorName, deadline), deadline);
     }
 
     /** How long a void control method waits for its outcome before detaching (the request still applies). */
     static final long CONTROL_WAIT_MILLIS = 10_000;
 
     private com.telamin.mongoose.control.ControlReply awaitWhereSafe(String groupName,
-                                                                     com.telamin.mongoose.control.ControlRequest request) {
-        if (request == null || !safeToWait(groupName)) return null;
-        com.telamin.mongoose.control.ControlReply reply = com.telamin.mongoose.control.ControlReplies.await(request, controlWaitMillis());
+                                                                     com.telamin.mongoose.control.ControlRequest request,
+                                                                     long deadline) {
+        if (request == null) return null;
+        var immediate = request.reply().getNow(null);
+        if (immediate != null) return immediate;
+        if (!safeToWait(groupName)) return null;
+        long remaining = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(Math.max(0, deadline - System.nanoTime()));
+        com.telamin.mongoose.control.ControlReply reply = com.telamin.mongoose.control.ControlReplies.await(request, remaining);
         if (reply == null) {
             log.warning("control request " + request.description() + " in group '" + groupName + "' not answered within "
                     + controlWaitMillis() + " ms; it still applies");
@@ -1291,11 +1294,7 @@ public class MongooseServer implements MongooseServerController {
      * group that has not started cannot answer yet, and its outcome surfaces when it starts.
      */
     private boolean safeToWait(String groupName) {
-        Thread current = Thread.currentThread();
-        if (com.telamin.mongoose.control.AgentThreads.isAgentThread() || isServerAgentThread(current)
-                || current == startupThread || current == stopThread || lifecycleManager.isStopHelper(current)) {
-            return false;
-        }
+        if (!controlCallerMayWait()) return false;
         var runner = composingEventProcessorAgents.get(groupName);
         if (runner == null) return false;
         Thread agent = runner.groupRunner().thread();
@@ -1304,13 +1303,37 @@ public class MongooseServer implements MongooseServerController {
         return agent != AgentRunner.TOMBSTONE && agent.isAlive();
     }
 
+    private boolean controlCallerMayWait() {
+        Thread current = Thread.currentThread();
+        if (com.telamin.mongoose.control.AgentThreads.isAgentThread() || isServerAgentThread(current)
+                || current == startupThread || current == stopThread || lifecycleManager.isStopHelper(current)) {
+            return false;
+        }
+        return true;
+    }
+
+    private static long controlDeadline(long millis) {
+        return System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(Math.max(0, millis));
+    }
+
+    private boolean lockControlAdmission(java.util.concurrent.locks.Lock lock, long deadline) {
+        if (!controlCallerMayWait()) return lock.tryLock();
+        try {
+            return lock.tryLock(Math.max(0, deadline - System.nanoTime()), java.util.concurrent.TimeUnit.NANOSECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
     private static boolean lockUninterruptibly(java.util.concurrent.locks.Lock lock) {
         lock.lock();
         return true;
     }
 
     private Admission admitEventProcessor(String processorName, String groupName,
-                                                                         IdleStrategy idleStrategy, Supplier<DataFlow> feedConsumer) {
+                                                                         IdleStrategy idleStrategy, Supplier<DataFlow> feedConsumer,
+                                                                         long deadline) {
         IdleStrategy idleStrategyOverride = mongooseServerConfig.getIdleStrategyOrDefault(groupName, idleStrategy);
         ComposingEventProcessorAgentRunner composingEventProcessorAgentRunner = composingEventProcessorAgents.computeIfAbsent(
                 groupName,
@@ -1368,7 +1391,7 @@ public class MongooseServer implements MongooseServerController {
                     reservedProcessorNames.remove(reservation, registration);
                     throw e;
                 }
-            }, registration);
+            }, registration, controlCallerMayWait() && (isStarted() || safeToWait(groupName)) ? deadline : System.nanoTime());
         } catch (RuntimeException | Error e) {
             // Rejected before the supplier ran: its own failure cleanup cannot release this reservation.
             reservedProcessorNames.remove(reservation, registration);
@@ -1516,17 +1539,14 @@ public class MongooseServer implements MongooseServerController {
      */
     @Override
     public void stopProcessor(String groupName, String processorName) {
+        long deadline = controlDeadline(controlWaitMillis());
         log.info("stopProcessor:" + processorName + " in group:" + groupName);
         // design PR 3: wait for the outcome where waiting is safe; a timeout detaches, the stop still applies
-        awaitWhereSafe(groupName, sendStop(groupName, processorName));
+        awaitWhereSafe(groupName, sendStop(groupName, processorName, deadline), deadline);
     }
 
     /** Send a stop bound, now, to the registration admitted under the name; null when nothing is admitted. */
-    private com.telamin.mongoose.control.ControlRequest sendStop(String groupName, String processorName) {
-        return sendStop(groupName, processorName, Long.MAX_VALUE);
-    }
-
-    private com.telamin.mongoose.control.ControlRequest sendStop(String groupName, String processorName, long admitByNanos) {
+    private com.telamin.mongoose.control.ControlRequest sendStop(String groupName, String processorName, long deadline) {
         var processorAgent = composingEventProcessorAgents.get(groupName);
         if (processorAgent == null) return null;
         ProcessorName reservation = new ProcessorName(groupName, processorName);
@@ -1535,7 +1555,8 @@ public class MongooseServer implements MongooseServerController {
         // A stop belongs to this accepted add, including before its supplier runs. The name is released by the control
         // processor's ReleaseName effect when the stop is applied (the registration's own releaser), never by the reply:
         // a stop refused for a full mailbox is replied too, and its processor keeps running (final review, finding 4)
-        return processorAgent.group().removeEventProcessorByName(processorName, registration, null, admitByNanos);
+        return processorAgent.group().removeEventProcessorByName(processorName, registration, null,
+                safeToWait(groupName) ? deadline : System.nanoTime());
     }
 
     /**

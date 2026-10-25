@@ -49,6 +49,37 @@ import java.util.concurrent.locks.LockSupport;
  */
 public final class ControlDriver {
 
+    /** One cold-path checker for all groups; no per-group waiting thread and no duty-cycle polling cost. */
+    private static final Set<ControlDriver> LIVE = ConcurrentHashMap.newKeySet();
+    private static final java.util.concurrent.ScheduledExecutorService DEATH_CHECKS =
+            java.util.concurrent.Executors.newSingleThreadScheduledExecutor(task -> {
+                Thread thread = new Thread(task, "mongoose-control-liveness");
+                thread.setDaemon(true);
+                return thread;
+            });
+
+    static {
+        DEATH_CHECKS.scheduleWithFixedDelay(() -> {
+            for (ControlDriver driver : LIVE) {
+                Thread agent = driver.agentThread;
+                if (agent != null && !agent.isAlive() && LIVE.remove(driver)) {
+                    // Completion callbacks cannot hold up the checker for unrelated groups. Only terminated groups
+                    // get a cleanup task, and joining before touching claimed gives ownership to that task.
+                    Thread.ofVirtual().name("mongoose-control-ended-" + driver.group).start(() -> {
+                        try {
+                            agent.join();
+                            driver.markDead("agent thread terminated", true);
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                        } finally {
+                            driver.failClaimed("group died");
+                        }
+                    });
+                }
+            }
+        }, 100, 100, TimeUnit.MILLISECONDS);
+    }
+
     public enum GroupState { NEW, STARTING, RUNNING, CLOSING, CLOSED, DEAD }
 
     /** Generous: the deepest real cascade is a close that releases every processor. A bound makes a runaway loud. */
@@ -286,6 +317,7 @@ public final class ControlDriver {
     public void starting(Thread agent) {
         this.agentThread = agent;
         state.compareAndSet(GroupState.NEW, GroupState.STARTING);
+        LIVE.add(this);
     }
 
     public void running() {
@@ -481,6 +513,7 @@ public final class ControlDriver {
         }
         failClaimed("group ended");
         if (state.get() != GroupState.DEAD) state.set(GroupState.CLOSED);
+        LIVE.remove(this);
         sweep();
         orphanLeftovers();
     }
@@ -499,6 +532,11 @@ public final class ControlDriver {
 
     /** Move the group to DEAD and sweep. Idempotent; run again after the thread is joined. */
     public void markDead(String why) {
+        markDead(why, Thread.currentThread() == agentThread);
+    }
+
+    /** completeClaims is used only by the agent itself or the checker after joining its terminated thread. */
+    private void markDead(String why, boolean completeClaims) {
         GroupState s;
         do {
             s = state.get();
@@ -507,6 +545,9 @@ public final class ControlDriver {
         if (s != GroupState.DEAD && s != GroupState.CLOSED) {
             audit.fallback("Dead", "group", group, "reason", why);
         }
+        // A wedged control graph may mark itself dead without terminating the data agent. Its owner can answer
+        // older claimed requests now; an external detector must wait for thread termination before touching them.
+        if (completeClaims) failClaimed("group died");
         sweep();
         orphanLeftovers();
     }
@@ -528,13 +569,31 @@ public final class ControlDriver {
      * joined (which gives the caller a happens-before edge with everything the agent wrote).
      */
     public void failClaimed(String why) {
-        for (ControlRequest r : new ArrayList<>(claimed.values())) {
-            if (r.completeClaimed(new ControlReply(r.requestId(), ReplyOutcome.FAILED, why, -1, null))) {
-                audit.fallback("Failed", "group", group, "requestId", r.requestId(), "reason", why);
-            }
-            outstanding.remove(r);
+        List<ControlRequest> pending;
+        synchronized (this) {
+            pending = new ArrayList<>(claimed.values());
+            claimed.clear();
         }
-        claimed.clear();
+        // Do not hold the ownership lock while callbacks or the audit sink run: post-join server cleanup must not
+        // wait for another completer's callback. Requests remain in outstanding until their completion returns.
+        VirtualMachineError fatal = null;
+        for (ControlRequest r : pending) {
+            try {
+                if (r.completeClaimed(new ControlReply(r.requestId(), ReplyOutcome.FAILED, why, -1, null))) {
+                    audit.fallback("Failed", "group", group, "requestId", r.requestId(), "reason", why);
+                }
+            } catch (Throwable callbackFailure) {
+                // ControlRequest completes its future in finally even if its legacy callback throws. Finish the
+                // other detached claims as well, then propagate a fatal callback failure after all replies exist.
+                audit.fallback("Failed", "group", group, "requestId", r.requestId(), "reason", why);
+                audit.fallback("Anomaly", "group", group, "requestId", r.requestId(),
+                        "description", "terminal reply callback failed: " + callbackFailure);
+                if (callbackFailure instanceof VirtualMachineError e && fatal == null) fatal = e;
+            } finally {
+                outstanding.remove(r);
+            }
+        }
+        if (fatal != null) throw fatal;
     }
 
     /**

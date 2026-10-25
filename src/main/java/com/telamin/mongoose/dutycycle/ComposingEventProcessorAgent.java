@@ -232,13 +232,19 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
      * @return the request, whose reply completes once the processor has started or failed
      */
     public ControlRequest addNamedEventProcessor(Supplier<NamedEventProcessor> initFunction, ProcessorRegistration registration) {
+        return addNamedEventProcessor(initFunction, registration, Long.MAX_VALUE);
+    }
+
+    /** As above, admitted within the server call's absolute deadline, including its later reply wait. */
+    public ControlRequest addNamedEventProcessor(Supplier<NamedEventProcessor> initFunction, ProcessorRegistration registration,
+                                                 long admitByNanos) {
         Objects.requireNonNull(initFunction, "initFunction is null");
         if (registration != null) admit(registration, registration.name());
         ControlRequest request = new ControlRequest(ControlRequest.Kind.ADD,
                 "add " + (registration == null || registration.name() == null ? "<unnamed>" : registration.name()),
                 id -> addIntent(id, registration), new AddPayload(initFunction, registration));
         if (registration != null) request.onUnapplied(registration::releaseName);   // refused or swept unapplied
-        return control.send(request);
+        return control.send(request, admitByNanos);
     }
 
     /** Stop the processor currently registered as {@code name}, resolved when the stop is applied. */
