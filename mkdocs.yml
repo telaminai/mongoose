@@ -72,7 +72,7 @@ extra:
   # Define variables here
   source_root: https://github.com/telaminai/mongoose/tree/feature/control-plane/src
   example_root: https://github.com/telaminai/mongoose-examples/tree/main
-  mongoose_version: 1.0.33-rc1
+  mongoose_version: 1.0.33
   release_date: "RC pending publication"
 
 nav:
@@ -142,7 +142,7 @@ nav:
           - Server control: architecture/server-control.md
       - Reference:
           - Control plane contracts: reference/control-plane-contracts.md
-          - Release notes (1.0.33-rc1): release/release-notes-1.0.33-rc1.md
+          - Release notes (1.0.33): release/release-notes-1.0.33.md
           - Client migration checklist: release/client-migration-1.0.33.md
           - RC release procedure: release/rc-release-procedure.md
           - Troubleshooting and FAQ: reference/troubleshooting.md

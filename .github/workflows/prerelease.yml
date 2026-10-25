@@ -1,10 +1,10 @@
-name: Publish qualified Mongoose pre-release
+name: Publish qualified Mongoose release
 
 on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Existing qualified RC tag to publish (never moved)
+        description: Existing qualified release tag to publish (never moved)
         required: true
         type: string
       expected_sha:
@@ -13,7 +13,7 @@ on:
         type: string
   push:
     tags:
-      - 'v*-rc*'
+      - 'v[0-9]*'
 
 permissions:
   contents: read
@@ -38,7 +38,7 @@ jobs:
           python3 - <<'PYTHON'
           import os, re, subprocess, xml.etree.ElementTree as ET
           version = ET.parse('pom.xml').getroot().find('{http://maven.apache.org/POM/4.0.0}version').text
-          assert re.fullmatch(r'\d+\.\d+\.\d+-rc\d+', version), version
+          assert re.fullmatch(r'\d+\.\d+\.\d+(?:-rc\d+)?', version), version
           assert os.environ['RELEASE_TAG'] == 'v' + version, 'tag/POM mismatch'
           expected = os.environ.get('EXPECTED_SHA', '')
           if expected:

@@ -1,8 +1,8 @@
 # Mongoose Server
 
 !!! warning "Pre-release documentation"
-    This documentation targets **1.0.33-rc1**, pending publication and qualification.
-    See the [release notes](release/release-notes-1.0.33-rc1.md) and
+    This documentation targets **1.0.33**, pending publication and qualification.
+    See the [release notes](release/release-notes-1.0.33.md) and
     [client migration checklist](release/client-migration-1.0.33.md) before adopting it.
 
 
@@ -34,7 +34,7 @@ standalone single‑server app — the same APIs support both.
 
 ### Performance at a glance
 
-These are historical measurements, not qualification results for 1.0.33-rc1. Pinned-core Linux testing of this
+These are historical measurements, not qualification results for 1.0.33. Pinned-core Linux testing of this
 candidate remains open; measure with your workload and audit profile before adopting a performance budget.
 
 - At 1 million messages/second, latency statistics:

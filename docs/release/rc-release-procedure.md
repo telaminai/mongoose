@@ -72,3 +72,16 @@ Merge a workflow-only correction through a PR, then dispatch from main with the 
 tag and SHA. No source/POM changes or tag moves are permitted in this retry. The workflow repeats
 Java 21 tests, package generation, signing and publication, and retains the generated bundle for inspection.
 A successful workflow still requires independent clean-cache artifact resolution before release completion.
+
+## Stable promotion
+
+The owner authorized stable Mongoose 1.0.33 and plugins 1.0.46 after published RC acceptance.
+Use the same exact-tag workflow for stable tags, with POM/tag/SHA validation and the compatible
+Maven pin. Change release coordinates, current schema metadata and release notes only; compare
+runtime Java to the qualified RC and require no changes. Run the full test/package checks with
+the final versions and verify fresh-cache public resolution after publication. The RC stress,
+mutation and soak evidence remains identified by its original SHA; do not relabel it as a run
+on the stable metadata commit. If runtime code changes, requalify that change before publishing.
+
+Publish core first, then plugins after the public core resolves. Create ordinary GitHub releases
+for stable versions. Client migration remains independently gated by its checklist.
