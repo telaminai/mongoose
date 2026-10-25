@@ -112,6 +112,24 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     /** Agent thread only: what each generation built, the registration it answers to, and the live name index. */
     private final Map<Long, NamedEventProcessor> processorsByGeneration = new HashMap<>();
     private final Map<Long, ProcessorRegistration> registrationsByGeneration = new HashMap<>();
+    /** Releases remain owned after removal from the live index, including when a fatal callback kills the agent. */
+    private final Map<NamedEventProcessor, ReleaseProgress> releasesInProgress = new java.util.IdentityHashMap<>();
+
+    private static final class ReleaseProgress {
+        final NamedEventProcessor named;
+        final ProcessorRegistration registration;
+        final boolean stopping;
+        final boolean recordStop;
+        int nextStep;
+
+        ReleaseProgress(NamedEventProcessor named, ProcessorRegistration registration, boolean stopping,
+                        boolean recordStop) {
+            this.named = named;
+            this.registration = registration;
+            this.stopping = stopping;
+            this.recordStop = recordStop;
+        }
+    }
     private final List<EventQueueToEventProcessor> queueReadersToAdd = new ArrayList<>();
     /**
      * mongoose#60 (item 1): the services each processor has been handed, by identity, so each is handed over once. A
@@ -137,6 +155,8 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     private volatile Thread agentThread;
     /** mongoose#46: set as the group closes; hand-offs are refused after it. */
     private volatile boolean closed;
+    /** Closed prevents new hand-offs; cleanup completion is separate because a cleanup callback may fail fatally. */
+    private boolean deathCleanupComplete;
     /** Without a server: isolate a start failure in onStart instead of failing the group's start (review of #66). */
     private volatile boolean isolateStartFailuresAtBoot;
     /** True only while onStart applies the requests accepted before the group started. Agent thread only. */
@@ -463,13 +483,15 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     }
 
     /**
-     * Release what a dead group still holds: its thread ended without {@code onClose} (an {@code Error} escaped), so
-     * nothing else will. Runs only once that thread has terminated (joined first, which gives this thread a
-     * happens-before edge with everything the agent wrote); a no-op for a group that closed normally or never died.
+     * Release what an ended group still holds: its thread may have ended without {@code onClose}, or its close may
+     * have left incomplete resource cleanup. Runs only once that thread has terminated (joined first, which gives
+     * this thread a happens-before edge with everything the agent wrote). Subsequent attempts resume outstanding
+     * work without repeating lifecycle callbacks already attempted.
      * Claimed requests are answered {@code FAILED}, unclaimed ones swept, and every processor stopped and torn down.
      */
     public void cleanupAfterDeath() throws InterruptedException {
-        if (control.state() != ControlDriver.GroupState.DEAD || closed) {
+        ControlDriver.GroupState state = control.state();
+        if ((state != ControlDriver.GroupState.DEAD && state != ControlDriver.GroupState.CLOSED) || deathCleanupComplete) {
             return;
         }
         Thread agent = control.agentThread();
@@ -480,7 +502,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             }
         }
         closed = true;
-        control.markDead("cleanup after the agent thread ended");
+        if (state == ControlDriver.GroupState.DEAD) control.markDead("cleanup after the agent thread ended");
         control.failClaimed("group died");
         stopAndTearDownProcessors();
         // the dead group's processors are released: so are their names
@@ -488,7 +510,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             registration.releaseName();
         }
         registrationsByGeneration.clear();
-        control.audit().fallback("CleanedUp", "group", roleName(), "processorsLeft", registeredEventProcessors.size());
+        deathCleanupComplete = captureHandles.isEmpty();
+        control.audit().fallback(deathCleanupComplete ? "CleanedUp" : "CleanupPending", "group", roleName(),
+                "processorsLeft", registeredEventProcessors.size(), "captureResourcesLeft", captureHandles.size());
     }
 
     /**
@@ -498,27 +522,16 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
      */
     private void stopAndTearDownProcessors() {
         releaseLeftoverCaptures();
-        for (String name : new ArrayList<>(registeredEventProcessors.keySet())) {
-            NamedEventProcessor named = registeredEventProcessors.remove(name);
-            registrations.remove(named);
-            if (named == null || !(named.eventProcessor() instanceof Lifecycle lifecycle)) {
-                continue;
-            }
-            try {
-                lifecycle.stop();
-            } catch (VirtualMachineError fatal) {
-                throw fatal;
-            } catch (Throwable t) {
-                reportCloseFailure(name, "failed to stop", t);
-            }
-            try {
-                lifecycle.tearDown();
-            } catch (VirtualMachineError fatal) {
-                throw fatal;
-            } catch (Throwable t) {
-                reportCloseFailure(name, "failed to tear down", t);
-            }
+        // A release removes the live name before calling user code. Resume its remaining steps even though that
+        // processor is no longer in registeredEventProcessors. A callback already attempted is never repeated.
+        for (ReleaseProgress release : new ArrayList<>(releasesInProgress.values())) {
+            continueRelease(release);
         }
+        for (String name : new ArrayList<>(registeredEventProcessors.keySet())) {
+            NamedEventProcessor named = registeredEventProcessors.get(name);
+            if (named != null) release(named, true, false);
+        }
+        processorsByGeneration.clear();
     }
 
     private void reportCloseFailure(String processorName, String what, Throwable t) {
@@ -1078,32 +1091,60 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
      * </ul>
      */
     private void release(NamedEventProcessor named, boolean stopping, boolean byRequest) {
-        String name = named.name();
-        DataFlow eventProcessor = named.eventProcessor();
         // a stop by request ends the processor's stream, its clock readings recorded from the moment it begins; its
         // group closing does not (the run simply ends there). Which it is comes from the control processor's decision
-        boolean recordStop = recorder != null && stopping && byRequest;
-        if (recordStop) recorder.beforeControl(eventProcessor);
-        registeredEventProcessors.remove(name, named);
-        ProcessorRegistration registration = registrations.remove(named);
-        servicesDelivered.remove(eventProcessor);
-        if (eventProcessor instanceof Lifecycle lifecycle) {
-            if (stopping) {
-                guarded(name, "failed to stop cleanly, removed from the group", lifecycle::stop);
+        ReleaseProgress release = releasesInProgress.computeIfAbsent(named,
+                n -> new ReleaseProgress(n, registrations.get(n), stopping, recorder != null && stopping && byRequest));
+        continueRelease(release);
+    }
+
+    /** Agent-owned until death, then resumed only after join. Advance before user code: an attempted callback is final. */
+    private void continueRelease(ReleaseProgress release) {
+        NamedEventProcessor named = release.named;
+        String name = named.name();
+        DataFlow eventProcessor = named.eventProcessor();
+        while (release.nextStep < 10) {
+            switch (release.nextStep++) {
+                case 0 -> {
+                    if (release.recordStop) guarded(name, "failed to frame its stop", () -> recorder.beforeControl(eventProcessor));
+                }
+                case 1 -> {
+                    registeredEventProcessors.remove(name, named);
+                    registrations.remove(named);
+                    servicesDelivered.remove(eventProcessor);
+                }
+                case 2 -> {
+                    if (release.stopping && eventProcessor instanceof Lifecycle lifecycle) {
+                        guarded(name, "failed to stop cleanly, removed from the group", lifecycle::stop);
+                    }
+                }
+                case 3 -> {
+                    if (eventProcessor instanceof Lifecycle lifecycle) {
+                        guarded(name, release.stopping ? "failed to tear down, removed from the group"
+                                : "failed to tear down after its failed start", lifecycle::tearDown);
+                    }
+                }
+                case 4 -> releaseSubscriptions(name, eventProcessor);
+                case 5 -> guarded(name, "failed to cancel its timers", () -> scheduler.cancelTimersOf(eventProcessor));
+                case 6 -> {
+                    if (release.recordStop) guarded(name, "failed to record its stop", () -> recorder.stopped(eventProcessor));
+                }
+                case 7 -> {
+                    if (recorder != null) guarded(name, "failed to leave the replay recording", () -> recorder.detach(eventProcessor));
+                }
+                case 8 -> {
+                    if (replayer != null) guarded(name, "failed to leave the replay", () -> replayer.detach(eventProcessor));
+                }
+                case 9 -> {
+                    if (mongooseServer != null) {
+                        guarded(name, "failed to release its server bindings", release.stopping
+                                ? () -> mongooseServer.processorStopped(roleName(), name, eventProcessor)
+                                : () -> mongooseServer.processorDropped(roleName(), name, eventProcessor, release.registration));
+                    }
+                }
             }
-            guarded(name, stopping ? "failed to tear down, removed from the group"
-                    : "failed to tear down after its failed start", lifecycle::tearDown);
         }
-        releaseSubscriptions(name, eventProcessor);
-        guarded(name, "failed to cancel its timers", () -> scheduler.cancelTimersOf(eventProcessor));
-        if (recordStop) guarded(name, "failed to record its stop", () -> recorder.stopped(eventProcessor));
-        if (recorder != null) guarded(name, "failed to leave the replay recording", () -> recorder.detach(eventProcessor));
-        if (replayer != null) guarded(name, "failed to leave the replay", () -> replayer.detach(eventProcessor));
-        if (mongooseServer != null) {
-            guarded(name, "failed to release its server bindings", stopping
-                    ? () -> mongooseServer.processorStopped(roleName(), name, eventProcessor)
-                    : () -> mongooseServer.processorDropped(roleName(), name, eventProcessor, registration));
-        }
+        releasesInProgress.remove(named);
     }
 
     private void guarded(String name, String what, Runnable step) {
