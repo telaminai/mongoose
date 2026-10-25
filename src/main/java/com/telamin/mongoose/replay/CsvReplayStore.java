@@ -34,6 +34,8 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
     private final Path file;
     private final EventCodec codec;
     private final Map<String, List<ReplayEntry>> entries = new ConcurrentHashMap<>();
+    /** How each stream began: a BEGAN line, kept beside the entries, never among them. */
+    private final Map<String, Provenance> provenance = new ConcurrentHashMap<>();
     private final BufferedWriter out;
     /** A torn last line found on opening, or null: the file is then read, and never appended to. */
     private String torn;
@@ -62,6 +64,11 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
                     if (lines.get(i).isEmpty()) continue;
                     List<String> f = Csv.split(lines.get(i));
                     if (f.size() != fields) throw new IllegalArgumentException(file + " line " + (i + 1) + " has " + f.size() + " fields, not " + fields);
+                    if (fields == 8 && "BEGAN".equals(f.get(1))) {
+                        provenance.put(f.get(0), new Provenance(f.get(2), f.get(3), Integer.parseInt(f.get(4)),
+                                Long.parseLong(f.get(5))));
+                        continue;
+                    }
                     add(f.get(0), fields == 8 ? parse(f) : parse6(f));
                 }
             }
@@ -96,6 +103,27 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
     }
 
     @Override
+    public synchronized void began(String processor, Provenance p) {
+        if (torn != null) throw Csv.tornRefusal(file, torn);
+        if (earlierFormat) return;          // an earlier-format file is read, never appended to
+        String line = Csv.field(processor) + ",BEGAN," + Csv.field(p.processorClass()) + "," + Csv.field(p.handlerClass())
+                + "," + p.incarnation() + "," + p.instant() + ",,";
+        try {
+            out.write(line);
+            out.newLine();
+            out.flush();
+        } catch (IOException e) {
+            throw new UncheckedIOException("cannot append to replay store " + file, e);
+        }
+        provenance.put(processor, p);
+    }
+
+    @Override
+    public Provenance provenance(String processor) {
+        return provenance.get(processor);
+    }
+
+    @Override
     public boolean has(String processor) {
         return entries.containsKey(processor);
     }
@@ -127,6 +155,8 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
             case ReplayEntry.Stopped s -> "STOPPED,,,," + s.instant() + ",," + reads(s.reads());
             case ReplayEntry.ServiceChanged c -> "SERVICE," + Csv.field(c.service()) + "," + (c.register() ? "register" : "deregister")
                     + "," + c.version() + "," + c.instant() + ",," + reads(c.reads());
+            case ReplayEntry.ControlCall cc -> "CONTROL," + Csv.field(cc.method()) + "," + Csv.field(cc.outcome()) + ",,"
+                    + cc.instant() + "," + encode(new ArrayList<>(cc.args())) + ",";
         };
     }
 
@@ -143,6 +173,7 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
             case "FAILED" -> new ReplayEntry.Failed(source, (String) decode(payload), instant);
             case "STOPPED" -> new ReplayEntry.Stopped(instant, reads);
             case "SERVICE" -> new ReplayEntry.ServiceChanged(source, "register".equals(route), Long.parseLong(seq), instant, reads);
+            case "CONTROL" -> new ReplayEntry.ControlCall(source, List.copyOf((List<String>) decode(payload)), route, instant);
             default -> throw new IllegalArgumentException(file + ": an unknown entry kind " + kind);
         };
     }

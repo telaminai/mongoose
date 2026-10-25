@@ -43,7 +43,8 @@ class CsvDurableReplayTest {
         assertTrue(journalLines.get(1).startsWith("orders,1,"), journalLines.toString());
         List<String> storeLines = Files.readAllLines(storeFile, StandardCharsets.UTF_8);
         assertEquals(CsvReplayStore.HEADER, storeLines.get(0));
-        assertEquals(List.of("INDEXED", "INLINE", "INDEXED", "INLINE", "TIMER"),
+        // a BEGAN line first: the stream's provenance, kept beside its entries
+        assertEquals(List.of("BEGAN", "INDEXED", "INLINE", "INDEXED", "INLINE", "TIMER"),
                 storeLines.subList(1, storeLines.size()).stream().map(l -> l.split(",")[1]).toList(), storeLines.toString());
 
         // another process: new instances, from the files alone

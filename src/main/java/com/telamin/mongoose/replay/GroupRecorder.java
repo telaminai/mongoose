@@ -64,6 +64,15 @@ public final class GroupRecorder {
         if (!config.covers(name)) return;
         RecordingClock clock = new RecordingClock(live);
         Recorded r = new Recorded(ReplayStreams.key(name, incarnation), clock);
+        if (config.recordProvenance()) {
+            try {
+                config.store().began(r.name, Provenance.of(flow, incarnation, live.getAsLong()));
+            } catch (VirtualMachineError e) {
+                throw e;
+            } catch (Throwable t) {
+                log.warning("replay recording of " + r.name + ": its provenance could not be recorded: " + t);
+            }
+        }
         byFlow.put(flow, r);
         // on the group's agent thread: a processor that refuses the recording's clock must not reach the agent's error
         // handler, which ends the process (review of cd52628, F3; N1's RECORD counterpart). Its recording is FAILED, by
@@ -84,6 +93,45 @@ public final class GroupRecorder {
 
     public void detach(DataFlow flow) {
         byFlow.remove(flow);
+        wrapped.remove(flow);
+    }
+
+    /**
+     * The service {@code flow} is given: a recorded processor's {@code MongooseServerController} records every request
+     * that changes the server, with its outcome, in the processor's stream, then executes it (when the configuration
+     * intercepts control). Any other service, or processor, gets {@code service} itself.
+     */
+    public com.telamin.fluxtion.runtime.service.Service<?> serviceFor(DataFlow flow,
+                                                                      com.telamin.fluxtion.runtime.service.Service<?> service) {
+        if (!config.interceptControl() || !byFlow.containsKey(flow) || !ControlInterception.isController(service)) {
+            return service;
+        }
+        // the same wrapper for the same service, so a deregistration withdraws what was registered
+        return wrapped.computeIfAbsent(flow, f -> new IdentityHashMap<>()).computeIfAbsent(service, s -> recording(flow, s));
+    }
+
+    private final Map<DataFlow, Map<com.telamin.fluxtion.runtime.service.Service<?>,
+            com.telamin.fluxtion.runtime.service.Service<?>>> wrapped = new IdentityHashMap<>();
+
+    private com.telamin.fluxtion.runtime.service.Service<?> recording(DataFlow flow,
+                                                                      com.telamin.fluxtion.runtime.service.Service<?> service) {
+        Object target = service.instance();
+        return ControlInterception.wrap(service, (method, args, m, raw) -> {
+            Object result = null;
+            Throwable failure = null;
+            try {
+                result = ControlInterception.invoke(m, target, raw);
+            } catch (Throwable t) {
+                failure = t;
+            }
+            Recorded r = byFlow.get(flow);
+            if (r != null) {
+                append(r, new ReplayEntry.ControlCall(method, List.copyOf(args), failure == null ? "ok" : "failed: " + failure,
+                        live.getAsLong()));
+            }
+            if (failure != null) throw failure;
+            return result;
+        });
     }
 
     /**

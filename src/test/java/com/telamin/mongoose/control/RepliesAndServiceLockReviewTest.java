@@ -138,6 +138,36 @@ class RepliesAndServiceLockReviewTest {
         }
     }
 
+    /** The void add's failure policy: REPORT by default (mongoose#57), THROW as the design's table has it. */
+    @Test
+    void theVoidAddThrowsOnAFailedStartWhenConfiguredTo() {
+        MongooseServerConfig cfg = new MongooseServerConfig();
+        cfg.setAddFailurePolicy(MongooseServerConfig.AddFailurePolicy.THROW);
+        MongooseServer s = new MongooseServer(cfg);
+        s.init();
+        s.start();
+        try {
+            s.addEventProcessor("seed", "g", null, Proc::new);
+            org.junit.jupiter.api.Assertions.assertThrows(com.telamin.mongoose.dutycycle.ProcessorStartException.class,
+                    () -> s.addEventProcessor("bad", "g", null, () -> new Proc() {
+                        @Override public void start() { throw new IllegalStateException("start failed"); }
+                    }));
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                    () -> s.addEventProcessor("seed", "g", null, Proc::new), "a duplicate is refused at once, as before");
+        } finally {
+            s.stop();
+        }
+        MongooseServer byDefault = started();
+        try {
+            byDefault.addEventProcessor("seed", "g", null, Proc::new);
+            byDefault.addEventProcessor("bad", "g", null, () -> new Proc() {
+                @Override public void start() { throw new IllegalStateException("start failed"); }
+            });                                        // REPORT: reported, returns
+        } finally {
+            byDefault.stop();
+        }
+    }
+
     /** Finding 4: no handle came with an add, and looking one up by name could find a replacement. */
     @Test
     void anAddsOwnHandleNeverStopsAReplacement() throws Exception {

@@ -84,4 +84,11 @@ public sealed interface ReplayEntry {
      * delivers it at this point, and live deliveries to the replayed processor are suppressed.
      */
     record ServiceChanged(String service, boolean register, long version, long instant, List<Long> reads) implements Timed { }
+
+    /**
+     * The processor asked the server to change something (stop a processor, remove a service, ...) here, and how that
+     * request ended: {@code outcome} is {@code ok} or {@code failed: <reason>}. A replay never executes it: the replayed
+     * request is matched against this one and answered with this outcome.
+     */
+    record ControlCall(String method, List<String> args, String outcome, long instant) implements ReplayEntry { }
 }

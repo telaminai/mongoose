@@ -1210,6 +1210,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
 
     /** The service a processor is given: REPLAY swaps a replayed processor's sinks for a capture (L2); else itself. */
     private Service<?> serviceFor(DataFlow eventProcessor, Service<?> service) {
+        if (recorder != null) return recorder.serviceFor(eventProcessor, service);     // control requests recorded
         return replayer == null ? service : replayer.serviceFor(eventProcessor, service);
     }
 

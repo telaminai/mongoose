@@ -19,6 +19,18 @@ public class InMemoryReplayStore implements ReplayStore {
         entries.computeIfAbsent(processor, p -> new CopyOnWriteArrayList<>()).add(entry);
     }
 
+    private final Map<String, Provenance> provenance = new ConcurrentHashMap<>();
+
+    @Override
+    public void began(String processor, Provenance p) {
+        provenance.put(processor, p);
+    }
+
+    @Override
+    public Provenance provenance(String processor) {
+        return provenance.get(processor);
+    }
+
     @Override
     public boolean has(String processor) {
         return entries.containsKey(processor);

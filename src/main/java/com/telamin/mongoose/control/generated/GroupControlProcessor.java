@@ -60,7 +60,7 @@ import java.util.function.Consumer;
  *
  * <pre>
  * generation time           : Not available
- * api version               : 1.1.1
+ * api version               : 1.1.2
  * analyser version          : 1.0.79
  * target generator version  : 1.0.79
  * </pre>
