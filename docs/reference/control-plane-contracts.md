@@ -945,8 +945,8 @@ These records consume the same bounded group control-audit capacity; repeated su
 that capacity and make the export incomplete. It is a correlation point, not one audit record per lost item
 or a shared business-event ordering guarantee.
 
-On a feed without an `overload` block this health behaviour is exactly that of PR #76: `DEGRADED` after loss, with
-no recovery while the queue is bound.
+On a feed without an `overload` block this health behaviour is that of PR #76: `DEGRADED` after loss, from the path's
+cumulative drop counter, with no recovery and no `overload.clear`.
 
 **Configured policies (#79).**
 

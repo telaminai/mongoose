@@ -135,11 +135,11 @@ class OverloadReview2RegressionTest {
     void quietRecoveryIsItsOwnRecordStampedWhenTheQuietPeriodEnded() throws Exception {
         var p = new EventToQueuePublisher<Object>("telemetry");
         p.setOverload(FeedOverloadSettings.of(OverloadSettings.dropAfterSpin(Duration.ZERO))
-                .withQuietPeriod(Duration.ofMillis(100)));
+                .withQuietPeriod(Duration.ofMillis(1000)));
         p.addTargetQueue(full(2), "t");
         long lossAt = System.currentTimeMillis();
         p.publish("a"); // drop -> DEGRADED
-        Thread.sleep(400); // quiet period passes; nobody reads
+        Thread.sleep(1400); // quiet period passes; nobody reads
         long secondAt = System.currentTimeMillis();
         p.publish("b"); // second, separate loss episode
         assertEquals(OverloadState.DEGRADED, p.overloadState("t"));
@@ -147,22 +147,22 @@ class OverloadReview2RegressionTest {
         assertEquals(3, recs.size(), recs.toString());
         assertTrue(recs.get(1).contains("to: \"UP\""), recs.get(1));
         long upAt = field(recs.get(1), "epochMillis");
-        assertTrue(upAt - lossAt >= 95 && upAt - lossAt < 300, "UP stamped " + (upAt - lossAt) + " ms after the loss");
+        assertTrue(upAt - lossAt >= 995 && upAt - lossAt < 1200, "UP stamped " + (upAt - lossAt) + " ms after the loss");
         assertTrue(field(recs.get(1), "observedEpochMillis") >= secondAt, "observed when the second loss applied it");
         assertTrue(recs.get(2).contains("from: \"UP\"") && recs.get(2).contains("to: \"DEGRADED\""), recs.get(2));
 
         var p2 = new EventToQueuePublisher<Object>("telemetry2");
         p2.setOverload(FeedOverloadSettings.of(OverloadSettings.dropAfterSpin(Duration.ZERO))
-                .withQuietPeriod(Duration.ofMillis(100)));
+                .withQuietPeriod(Duration.ofMillis(1000)));
         p2.addTargetQueue(full(2), "t");
         long lossAt2 = System.currentTimeMillis();
         p2.publish("a");
-        Thread.sleep(600);
+        Thread.sleep(1600);
         assertEquals(OverloadState.UP, p2.overloadState("t"));
         String up = p2.getStateAudit().records().get(1);
         long stamped = field(up, "epochMillis");
-        assertTrue(stamped - lossAt2 >= 95 && stamped - lossAt2 < 300, "stamped " + (stamped - lossAt2) + " ms after");
-        assertTrue(field(up, "observedEpochMillis") - lossAt2 >= 550, up);
+        assertTrue(stamped - lossAt2 >= 995 && stamped - lossAt2 < 1200, "stamped " + (stamped - lossAt2) + " ms after");
+        assertTrue(field(up, "observedEpochMillis") - lossAt2 >= 1550, up);
     }
 
     /** Finding 8: losses that continue through the quiet period keep the queue DEGRADED. */
@@ -170,15 +170,15 @@ class OverloadReview2RegressionTest {
     void lossesContinuingThroughTheQuietPeriodKeepTheQueueDegraded() throws Exception {
         var p = new EventToQueuePublisher<Object>("telemetry");
         p.setOverload(FeedOverloadSettings.of(OverloadSettings.dropAfterSpin(Duration.ZERO))
-                .withQuietPeriod(Duration.ofMillis(300)));
+                .withQuietPeriod(Duration.ofMillis(1000)));
         p.addTargetQueue(full(2), "t");
         for (int i = 0; i < 8; i++) {
             p.publish(i);
-            Thread.sleep(100);
-            assertEquals(OverloadState.DEGRADED, p.overloadState("t"), "loss every 100 ms, quiet period 300 ms");
+            Thread.sleep(300);
+            assertEquals(OverloadState.DEGRADED, p.overloadState("t"), "loss every 300 ms, quiet period 1000 ms");
         }
         assertEquals(1, p.getStateAudit().records().size(), "one episode");
-        Thread.sleep(400);
+        Thread.sleep(1300);
         assertEquals(OverloadState.UP, p.overloadState("t"));
     }
 
@@ -280,8 +280,11 @@ class OverloadReview2RegressionTest {
     }
 
     /**
-     * Finding 4 (D2 parity, owner decision): a feed that configured no policy keeps PR #76's health: DEGRADED after a
-     * loss, no quiet-period recovery, and no OverloadState record in the group control audit.
+     * Finding 4 (D2 parity, owner decision) and review 3 finding 3: a feed that configured no policy reports health as
+     * PR #76 did, from the path's cumulative drop counter: DEGRADED after a loss, no quiet-period recovery, still
+     * DEGRADED with the cumulative count after an unsubscribe and resubscribe of the same group, not cleared by
+     * overload.clear, and no OverloadState record in the group control audit. The transcript is the reviewer's
+     * DefaultParityProbeTest, whose output at dfbfdd9 these values match.
      */
     @Test
     void anUnconfiguredFeedKeepsPr76HealthSemantics() throws Exception {
@@ -291,27 +294,37 @@ class OverloadReview2RegressionTest {
         var manager = new EventFlowManager();
         manager.setCountersService(counters);
         manager.setHealthService(health);
-        // the default, with a 1 ms quiet period so a recovery would show at once: none may happen
-        manager.setFeedOverload("feed", new FeedOverloadSettings(OverloadSettings.DEFAULT, Map.of(), 1_000_000, false, false));
+        // no setFeedOverload: the unconfigured default
         var publisher = manager.registerEventSource("feed", new OverloadHealthAndKillSwitchTest.IntSource());
-        var group = new ComposingEventProcessorAgent("g", manager, null, new DeadWheelScheduler(), new ConcurrentHashMap<>());
-        var reader = manager.getMappingAgent(new EventSourceKey<Integer>("feed"), CallBackType.ON_EVENT_CALL_BACK, group);
+        var group = new ComposingEventProcessorAgent("slow", manager, null, new DeadWheelScheduler(), new ConcurrentHashMap<>());
+        var key = new EventSourceKey<Integer>("feed");
+        var reader = manager.getMappingAgent(key, CallBackType.ON_EVENT_CALL_BACK, group);
         DataFlow flow = e -> { };
         reader.registerProcessor(flow);
-        try {
-            var spinZero = new FeedOverloadSettings(OverloadSettings.dropAfterSpin(Duration.ZERO), Map.of(), 1_000_000, false, false);
-            publisher.setOverload(spinZero);
-            for (int i = 0; i < 1025; i++) publisher.publish(i);
-            assertEquals(1, publisher.droppedCount());
-            Thread.sleep(50);
-            assertEquals(OverloadState.DEGRADED, publisher.overloadState("g/feed/onEventCallBack"), "no recovery");
-            assertEquals(HealthStatus.Verdict.DEGRADED, health.aggregatedVerdict("feed").verdict());
-            assertTrue(group.control().audit().records().stream().noneMatch(r -> r.contains("record: OverloadState")),
-                    "no new records in the group control audit");
-        } finally {
-            reader.deregisterProcessor(flow);
-            reader.onClose();
-        }
+        for (int i = 0; i < 1030; i++) publisher.publish(i);
+        assertEquals("DEGRADED / 6 item(s) dropped", verdict(health));
+        while (reader.doWork() > 0) { }
+        assertEquals("DEGRADED / 6 item(s) dropped", verdict(health), "no recovery");
+        assertEquals(0, manager.clearOverloadState("feed"), "overload.clear does not reset a feed with no policy");
+        assertEquals("DEGRADED / 6 item(s) dropped", verdict(health));
+        reader.deregisterProcessor(flow);
+        reader.onClose();
+        var reader2 = manager.getMappingAgent(key, CallBackType.ON_EVENT_CALL_BACK, group);
+        reader2.registerProcessor(flow);
+        assertEquals("DEGRADED / 6 item(s) dropped", verdict(health), "the same group resubscribed: still DEGRADED");
+        for (int i = 0; i < 1030; i++) publisher.publish(i);
+        assertEquals("DEGRADED / 12 item(s) dropped", verdict(health), "cumulative, as at dfbfdd9");
+        assertTrue(group.control().audit().records().stream().noneMatch(r -> r.contains("record: OverloadState")),
+                "no new records in the group control audit");
+        reader2.deregisterProcessor(flow);
+        reader2.onClose();
+    }
+
+    static String verdict(DefaultMongooseHealth health) throws InterruptedException {
+        Thread.sleep(1_100); // the health service caches a status for 1 s
+        var s = health.aggregatedVerdict("feed");
+        String reason = String.valueOf(s.reason());
+        return s.verdict() + " / " + (reason.contains(" item(s) dropped") ? reason.substring(0, reason.indexOf(" by queue")) : reason);
     }
 
     /** Finding 9: drop-tolerant state changes stay out of the group control audit even on a configured feed. */
@@ -319,7 +332,7 @@ class OverloadReview2RegressionTest {
     void dropTolerantChangesStayOutOfTheGroupControlAudit() throws Exception {
         var manager = new EventFlowManager();
         manager.setFeedOverload("feed", FeedOverloadSettings.of(OverloadSettings.dropAfterSpin(Duration.ZERO))
-                .withQuietPeriod(Duration.ofMillis(50)));
+                .withQuietPeriod(Duration.ofMillis(1000)));
         var publisher = manager.registerEventSource("feed", new OverloadHealthAndKillSwitchTest.IntSource());
         var group = new ComposingEventProcessorAgent("g", manager, null, new DeadWheelScheduler(), new ConcurrentHashMap<>());
         var reader = manager.getMappingAgent(new EventSourceKey<Integer>("feed"), CallBackType.ON_EVENT_CALL_BACK, group);
@@ -327,7 +340,7 @@ class OverloadReview2RegressionTest {
         reader.registerProcessor(flow);
         try {
             for (int i = 0; i < 1025; i++) publisher.publish(i);
-            Thread.sleep(100);
+            Thread.sleep(1100);
             assertEquals(OverloadState.UP, publisher.overloadState("g/feed/onEventCallBack"));
             assertEquals(2, publisher.getStateAudit().records().size());
             assertTrue(group.control().audit().records().stream().noneMatch(r -> r.contains("record: OverloadState")));

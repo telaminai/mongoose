@@ -32,6 +32,9 @@ public record FeedOverloadSettings(OverloadSettings feedDefault, Map<String, Ove
     /** Default quiet period before a drop-tolerant queue's health recovers. */
     public static final long DEFAULT_QUIET_PERIOD_NANOS = TimeUnit.SECONDS.toNanos(60);
 
+    /** The shortest quiet period, enforced here and at boot. */
+    public static final long MIN_QUIET_PERIOD_NANOS = TimeUnit.SECONDS.toNanos(1);
+
     /** Every queue on {@link OverloadSettings#DEFAULT}: the behaviour before #79. */
     public static final FeedOverloadSettings DEFAULT = new FeedOverloadSettings(OverloadSettings.DEFAULT, Map.of(),
             DEFAULT_QUIET_PERIOD_NANOS, false, false);
@@ -39,8 +42,10 @@ public record FeedOverloadSettings(OverloadSettings feedDefault, Map<String, Ove
     public FeedOverloadSettings {
         Objects.requireNonNull(feedDefault, "feedDefault must be non-null");
         bySubscriberGroup = bySubscriberGroup == null ? Map.of() : Map.copyOf(bySubscriberGroup);
-        if (quietPeriodNanos < 0) {
-            throw new IllegalArgumentException("quiet period must not be negative: " + quietPeriodNanos + "ns");
+        if (quietPeriodNanos < MIN_QUIET_PERIOD_NANOS) {
+            // a shorter period lets a flapping queue write two state records per health poll (review findings 9, 9)
+            throw new IllegalArgumentException("quiet period must be at least 1000 ms, was "
+                    + TimeUnit.NANOSECONDS.toMillis(quietPeriodNanos) + " ms");
         }
     }
 

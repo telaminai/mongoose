@@ -108,7 +108,7 @@ class OverloadHealthAndKillSwitchTest {
 
     @Test
     void dropTolerantRecoversAfterQuietPeriodNeverDropLatchesUntilCleared() throws Exception {
-        try (Rig rig = new Rig(riskBlocksTelemetryDrops(Duration.ofMillis(300)));
+        try (Rig rig = new Rig(riskBlocksTelemetryDrops(Duration.ofMillis(1000)));
              Captured log = new Captured()) {
             // telemetry full (not drained), risk drained: telemetry drops, DEGRADED
             for (int i = 0; i < 1025; i++) {
@@ -121,7 +121,7 @@ class OverloadHealthAndKillSwitchTest {
 
             // quiet period passes with no new loss: UP again
             Rig.drain(rig.telemetry);
-            Thread.sleep(1_100); // past the 300 ms quiet period and the health service's 1 s status cache
+            Thread.sleep(1_300); // past the 1 s quiet period and the health service's 1 s status cache
             assertEquals(HealthStatus.Verdict.UP, rig.health.aggregatedVerdict("feed").verdict(),
                     rig.health.aggregatedVerdict("feed") + " " + rig.publisher.overload());
             assertEquals(OverloadState.UP, rig.publisher.overloadState(TELEMETRY));

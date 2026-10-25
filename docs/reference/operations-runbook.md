@@ -48,7 +48,9 @@ delivery test does not establish losslessness under overload.
 **Overload policies (#79).** That is the default policy. Feeds that must not lose data use
 `BLOCK_WITH_DEADLINE`; see [Configuring overload and loss](../guide/overload-configuration.md). For operators:
 
-- `overload.status` lists every feed, queue and state: `UP`, `DEGRADED` or `LATCHED`.
+- `overload.status` lists every feed, queue and state: `UP`, `DEGRADED` or `LATCHED`. A queue removed while latched
+  is listed as `<group/feed/callback> [removed]: LATCHED`. A latch follows the group name, so a restarted group is
+  latched again.
 - A `LATCHED` never-drop queue stays DEGRADED in health until `overload.clear <feed>`, even after it is unsubscribed
   (`LATCHED→REMOVED`). Reconcile what was lost with the venue before clearing. Use the `OverloadState` and
   `QueueDrop` audit records and the `queue.<path>.refused`/`.dropped` counters.

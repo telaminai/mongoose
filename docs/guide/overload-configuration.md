@@ -132,7 +132,7 @@ server.setOverloadKillSwitch(loss -> {
 Commands, on the admin interface:
 
 ```text
-overload.status              # every feed, queue and state
+overload.status              # every feed, queue and state; a queue removed while latched shows as "<name> [removed]: LATCHED"
 overload.clear <feed>        # operator clear: LATCHED and DEGRADED queues of the feed return to UP
 ```
 
@@ -146,7 +146,8 @@ writes one record per queue and does not reset counters.
 - the counters `queue.<path>.refused`, `.dropped`, `.blocked`, `.blockedNanos` and `.blockedMaxNanos`, and
   `feed.<name>.downgraded`.
 
-In RECORD mode the processor's recording holds a `Dropped` entry at the exact point of loss. A replay reports it
+In RECORD mode the processor's recording holds a `Dropped` entry at the point of loss. Drops past the 1024 pending
+marks are not placed individually; they are counted into the first entry after the overflow. A replay reports it
 (`GroupReplayer.losses`, `lossless()`) and carries on.
 
 ## 7. Checklist

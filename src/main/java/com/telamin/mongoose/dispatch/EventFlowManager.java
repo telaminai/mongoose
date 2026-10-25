@@ -257,6 +257,10 @@ public class EventFlowManager {
                 OverloadState s = p.queuePublisher().overloadState(q.name());
                 if (s != null) queues.put(q.name(), s);
             }
+            // queues removed while latched: still LATCHED until an operator clears them (finding 4)
+            for (String removed : p.queuePublisher().removedLatches()) {
+                queues.put(removed + " [removed]", OverloadState.LATCHED);
+            }
             states.put(key.sourceName(), queues);
         });
         return states;
@@ -434,6 +438,13 @@ public class EventFlowManager {
                 if (existing == null) existing = new QueueDropCheck(healthService.registerCheck(eventSourceKey.sourceName(),
                     "queue-drops:" + path, ctx -> {
                         if (!ctx.countersOperational()) return com.telamin.mongoose.service.health.HealthStatus.unknown("counters disabled");
+                        if (!queuePublisher.overloadExplicit()) {
+                            // #79 D2 parity: a feed with no policy reports exactly as PR #76 did, from the path's
+                            // cumulative drop counter, which survives an unsubscribe and resubscribe (finding 3)
+                            long count = drops.get();
+                            return count == 0 ? com.telamin.mongoose.service.health.HealthStatus.up()
+                                    : com.telamin.mongoose.service.health.HealthStatus.degraded(count + " item(s) dropped by queue " + path);
+                        }
                         // #79 D4: never-drop queues latch until an operator clears them; drop-tolerant queues recover
                         // after the feed's quiet period
                         EventToQueuePublisher.OverloadHealth h = queuePublisher.overloadHealth(path);
@@ -448,6 +459,16 @@ public class EventFlowManager {
                     }));
                 existing.bindings.add(name);
                 return existing;
+            });
+        }
+
+        // a check kept for a latched queue that has come back on another path (its group restarted) is closed (finding 5)
+        for (EventSourceKey_Subscriber<?> other : queueDropChecks.keySet()) {
+            if (other.equals(keySubscriber) || !other.eventSourceKey().equals(eventSourceKey)) continue;
+            queueDropChecks.computeIfPresent(other, (k, check) -> {
+                if (!check.bindings.isEmpty() || queuePublisher.latched(queuePathFor(k))) return check;
+                check.handle.close();
+                return null;
             });
         }
 
