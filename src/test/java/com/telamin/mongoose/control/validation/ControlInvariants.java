@@ -159,14 +159,20 @@ public final class ControlInvariants {
                         + ") requested " + q.effect() + " on gen " + q.generation());
             }
         }
-        // I8: Applied only after every effect of that request succeeded
+        // I8: Applied only after every effect of that request succeeded. Index failures once: rescanning all
+        // outcomes for every reply makes verification of a sustained run quadratic, even when nothing failed.
+        Map<Long, List<Rec>> failedByRequest = new HashMap<>();
+        for (Rec outcome : evidence.ofType("EffectOutcome")) {
+            // A fallback has no seq to order by; a failed physical close is recorded and never blocks a reply.
+            if (!outcome.fallback() && "failed".equals(outcome.str("outcome"))
+                    && !"CloseCapture".equals(outcome.str("effect"))) {
+                failedByRequest.computeIfAbsent(outcome.requestId(), id -> new ArrayList<>()).add(outcome);
+            }
+        }
         for (Rec reply : evidence.ofType("Reply")) {
             if (!"APPLIED".equals(reply.str("outcome"))) continue;
-            for (Rec o : evidence.ofType("EffectOutcome")) {
-                // a fallback record has no seq to order by; a failed physical close is recorded and never blocks a reply
-                if (o.requestId() == reply.requestId() && !o.fallback() && o.seq() < reply.seq()
-                        && "failed".equals(o.str("outcome"))
-                        && !"CloseCapture".equals(o.str("effect"))) {
+            for (Rec o : failedByRequest.getOrDefault(reply.requestId(), List.of())) {
+                if (o.seq() < reply.seq()) {
                     violations.add("I8 request " + reply.requestId() + " replied APPLIED after a failed "
                             + o.str("effect") + " (" + o.str("opId") + ")");
                 }
