@@ -4,7 +4,7 @@
 
     <groupId>com.telamin</groupId>
     <artifactId>mongoose</artifactId>
-    <version>1.0.33-SNAPSHOT</version>
+    <version>1.0.33-rc1</version>
     <name>telamin :: mongoose</name>
 
     <properties>

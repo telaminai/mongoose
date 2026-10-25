@@ -1,5 +1,11 @@
 # Release plan — Mongoose 1.0.33 and mongoose-plugins 1.0.46
 
+!!! warning "Historical plan — superseded"
+    The RC includes PR #76 as well as #69. Use the [RC release procedure](rc-release-procedure.md)
+    and [1.0.33-rc1 notes](release-notes-1.0.33-rc1.md). The stable-release steps and scope below
+    are retained as historical context, not current release instructions.
+
+
 Status: draft, 2026-10-24. Covers the thread-safety, lifecycle and admin-REST fixes found by review on
 2026-10-23/24. Integration branch for testing: `integration/next-release` (draft PR #69, https://github.com/telaminai/mongoose/pull/69).
 

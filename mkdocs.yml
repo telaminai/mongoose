@@ -140,7 +140,9 @@ nav:
           - Server control: architecture/server-control.md
       - Reference:
           - Control plane contracts: reference/control-plane-contracts.md
-          - Release notes (unreleased): release/release-notes-unreleased.md
+          - Release notes (1.0.33-rc1): release/release-notes-1.0.33-rc1.md
+          - Client migration checklist: release/client-migration-1.0.33.md
+          - RC release procedure: release/rc-release-procedure.md
           - Troubleshooting and FAQ: reference/troubleshooting.md
           - Comparisons: reference/comparisons.md
           - Modulith suitability: reference/modulith-suitability.md
