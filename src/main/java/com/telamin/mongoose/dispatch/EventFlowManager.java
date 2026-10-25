@@ -18,6 +18,9 @@ import org.agrona.concurrent.OneToOneConcurrentArrayQueue;
 import java.io.IOException;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import java.util.function.Supplier;
 
 
@@ -53,11 +56,19 @@ public class EventFlowManager {
     private final ConcurrentHashMap<EventSinkKey<?>, ManyToOneConcurrentArrayQueue<?>> eventSinkToQueueMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<CallBackType, Supplier<EventToInvokeStrategy>> eventToInvokerFactoryMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<EventSourceKey_Subscriber<?>, OneToOneConcurrentArrayQueue<Object>> subscriberKeyToQueueMap = new ConcurrentHashMap<>();
+    /**
+     * mongoose#55 review: how many group readers each subscription key has, across all groups. A source is told to
+     * unsubscribe a key only when the last of them is released, not when one group's last listener leaves. The count
+     * object is also the lock that orders a release against a new reader for the same key.
+     */
+    private final ConcurrentHashMap<EventSubscriptionKey<?>, ReaderCount> readersByKey = new ConcurrentHashMap<>();
     // Counters service — default no-op, swapped to the Agrona impl by MongooseServer
     // during construction before any source registration happens. The reference
     // settles to the chosen impl before any publisher / agent loop reads it, so
     // hot-path call sites stay monomorphic and the no-op JIT-inlines away.
     private MongooseCountersService countersService = NoOpCountersService.INSTANCE;
+    private static final Logger LOG = Logger.getLogger(EventFlowManager.class.getName());
+    private final AtomicBoolean stopped = new AtomicBoolean();
 
     public EventFlowManager() {
         eventToInvokerFactoryMap.put(CallBackType.ON_EVENT_CALL_BACK, EventToOnEventInvokeStrategy::new);
@@ -139,6 +150,60 @@ public class EventFlowManager {
         forEachLifeCycleEventSource(LifeCycleEventSource::start);
     }
 
+    /** Let the server admit and cancel each source's startup independently of the others. */
+    public void start(java.util.function.Consumer<LifeCycleEventSource> startSource) {
+        forEachLifeCycleEventSource(startSource);
+    }
+
+    /**
+     * Stop and tear down every registered {@link LifeCycleEventSource} (mongoose#56), once: a second call is a no-op. A
+     * source that throws is logged and the others still stop. Called by the server's ordered shutdown after the agent
+     * threads hosting feeds have closed, so an agent-hosted source is not stopped under its own running duty cycle.
+     */
+    public void stop() {
+        if (!stopped.compareAndSet(false, true)) {
+            return;
+        }
+        forEachLifeCycleEventSource(source -> {
+            try {
+                source.stop();
+            } catch (Throwable t) {
+                LOG.log(Level.WARNING, "event source " + source + " failed to stop", t);
+            }
+            try {
+                source.tearDown();
+            } catch (Throwable t) {
+                LOG.log(Level.WARNING, "event source " + source + " failed to tear down", t);
+            }
+        });
+    }
+
+    /**
+     * Wait, at most {@code timeoutMillis}, for every per-subscriber dispatch queue to empty (mongoose#56): the drain step
+     * of the ordered shutdown, run once feeds have stopped and while processors still consume.
+     *
+     * @return true when every queue emptied in time, false when the bound was reached first
+     */
+    public boolean awaitQueuesDrained(long timeoutMillis) throws InterruptedException {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(Math.max(0, timeoutMillis));
+        while (pendingQueuedEvents() > 0) {
+            if (System.nanoTime() - deadline >= 0) {
+                return false;
+            }
+            Thread.sleep(1);
+        }
+        return true;
+    }
+
+    /** Events still waiting in the per-subscriber dispatch queues, summed over all queues. */
+    public long pendingQueuedEvents() {
+        long pending = 0;
+        for (OneToOneConcurrentArrayQueue<Object> queue : subscriberKeyToQueueMap.values()) {
+            pending += queue.size();
+        }
+        return pending;
+    }
+
     @SuppressWarnings("unchecked")
     public <T> ManyToOneConcurrentArrayQueue<T> registerEventSink(EventSourceKey<T> sinkKey, Object sinkReader) {
         Objects.requireNonNull(sinkKey, "sinkKey must be non-null");
@@ -164,6 +229,40 @@ public class EventFlowManager {
         EventSource_QueuePublisher<?> eventSourceQueuePublisher = eventSourceToQueueMap.get(subscriptionKey.eventSourceKey());
         Objects.requireNonNull(eventSourceQueuePublisher, "no EventSource registered for EventSourceKey:" + subscriptionKey);
         eventSourceQueuePublisher.eventSource().unSubscribe((EventSubscriptionKey) subscriptionKey);
+    }
+
+    /**
+     * A group released its reader for {@code subscriptionKey} (its last listener left). The source is unsubscribed,
+     * through {@link #unSubscribe(EventSubscriptionKey)}, only when no group has a reader for the key any more, so one
+     * group leaving a feed does not cut off another group still subscribed to it. A release with no reader counted (a
+     * reader not made by {@link #getMappingAgent}) is treated as the last one.
+     * <p>
+     * The decrement and the source call are atomic with respect to a new reader for the same key: a group subscribing
+     * the key concurrently either keeps the count above zero, or makes its reader, and so its source subscribe, after
+     * this unsubscribe has completed. An exception from the source propagates, with the release already counted.
+     */
+    public void releaseReader(EventSubscriptionKey<?> subscriptionKey) {
+        Objects.requireNonNull(subscriptionKey, "subscriptionKey must be non-null");
+        ReaderCount count = readersByKey.computeIfAbsent(subscriptionKey, k -> new ReaderCount());
+        synchronized (count) {
+            if (count.readers > 0) {
+                count.readers--;
+            }
+            if (count.readers == 0) {
+                unSubscribe(subscriptionKey);
+            }
+        }
+    }
+
+    /** How many group readers currently exist for {@code subscriptionKey}, across all groups. */
+    public int readerCount(EventSubscriptionKey<?> subscriptionKey) {
+        ReaderCount count = readersByKey.get(subscriptionKey);
+        if (count == null) {
+            return 0;
+        }
+        synchronized (count) {
+            return count.readers;
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -218,6 +317,11 @@ public class EventFlowManager {
         sourcePublisher.queuePublisher().addTargetQueue(eventQueue, name);
 
         Runnable unsubscribe = createUnsubscribeAction(sourcePublisher, name, keySubscriber);
+
+        ReaderCount count = readersByKey.computeIfAbsent(new EventSubscriptionKey<>(eventSourceKey, type), k -> new ReaderCount());
+        synchronized (count) {
+            count.readers++;
+        }
 
         return new EventQueueToEventProcessorAgent(eventQueue, eventMapperSupplier.get(), name, eventSourceKey.sourceName(),
                 type.name())
@@ -298,6 +402,10 @@ public class EventFlowManager {
         } catch (IOException ex) {
             System.err.println("problem logging event queues, exception:" + ex);
         }
+    }
+
+    private static final class ReaderCount {
+        private int readers;
     }
 
     private record EventSource_QueuePublisher<T>(EventToQueuePublisher<T> queuePublisher, EventSource<T> eventSource) {

@@ -112,54 +112,106 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
                 created.onAgentThread = onAgentThread;
                 return created;
             }
-            existing.dataFlow = dataFlow;
-            existing.onAgentThread = onAgentThread;
             // Re-attach: take the listener again. The server may have replaced it, and a re-registered
             // processor is a NEW DataFlow whose listener is the one just installed on it.
-            if (configuredListener != null) existing.configuredListener = configuredListener;
             // MA-5.4. If the sink is ALREADY recording, the new DataFlow has the server's listener on
             // it and nothing else — so its records would reach the console and never the queue, while
             // start() returned early on isRecording() and the sink kept answering "recording: true".
             // Measured on a live server: 3 events after a re-registration reached the listener, the
             // capture recordCount stayed at 23, and the export held none of them. Adopt the new flow.
-            existing.adoptWhileRecording();
+            existing.reattach(dataFlow, configuredListener, onAgentThread);
             liveSinkMutation.run();
             return existing;
         });
     }
 
+    /**
+     * Begin capturing {@code processorName}.
+     *
+     * <p><b>Threading (mongoose#46).</b> Called from any thread, typically the admin transport's. The Chronicle queue
+     * is opened here, on the caller's thread, so no file I/O lands on the processor's thread; the listener is then
+     * installed on the processor's agent thread, and this returns once it has been. It is refused, by name, with an
+     * {@link IllegalStateException} when that cannot happen in time (the group's thread is busy or wedged for
+     * {@value #APPLY_TIMEOUT_SECONDS} s, its hand-off queue stays full, or the group has closed), and with an
+     * {@link IllegalArgumentException} when the processor has left its group; nothing changes then. No lock is held
+     * while waiting, so the agent thread is never blocked by a caller that waits on it. Called on the agent thread, or
+     * before its group has started, it runs inline.
+     */
     @Override
-    public synchronized void start(String processorName) {
+    public void start(String processorName) {
         ProcessorSink sink = sinks.get(processorName);
         if (sink == null) {
             throw new IllegalArgumentException(
                     "no processor named '" + processorName + "' attached to the audit-capture service");
         }
         if (sink.isRecording()) {
-            // Idempotent — don't roll the sink.
+            // Idempotent — don't roll the sink. A sink only reads as recording once its listener is installed.
             return;
         }
-        // mongoose#46: installed on the processor's agent thread; awaited here, outside the sink's lock. A start that
-        // times out is cancelled (the install never runs later) and the half-opened sink is closed
+        sink.requireAttached("start");
+        ChronicleQueue opened = sink.openQueue(config);
+        boolean[] adopted = {false};
         try {
-            awaitOnAgent(sink.startRecording(config, counters), processorName, "start");
-        } catch (IllegalStateException notApplied) {
-            sink.closeRecording();
-            throw notApplied;
+            sink.applyOnAgent("start", () -> adopted[0] = sink.beginRecording(opened, counters));
+        } finally {
+            if (!adopted[0]) opened.close();            // refused, cancelled, or another start got there first
         }
-        liveSinkMutation.run();
-        log.info("audit-capture STARTED for processor '" + processorName + "' at " + sink.path());
+        if (adopted[0]) {
+            liveSinkMutation.run();
+            log.info("audit-capture STARTED for processor '" + processorName + "' at " + sink.path());
+        }
     }
 
+    /**
+     * Halt capture of {@code processorName}: the listener the server configured is restored on the processor's agent
+     * thread (mongoose#46), and the queue is closed once it has been, so no record in flight meets a closed queue.
+     * Threading, bounds and refusals as {@link #start}. A processor that has left its group has nothing to restore;
+     * its capture is closed here.
+     */
     @Override
-    public synchronized void stop(String processorName) {
+    public void stop(String processorName) {
         ProcessorSink sink = sinks.get(processorName);
         if (sink == null || !sink.isRecording()) {
             return;
         }
-        sink.stopRecording();
+        ChronicleQueue released = sink.endRecordingIfGone();    // processor gone: no DataFlow to touch, no thread to wait on
+        if (released == null && sink.isAttached()) {
+            released = sink.applyOnAgent("stop", sink::endRecording);
+        }
+        if (released != null) {
+            released.close();
+            liveSinkMutation.run();
+            log.info("audit-capture STOPPED for processor '" + processorName + "'");
+        }
+    }
+
+    @Override
+    public void detach(String processorName, DataFlow dataFlow) {
+        ProcessorSink sink = sinks.get(processorName);
+        if (sink == null || sink.dataFlow != dataFlow) {
+            return;
+        }
+        // on the agent thread, so the restore and the removal are one step there; inline when called on it, as the
+        // server does (processorDropped)
+        ChronicleQueue released = sink.applyOnAgent("detach", () -> {
+            if (sink.dataFlow != dataFlow) return null;
+            ChronicleQueue q = sink.endRecording();
+            sinks.remove(processorName, sink);
+            return q;
+        });
+        if (released != null) released.close();
         liveSinkMutation.run();
-        log.info("audit-capture STOPPED for processor '" + processorName + "'");
+    }
+
+    /**
+     * The processor left its group normally (stopped and torn down). Nothing is installed on that instance again:
+     * {@code start} is refused until a processor is added under the name, and {@code stop} closes the capture without
+     * touching it. A capture still recording carries on into a processor re-added under the name (MA-5.4).
+     */
+    @Override
+    public void processorStopped(String processorName, DataFlow dataFlow) {
+        ProcessorSink sink = sinks.get(processorName);
+        if (sink != null) sink.forget(dataFlow);
     }
 
     @Override
@@ -183,51 +235,71 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
     }
 
     /**
-     * Stop every live capture. Called at server tearDown so files are
-     * flushed and queues closed cleanly.
+     * Stop every live capture, each as {@link #stop} would. One that cannot be stopped is logged and the rest are
+     * still stopped. The server calls it at the end of {@code stop()}, once its processors have stopped and their
+     * groups have closed: no processor instance is touched.
      */
-    public synchronized void stopAll() {
-        for (ProcessorSink s : sinks.values()) {
-            if (s.isRecording()) {
-                s.stopRecording();
+    @Override
+    public void stopAll() {
+        for (java.util.Map.Entry<String, ProcessorSink> entry : sinks.entrySet()) {
+            String name = entry.getKey();
+            try {
+                // at server stop the processors have stopped and their groups have closed: forget each instance, so
+                // the capture is ended without touching it and without waiting on a group thread that has gone
+                ProcessorSink sink = entry.getValue();
+                DataFlow flow = sink.dataFlow;
+                if (flow != null) sink.forget(flow);
+                stop(name);
+            } catch (RuntimeException e) {
+                log.log(Level.WARNING, "audit-capture could not stop '" + name + "'", e);
             }
         }
     }
 
+    /** How long a caller waits for its change to be applied on the processor's agent thread. */
+    static final long APPLY_TIMEOUT_SECONDS = 5;
+
     /** Wait for a sink change the processor's agent thread applies; refused by name rather than hanging. */
     private static void awaitOnAgent(com.telamin.mongoose.dutycycle.AgentHandoff applied, String processorName, String what) {
         try {
-            if (!applied.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+            if (!applied.await(APPLY_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)) {
                 // cancelled unrun: it never runs later, so closing what it would have used is safe. Work the agent
                 // thread had already started is waited for instead, even through an interrupt (review of 90f0d9b, 5)
                 throw new IllegalStateException("audit " + what + " for '" + processorName + "' was "
-                        + (Thread.currentThread().isInterrupted() ? "interrupted" : "not applied on its agent thread within 5s")
+                        + (Thread.currentThread().isInterrupted() ? "interrupted"
+                        : "not applied on its agent thread within " + APPLY_TIMEOUT_SECONDS + "s")
                         + " before it started; it was cancelled, and nothing changed");
             }
         } catch (java.util.concurrent.ExecutionException e) {
-            throw new IllegalStateException("audit " + what + " for '" + processorName + "' failed on its agent thread", e.getCause());
+            Throwable cause = e.getCause();
+            if (cause instanceof IllegalStateException || cause instanceof IllegalArgumentException) {
+                throw (RuntimeException) cause;
+            }
+            throw new IllegalStateException("audit " + what + " for '" + processorName + "' failed on its agent thread", cause);
         }
     }
 
     /** Per-processor state holder — keeps the wiring local. */
     private static final class ProcessorSink {
         private final String processorName;
-        private DataFlow dataFlow;
+        /** The live processor; null once it has left its group ({@link #forget}). */
+        private volatile DataFlow dataFlow;
         /** mongoose#46: the processor's agent thread; the processor is only driven from it. */
-        private java.util.concurrent.Executor onAgentThread = Runnable::run;
-        private ChronicleQueue queue;
-        private ExcerptAppender appender;
+        private volatile java.util.concurrent.Executor onAgentThread = Runnable::run;
+        /** Set and cleared on the processor's agent thread, together with the listener it installs. */
+        private volatile ChronicleQueue queue;
+        private volatile ExcerptAppender appender;
         /** The listener the server configured, taken at attach. Restored on stop; fanned to while recording. */
         private LogRecordListener configuredListener;
         /** Counted, never swallowed: a destination that fails is a finding, not silence. */
         private long captureFailures;
         private long delegateFailures;
-        private LogRecordListener previousListener;
-        private LogRecordListener captureListener;
+        private volatile LogRecordListener previousListener;
+        private volatile LogRecordListener captureListener;
         private MongooseCounter recordCounter;
-        private Instant startedAt;
+        private volatile Instant startedAt;
         private volatile Instant lastWriteAt;
-        private int startCycle;
+        private volatile int startCycle;
         private final java.util.concurrent.atomic.AtomicLong recordCount = new java.util.concurrent.atomic.AtomicLong();
 
         ProcessorSink(DataFlow dataFlow, String processorName) {
@@ -239,10 +311,21 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             return queue != null;
         }
 
-        Path path() {
-            return queue == null ? null : Path.of(queue.fileAbsolutePath());
+        boolean isAttached() {
+            return dataFlow != null;
         }
 
+        void requireAttached(String what) {
+            if (dataFlow == null) {
+                throw new IllegalArgumentException("audit " + what + " for '" + processorName
+                        + "' refused: the processor has left its group");
+            }
+        }
+
+        Path path() {
+            ChronicleQueue q = queue;
+            return q == null ? null : Path.of(q.fileAbsolutePath());
+        }
         AuditSinkHandle handle() {
             Path p = path();
             long size = 0;
@@ -275,15 +358,27 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
                     true);
         }
 
-        /** Change the processor's audit sink on its agent thread; the future completes once it has. */
-        private com.telamin.mongoose.dutycycle.AgentHandoff installOnAgent(LogRecordListener listener) {
-            DataFlow flow = dataFlow;
-            return com.telamin.mongoose.dutycycle.AgentHandoff.submit(onAgentThread, () -> {
-                if (flow != null) flow.setAuditLogProcessor(listener);
-            });
+        /**
+         * Run {@code change} on the processor's agent thread and wait for it, bounded; its result is returned once it
+         * has been applied. Inline when called on that thread, or before its group has started. No lock is held while
+         * waiting.
+         */
+        <T> T applyOnAgent(String what, java.util.function.Supplier<T> change) {
+            Object[] result = new Object[1];
+            com.telamin.mongoose.dutycycle.AgentHandoff applied;
+            try {
+                applied = com.telamin.mongoose.dutycycle.AgentHandoff.submit(onAgentThread, () -> result[0] = change.get());
+            } catch (RuntimeException refused) {          // the group's hand-off queue stayed full, or the group closed
+                throw new IllegalStateException("audit " + what + " for '" + processorName + "' refused: "
+                        + refused.getMessage() + "; nothing changed", refused);
+            }
+            awaitOnAgent(applied, processorName, what);
+            @SuppressWarnings("unchecked") T t = (T) result[0];
+            return t;
         }
 
-        synchronized com.telamin.mongoose.dutycycle.AgentHandoff startRecording(AuditCaptureConfig cfg, MongooseCountersService counters) {
+        /** Opened on the caller's thread: the file I/O stays off the processor's thread. */
+        ChronicleQueue openQueue(AuditCaptureConfig cfg) {
             Path procDir = Path.of(cfg.getDirectory(), processorName);
             try {
                 Files.createDirectories(procDir);
@@ -291,61 +386,93 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
                 throw new RuntimeException(
                         "could not create audit dir " + procDir + ": " + e.getMessage(), e);
             }
-            this.queue = SingleChronicleQueueBuilder.binary(procDir)
+            return SingleChronicleQueueBuilder.binary(procDir)
                     .rollCycle(RollCycles.FAST_DAILY)
                     .build();
-            this.appender = queue.createAppender();
-            this.startCycle = appender.cycle();
+        }
+
+        /**
+         * On the agent thread: adopt {@code opened} and install the capture listener. False, adopting nothing, when
+         * already recording (another start was applied first).
+         *
+         * <p>Compose the capture listener IN FRONT of the listener the server configured, handed to us at attach
+         * because DataFlow has no getter for it. Capture used to REPLACE it: records stopped reaching the console the
+         * moment capture started (MA-5a), and stopRecording installed a no-op, so stopping capture sent audit nowhere
+         * at all until restart (MA-5b).
+         */
+        synchronized boolean beginRecording(ChronicleQueue opened, MongooseCountersService counters) {
+            if (queue != null) {
+                return false;
+            }
+            requireAttached("start");
+            DataFlow flow = dataFlow;
+            ExcerptAppender a = opened.createAppender();
+            this.appender = a;
+            this.startCycle = a.cycle();
             this.recordCounter = counters.counter("audit." + processorName + ".records");
             this.startedAt = Instant.now();
-
-            // Compose the capture listener IN FRONT of the listener the server configured, handed to
-            // us at attach because DataFlow has no getter for it. Capture used to REPLACE it: records
-            // stopped reaching the console the moment capture started (MA-5a), and stopRecording
-            // installed a no-op, so stopping capture sent audit nowhere at all until restart (MA-5b).
             this.previousListener = configuredListener;
             this.captureListener = this::onRecordFanOut;
-            return installOnAgent(captureListener);
+            this.queue = opened;                        // recording from here: the listener is being installed
+            try {
+                flow.setAuditLogProcessor(captureListener);
+            } catch (RuntimeException | Error failed) {
+                this.queue = null;
+                this.appender = null;
+                this.captureListener = null;
+                throw failed;
+            }
+            return true;
         }
 
         /**
-         * Point an already-recording sink at a freshly attached {@code DataFlow} (MA-5.4).
-         *
-         * <p>Without this a re-registered processor discards silently: {@code start} returns early
-         * because {@link #isRecording()} is true, so nothing ever installs the capture listener on the
-         * new instance.
+         * On the agent thread (or, for a processor that has left its group, on any): restore the listener the server
+         * configured, so audit keeps flowing after capture stops (a no-op here is what made stopping capture discard
+         * audit entirely, MA-5b), and release the queue, which the caller closes. Null when not recording.
          */
-        synchronized void adoptWhileRecording() {
-            if (captureListener != null && dataFlow != null) {
-                installOnAgent(captureListener);                // called on the agent thread, at attach: runs now
+        synchronized ChronicleQueue endRecording() {
+            ChronicleQueue q = queue;
+            if (q == null) {
+                return null;
             }
+            DataFlow flow = dataFlow;
+            if (flow != null) {
+                flow.setAuditLogProcessor(previousListener != null ? previousListener : NoOpLogRecordListener.INSTANCE);
+            }
+            this.appender = null;
+            this.captureListener = null;
+            this.queue = null;
+            return q;
+        }
+
+        /** As {@link #endRecording}, only while the processor has left its group: then no DataFlow is touched. */
+        synchronized ChronicleQueue endRecordingIfGone() {
+            return dataFlow == null ? endRecording() : null;
         }
 
         /**
-         * Restore the listener the server configured, so audit keeps flowing after capture stops (a no-op here is what
-         * made stopping capture discard audit entirely, MA-5b), on the agent thread (mongoose#46). The queue is closed
-         * by {@link #closeRecording} only after this has been applied, so no record in flight meets a closed queue.
+         * Point the sink at a freshly attached {@code DataFlow}; if already recording, install the capture listener
+         * on it (MA-5.4). Without this a re-registered processor discards silently: {@code start} returns early
+         * because {@link #isRecording()} is true, so nothing ever installs the capture listener on the new instance.
+         * Called by the server on the agent thread, at attach, so the install runs inline.
          */
-        synchronized com.telamin.mongoose.dutycycle.AgentHandoff restoreListener() {
-            return installOnAgent(previousListener != null ? previousListener : NoOpLogRecordListener.INSTANCE);
+        synchronized void reattach(DataFlow flow, LogRecordListener configured, java.util.concurrent.Executor agent) {
+            this.dataFlow = flow;
+            this.onAgentThread = agent;
+            if (configured != null) this.configuredListener = configured;
+            LogRecordListener capture = captureListener;
+            if (capture != null && flow != null) {
+                com.telamin.mongoose.dutycycle.AgentHandoff.submit(agent, () -> {
+                    if (dataFlow == flow && captureListener == capture) flow.setAuditLogProcessor(capture);
+                });
+            }
         }
 
-        void stopRecording() {
-            // not synchronized: the agent thread may need this sink's lock (adoptWhileRecording) while it is awaited
-            awaitOnAgent(restoreListener(), processorName, "stop");
-            closeRecording();
+        /** {@code flow} left its group: nothing is installed on it again. Ignored for any other instance. */
+        synchronized void forget(DataFlow flow) {
+            if (dataFlow == flow) dataFlow = null;
         }
 
-        synchronized void closeRecording() {
-            if (appender != null) {
-                appender = null;
-            }
-            if (queue != null) {
-                queue.close();
-                queue = null;
-            }
-            captureListener = null;
-        }
 
         /**
          * Fan one record out to BOTH destinations, isolated in both directions.

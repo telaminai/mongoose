@@ -60,14 +60,31 @@ public class EventToQueuePublisher<T> {
     public EventToQueuePublisher(String name) {
         this(name, NoOpCountersService.INSTANCE.feedPublishCounter(name));
     }
+    /**
+     * Cache published items in the event log so they can be replayed to subscribers at {@link #startComplete()}.
+     * Publishes stop adding to the log once {@link #startComplete()} has run (#59): the log holds the pre-start
+     * history, not the feed's traffic.
+     */
     @Setter
     private boolean cacheEventLog;
-    private long sequenceNumber = 0;
+    /**
+     * Keep logging published items after {@link #startComplete()}. Off by default: the log then grows with every
+     * publish for the life of the feed, without bound, so only turn it on for a bounded feed or a test that reads the
+     * whole history back through {@link #getEventLog()}.
+     */
+    @Setter
+    private boolean retainEventLogAfterStart;
+    /** Set by {@link #startComplete()}, under the publish lock: publishes no longer add to the event log. */
+    @Getter(lombok.AccessLevel.NONE)
+    private boolean startComplete;
+    /** Written under the publish lock only; volatile so {@link #getSequenceNumber()} can read it without the lock. */
+    private volatile long sequenceNumber = 0;
     @Setter
     private EventSource.EventWrapStrategy eventWrapStrategy = EventSource.EventWrapStrategy.SUBSCRIPTION_NOWRAP;
     @Setter
     private Function<T, ?> dataMapper = Function.identity();
-    private int cacheReadPointer = 0;
+    /** Written under the publish lock only; volatile so {@link #getCacheReadPointer()} can read it without the lock. */
+    private volatile int cacheReadPointer = 0;
     /** Replay R3: when set, each item is journalled once, encoded, and carries its sequence number to the queue. */
     private EventJournal journal;
     private EventCodec journalCodec;
@@ -76,6 +93,43 @@ public class EventToQueuePublisher<T> {
     private final boolean logWarning = log.isLoggable(Level.WARNING);
     private final boolean logInfo = log.isLoggable(Level.INFO);
     private final boolean logFine = log.isLoggable(Level.FINE);
+    /**
+     * Serialises every write into the target queues, and the sequence number and event log with them. Each target
+     * queue is a single-producer {@link OneToOneConcurrentArrayQueue}, but a publisher can be called from several
+     * threads: a {@code HandlerPipe} sink from every processor that publishes to it, and a source's
+     * {@code startComplete} replaying the cache while its own thread publishes. Two unserialised offers can claim the
+     * same slot and lose an event (telaminai/mongoose#51). Adding and removing target queues take it too, so a dispatch
+     * never sees the list change under it. Uncontended, the lock costs a few nanoseconds per publish.
+     * <p>
+     * <b>Cost under a slow subscriber.</b> The lock is held for the whole dispatch, including the bounded spin in
+     * {@code writeToQueue} when a target queue is full (up to about 10 ms per full queue, after which the item is
+     * dropped for that queue and counted in {@link #droppedCount()}). The lock is what keeps one producer per
+     * single-producer queue, so it cannot be released during that spin. While one subscriber stays full, therefore:
+     * <ul>
+     *     <li>every publish on this publisher, from any thread, takes up to ~10 ms per full queue, so one slow
+     *     subscriber throttles all publishers of this feed (and delays delivery to its other subscribers);</li>
+     *     <li>a publish or {@link #getEventLog()} waiting for the lock can wait behind each publisher queued ahead of
+     *     it: up to N x 10 ms with N callers ahead, per full queue;</li>
+     *     <li>{@link #addTargetQueue} and {@link #removeTargetQueueByName} wait only for the dispatch in flight:
+     *     publishers hold back while one is waiting ({@link #subscriberChangesWaiting}). A Java monitor is not fair,
+     *     so without that a thread publishing in a loop takes the lock back every time and a remove never gets in.</li>
+     * </ul>
+     * <p>
+     * With a journal ({@link #journal}), each item is encoded and appended to the journal under this lock too (see
+     * {@code journalItem}), so the journal's append cost, including any I/O it does, adds to every caller's wait.
+     */
+    @Getter(lombok.AccessLevel.NONE)
+    private final Object publishLock = new Object();
+    /**
+     * Adds and removes of target queues waiting for {@link #publishLock}. While it is non-zero, a publish holds back
+     * before taking the lock, so the change gets it next (one volatile read per publish when it is zero).
+     */
+    @Getter(lombok.AccessLevel.NONE)
+    private final java.util.concurrent.atomic.AtomicInteger subscriberChangesWaiting =
+            new java.util.concurrent.atomic.AtomicInteger();
+    /** Items dropped because a target queue stayed full past the spin bound, over all target queues. */
+    @Getter(lombok.AccessLevel.NONE)
+    private volatile long droppedCount;
 
     /** Journal this feed's items (spec-replay-recording R3). */
     public void journal(EventJournal journal, EventCodec codec) {
@@ -88,8 +142,27 @@ public class EventToQueuePublisher<T> {
         if (log.isLoggable(Level.FINE)) {
             log.fine("adding a publisher queue:" + namedQueue);
         }
-        if (!targetQueues.contains(namedQueue)) {
-            targetQueues.add(namedQueue);
+        // under the publish lock: a dispatch loop never sees the list change under it, and contains-then-add is atomic
+        subscriberChangesWaiting.incrementAndGet();
+        try {
+            synchronized (publishLock) {
+                if (!targetQueues.contains(namedQueue)) {
+                    targetQueues.add(namedQueue);
+                }
+            }
+        } finally {
+            subscriberChangesWaiting.decrementAndGet();
+        }
+    }
+
+    /**
+     * Hold back while an add or remove of a target queue is waiting for the lock, so it is not starved by publishers
+     * that take the lock back-to-back. Not when this thread already holds the lock (a nested publish), which would
+     * deadlock.
+     */
+    private void yieldToSubscriberChanges() {
+        while (subscriberChangesWaiting.get() != 0 && !Thread.holdsLock(publishLock)) {
+            Thread.yield();
         }
     }
 
@@ -98,6 +171,13 @@ public class EventToQueuePublisher<T> {
             log.info("itemToPublish is null");
             return;
         }
+        yieldToSubscriberChanges();
+        synchronized (publishLock) {
+            publishSerialised(itemToPublish);
+        }
+    }
+
+    private void publishSerialised(T itemToPublish) {
 
         Object mappedItem = mapItemSafely(itemToPublish, "publish");
         if (mappedItem == null) {
@@ -113,26 +193,53 @@ public class EventToQueuePublisher<T> {
             log.fine("listenerCount:" + targetQueues.size() + " sequenceNumber:" + sequenceNumber + " publish:" + itemToPublish);
         }
 
-        if (cacheEventLog) {
-            dispatchCachedEventLog();
-            // Store a detached snapshot in the cache to avoid retaining pooled instances
-            Object cachedData = (mappedItem instanceof PoolAware)
-                    ? String.valueOf(mappedItem)
-                    : mappedItem;
-            NamedFeedEventImpl<Object> namedFeedEvent = new NamedFeedEventImpl<>(name)
-                    .data(cachedData)
-                    .sequenceNumber(sequenceNumber);
-            eventLog.add(namedFeedEvent);
-        } else {
-            // Hold a reference while retained in the cache/event log
-            PoolTracker<?> tracker = trackerOf(mappedItem);
-            if (tracker != null) {
-                tracker.releaseReference();
+        // the publisher's own reference to a pooled item (the one acquire handed over), held until every queue holds
+        // its own: released first, the first consumer to finish could return it to the pool while it was still being
+        // offered to the next queue (#54). Released last, it returns the item when no queue took it
+        PoolTracker<?> publisherRef = trackerOf(mappedItem);
+        try {
+            if (cacheEventLog) {
+                dispatchCachedEventLogSerialised();
+                if (!startComplete || retainEventLogAfterStart) {
+                    // Store a detached snapshot in the cache to avoid retaining pooled instances: the cache holds no
+                    // reference
+                    Object cachedData = (mappedItem instanceof PoolAware)
+                            ? String.valueOf(mappedItem)
+                            : mappedItem;
+                    NamedFeedEventImpl<Object> namedFeedEvent = new NamedFeedEventImpl<>(name)
+                            .data(cachedData)
+                            .sequenceNumber(sequenceNumber);
+                    eventLog.add(namedFeedEvent);
+                    // dispatched below, so never replayed from the log
+                    cacheReadPointer = eventLog.size();
+                }
+            }
+
+            dispatch(mappedItem, sequenceNumber);
+        } finally {
+            if (publisherRef != null) {
+                publisherRef.releaseReference();
             }
         }
+    }
 
-        cacheReadPointer++;
-        dispatch(mappedItem, sequenceNumber);
+    /**
+     * Publishes the item if {@link #startComplete()} has run, else caches it, deciding under the publish lock and so
+     * atomically with {@code startComplete}: a source that switches from caching to publishing at start cannot cache
+     * an item after the replay (it would wait for the next publish) or publish one before it.
+     */
+    public void publishOrCache(T item) {
+        if (item == null) {
+            return;
+        }
+        yieldToSubscriberChanges();
+        synchronized (publishLock) {
+            if (startComplete) {
+                publishSerialised(item);
+            } else {
+                cacheSerialised(item);
+            }
+        }
     }
 
     public void cache(T itemToCache) {
@@ -140,6 +247,13 @@ public class EventToQueuePublisher<T> {
             log.fine("itemToCache is null");
             return;
         }
+        yieldToSubscriberChanges();
+        synchronized (publishLock) {
+            cacheSerialised(itemToCache);
+        }
+    }
+
+    private void cacheSerialised(T itemToCache) {
 
         Object mappedItem = mapItemSafely(itemToCache, "cache");
         if (mappedItem == null) {
@@ -161,6 +275,12 @@ public class EventToQueuePublisher<T> {
                     .data(mappedItem)
                     .sequenceNumber(sequenceNumber);
             eventLog.add(namedFeedEvent);
+        } else {
+            // nothing holds the item (no event log, no dispatch): drop the reference handed over with it
+            PoolTracker<?> tracker = trackerOf(mappedItem);
+            if (tracker != null) {
+                tracker.releaseReference();
+            }
         }
     }
 
@@ -173,17 +293,40 @@ public class EventToQueuePublisher<T> {
             log.fine("listenerCount:" + targetQueues.size() + " publish:" + record);
         }
 
-        for (int i = 0, targetQueuesSize = targetQueues.size(); i < targetQueuesSize; i++) {
-            NamedQueue namedQueue = targetQueues.get(i);
-            OneToOneConcurrentArrayQueue<Object> targetQueue = namedQueue.targetQueue();
-            targetQueue.offer(record);
-            if (log.isLoggable(Level.FINE)) {
-                log.fine("queue:" + namedQueue.name() + " size:" + targetQueue.size());
+        yieldToSubscriberChanges();
+        synchronized (publishLock) {
+            for (int i = 0, targetQueuesSize = targetQueues.size(); i < targetQueuesSize; i++) {
+                NamedQueue namedQueue = targetQueues.get(i);
+                OneToOneConcurrentArrayQueue<Object> targetQueue = namedQueue.targetQueue();
+                targetQueue.offer(record);
+                if (log.isLoggable(Level.FINE)) {
+                    log.fine("queue:" + namedQueue.name() + " size:" + targetQueue.size());
+                }
             }
         }
     }
 
+    /**
+     * The owning source's start is complete: replay what was cached before it to the target queues, and stop adding
+     * published items to the event log (unless {@link #setRetainEventLogAfterStart(boolean) retained}). Items given to
+     * {@link #cache(Object)} afterwards are still logged and replayed on the next publish or dispatch.
+     */
+    public void startComplete() {
+        yieldToSubscriberChanges();
+        synchronized (publishLock) {
+            dispatchCachedEventLogSerialised();
+            startComplete = true;
+        }
+    }
+
     public void dispatchCachedEventLog() {
+        yieldToSubscriberChanges();
+        synchronized (publishLock) {
+            dispatchCachedEventLogSerialised();
+        }
+    }
+
+    private void dispatchCachedEventLogSerialised() {
         if (cacheReadPointer < eventLog.size()) {
             if (log.isLoggable(Level.FINE)) {
                 log.fine("publishing cached items cacheReadPointer:" + cacheReadPointer + " eventLog.size():" + eventLog.size());
@@ -200,13 +343,18 @@ public class EventToQueuePublisher<T> {
         cacheReadPointer = eventLog.size();
     }
 
+    /**
+     * A snapshot of the event log: what was published before {@link #startComplete()}, and what was given to
+     * {@link #cache(Object)}. Empty unless {@code cacheEventLog} is set.
+     */
     public List<NamedFeedEvent<?>> getEventLog() {
         if (!cacheEventLog) {
             return Collections.emptyList();
         }
-        // Return a thread-safe snapshot for concurrent readers while maintaining
-        // single-writer performance characteristics for the underlying eventLog.
-        return Collections.unmodifiableList(new ArrayList<>(eventLog));
+        // a snapshot taken under the publish lock: the log is appended to by whichever thread publishes
+        synchronized (publishLock) {
+            return Collections.unmodifiableList(new ArrayList<>(eventLog));
+        }
     }
 
     private Object mapItemSafely(T item, String context) {
@@ -214,12 +362,16 @@ public class EventToQueuePublisher<T> {
             Object mapped = dataMapper.apply(item);
             if (mapped == null) {
                 log.fine("mappedItem is null");
-            } else if (item != mapped && (item instanceof PoolAware poolAware)) {
+            }
+            if (item != mapped && (item instanceof PoolAware poolAware)) {
+                // the input is not published (its mapping is, or nothing is): drop the reference handed over with it
                 poolAware.getPoolTracker().releaseReference();
-                poolAware.getPoolTracker().returnToPool();
             }
             return mapped;
         } catch (Throwable t) {
+            // the input is not published: drop the reference handed over with it, or a pooled input leaks and the
+            // pool runs dry (review of #63)
+            releaseUnpublished(item);
             log.severe("data mapping (" + context + ") failed: publisher=" + name + ", nextSequenceNumber=" + (sequenceNumber + 1) + ", item=" + item + ", error=" + t);
             com.telamin.mongoose.service.error.ErrorReporting.report(
                     "EventToQueuePublisher:" + name,
@@ -230,6 +382,28 @@ public class EventToQueuePublisher<T> {
         }
     }
 
+    /** Releases the reference handed over with a pooled item that is not published; a failed release is reported. */
+    private void releaseUnpublished(Object item) {
+        if (item instanceof PoolAware poolAware) {
+            try {
+                poolAware.getPoolTracker().releaseReference();
+            } catch (Throwable releaseFailed) {
+                log.severe("pooled item reference release failed: publisher=" + name + ", error=" + releaseFailed);
+                com.telamin.mongoose.service.error.ErrorReporting.report("EventToQueuePublisher:" + name,
+                        "pooled item reference release failed", releaseFailed,
+                        com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
+            }
+        }
+    }
+
+    /**
+     * Encodes and appends one item to the journal. Called under the publish lock, deliberately: the append must follow
+     * sequence-number order (a replay reads the journal in append order and stops at the first gap), and it must happen
+     * before dispatch, because once a pooled item is on a queue its consumer can return it to the pool and it can be
+     * rewritten. Moving the append outside the lock would let two publishers append out of order. The cost is that the
+     * codec's encode and the journal's append (which may do I/O) are paid while the lock is held, so a slow journal
+     * slows every publisher of this feed.
+     */
     private void journalItem(Object mappedItem, long seq) {
         if (journal == null || journalBroken != null) return;
         try {
@@ -249,13 +423,18 @@ public class EventToQueuePublisher<T> {
         }
     }
 
+    /** Items dropped because a target queue stayed full for longer than the 10 ms spin bound, over all target queues. */
+    public long droppedCount() {
+        return droppedCount;
+    }
+
     /** Why this feed's journal stopped (an append or its encoding failed), or null while it journals. */
     public String journalBroken() {
         return journalBroken;
     }
 
     private void dispatch(Object mappedItem, long seq) {
-        // no-op here; writeToQueue will handle PoolAware reference acquisition per queue
+        // writeToQueue acquires one PoolAware reference per queue
         for (int i = 0, targetQueuesSize = targetQueues.size(); i < targetQueuesSize; i++) {
             NamedQueue namedQueue = targetQueues.get(i);
             OneToOneConcurrentArrayQueue<Object> targetQueue = namedQueue.targetQueue();
@@ -282,22 +461,25 @@ public class EventToQueuePublisher<T> {
         long startNs = -1;
         final long maxSpinNs = java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(10); // bound spin to avoid publisher timeouts under contention
         PoolTracker<?> tracker = trackerOf(itemToPublish);
+        // the queue's reference, taken before the offer (a consumer may poll and release at once) and kept across
+        // retries; the publisher still holds its own, so releasing this one on a drop never returns the item early
+        boolean queueRef = false;
         try {
+            if (tracker != null) {
+                tracker.acquireReference();
+                queueRef = true;
+            }
             while (!offered) {
-                boolean attemptRef = false;
-                if (tracker != null) {
-                    tracker.acquireReference();
-                    attemptRef = true;
-                }
                 offered = targetQueue.offer(itemToPublish);
                 if (!offered) {
-                    // release per-attempt ref before retry/abandon
-                    if (attemptRef) {
-                        tracker.releaseReference();
-                    }
                     if (startNs < 0) {
                         startNs = System.nanoTime();
                     } else if (System.nanoTime() - startNs > maxSpinNs) {
+                        droppedCount++; // written under publishLock only
+                        if (queueRef) {
+                            queueRef = false;
+                            tracker.releaseReference();
+                        }
                         if (logWarning) {
                             log.warning("dropping publish to slow/contended queue: " + namedQueue.name() +
                                     " after ~" + ((System.nanoTime() - startNs) / 1_000_000) + "ms seq:" + sequenceNumber +
@@ -309,9 +491,12 @@ public class EventToQueuePublisher<T> {
                 }
             }
         } catch (Throwable t) {
-            // ensure no attempt ref remains on exception path
-            if (tracker != null) {
-                tracker.returnToPool();
+            // ensure no queue ref remains on the exception path when the item never reached the queue
+            if (queueRef && !offered) {
+                try {
+                    tracker.releaseReference();
+                } catch (Throwable ignored) {
+                }
             }
             log.severe("queue write failed: publisher=" + name + ", queue=" + namedQueue.name() + ", seq=" + sequenceNumber + ", item=" + itemToPublish + ", error=" + t);
             com.telamin.mongoose.service.error.ErrorReporting.report(
@@ -350,6 +535,17 @@ public class EventToQueuePublisher<T> {
         if (queueName == null) {
             return;
         }
-        targetQueues.removeIf(q -> queueName.equals(q.name()));
+        // under the publish lock: an unsubscribe on a processor's thread must not shrink the list while a dispatch on
+        // the feed's thread is indexing it (an IndexOutOfBounds out of publish exits the process via the agent's
+        // error handler). The remove waits for the dispatch in flight (up to ~10 ms per full target queue): publishers
+        // hold back while it waits, so one publishing in a loop cannot starve it. See the publishLock javadoc.
+        subscriberChangesWaiting.incrementAndGet();
+        try {
+            synchronized (publishLock) {
+                targetQueues.removeIf(q -> queueName.equals(q.name()));
+            }
+        } finally {
+            subscriberChangesWaiting.decrementAndGet();
+        }
     }
 }

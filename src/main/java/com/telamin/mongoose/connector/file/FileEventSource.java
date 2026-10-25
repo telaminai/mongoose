@@ -50,6 +50,8 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
     private MappedByteBuffer commitPointer;
     private boolean once;
     private boolean publishToQueue = false;
+    /** Set by stop, cleared by start: a stopped source reads nothing, so it never reopens the file it released. */
+    private volatile boolean stopped = false;
 
     // Cached JUL log guards to minimize per-call allocations
     private final boolean infoEnabled;
@@ -78,6 +80,7 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
         if (infoEnabled) {
             log.log(Level.INFO, "start FileEventSource " + serviceName + " file:" + filename);
         }
+        stopped = false;
         if (filename == null || filename.isEmpty()) {
             throw new IllegalStateException(
                     "FileEventSource " + serviceName + " has no filename configured");
@@ -165,7 +168,7 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
         }
         startComplete.set(true);
         publishToQueue = true;
-        output.dispatchCachedEventLog();
+        output.startComplete();
     }
 
     @Override
@@ -183,7 +186,7 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
     @Override
     public int doWork() {
 //        if (!tail && !cacheEventLog) {
-        if (!tail) {
+        if (!tail || stopped) {
             return 0;
         }
         try {
@@ -262,6 +265,7 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
 
     @Override
     public void stop() {
+        stopped = true;
         if (infoEnabled) {
             log.log(Level.INFO, "Stopping");
         }
@@ -277,9 +281,13 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
                 log.log(Level.SEVERE, "Failed to close FileStreamSourceTask stream", e);
             }
         } finally {
+            // mongoose#56: drop the references once released, so a second stop neither closes nor unmaps them again
+            stream = null;
+            reader = null;
             if (commitPointer != null) {
                 commitPointer.force();
                 IoUtil.unmap(commitPointer);
+                commitPointer = null;
             }
         }
     }

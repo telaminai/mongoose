@@ -24,7 +24,7 @@ public static class PooledMessage extends BasePoolAware {
 ```
 
 2) Create a PooledEventSource that receives an injected ObjectPoolsRegistry. Use the ObjectPoolsRegistry to create an
-   ObjectPool and publish the event. The framework will manage references and return-to-pool at the end of the cycle:
+   ObjectPool and publish the event. The framework manages the references from then on, and the last holder to release the object returns it to the pool:
 
 
 ```java
@@ -45,7 +45,7 @@ public static class PooledEventSource extends AbstractEventSourceService<PooledM
     /**
      * Publish a message value. The framework acquires and releases references as the
      * message passes through queues and consumers; the object is returned to the pool
-     * automatically at end-of-cycle once all references are released.
+     * by the last release, once every queue's consumer has dispatched it.
      */
     public void publish(String value) {
         PooledMessage msg = pool.acquire();
@@ -88,13 +88,17 @@ What it shows:
 
 ## How the framework handles pooling across threads
 
-- When you publish a pooled object, the framework acquires additional references for each queue/cache that will hold the
-  object. Consumers drop their reference when done.
-- The sender does not need to call releaseReference() after publishing. After publish, the framework takes ownership of reference
-  management. The object is returned to the pool once ALL references (queues + consumers + optional cache) are released and the
-  end-of-cycle returnToPool() occurs.
-- When event caching is enabled, the publisher detaches the pooled instance from the pool (via removeFromPool) and caches the original object, while the pool immediately stages a fresh replacement instance. This avoids holding pool references for long-lived cached items and maintains pool capacity.
-- Early calls to returnToPool() are safe; the object is returned only once the reference count reaches zero.
+- When you publish a pooled object, the reference that `acquire()` gave you passes to the publisher. The publisher takes one
+  reference for each queue it offers the object to, and only then drops its own. Each queue's consumer drops its reference
+  after the object has been dispatched to every processor on that queue.
+- The sender does not need to call releaseReference() after publishing. The object is returned to the pool by the release
+  that takes the count to zero, whichever holder that is (a queue's consumer, or the publisher when no queue took it).
+- When event caching is enabled, a published pooled object is cached as a String snapshot and holds no reference. An object
+  given to `cache()` is detached from the pool (via removeFromPool) and cached as-is, while the pool stages a fresh
+  replacement instance; a detached object's references are no longer counted.
+- Calls to returnToPool() are safe and idempotent; the object is returned only once the reference count reaches zero.
+- At capacity, `acquire()` waits until an instance is returned; it never returns null. A pooled object that is never
+  released shows as a publisher waiting in `acquire()` once the pool has run dry.
 
 ## Important constraints (read this!)
 

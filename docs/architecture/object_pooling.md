@@ -9,8 +9,8 @@ a deeper understanding of reference counting, pooling queues, partitions, and in
 
 - PoolTracker: manages reference counting for a pooled object and coordinates return to the originating pool.
     - acquireReference(): increment the reference count.
-    - releaseReference(): decrement the reference count; never returns to the pool by itself.
-    - returnToPool(): explicitly attempt to return the object to its pool, but only succeeds when the current reference count is zero. The method is idempotent and concurrency-safe; early calls are a no-op until the count reaches zero.
+    - releaseReference(): decrement the reference count; the release that takes it to zero returns the object to its pool. The count never goes negative: a release with no reference held, while the object is out of the pool, throws IllegalStateException; a late release after the return is a no-op.
+    - returnToPool(): return the object to its pool if the reference count is zero. The method is idempotent and concurrency-safe; with the last release already returning the object it is rarely needed.
 - ObjectPool<T extends PoolAware>: creates and recycles instances of T. When an instance is acquired, its PoolTracker is initialised with the originating pool and the reset hook, and ref count is set. When returned, an optional reset hook is invoked and the instance is placed on the pool’s free list.
 - ObjectPools: a shared registry mapping a class to a single ObjectPool instance. Provides convenient getOrCreate overloads to configure capacity and partitions.
 
@@ -51,15 +51,16 @@ flowchart TB
 
 - Acquire: pool.acquire() returns a pooled instance. Internally, if a free instance is available it is used; otherwise, the pool may create a new instance up to capacity. The instance’s tracker.init(...) sets refCount to 1 and clears the returned flag.
 - Additional references: any component that intends to hold a reference (e.g., a queue, cache, or consumer) must call acquireReference() and later releaseReference().
-- Origin release: no action is required by the sender. After publish, the framework takes ownership of reference management (it acquires the necessary references for queues/caches and releases them later). The end of the event cycle will attempt returnToPool(); actual return occurs once the reference count reaches zero.
-- Returning to pool: returnToPool() will only actually free the instance when the reference count is zero. It is safe to call multiple times and from multiple threads; only the first successful attempt after the count has reached zero will return the object.
+- Origin release: no action is required by the sender. The reference acquire() handed out passes to the publisher on publish; the publisher holds it until every target queue holds its own reference, then releases it.
+- Returning to pool: the release that takes the count to zero returns the instance, exactly once per cycle. returnToPool() is safe to call multiple times and from multiple threads and returns the instance only at zero.
+- Exhaustion: at capacity, acquire() waits (spin, then yield) until an instance is returned and never returns null. A leaked reference therefore shows as a publisher waiting in acquire() for good once the pool has run dry.
 - Reset: an optional reset hook is invoked just before an instance is placed on the free list, allowing the caller to clear state.
 
 ## Integration with dispatch/pipeline
 
-- EventToQueuePublisher and caches: when caching is enabled, the publisher detaches the pooled instance from the pool (via PoolTracker.removeFromPool), immediately replaces it with a fresh instance in the pool, and then stores the original object in the cache. For each queue write, a reference is acquired just before a successful offer and released on failure/abandonment.
-- Consumers: upon finishing processing, consumers releaseReference().
-- End of cycle: the pipeline invokes returnToPool() after dispatch to processors; pooled events return automatically once all references (origin + queues + cache + consumers) are released.
+- EventToQueuePublisher and caches: a published pooled item is cached as a String snapshot and the cache holds no reference. An item given to cache() is detached from the pool (via PoolTracker.removeFromPool), replaced by a fresh instance in the pool, and cached as-is; a detached item's references are not counted. For each queue write, a reference is acquired before the offer and released if the offer is abandoned.
+- Publisher: holds the origin reference until every queue has its reference, then releases it (telaminai/mongoose#54: released first, the first consumer to finish could recycle the item while it was still being offered to the next queue).
+- Consumers: EventQueueToEventProcessorAgent releases its queue's reference after the event has been dispatched to every processor on that queue, never before; the last release returns the event to its pool.
 
 ## Threading model and safety
 
@@ -110,31 +111,28 @@ sequenceDiagram
     note over Src: Manual: mutate and publish
     Src->>Pub: publish Msg
 
-    note over Pub,Q: Automatic framework: acquire refs for handoff
-    Pub->>Q: offer Msg to each queue/cache
-    activate Q
-    Q->>Msg: tracker.acquireReference
-    deactivate Q
-
-    note over Src: After publish, the framework manages references<br> no explicit release is required by the sender
-    Src-->>Msg: no-op for sender
-    Msg->>Msg: framework continues ref-counting internally
-
-    note over C: Automatic: consumer drops its ref when done
-    Q-->>C: deliver Msg
-    C->>Msg: tracker.releaseReference()
-
-    rect rgba(200, 200, 255, 0.2)
-    note over publish Queues Consumers: Automatic end-of-cycle
-    Pub->>Msg: returnToPool invoked by pipeline end
+    note over Pub,Q: Automatic: the publisher holds the reference acquire handed over
+    loop each target queue
+        Pub->>Msg: tracker.acquireReference (the queue's reference)
+        Pub->>Q: offer Msg
+        alt offer dropped (queue full past the spin bound)
+            Pub->>Msg: tracker.releaseReference (the queue's reference)
+        end
     end
+    Pub->>Msg: tracker.releaseReference (the publisher's own, in a finally)
 
-    alt refCount == 0
-        Msg->>Pool: release to pool, resetHook
+    note over Src: After publish the sender holds no reference<br> and must not touch the object again
+
+    note over C: Automatic: each queue's agent releases after dispatch to every processor
+    Q-->>C: deliver Msg
+    C->>Msg: tracker.releaseReference (in a finally)
+
+    alt this release took refCount to 0 (the last holder)
+        Msg->>Pool: release to pool, resetHook (exactly once)
         Pool-->>Pool: resetHook.apply  [optional]
-        Pool-->>Pool: offer to free list 
-    else refCount > 0
-        note over Msg: returnToPool is safe no-op waits until last release
+        Pool-->>Pool: offer to free list
+    else refCount still > 0
+        note over Msg: other holders still read it, it stays out of the pool
     end
 ```
 
@@ -145,28 +143,27 @@ sequenceDiagram
     - Set fields on the pooled object
     - Publish to the framework (publisher.publish(msg))
     - The publisher MAY NOT continue to use the object after it has been published within its method scope; the framework manages references from the point of publish onward.
-    - No explicit release is required from the origin after publish; the framework manages references and returns the object at end-of-cycle once all holders have released.
+    - No explicit release is required from the origin after publish: the reference acquire handed over passes to the publisher, which releases it once every queue holds its own (or at once, if nothing took the object). There is no end-of-cycle return: the object goes back to the pool on the release that takes the count to zero, whichever holder makes it. A publish whose data mapper throws, or maps the input to something else, releases the input's reference.
     - Do not retain the object beyond the event cycle; copy data if needed.
 
 - Manual (any out-of-band holder):
     - If you take ownership outside the normal pipeline, call tracker.acquireReference() and later tracker.releaseReference().
 
 - Automatic (framework):
-    - Publisher acquires an extra reference for each successful queue/cache offer, and releases on failure/abandonment.
-    - Consumers release their reference when processing completes.
-    - The pipeline calls returnToPool() at the end of the event cycle; actual return only occurs when refCount reaches zero.
+    - Publisher acquires a reference for each queue offer, releases it on abandonment, and releases the origin reference after the last queue.
+    - Consumers release their reference after dispatch completes.
+    - The last release returns the object to the pool.
     - Reset hook executes before the object is placed back on the free list.
 
 ## Return-to-pool decision (flow)
 
 ```mermaid
 flowchart TD
-    A[After publish
-    - framework manages references and attempts returnToPool at end-of-cycle] --> B{refCount == 0?}
-    B -- No --> C[No-op; object remains in use
-    Other holders will release later]
-    C --> D[Pipeline end invokes returnToPool again]
-    D --> B
+    A[A holder calls releaseReference
+    publisher after the last offer, a dropped offer, a consumer after dispatch] --> B{Did this release take refCount to 0?}
+    B -- No --> C[Object stays out of the pool
+    the remaining holders release later]
+    C --> A
     B -- Yes --> E[Execute resetHook if provided]
     E --> F[Offer object to pool free list partitioned MPMC]
     F --> G[Object available for reuse]

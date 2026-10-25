@@ -16,6 +16,7 @@ import com.telamin.mongoose.dispatch.EventFlowManager;
 import com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent;
 import com.telamin.mongoose.dutycycle.ComposingServiceAgent;
 import com.telamin.mongoose.dutycycle.NamedEventProcessor;
+import com.telamin.mongoose.dutycycle.ProcessorRegistration;
 import com.telamin.mongoose.dutycycle.ServiceAgent;
 import com.telamin.mongoose.internal.*;
 import com.telamin.mongoose.replay.GroupRecorder;
@@ -130,14 +131,40 @@ public class MongooseServer implements MongooseServerController {
     /** Audit capture config — read for autoStart at processor registration. */
     private com.telamin.mongoose.config.AuditCaptureConfig auditCaptureConfig;
     private final Set<Service<?>> registeredAgentServices = ConcurrentHashMap.newKeySet();
+    /**
+     * mongoose#60: processor names taken, per group, reserved atomically when {@link #addEventProcessor} is called (the
+     * group's own map only fills later, on its thread). Released by {@link #stopProcessor}, when building it fails, or when the group drops it after a failed
+     * start ({@link #processorDropped}).
+     */
+    private final ConcurrentHashMap<ProcessorName, ProcessorRegistration> reservedProcessorNames = new ConcurrentHashMap<>();
+
+    private record ProcessorName(String group, String name) {
+    }
+
+    /** mongoose#56: service agent groups hosting an event source, closed first by the ordered shutdown. */
+    private final Set<String> eventSourceAgentGroups = ConcurrentHashMap.newKeySet();
+    /** Service agent groups hosting a service that is not an event source: the ordered shutdown keeps them running. */
+    private final Set<String> nonEventSourceAgentGroups = ConcurrentHashMap.newKeySet();
+    /** Released once the ordered shutdown has finished. */
+    private final java.util.concurrent.CountDownLatch stopCompleted = new java.util.concurrent.CountDownLatch(1);
     /** Configured pipes — tracked separately from registeredServices because
      *  a pipe is one logical config entry but two service registrations.
      *  Order-preserving so the admin surface lists pipes in declaration order. */
     private final List<PipeRegistration> registeredPipes = Collections.synchronizedList(new ArrayList<>());
     private ErrorHandler errorHandler = m -> log.severe(m.getMessage());
     private final ServiceRegistryNode serviceRegistry = new ServiceRegistryNode();
-    private volatile boolean started = false;
+    /**
+     * mongoose#60: the server's lifecycle, NEW → STARTING → STARTED → STOPPING → STOPPED. A stop can land in STARTING
+     * (it also cleans up after a failed start); start then fails and the server is never marked STARTED.
+     */
+    private enum LifecycleState { NEW, STARTING, STARTED, STOPPING, STOPPED }
+
+    private final java.util.concurrent.atomic.AtomicReference<LifecycleState> lifecycleState =
+            new java.util.concurrent.atomic.AtomicReference<>(LifecycleState.NEW);
     private final LifecycleManager lifecycleManager = new LifecycleManager(this);
+    /** Startup and shutdown callbacks may request stop themselves; neither may wait for its own completion. */
+    private volatile Thread startupThread;
+    private volatile Thread stopThread;
 
     /**
      * Entry point for starting a MongooseServer instance with default configuration.
@@ -385,6 +412,61 @@ public class MongooseServer implements MongooseServerController {
     }
 
     /**
+     * Whether a processor whose {@code start()} throws while its group starts fails that start, and so the server's
+     * boot (review of #66). True until the server has started, unless
+     * {@link MongooseServerConfig#isIsolateProcessorStartFailuresAtBoot()} opts into isolating it; false once started,
+     * when a processor that fails to start is always isolated (reported and dropped).
+     */
+    public boolean failsBootOnProcessorStartFailure() {
+        LifecycleState state = lifecycleState.get();
+        boolean booting = state == LifecycleState.NEW || state == LifecycleState.STARTING;
+        return booting && (mongooseServerConfig == null || !mongooseServerConfig.isIsolateProcessorStartFailuresAtBoot());
+    }
+
+    /**
+     * A processor group dropped {@code processorName} after its {@code start()} failed (mongoose#57). Called on the
+     * group's thread, once the group has released what it holds for the processor; this releases what the server bound
+     * to it by name ({@link #releaseProcessorBindings}) and its name reservation (mongoose#60), so the name can be
+     * added again.
+     */
+    public void processorDropped(String groupName, String processorName, DataFlow eventProcessor, ProcessorRegistration registration) {
+        log.info("processor '" + processorName + "' dropped from group '" + groupName + "' after a failed start");
+        try {
+            releaseProcessorBindings(processorName, eventProcessor);
+        } finally {
+            if (registration != null) reservedProcessorNames.remove(new ProcessorName(groupName, processorName), registration);
+        }
+    }
+
+    /**
+     * A processor group stopped {@code processorName} ({@link #stopProcessor}, mongoose#71). Called on the group's
+     * thread, once the group has stopped the processor and released what it holds for it; this releases what the server
+     * bound to it: the audit capture forgets the instance and a capture still recording is ended.
+     * <p>
+     * It does not free a processor-name reservation (mongoose#60): the accepted stop request frees its own registration
+     * when consumed on the group's thread. Freeing by name here could free a newer registration under that name.
+     */
+    public void processorStopped(String groupName, String processorName, DataFlow eventProcessor) {
+        log.info("processor '" + processorName + "' stopped in group '" + groupName + "'");
+        // the audit capture forgets the torn-down instance first (mongoose#46), so nothing is installed on it again and
+        // an audit.start for it is refused; then a capture still recording is ended and its queue closed without
+        // touching the instance (mongoose#71), rather than left open for a processor that has gone
+        try {
+            auditCaptureService.processorStopped(processorName, eventProcessor);
+        } finally {
+            auditCaptureService.stop(processorName);
+        }
+    }
+
+    /**
+     * Release what the server bound to a processor that left its group, stopped or dropped: its audit-capture binding.
+     * Anything else the server binds per processor is to be released here too, so both paths release it.
+     */
+    private void releaseProcessorBindings(String processorName, DataFlow eventProcessor) {
+        auditCaptureService.detach(processorName, eventProcessor);
+    }
+
+    /**
      * Register a factory to produce event-to-callback mapping strategies for a given callback type.
      * <p>
      * This allows customization of how events are mapped to processor invocation strategies,
@@ -557,10 +639,10 @@ public class MongooseServer implements MongooseServerController {
         for (Service<?> service : services) {
             String serviceName = service.serviceName();
             log.info("registerService:" + service);
-            if (registeredServices.containsKey(serviceName)) {
+            // mongoose#60: reserve the name atomically, so of two concurrent registrations exactly one wins
+            if (registeredServices.putIfAbsent(serviceName, service) != null) {
                 throw new com.telamin.mongoose.exception.ServiceRegistrationException("cannot register service name is already assigned:" + serviceName);
             }
-            registeredServices.put(serviceName, service);
             Object instance = service.instance();
             //TODO set service name if not an EventFlow service
             if (instance instanceof EventFlowService) {
@@ -587,8 +669,38 @@ public class MongooseServer implements MongooseServerController {
             // are running yet — those groups pick up registeredServices
             // at processor-join time via ComposingEventProcessorAgent.
             // checkForAdded.
-            composingEventProcessorAgents.values().forEach(runner ->
-                    runner.group().broadcastServiceRegistered(service));
+            broadcastToGroups(service, true);
+        }
+    }
+
+    /**
+     * Queue a service (de)registration for every processor group. All or report (review of #67): every group is
+     * attempted, so one stalled group does not keep the others from the service; a group whose control queue cannot
+     * take it (its thread is not draining, see {@code ComposingEventProcessorAgent.enqueue}) is skipped, and the groups
+     * skipped are reported together, once, through {@code ErrorReporting}. The registry is left as the call made it -
+     * the service registered (or removed) - because it is the source of truth: a processor that joins any group later
+     * is given the registry's services, and the injection into other services already done cannot be undone.
+     */
+    private void broadcastToGroups(Service<?> service, boolean register) {
+        List<String> missed = new ArrayList<>();
+        composingEventProcessorAgents.forEach((groupName, runner) -> {
+            try {
+                if (register) {
+                    runner.group().broadcastServiceRegistered(service);
+                } else {
+                    runner.group().broadcastServiceDeregistered(service);
+                }
+            } catch (IllegalStateException notQueued) {
+                missed.add(groupName);
+                log.fine("group " + groupName + " not told of service " + service.serviceName() + ": " + notQueued);
+            }
+        });
+        if (!missed.isEmpty()) {
+            com.telamin.mongoose.service.error.ErrorReporting.report("MongooseServer",
+                    "service '" + service.serviceName() + "' is " + (register ? "registered" : "removed")
+                            + ", but processor group(s) " + missed + " could not be told (control queue full, group not"
+                            + " draining): their running processors were not " + (register ? "given" : "relieved of")
+                            + " it", null, com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
         }
     }
 
@@ -617,8 +729,7 @@ public class MongooseServer implements MongooseServerController {
             log.warning("error stopping service '" + serviceName + "' during remove: " + ex);
         }
         flipServiceUp(serviceName, 0);
-        composingEventProcessorAgents.values().forEach(runner ->
-                runner.group().broadcastServiceDeregistered(removed));
+        broadcastToGroups(removed, false);
     }
 
     /**
@@ -712,6 +823,11 @@ public class MongooseServer implements MongooseServerController {
                     return new ComposingWorkerServiceAgentRunner(group, groupRunner, idleStrategy);
                 });
 
+        if (service.exportedService().instance() instanceof EventSource) {
+            eventSourceAgentGroups.add(agentGroup);
+        } else {
+            nonEventSourceAgentGroups.add(agentGroup);
+        }
         composingAgentRunner.group().registerServer(service);
     }
 
@@ -794,45 +910,68 @@ public class MongooseServer implements MongooseServerController {
                     return new ComposingEventProcessorAgentRunner(group, groupRunner, idleStrategyOverride);
                 });
 
-        if (composingEventProcessorAgentRunner.group().isProcessorRegistered(processorName)) {
-            throw new IllegalArgumentException("cannot add event processor name is already assigned:" + processorName);
+        ProcessorName reservation = new ProcessorName(groupName, processorName);
+        ProcessorRegistration registration = new ProcessorRegistration();
+        if (reservedProcessorNames.putIfAbsent(reservation, registration) != null) {
+            log.warning("refusing to add event processor '" + processorName + "' to group '" + groupName
+                    + "': the name is already assigned in that group");
+            throw new IllegalArgumentException("cannot add event processor name is already assigned:" + processorName
+                    + " in group:" + groupName);
         }
 
-        composingEventProcessorAgentRunner.group().addNamedEventProcessor(() -> {
-            DataFlow eventProcessor = feedConsumer.get();
-            eventProcessor.setAuditLogProcessor(logRecordListener);
-            // Auto-bind the PerformanceMonitorAudit (if present) to the YAML
-            // processor name. Without this the audit's counter labels use
-            // whatever string the SEP author passed to the ctor — which is
-            // usually a different namespace from the YAML processorName and
-            // breaks any UI / metric that joins the two by name.
-            applyProcessorNameToPerfMonAuditor(eventProcessor, processorName);
+        try {
+            composingEventProcessorAgentRunner.group().addNamedEventProcessor(() -> {
+                try {
+                    return buildNamedEventProcessor(processorName, feedConsumer, composingEventProcessorAgentRunner);
+                } catch (RuntimeException | Error e) {
+                    reservedProcessorNames.remove(reservation, registration);
+                    throw e;
+                }
+            }, registration);
+        } catch (RuntimeException | Error e) {
+            // Rejected before the supplier ran: its own failure cleanup cannot release this reservation.
+            reservedProcessorNames.remove(reservation, registration);
+            throw e;
+        }
 
-            // Attach the audit-capture service to this processor. NoOp when
-            // capture is disabled; the Chronicle impl remembers the DataFlow
-            // so a later start(name) call can install a LogRecordListener
-            // without the runtime needing to hand the DataFlow over again.
-            // Hand the capture service the listener this server configured, so it can fan out to it
-            // and restore it on stop. Taken here, at attach: logRecordListener is a static that each
-            // bootServer call overwrites, so reading it later would restore another server's listener.
-            // mongoose#46: the capture service changes this processor's audit sink on the group's own thread
-            auditCaptureService.attach(eventProcessor, processorName, logRecordListener,
-                    composingEventProcessorAgentRunner.group()::runOnAgentThread);
-            if (auditCaptureConfig != null && auditCaptureConfig.getAutoStart() != null
-                    && auditCaptureConfig.getAutoStart().contains(processorName)) {
-                auditCaptureService.start(processorName);
-            }
-            if (started) {
-                log.info("init event processor in already started server processor:'" + eventProcessor + "'");
-//                eventProcessor.setAuditLogLevel(EventLogControlEvent.LogLevel.INFO);
-            }
-            return new NamedEventProcessor(processorName, eventProcessor);
-        });
-
-        if (started && composingEventProcessorAgentRunner.groupRunner().thread() == null) {
+        if (isStarted() && composingEventProcessorAgentRunner.groupRunner().thread() == null) {
             log.info("staring event processor group:'" + groupName + "' for running server");
-            AgentRunner.startOnThread(composingEventProcessorAgentRunner.groupRunner());
+            // two adds racing to a new group both get here; only one may start its thread
+            lifecycleManager.startOnce(composingEventProcessorAgentRunner.groupRunner());
         }
+    }
+
+    /** Build a processor from its supplier and wire it into the server (audit, perf monitor, capture). */
+    private NamedEventProcessor buildNamedEventProcessor(String processorName, Supplier<DataFlow> feedConsumer,
+                                                         ComposingEventProcessorAgentRunner composingEventProcessorAgentRunner) {
+        DataFlow eventProcessor = feedConsumer.get();
+        eventProcessor.setAuditLogProcessor(logRecordListener);
+        // Auto-bind the PerformanceMonitorAudit (if present) to the YAML
+        // processor name. Without this the audit's counter labels use
+        // whatever string the SEP author passed to the ctor — which is
+        // usually a different namespace from the YAML processorName and
+        // breaks any UI / metric that joins the two by name.
+        applyProcessorNameToPerfMonAuditor(eventProcessor, processorName);
+
+        // Attach the audit-capture service to this processor. NoOp when
+        // capture is disabled; the Chronicle impl remembers the DataFlow
+        // so a later start(name) call can install a LogRecordListener
+        // without the runtime needing to hand the DataFlow over again.
+        // Hand the capture service the listener this server configured, so it can fan out to it
+        // and restore it on stop. Taken here, at attach: logRecordListener is a static that each
+        // bootServer call overwrites, so reading it later would restore another server's listener.
+        // mongoose#46: the capture service changes this processor's audit sink on the group's own thread
+        auditCaptureService.attach(eventProcessor, processorName, logRecordListener,
+                composingEventProcessorAgentRunner.group()::runOnAgentThread);
+        if (auditCaptureConfig != null && auditCaptureConfig.getAutoStart() != null
+                && auditCaptureConfig.getAutoStart().contains(processorName)) {
+            auditCaptureService.start(processorName);
+        }
+        if (isStarted()) {
+            log.info("init event processor in already started server processor:'" + eventProcessor + "'");
+//                eventProcessor.setAuditLogLevel(EventLogControlEvent.LogLevel.INFO);
+        }
+        return new NamedEventProcessor(processorName, eventProcessor);
     }
 
     /**
@@ -900,7 +1039,14 @@ public class MongooseServer implements MongooseServerController {
         log.info("stopProcessor:" + processorName + " in group:" + groupName);
         var processorAgent = composingEventProcessorAgents.get(groupName);
         if (processorAgent != null) {
-            processorAgent.group().removeEventProcessorByName(processorName);
+            ProcessorName reservation = new ProcessorName(groupName, processorName);
+            ProcessorRegistration registration = reservedProcessorNames.get(reservation);
+            if (registration != null) {
+                // A stop belongs to this accepted add, including before its supplier runs. Release the name only when
+                // that stop is consumed, and never remove a newer reservation or stop a replacement under that name.
+                processorAgent.group().removeEventProcessorByName(processorName, registration,
+                        () -> reservedProcessorNames.remove(reservation, registration));
+            }
         }
     }
 
@@ -995,6 +1141,10 @@ public class MongooseServer implements MongooseServerController {
      */
     @SneakyThrows
     public void start() {
+        if (!lifecycleState.compareAndSet(LifecycleState.NEW, LifecycleState.STARTING)) {
+            throw new IllegalStateException("server cannot start: it is " + lifecycleState.get()
+                    + " (a server starts once and is not restarted after stop)");
+        }
         ConcurrentHashMap<String, LifecycleManager.GroupRunner> serviceGroups = new ConcurrentHashMap<>();
         composingServiceAgents.forEach((k, v) -> serviceGroups.put(k, new LifecycleManager.GroupRunner() {
             @Override
@@ -1024,7 +1174,21 @@ public class MongooseServer implements MongooseServerController {
                 return v.group();
             }
         }));
-        lifecycleManager.start(registeredServices, serviceGroups, processorGroups, flowManager, registeredAgentServices);
+        long startupTimeoutMillis = mongooseServerConfig == null
+                ? MongooseServerConfig.DEFAULT_STARTUP_TIMEOUT_MILLIS
+                : mongooseServerConfig.getStartupTimeoutMillis();
+        try {
+            startupThread = Thread.currentThread();
+            lifecycleManager.start(registeredServices, serviceGroups, processorGroups, flowManager, registeredAgentServices,
+                    startupTimeoutMillis);
+        } catch (Throwable t) {
+            if (isStopRequested() && !(t.getMessage() != null && t.getMessage().startsWith(LifecycleManager.STOPPED_DURING_START))) {
+                throw new IllegalStateException(LifecycleManager.STOPPED_DURING_START, t);
+            }
+            throw t;   // the state stays STARTING: stop() still cleans up what a failed start left running
+        } finally {
+            startupThread = null;
+        }
         // Flip the per-service "up" gauge to 1 for every service that's been
         // started via the lifecycle manager. The startService() entry point
         // handles per-call flips; this covers the global start() path that
@@ -1032,7 +1196,10 @@ public class MongooseServer implements MongooseServerController {
         for (String name : registeredServices.keySet()) {
             flipServiceUp(name, 1);
         }
-        started = true;
+        // a stop that landed while starting has already shut everything down: never mark that server started
+        if (!lifecycleState.compareAndSet(LifecycleState.STARTING, LifecycleState.STARTED)) {
+            throw new IllegalStateException(LifecycleManager.STOPPED_DURING_START);
+        }
 
         // Pick up any event processor groups registered DURING service.start() — e.g. by
         // svc-loader-yaml's EventHandlerLoader, which calls addEventProcessor() from inside
@@ -1040,12 +1207,24 @@ public class MongooseServer implements MongooseServerController {
         // the processorGroups snapshot above has already been passed to LifecycleManager,
         // so without this pass their agent thread would never be started and the loaded
         // processor would receive no events.
-        composingEventProcessorAgents.forEach((groupName, runner) -> {
+        for (var entry : composingEventProcessorAgents.entrySet()) {
+            String groupName = entry.getKey();
+            var runner = entry.getValue();
+            if (!isStarted()) {
+                log.info("server stopped after startup; skipping remaining late processor groups");
+                return;
+            }
             if (runner.groupRunner().thread() == null) {
                 log.info("late-starting event processor agent registered during boot: " + groupName);
-                AgentRunner.startOnThread(runner.groupRunner());
+                try {
+                    lifecycleManager.startAgent(runner.groupRunner());
+                } catch (IllegalStateException refused) {
+                    if (!isStopRequested()) throw refused;
+                    log.info("server stopped after startup; skipping late processor group " + groupName);
+                    return;
+                }
             }
-        });
+        }
     }
 
     /**
@@ -1072,13 +1251,117 @@ public class MongooseServer implements MongooseServerController {
     }
 
     /**
-     * Stops the server and all its components.
-     * This method stops all event processor agents, agent hosted services, the flowManager, and all registered services.
-     * It should be called when the server is no longer needed to free up resources.
+     * Stops the server and all its components, in order (mongoose#56): the feeds stop (agent groups hosting only feeds
+     * close, feeds sharing a group with other services are taken off it, then every event source is stopped and torn
+     * down); events already queued to processors drain, bounded by
+     * {@link MongooseServerConfig#getShutdownDrainTimeoutMillis()}; each processor group stops and tears down its
+     * processors on its own thread; then the remaining agent hosted services and registered services stop.
+     * <p>
+     * The stop runs once. Called from an ordinary thread, it returns when the server has stopped, and so does a call
+     * that races an in-progress stop. Called from one of the server's own agent threads (a processor's event handler, an
+     * admin command, an agent hosted service), or from a synchronous startup callback, it cannot wait for itself: it
+     * hands the stop to a new
+     * {@code mongoose-server-stop} thread and returns at once. Use {@link #awaitStopped(long, java.util.concurrent.TimeUnit)} from another
+     * thread to wait for it to finish.
      */
     public void stop() {
-        lifecycleManager.stop(started, toGroupRunnerMap(composingEventProcessorAgents), toGroupRunnerMap(composingServiceAgents), registeredServices);
-        started = false;
+        boolean onAgentThread = isServerAgentThread(Thread.currentThread()) || Thread.currentThread() == startupThread
+                || Thread.currentThread() == stopThread;
+        while (true) {
+            LifecycleState state = lifecycleState.get();
+            if (state == LifecycleState.NEW) {
+                log.info("server not started, nothing to stop");
+                return;
+            }
+            if (state == LifecycleState.STOPPING || state == LifecycleState.STOPPED) {
+                log.info("server stop already in progress or done");
+                if (!onAgentThread) {
+                    awaitStopCompletedUninterruptibly();
+                }
+                return;
+            }
+            // STARTING (a start in progress, or one that failed) or STARTED
+            if (lifecycleState.compareAndSet(state, LifecycleState.STOPPING)) {
+                break;
+            }
+        }
+        if (onAgentThread) {
+            log.info("stop called on lifecycle or agent thread " + Thread.currentThread().getName()
+                    + ", running the ordered shutdown on a separate thread");
+            Thread stopper = new Thread(this::runOrderedStop, "mongoose-server-stop");
+            stopper.setDaemon(false);
+            stopper.start();
+            return;
+        }
+        runOrderedStop();
+    }
+
+    /** True once {@link #start()} has completed and until {@link #stop()} begins. */
+    public boolean isStarted() {
+        return lifecycleState.get() == LifecycleState.STARTED;
+    }
+
+    private boolean isStopRequested() {
+        LifecycleState state = lifecycleState.get();
+        return state == LifecycleState.STOPPING || state == LifecycleState.STOPPED;
+    }
+
+    /**
+     * Wait, at most {@code timeout}, for a stop to finish: useful after a {@link #stop()} that was called on an agent
+     * thread and so returned before the server had stopped.
+     *
+     * @return true once the ordered shutdown has finished, false if it has not (or no stop was requested) in time
+     */
+    public boolean awaitStopped(long timeout, java.util.concurrent.TimeUnit unit) throws InterruptedException {
+        return stopCompleted.await(timeout, unit);
+    }
+
+    private void runOrderedStop() {
+        stopThread = Thread.currentThread();
+        try {
+            long drainTimeoutMillis = mongooseServerConfig == null
+                    ? MongooseServerConfig.DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS
+                    : mongooseServerConfig.getShutdownDrainTimeoutMillis();
+            lifecycleManager.stop(true, toGroupRunnerMap(composingEventProcessorAgents), toGroupRunnerMap(composingServiceAgents),
+                    registeredServices, flowManager, drainTimeoutMillis);
+        } finally {
+            // the processors have stopped: close every audit capture still recording, so its queue is flushed and
+            // closed rather than left open until the JVM exits
+            try {
+                auditCaptureService.stopAll();
+            } catch (RuntimeException e) {
+                log.log(java.util.logging.Level.WARNING, "audit capture could not be stopped at server stop", e);
+            }
+            lifecycleState.set(LifecycleState.STOPPED);
+            stopCompleted.countDown();
+            stopThread = null;
+        }
+    }
+
+    private void awaitStopCompletedUninterruptibly() {
+        boolean interrupted = false;
+        while (true) {
+            try {
+                stopCompleted.await();
+                break;
+            } catch (InterruptedException e) {
+                interrupted = true;
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /** True when {@code thread} runs one of this server's agent groups. */
+    private boolean isServerAgentThread(Thread thread) {
+        for (ComposingEventProcessorAgentRunner runner : composingEventProcessorAgents.values()) {
+            if (runner.groupRunner().thread() == thread) return true;
+        }
+        for (ComposingWorkerServiceAgentRunner runner : composingServiceAgents.values()) {
+            if (runner.groupRunner().thread() == thread) return true;
+        }
+        return false;
     }
 
     private ConcurrentHashMap<String, LifecycleManager.GroupRunner> toGroupRunnerMap(ConcurrentHashMap<String, ? extends Object> source) {
@@ -1111,6 +1394,22 @@ public class MongooseServer implements MongooseServerController {
                     @Override
                     public void startCompleteIfSupported() {
                         cws.group().startComplete();
+                    }
+
+                    @Override
+                    public boolean hostsEventSource() {
+                        return eventSourceAgentGroups.contains(k);
+                    }
+
+                    @Override
+                    public boolean hostsOnlyEventSources() {
+                        return eventSourceAgentGroups.contains(k) && !nonEventSourceAgentGroups.contains(k);
+                    }
+
+                    @Override
+                    public boolean removeEventSources(long timeoutMillis) throws InterruptedException {
+                        return cws.group().removeHostedAgents(
+                                agent -> agent.exportedService().instance() instanceof EventSource, timeoutMillis);
                     }
                 });
             }

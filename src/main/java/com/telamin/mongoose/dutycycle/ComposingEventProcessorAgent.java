@@ -22,7 +22,7 @@ import com.telamin.mongoose.service.scheduler.DeadWheelScheduler;
 import com.telamin.mongoose.service.scheduler.SchedulerService;
 import lombok.extern.java.Log;
 import org.agrona.concurrent.DynamicCompositeAgent;
-import org.agrona.concurrent.OneToOneConcurrentArrayQueue;
+import org.agrona.concurrent.ManyToOneConcurrentArrayQueue;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -36,11 +36,31 @@ import java.util.function.Supplier;
  * <p>
  * Responsibilities:
  * <ul>
- *   <li>Accepts registrations/removals of named event processors</li>
+ *   <li>Accepts registrations/removals of named event processors; a removed (stopped) processor and one dropped after
+ *       a failed start leave by the same path, which releases its subscriptions, timers, replay bindings and the
+ *       server's bindings (mongoose#71)</li>
  *   <li>Wires processors to event queues via the EventFlowManager on first subscription</li>
  *   <li>Registers shared services and a SchedulerService into each processor</li>
  *   <li>Adds/removes queue reader agents dynamically as subscriptions change</li>
  * </ul>
+ * <h2>Failure isolation (mongoose#57)</h2>
+ * One processor's failure is kept from the group's agent error handler (under bootServer, {@code GlobalErrorHandler},
+ * which exits the JVM), reported once through {@code ErrorReporting} at {@code ERROR}, and the rest of the group runs on:
+ * <ul>
+ *   <li>a failed {@code start()} of a processor added at runtime: the processor is dropped and everything the group
+ *       holds for it released (its tearDown, subscriptions, timers, replay bindings, the server's bindings);</li>
+ *   <li>a failed {@code start()} at boot, among the processors queued before the group starts: <b>fails the boot by
+ *       default</b>. The processor is dropped as above and a {@link ProcessorStartException} naming the group and the
+ *       processor is thrown out of {@code onStart}, so it reaches the agent's error handler and the group does not
+ *       become active. {@code MongooseServerConfig.isolateProcessorStartFailuresAtBoot} opts into isolating it
+ *       instead, so the server boots without it;</li>
+ *   <li>a failed {@code stop()}/{@code tearDown()}: the processor is still removed and everything the group holds for
+ *       it released, as for a stop that succeeds (mongoose#71);</li>
+ *   <li>a failed {@code @ServiceRegistered}/{@code @ServiceDeregistered} handler: reported; the processor keeps running;</li>
+ *   <li>a failed timer callback: reported by the scheduler, naming the processor; the other timers fire.</li>
+ * </ul>
+ * Every {@code Throwable} is caught on these paths except {@link VirtualMachineError} ({@code OutOfMemoryError},
+ * {@code StackOverflowError}, ...), which propagates to the agent's error handler as before.
  */
 @Experimental
 @Log
@@ -50,18 +70,44 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     private final ConcurrentHashMap<String, Service<?>> registeredServices;
     private final ConcurrentHashMap<String, NamedEventProcessor> registeredEventProcessors = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<EventSubscriptionKey<?>, EventQueueToEventProcessor> queueProcessorMap = new ConcurrentHashMap<>();
-    private final OneToOneConcurrentArrayQueue<Supplier<NamedEventProcessor>> toStartList = new OneToOneConcurrentArrayQueue<>(128);
-    private final OneToOneConcurrentArrayQueue<String> toStopList = new OneToOneConcurrentArrayQueue<>(128);
-    // Dynamic-service broadcast queues. MongooseServer.registerService /
-    // removeService publish onto these so the agent thread (and only the
+    /**
+     * Control queues (mongoose#58): fed from several threads at once - admin, loaders, and every service-agent thread
+     * registering its service at boot - and drained by this group's thread alone, so many-to-one. A full queue is
+     * waited on (see {@link #enqueue}), never dropped.
+     */
+    static final int CONTROL_QUEUE_CAPACITY = 4096;
+    /** Default for how long a producer waits for this group's thread to make room in a full control queue. */
+    static final long CONTROL_QUEUE_FULL_TIMEOUT_NANOS = java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+    private volatile long controlQueueFullTimeoutNanos = CONTROL_QUEUE_FULL_TIMEOUT_NANOS;
+    private record ProcessorStart(Supplier<NamedEventProcessor> init, ProcessorRegistration registration) { }
+    private record ProcessorStop(String name, ProcessorRegistration registration, Runnable completed) { }
+    private final ManyToOneConcurrentArrayQueue<ProcessorStart> toStartList = new ManyToOneConcurrentArrayQueue<>(CONTROL_QUEUE_CAPACITY);
+    private final ManyToOneConcurrentArrayQueue<ProcessorStop> toStopList = new ManyToOneConcurrentArrayQueue<>(CONTROL_QUEUE_CAPACITY);
+    /** Registration identity is used only for lifecycle operations, never for event delivery. */
+    private final java.util.Map<NamedEventProcessor, ProcessorRegistration> registrations = new java.util.IdentityHashMap<>();
+    // Dynamic-service broadcast queue. MongooseServer.registerService /
+    // removeService publish onto it so the agent thread (and only the
     // agent thread) calls eventProcessor.registerService /
     // deRegisterService on every running DataFlow in this group — that's
     // what fires @ServiceRegistered / @ServiceDeregistered on processor-
     // internal nodes (SubscriptionManagerNode for feeds, SinkPublisher
     // for sinks, plus any operator-defined node carrying the annotation).
-    private final OneToOneConcurrentArrayQueue<Service<?>> servicesToBroadcastRegister = new OneToOneConcurrentArrayQueue<>(128);
-    private final OneToOneConcurrentArrayQueue<Service<?>> servicesToBroadcastDeregister = new OneToOneConcurrentArrayQueue<>(128);
+    // One queue for both, so a service's deregistration is never handled
+    // before the registration queued ahead of it (mongoose#60 item 1).
+    private final ManyToOneConcurrentArrayQueue<ServiceBroadcast> servicesToBroadcast = new ManyToOneConcurrentArrayQueue<>(CONTROL_QUEUE_CAPACITY);
+
+    private record ServiceBroadcast(Service<?> service, boolean register) {
+    }
     private final List<EventQueueToEventProcessor> queueReadersToAdd = new ArrayList<>();
+    /**
+     * mongoose#60 (item 1): the services each processor has been handed, by identity, so each is handed over once. A
+     * service registered while the group starts is both in {@code registeredServices} (read when a processor joins)
+     * and queued for broadcast; without this the processor got it from both. A register that threw counts as delivered
+     * (see {@link #deliverService}). Agent thread only.
+     */
+    private final java.util.Map<DataFlow, java.util.Set<Service<?>>> servicesDelivered = new java.util.IdentityHashMap<>();
+    /** mongoose#55: readers whose last listener left, waiting for the composite to take them out. Agent thread only. */
+    private final List<EventQueueToEventProcessor> queueReadersToRemove = new ArrayList<>();
     private final MongooseServer mongooseServer;
     private final DeadWheelScheduler scheduler;
     private final Service<SchedulerService> schedulerService;
@@ -78,6 +124,10 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     private final org.agrona.concurrent.ManyToOneConcurrentArrayQueue<Runnable> onAgentThread =
             new org.agrona.concurrent.ManyToOneConcurrentArrayQueue<>(256);
     private volatile Thread agentThread;
+    /** mongoose#46: set as the group closes; hand-offs are refused after it. */
+    private volatile boolean closed;
+    /** Without a server: isolate a start failure in onStart instead of failing the group's start (review of #66). */
+    private volatile boolean isolateStartFailuresAtBoot;
 
     public ComposingEventProcessorAgent(String roleName,
                                         EventFlowManager eventFlowManager,
@@ -103,16 +153,63 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         this.scheduler = scheduler;
         this.registeredServices = registeredServices;
         this.schedulerService = new Service<>(scheduler, SchedulerService.class);
+        scheduler.setProcessorNames(this::nameOf);
         this.eventsProcessedCounter = eventFlowManager.getCountersService().agentEventsCounter(roleName);
         this.idleCyclesCounter = eventFlowManager.getCountersService().agentIdleCyclesCounter(roleName);
     }
 
     public void addNamedEventProcessor(Supplier<NamedEventProcessor> initFunction) {
-        toStartList.add(initFunction);
+        addNamedEventProcessor(initFunction, null);
+    }
+
+    /** Server-owned registration identity, so a delayed stop cannot address a replacement by name alone. */
+    public void addNamedEventProcessor(Supplier<NamedEventProcessor> initFunction, ProcessorRegistration registration) {
+        enqueue(toStartList, new ProcessorStart(initFunction, registration), "processor-start");
     }
 
     public void removeEventProcessorByName(String name) {
-        toStopList.add(name);
+        removeEventProcessorByName(name, null, null);
+    }
+
+    /** Complete on this group's thread after consuming the stop, including a stop of an add still queued. */
+    public void removeEventProcessorByName(String name, ProcessorRegistration registration, Runnable completed) {
+        enqueue(toStopList, new ProcessorStop(name, registration, completed), "processor-stop");
+    }
+
+    /**
+     * Queue {@code item} for this group's thread. Safe from any number of threads at once (mongoose#58). When the queue
+     * is full the caller backs off until the group's thread drains it; it fails with a clear error, rather than drop
+     * the item, only when that cannot happen: it is the group's own thread (immediately), or the queue stays full for
+     * the control-queue timeout, 10 s by default ({@link #setControlQueueFullTimeout}): the group is not running.
+     *
+     * @throws IllegalStateException naming the group and the queue when the item cannot be queued
+     */
+    private <T> void enqueue(ManyToOneConcurrentArrayQueue<T> queue, T item, String what) {
+        if (queue.offer(item)) {
+            return;
+        }
+        long timeoutNanos = controlQueueFullTimeoutNanos;
+        long deadline = System.nanoTime() + timeoutNanos;
+        while (!queue.offer(item)) {
+            if (Thread.currentThread() == agentThread) {
+                throw new IllegalStateException("group " + roleName() + ": " + what + " queue is full ("
+                        + queue.capacity() + ") and cannot drain while its own thread waits on it");
+            }
+            if (System.nanoTime() - deadline > 0) {
+                throw new IllegalStateException("group " + roleName() + ": " + what + " queue stayed full ("
+                        + queue.capacity() + ") for " + java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(timeoutNanos)
+                        + " ms; is the group's thread running?");
+            }
+            java.util.concurrent.locks.LockSupport.parkNanos(50_000);
+        }
+    }
+
+    /**
+     * How long a producer waits on a full control queue for this group's thread to drain it before failing; 10 s by
+     * default.
+     */
+    public void setControlQueueFullTimeout(java.time.Duration timeout) {
+        this.controlQueueFullTimeoutNanos = Objects.requireNonNull(timeout, "timeout is null").toNanos();
     }
 
     /** Queue a service for broadcast {@code @ServiceRegistered} dispatch
@@ -122,7 +219,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
      *  agent thread via {@link #checkForBroadcasts()} so processor-
      *  internal state stays single-threaded. */
     public void broadcastServiceRegistered(Service<?> service) {
-        servicesToBroadcastRegister.add(service);
+        enqueue(servicesToBroadcast, new ServiceBroadcast(service, true), "service broadcast");
     }
 
     /** Symmetric to {@link #broadcastServiceRegistered}. Fires
@@ -130,7 +227,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
      *  group — that's how SubscriptionManagerNode unbinds a feed and how
      *  SinkPublisher nulls its consumer reference. */
     public void broadcastServiceDeregistered(Service<?> service) {
-        servicesToBroadcastDeregister.add(service);
+        enqueue(servicesToBroadcast, new ServiceBroadcast(service, false), "service broadcast");
     }
 
     @Override
@@ -144,6 +241,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         }
         log.info("onStart " + roleName());
         agentThread = Thread.currentThread();
+        // the processors queued before the group starts are its boot processors: by default a failed start among them
+        // fails the group's start, so the server's boot fails, rather than boot on without it (review of #66)
+        startQueued(failsBootOnStartFailure());
         checkForAdded();
         super.onStart();
     }
@@ -173,21 +273,24 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
     }
 
     /**
-     * Run {@code work} on this group's thread (mongoose#46): directly when called on it, or when the group is not
-     * running (then nothing else drives its processors); otherwise queued for the start of the next duty cycle. Best
+     * Run {@code work} on this group's thread (mongoose#46): directly when called on it, or when the group has not
+     * started yet (then nothing else drives its processors); otherwise queued for the start of the next duty cycle. A
+     * full queue backs off as {@link #enqueue} does, bounded by the control-queue timeout. Refused with an
+     * {@link IllegalStateException} once the group has closed: its processors are gone, so nothing is applied. Best
      * effort: work queued as the group closes may be left unrun, so a caller that needs it applied awaits it with a
      * timeout ({@link AgentHandoff}), which then cancels it rather than leave it half applied.
      */
     public void runOnAgentThread(Runnable work) {
+        if (closed) {
+            throw new IllegalStateException("group " + roleName() + " is not running: it has closed");
+        }
         Thread agent = agentThread;
         if (agent == null || agent == Thread.currentThread() || !agent.isAlive()) {
             work.run();
             return;
         }
         Runnable once = AgentHandoff.once(work);
-        if (!onAgentThread.offer(once)) {
-            throw new IllegalStateException("group " + roleName() + " cannot take more work from other threads");
-        }
+        enqueue(onAgentThread, once, "agent hand-off");        // a full queue backs off, bounded (mongoose#58)
         // best effort, not a delivery guarantee: if the thread stopped between the check above and the offer, run it
         // here (the claim makes it run once, whichever gets to it). A window remains (a close that drains before this
         // offer and clears the thread after this re-read), in which the work is left unrun; a caller that awaits it
@@ -198,10 +301,48 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
 
     @Override
     public void onClose() {
+        closed = true;                                                    // no work is taken after this
         for (Runnable r; (r = onAgentThread.poll()) != null; ) r.run();   // work handed over before the close still runs
+        stopAndTearDownProcessors();   // mongoose#56: on the group's thread, as every other processor callback
         agentThread = null;
         log.info("onClose " + roleName());
         super.onClose();
+    }
+
+    /**
+     * mongoose#56: a closing group stops and tears down each processor it still hosts, once (it is removed first). A
+     * processor that throws is reported at ERROR through {@link com.telamin.mongoose.service.error.ErrorReporting}
+     * and the others are still stopped; a {@link VirtualMachineError} is rethrown (the mongoose#57 policy).
+     */
+    private void stopAndTearDownProcessors() {
+        for (String name : new ArrayList<>(registeredEventProcessors.keySet())) {
+            NamedEventProcessor named = registeredEventProcessors.remove(name);
+            registrations.remove(named);
+            if (named == null || !(named.eventProcessor() instanceof Lifecycle lifecycle)) {
+                continue;
+            }
+            try {
+                lifecycle.stop();
+            } catch (VirtualMachineError fatal) {
+                throw fatal;
+            } catch (Throwable t) {
+                reportCloseFailure(name, "failed to stop", t);
+            }
+            try {
+                lifecycle.tearDown();
+            } catch (VirtualMachineError fatal) {
+                throw fatal;
+            } catch (Throwable t) {
+                reportCloseFailure(name, "failed to tear down", t);
+            }
+        }
+    }
+
+    private void reportCloseFailure(String processorName, String what, Throwable t) {
+        com.telamin.mongoose.service.error.ErrorReporting.report(
+                "ComposingEventProcessorAgent:" + roleName(),
+                "processor '" + processorName + "' in group '" + roleName() + "' " + what + " on close: " + t, t,
+                com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
     }
 
     @Override
@@ -238,20 +379,54 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
 
     @Override
     public void unSubscribe(DataFlow subscriber, EventSubscriptionKey<?> subscriptionKey) {
-        if (queueProcessorMap.containsKey(subscriptionKey)) {
-            EventQueueToEventProcessor eventQueueToEventProcessor = queueProcessorMap.get(subscriptionKey);
-            if (eventQueueToEventProcessor.deregisterProcessor(subscriber) == 0) {
-                log.info("EventQueueToEventProcessor listener count = 0, removing subscription:" + subscriptionKey);
-                queueProcessorMap.remove(subscriptionKey);
-                eventFlowManager.unSubscribe(subscriptionKey);
-            }
+        EventQueueToEventProcessor eventQueueToEventProcessor = queueProcessorMap.get(subscriptionKey);
+        if (eventQueueToEventProcessor != null) {
+            deregister(subscriber, subscriptionKey, eventQueueToEventProcessor);
         }
     }
 
     @Override
     public void removeAllSubscriptions(DataFlow subscriber) {
         log.info("removing all subscriptions for:" + subscriber + " " + roleName());
-        queueProcessorMap.values().forEach(q -> q.deregisterProcessor(subscriber));
+        for (var entry : queueProcessorMap.entrySet()) {
+            deregister(subscriber, entry.getKey(), entry.getValue());
+        }
+    }
+
+    /**
+     * Deregister {@code subscriber} from one reader. When that leaves the reader with no listeners it is dead: its
+     * queue is no longer a target of the feed (the reader's unsubscribe action removed it), so it is released here
+     * (mongoose#55) - the map entry goes, so a later subscribe builds a fresh reader rather than reuse this one; the
+     * source subscription is released once no group reads the key; and the reader leaves the composite rather than
+     * poll a queue nobody fills.
+     */
+    private void deregister(DataFlow subscriber, EventSubscriptionKey<?> subscriptionKey, EventQueueToEventProcessor reader) {
+        if (reader.deregisterProcessor(subscriber) > 0) {
+            return;
+        }
+        if (!queueProcessorMap.remove(subscriptionKey, reader)) {
+            return; // already released
+        }
+        log.info("EventQueueToEventProcessor listener count = 0, removing subscription:" + subscriptionKey);
+        // the group's own bookkeeping first, so a failing source cannot leak the reader: a reader not yet added to the
+        // composite is simply never added; one already in it is taken out
+        if (!queueReadersToAdd.remove(reader)) {
+            queueReadersToRemove.add(reader);
+        } else {
+            // Never added to the composite, so no later composite removal will close it and release its backlog.
+            reader.onClose();
+        }
+        // the source is unsubscribed only when no group reads the key any more (EventFlowManager counts readers across
+        // groups). Its failure is the source's: reported, and it neither stops this release nor escapes the duty cycle
+        try {
+            eventFlowManager.releaseReader(subscriptionKey);
+        } catch (VirtualMachineError fatal) {
+            throw fatal;
+        } catch (Throwable t) {
+            String message = "group '" + roleName() + "' failed to unsubscribe the source of " + subscriptionKey + ": " + t;
+            com.telamin.mongoose.service.error.ErrorReporting.report("ComposingEventProcessorAgent:" + roleName(),
+                    message, t, com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
+        }
     }
 
     /** REPLAY mode's driver for this group, or null. */
@@ -305,33 +480,104 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         return registeredEventProcessors.values();
     }
 
-    private void checkForAdded() {
+    /**
+     * Whether a processor start that fails in this group's {@code onStart} fails the group's start (and so the server's
+     * boot) instead of being isolated. True while the server is booting unless
+     * {@link com.telamin.mongoose.config.MongooseServerConfig#isIsolateProcessorStartFailuresAtBoot()} is set; false once
+     * the server has started (a group started for a processor added at runtime isolates). Without a server (unit use)
+     * it follows {@link #setIsolateStartFailuresAtBoot(boolean)}.
+     */
+    private boolean failsBootOnStartFailure() {
+        return mongooseServer == null ? !isolateStartFailuresAtBoot : mongooseServer.failsBootOnProcessorStartFailure();
+    }
+
+    /**
+     * Isolate, rather than fail on, a processor start failure in this group's {@code onStart}. Consulted only when the
+     * group has no server; with one, {@code MongooseServerConfig.isolateProcessorStartFailuresAtBoot} decides.
+     */
+    public void setIsolateStartFailuresAtBoot(boolean isolateStartFailuresAtBoot) {
+        this.isolateStartFailuresAtBoot = isolateStartFailuresAtBoot;
+    }
+
+    private void startQueued(boolean failFast) {
         if (!toStartList.isEmpty()) {
-            toStartList.drain(init -> {
-                NamedEventProcessor namedEventProcessor = init.get();
-                DataFlow eventProcessor = namedEventProcessor.eventProcessor();
-                registeredEventProcessors.put(namedEventProcessor.name(), namedEventProcessor);
-                com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(eventProcessor);
-                // replay: a recorded processor gets a live recording clock, a replayed one a pinned replay clock. Before
-                // anything that can subscribe it (services, the feed): a replayed processor's live inputs are muted as
-                // each subscription is made, so the replayer must already know it
-                if (recorder != null) recorder.attach(namedEventProcessor.name(), eventProcessor);
-                if (replayer != null) replayer.attach(namedEventProcessor.name(), eventProcessor);
-                eventProcessor.registerService(schedulerService);
-                registeredServices.values().forEach(svc -> eventProcessor.registerService(serviceFor(eventProcessor, svc)));
-                eventProcessor.addEventFeed(this);
-                if (eventProcessor instanceof Lifecycle) {
-                    ((Lifecycle) eventProcessor).start();
-                    ((Lifecycle) eventProcessor).startComplete();
-                }
-                com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
-            });
+            toStartList.drain(init -> startProcessor(init, failFast));
         }
+    }
+
+    private void checkForAdded() {
+        startQueued(false);
 
         if (!queueReadersToAdd.isEmpty()) {
             if (status() == Status.ACTIVE && tryAdd(queueReadersToAdd.get(0))) {
                 queueReadersToAdd.remove(0);
             }
+        }
+
+        // one at a time, as the composite takes one pending removal per duty cycle; it closes the reader once removed
+        if (!queueReadersToRemove.isEmpty()) {
+            if (status() == Status.ACTIVE && tryRemove(queueReadersToRemove.get(0))) {
+                queueReadersToRemove.remove(0);
+            }
+        }
+    }
+
+    /**
+     * Build, wire and start one processor.
+     * <p>
+     * A failure here is the processor's, not the group's (mongoose#57): the processor is dropped
+     * ({@link #processorDropped}) and the other processors in the group run on. With {@code failFast} (a boot processor,
+     * by default) the failure is then rethrown as a {@link ProcessorStartException} naming the group and the processor,
+     * so the group's {@code onStart} fails and the server's boot with it; otherwise it is reported through
+     * {@code ErrorReporting} and the group carries on.
+     * <p>
+     * Caught: every {@code Throwable} except {@link VirtualMachineError} ({@code OutOfMemoryError},
+     * {@code StackOverflowError}, ...), which propagates to the agent's error handler as before, and under bootServer
+     * still exits the JVM.
+     */
+    private void startProcessor(ProcessorStart start, boolean failFast) {
+        if (start.registration() != null) {
+            start.registration().startTaken = true;
+            if (start.registration().cancelled) {
+                return; // its stop won before the start was queued: do not even run the supplier
+            }
+        }
+        NamedEventProcessor namedEventProcessor = null;
+        try {
+            namedEventProcessor = start.init().get();
+            DataFlow eventProcessor = namedEventProcessor.eventProcessor();
+            registeredEventProcessors.put(namedEventProcessor.name(), namedEventProcessor);
+            registrations.put(namedEventProcessor, start.registration());
+            com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(eventProcessor);
+            // replay: a recorded processor gets a live recording clock, a replayed one a pinned replay clock. Before
+            // anything that can subscribe it (services, the feed): a replayed processor's live inputs are muted as
+            // each subscription is made, so the replayer must already know it
+            if (recorder != null) recorder.attach(namedEventProcessor.name(), eventProcessor);
+            if (replayer != null) replayer.attach(namedEventProcessor.name(), eventProcessor);
+            eventProcessor.registerService(schedulerService);
+            for (Service<?> svc : registeredServices.values()) {
+                if (servicesDeliveredTo(eventProcessor).add(svc)) {
+                    eventProcessor.registerService(serviceFor(eventProcessor, svc));
+                }
+            }
+            eventProcessor.addEventFeed(this);
+            if (eventProcessor instanceof Lifecycle) {
+                ((Lifecycle) eventProcessor).start();
+                ((Lifecycle) eventProcessor).startComplete();
+            }
+        } catch (VirtualMachineError fatal) {
+            throw fatal;
+        } catch (Throwable t) {
+            String name = namedEventProcessor == null ? "<not built>" : namedEventProcessor.name();
+            if (namedEventProcessor != null) {
+                processorDropped(namedEventProcessor);
+            }
+            if (failFast) {
+                throw new ProcessorStartException(roleName(), name, t);   // reported once, by the agent's error handler
+            }
+            reportProcessorFailure(name, "failed to start, dropped from the group", t);
+        } finally {
+            com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
         }
     }
 
@@ -339,15 +585,112 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
         if (toStopList.isEmpty()) {
             return;
         }
-        toStopList.drain(name -> {
-            if (registeredEventProcessors.containsKey(name)) {
-                var eventProcessor = registeredEventProcessors.remove(name).eventProcessor();
-                if (eventProcessor instanceof Lifecycle) {
-                    ((Lifecycle) eventProcessor).stop();
-                    ((Lifecycle) eventProcessor).tearDown();
-                }
+        // start what was queued before the stop first: a stop made just after an add, while the add is still queued,
+        // then finds its processor instead of missing it and leaving it to start and run on
+        startQueued(false);
+        toStopList.drain(this::stopProcessor);
+    }
+
+    /**
+     * Stop one processor (mongoose#71): it leaves the group by {@link #release}, the same path a processor dropped after
+     * a failed start takes, so its timers, replay bindings and server bindings go with it. It leaves the group even when
+     * its {@code stop()} or {@code tearDown()} throws (mongoose#57).
+     */
+    private void stopProcessor(ProcessorStop stop) {
+        try {
+            NamedEventProcessor named = registeredEventProcessors.get(stop.name());
+            if (named != null && (stop.registration() == null || registrations.get(named) == stop.registration())) {
+                release(named, true);     // tells the server (processorStopped), once
+            } else if (stop.registration() != null && !stop.registration().startTaken) {
+                // No group-owned tombstone: a rejected enqueue may mean this start never arrives.
+                stop.registration().cancelled = true;
             }
-        });
+        } finally {
+            if (stop.completed() != null) stop.completed().run();
+        }
+    }
+
+    /** A processor whose start failed leaves the group (review of #66): {@link #release}, without a {@code stop()}. */
+    private void processorDropped(NamedEventProcessor named) {
+        release(named, false);
+    }
+
+    /**
+     * The one path a processor leaves the group by, whether stopped ({@code stopping}) or dropped after a failed start
+     * (mongoose#71, review of #66). Releases everything the group holds for it, each step guarded so one failure does
+     * not stop the rest:
+     * <ul>
+     *   <li>it leaves the registry, and the record of the services it was given, so a processor added again under its
+     *       name is delivered every service once (mongoose#60);</li>
+     *   <li>its {@code stop()} runs (a stop only: a processor whose start failed never ran), then its
+     *       {@code tearDown()};</li>
+     *   <li>its subscriptions are released (a no-op for those its own tearDown already released);</li>
+     *   <li>its timers are cancelled, so none fires into it ({@link DeadWheelScheduler#cancelTimersOf});</li>
+     *   <li>the replay recorder and replayer forget it;</li>
+     *   <li>the server is told ({@link MongooseServer#processorStopped} / {@link MongooseServer#processorDropped}),
+     *       which releases what the server bound to it by name: its audit-capture binding.</li>
+     * </ul>
+     */
+    private void release(NamedEventProcessor named, boolean stopping) {
+        String name = named.name();
+        DataFlow eventProcessor = named.eventProcessor();
+        registeredEventProcessors.remove(name, named);
+        ProcessorRegistration registration = registrations.remove(named);
+        servicesDelivered.remove(eventProcessor);
+        if (eventProcessor instanceof Lifecycle lifecycle) {
+            if (stopping) {
+                guarded(name, "failed to stop cleanly, removed from the group", lifecycle::stop);
+            }
+            guarded(name, stopping ? "failed to tear down, removed from the group"
+                    : "failed to tear down after its failed start", lifecycle::tearDown);
+        }
+        releaseSubscriptions(name, eventProcessor);
+        guarded(name, "failed to cancel its timers", () -> scheduler.cancelTimersOf(eventProcessor));
+        if (recorder != null) guarded(name, "failed to leave the replay recording", () -> recorder.detach(eventProcessor));
+        if (replayer != null) guarded(name, "failed to leave the replay", () -> replayer.detach(eventProcessor));
+        if (mongooseServer != null) {
+            guarded(name, "failed to release its server bindings", stopping
+                    ? () -> mongooseServer.processorStopped(roleName(), name, eventProcessor)
+                    : () -> mongooseServer.processorDropped(roleName(), name, eventProcessor, registration));
+        }
+    }
+
+    private void guarded(String name, String what, Runnable step) {
+        try {
+            step.run();
+        } catch (VirtualMachineError fatal) {
+            throw fatal;
+        } catch (Throwable t) {
+            reportProcessorFailure(name, what, t);
+        }
+    }
+
+    /** The name {@code flow} has in this group, or null: names a timer's processor in a failure report. */
+    private String nameOf(DataFlow flow) {
+        if (flow == null) return null;
+        for (NamedEventProcessor np : registeredEventProcessors.values()) {
+            if (np.eventProcessor() == flow) return np.name();
+        }
+        return null;
+    }
+
+    /** Release what a failed processor subscribed to, so its readers do not outlive it. */
+    private void releaseSubscriptions(String name, DataFlow eventProcessor) {
+        try {
+            removeAllSubscriptions(eventProcessor);
+        } catch (VirtualMachineError fatal) {
+            throw fatal;
+        } catch (Throwable t) {
+            reportProcessorFailure(name, "failed to release its subscriptions", t);
+        }
+    }
+
+    private void reportProcessorFailure(String processorName, String what, Throwable t) {
+        // reported once: the default reporter logs it, so it is not also logged here
+        String message = "processor '" + processorName + "' in group '" + roleName() + "' " + what + ": " + t;
+        com.telamin.mongoose.service.error.ErrorReporting.report(
+                "ComposingEventProcessorAgent:" + roleName(), message, t,
+                com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
     }
 
     /** The service a processor is given: REPLAY swaps a replayed processor's sinks for a capture (L2); else itself. */
@@ -362,28 +705,49 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent implemen
      *  {@code ServiceRegistryNode} bookkeeping) inherits the same
      *  threading guarantees as event dispatch. */
     private void checkForBroadcasts() {
-        if (!servicesToBroadcastRegister.isEmpty()) {
-            servicesToBroadcastRegister.drain(svc ->
-                    registeredEventProcessors.values().forEach(np -> {
-                        com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(np.eventProcessor());
-                        try {
-                            np.eventProcessor().registerService(serviceFor(np.eventProcessor(), svc));
-                        } finally {
-                            com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
-                        }
-                    }));
+        if (!servicesToBroadcast.isEmpty()) {
+            servicesToBroadcast.drain(b -> registeredEventProcessors.values().forEach(np ->
+                    deliverService(np, b.service(), b.register())));
         }
-        if (!servicesToBroadcastDeregister.isEmpty()) {
-            servicesToBroadcastDeregister.drain(svc ->
-                    registeredEventProcessors.values().forEach(np -> {
-                        com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(np.eventProcessor());
-                        try {
-                            np.eventProcessor().deRegisterService(serviceFor(np.eventProcessor(), svc));
-                        } finally {
-                            com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
-                        }
-                    }));
+    }
+
+    /**
+     * Hand one processor a service (de)registration. A processor that throws is reported and keeps running; the
+     * broadcast still reaches every other processor in the group (mongoose#57).
+     * <p>
+     * Delivery is recorded before the call (mongoose#60), so a {@code registerService} that throws still counts as
+     * delivered: a later broadcast of the same service is not offered to that processor again, and a later deregister
+     * of it does reach the processor. Likewise a
+     * {@code deRegisterService} that throws counts as done. A processor that must not miss a service handles its own
+     * failure inside its handler.
+     */
+    private void deliverService(NamedEventProcessor np, Service<?> svc, boolean register) {
+        DataFlow eventProcessor = np.eventProcessor();
+        // each service once (mongoose#60 item 1): a register the processor already has - it joined after the service
+        // was in the registry - is skipped, and a deregister reaches only a processor that was handed the service
+        if (register ? !servicesDeliveredTo(eventProcessor).add(svc) : !servicesDeliveredTo(eventProcessor).remove(svc)) {
+            return;
         }
+        com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(eventProcessor);
+        try {
+            if (register) {
+                eventProcessor.registerService(serviceFor(eventProcessor, svc));
+            } else {
+                eventProcessor.deRegisterService(serviceFor(eventProcessor, svc));
+            }
+        } catch (VirtualMachineError fatal) {
+            throw fatal;
+        } catch (Throwable t) {
+            reportProcessorFailure(np.name(), (register ? "failed to register" : "failed to deregister")
+                    + " service '" + svc.serviceName() + "'", t);
+        } finally {
+            com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
+        }
+    }
+
+    private java.util.Set<Service<?>> servicesDeliveredTo(DataFlow eventProcessor) {
+        return servicesDelivered.computeIfAbsent(eventProcessor,
+                k -> java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
     }
 
     public boolean isProcessorRegistered(String processorName) {

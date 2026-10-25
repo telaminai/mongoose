@@ -78,38 +78,102 @@ public abstract class AbstractEventToInvocationStrategy implements EventToInvoke
         return anyMuted && mutedForReplay.contains(target);
     }
 
+    /**
+     * mongoose#53: the dispatch position, and the processor, being given the event when the last dispatch threw; -1 and
+     * null while no processor is being given it. Plain fields: written and read on the agent thread only.
+     */
+    private int failedPosition = -1;
+    private DataFlow failedProcessor;
+
     @Override
     public void processEvent(Object event) {
+        processEventFrom(event, 0);
+    }
+
+    /**
+     * Deliver to the processors at position {@code from} and after. A processor's handler that throws ends the call with
+     * {@link #failedPosition()} naming it, so the agent's retry resumes there and the processors before it, which
+     * handled the event, are not given it again (mongoose#53). The processor context is cleared however the handler
+     * returns.
+     */
+    @Override
+    public void processEventFrom(Object event, int from) {
+        failedPosition = -1;
+        failedProcessor = null;
         if (fineLogEnabled) {
             log.fine(() -> "invokerId: " + id + " processEvent: " + event + " to " + eventProcessorSinks.size() + " processors");
         }
-        for (int i = 0, targetQueuesSize = eventProcessorSinks.size(); i < targetQueuesSize; i++) {
+        for (int i = from, targetQueuesSize = eventProcessorSinks.size(); i < targetQueuesSize; i++) {
             DataFlow eventProcessor = eventProcessorSinks.get(i);
-            if (anyMuted && mutedForReplay.contains(eventProcessor)) continue;
+            if (anyMuted && mutedForReplay.contains(eventProcessor)) {
+                skippedForReplay(event, eventProcessor);
+                continue;
+            }
             if (fineLogEnabled) {
                 log.fine(() -> "invokerId: " + id + " dispatchEvent to " + eventProcessor);
             }
+            failedPosition = i;
+            failedProcessor = eventProcessor;
             ProcessorContext.setCurrentProcessor(eventProcessor);
-            dispatchEvent(event, eventProcessor);
-            ProcessorContext.removeCurrentProcessor();
+            try {
+                dispatchEvent(event, eventProcessor);
+            } finally {
+                ProcessorContext.removeCurrentProcessor();
+            }
         }
+        failedPosition = -1;
+        failedProcessor = null;
+    }
+
+    /**
+     * A live input {@code target} is not given because it is muted for a replay. Nothing by default; a strategy whose
+     * caller waits on the input answers it here (#48 3).
+     */
+    protected void skippedForReplay(Object event, DataFlow target) {
     }
 
     /** RECORD: as {@link #processEvent(Object)}, telling the recording each processor's input just before it is given it. */
     @Override
     public void processEventRecording(Object event, java.util.function.BiConsumer<DataFlow, Object> beforeEach) {
-        for (int i = 0, targetQueuesSize = eventProcessorSinks.size(); i < targetQueuesSize; i++) {
+        processEventRecordingFrom(event, beforeEach, 0);
+    }
+
+    /** RECORD: as {@link #processEventFrom}, telling the recording each processor's input just before it is given it. */
+    @Override
+    public void processEventRecordingFrom(Object event, java.util.function.BiConsumer<DataFlow, Object> beforeEach, int from) {
+        failedPosition = -1;
+        failedProcessor = null;
+        for (int i = from, targetQueuesSize = eventProcessorSinks.size(); i < targetQueuesSize; i++) {
             DataFlow eventProcessor = eventProcessorSinks.get(i);
             if (anyMuted && mutedForReplay.contains(eventProcessor)) continue;
+            failedPosition = i;
+            failedProcessor = eventProcessor;
             beforeEach.accept(eventProcessor, event);
             ProcessorContext.setCurrentProcessor(eventProcessor);
-            dispatchEvent(event, eventProcessor);
-            ProcessorContext.removeCurrentProcessor();
+            try {
+                dispatchEvent(event, eventProcessor);
+            } finally {
+                ProcessorContext.removeCurrentProcessor();
+            }
         }
+        failedPosition = -1;
+        failedProcessor = null;
+    }
+
+    @Override
+    public int failedPosition() {
+        return failedPosition;
+    }
+
+    @Override
+    public DataFlow failedProcessor() {
+        return failedProcessor;
     }
 
     @Override
     public void processEvent(Object event, long time) {
+        failedPosition = -1;
+        failedProcessor = null;
         for (int i = 0, targetQueuesSize = eventProcessorSinks.size(); i < targetQueuesSize; i++) {
             setSyntheticTime(eventProcessorSinks.get(i), time);
         }

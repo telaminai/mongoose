@@ -83,11 +83,31 @@ public interface MongooseAuditCaptureService {
     /**
      * As above, with the processor's agent thread (mongoose#46): {@code start}/{@code stop} are called from the admin
      * transport's thread, and change the processor's audit sink through {@code onAgentThread}, so the processor is only
-     * ever driven from its own thread.
+     * ever driven from its own thread. They return once the change has been applied there, and are refused with an
+     * {@link IllegalStateException}, changing nothing, when it cannot be applied in time.
      */
     default void attach(DataFlow dataFlow, String processorName, LogRecordListener configuredListener,
                         java.util.concurrent.Executor onAgentThread) {
         attach(dataFlow, processorName, configuredListener);
+    }
+
+    /**
+     * Forget a processor that left the server without stopping normally (a failed start, mongoose#57): stop any capture
+     * of it and drop the reference to {@code dataFlow}. Ignored when {@code processorName} is now bound to another
+     * {@code DataFlow}. Default: a no-op.
+     */
+    default void detach(String processorName, DataFlow dataFlow) {
+        // no-op default — NoOp impl ignores
+    }
+
+    /**
+     * The processor left its group normally: it was stopped and torn down (mongoose#46). Nothing is installed on that
+     * instance again: {@link #start} is refused until a processor is added under the name, and {@link #stop} closes
+     * the capture without touching it. A capture still recording carries on into a processor re-added under the name.
+     * Ignored when {@code processorName} is now bound to another {@code DataFlow}. Default: a no-op.
+     */
+    default void processorStopped(String processorName, DataFlow dataFlow) {
+        // no-op default — NoOp impl ignores
     }
 
     /**
@@ -102,6 +122,8 @@ public interface MongooseAuditCaptureService {
      *                      {@code eventHandlers.&lt;name&gt;}).
      * @throws IllegalArgumentException if no processor with that name
      *         is registered.
+     * @throws IllegalStateException if the change could not be applied on
+     *         the processor's agent thread in time; nothing changed.
      */
     void start(String processorName);
 
@@ -111,6 +133,13 @@ public interface MongooseAuditCaptureService {
      * processor is a no-op.
      */
     void stop(String processorName);
+
+    /**
+     * Halt every live capture, flushing and closing each sink. The server calls it once its processors have stopped,
+     * at the end of {@code stop()}. Default: nothing to stop.
+     */
+    default void stopAll() {
+    }
 
     /**
      * True iff capture is currently active for the named processor.

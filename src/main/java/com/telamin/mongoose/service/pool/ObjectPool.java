@@ -13,7 +13,13 @@ import java.util.function.Consumer;
 public interface ObjectPool<T extends PoolAware> {
 
     /**
-     * Acquire an instance from the pool (creating up to capacity).
+     * Acquire an instance from the pool (creating up to capacity). The instance carries one reference, the caller's;
+     * publishing it hands that reference to the framework, which returns the instance when its last holder releases.
+     * <p>
+     * Never returns null: at capacity, with no free instance, it waits (spinning, then yielding) until one is
+     * returned. That wait is the pool's back-pressure and is unbounded, so an instance that is never released (a
+     * missing {@link com.telamin.mongoose.service.pool.impl.PoolTracker#releaseReference()}) shows as a caller that
+     * waits here for good once the pool has run dry.
      */
     T acquire();
 

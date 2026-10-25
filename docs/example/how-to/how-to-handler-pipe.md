@@ -58,11 +58,20 @@ pipes:
     # sinkName: orders-in   # optional override of the default ".sink" suffix
 ```
 
-Cross-thread safe — the underlying `InMemoryEventSource` extends
-`AbstractAgentHostedEventSourceService`, so the publisher's agent thread
-enqueues, the pipe's agent thread drains, and the subscriber's agent thread
-receives. Producer and consumer can sit on independent agent groups without
-explicit synchronization.
+Cross-thread safe — the sink publishes on the publisher's own thread straight
+into each subscriber's read queue (no extra thread hop), and the pipe's
+publisher serialises those writes, so several processors on different agent
+groups can publish to one pipe without losing events; each subscriber receives
+on its own agent thread. (Before the fix for #51, concurrent publishers could
+overwrite each other's slots in the single-producer subscriber queues.) An item
+dropped because a subscriber queue stayed full for more than 10 ms is logged and
+counted (`EventToQueuePublisher.droppedCount()`). The publishers wait for each
+other while a subscriber queue is full (the serialising lock is held through
+that 10 ms spin), so one slow subscriber slows every publisher on the pipe; see
+[Publisher serialisation and slow subscribers](../../architecture/event-flow.md#publisher-serialisation-and-slow-subscribers).
+With `agentName` set, the
+pipe's agent drains items handed to `InMemoryEventSource.offer(...)`; values
+sent into the sink are still published in-line.
 
 ### How pipes appear in the admin web
 
@@ -112,6 +121,12 @@ pipe.sink().accept("order-123-created");
 Notes:
 - `cacheEventLog(true)` will cache any events published before `startComplete`
   and replay them automatically when the source calls `startComplete()`.
+  After `startComplete` the log stops growing (#59): it keeps only the pre-start
+  events. To keep logging every event for the life of the pipe (unbounded; only
+  for a bounded pipe or a reader that needs the full history from the event log),
+  opt in with `retainEventLogAfterStart(true)` on the `HandlerPipe`, the
+  `HandlerPipeConfig` builder, or `retainEventLogAfterStart: true` in a YAML
+  `pipes:` entry.
 - You can customise data mapping and wrapping like other `EventSource` services.
 
 ## Sample code
@@ -125,7 +140,9 @@ Notes:
 ## Lifecycle semantics
 HandlerPipe delegates lifecycle to InMemoryEventSource:
 - start(): If cacheEventLog is true, publishes are cached (not dispatched).
-- startComplete(): Cached events are replayed to subscribers, subsequent publishes dispatch immediately.
+- startComplete(): Cached events are replayed to subscribers, subsequent publishes dispatch immediately. The
+  source goes live only after its publisher has replayed and stopped logging, and an item sent while it goes live
+  is published at once, not cached.
 
 You can still push items before start() using pipe.sink().accept(...); they will be cached if caching is enabled and replayed later.
 

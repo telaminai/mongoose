@@ -101,6 +101,27 @@ Mongoose server provides strategies for handling slow consumers:
 2. **EXIT_PROCESS**: Exit the process if a consumer is too slow.
 3. **BACKOFF**: Implement backoff strategies to give slow consumers time to catch up.
 
+## Publisher serialisation and slow subscribers
+
+Each subscriber's read queue is a single-producer `OneToOneConcurrentArrayQueue`, but an
+`EventToQueuePublisher` can be called from several threads (a `HandlerPipe` sink is published to by every
+processor that uses it, and a source's `startComplete` replays its cache while its own thread may publish).
+Since the fix for #51 every publisher serialises its dispatch on one lock: `publish`, `cache`, `publishReplay`,
+`dispatchCachedEventLog`/`startComplete`, `addTargetQueue`, `removeTargetQueueByName` and the `getEventLog()`
+snapshot all take it. Uncontended this costs a monitor enter/exit per publish.
+
+**Release note: a slow subscriber now throttles every publisher of the same feed.** The lock is held through the
+bounded spin on a full subscriber queue (about 10 ms per full queue, after which the item is dropped for that queue,
+logged and counted in `EventToQueuePublisher.droppedCount()`). It cannot be released during the spin, because that
+is what keeps one producer per queue. So while one subscriber's queue stays full, each publish on that feed, from
+any thread, can take up to ~10 ms per full queue, delivery to the feed's other subscribers is delayed by the same
+amount, and a thread waiting for the lock (another publisher, or a subscribe/unsubscribe calling
+`addTargetQueue`/`removeTargetQueueByName`) can wait up to N x 10 ms with N callers queued ahead of it. The wait is
+always bounded. Before the fix concurrent publishers did not wait for each other, but they could overwrite each
+other's slots and silently lose events. With replay journalling enabled (RECORD mode), each item's encode and journal
+append also run under the lock, to keep the journal in sequence order, so a slow journal slows the feed's publishers
+in the same way. Size subscriber queues and keep handlers fast enough that a queue does not stay full.
+
 ## Queue Implementation
 
 The event queues in Mongoose server are implemented using:

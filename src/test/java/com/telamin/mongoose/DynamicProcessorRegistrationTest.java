@@ -80,8 +80,9 @@ public class DynamicProcessorRegistrationTest {
 
         MongooseServer server = MongooseServer.bootServer(cfg);
         try {
-            // Wait for the registrar to install its dynamic processor.
-            awaitTrue(() -> registrar.installed && registrar.dynamicProc != null
+            // Wait for both processors to have subscribed: startCalled is set only once start() has subscribed, so
+            // no event is offered before the feed publishes to a queue for each of them
+            awaitTrue(() -> staticProc.startCalled && registrar.installed && registrar.dynamicProc != null
                     && registrar.dynamicProc.startCalled);
 
             feed.offer("a");
@@ -92,6 +93,9 @@ public class DynamicProcessorRegistrationTest {
             awaitTrue(() -> staticProc.received.get() >= 3);
             assertEquals(3, staticProc.received.get(),
                     "static processor should see all 3 events");
+
+            // the dynamic processor may run on another agent thread: wait for it too before asserting its count
+            awaitTrue(() -> registrar.dynamicProc.received.get() >= 3);
 
             // Sanity-check: the dynamic processor's lifecycle DID run.
             assertTrue(registrar.dynamicProc.initCalled, "dynamic processor init() should fire");
@@ -130,10 +134,11 @@ public class DynamicProcessorRegistrationTest {
         public final String label;
         public final AtomicInteger received = new AtomicInteger();
         public volatile boolean initCalled;
+        /** Set at the end of start(), after it has subscribed: the test offers events only once this is true. */
         public volatile boolean startCalled;
 
         private final List<EventFeed> eventFeeds = new ArrayList<>();
-        private final List<String> subscribedFeeds = new ArrayList<>();
+        private final List<String> subscribedFeeds = new java.util.concurrent.CopyOnWriteArrayList<>();
 
         public RecordingProcessor(String label) {
             this.label = label;
@@ -143,7 +148,6 @@ public class DynamicProcessorRegistrationTest {
 
         @Override
         public void start() {
-            startCalled = true;
             EventSubscriptionKey<Object> key = new EventSubscriptionKey<>(
                     new EventSourceKey<>(FEED_NAME),
                     CallBackType.ON_EVENT_CALL_BACK);
@@ -151,6 +155,9 @@ public class DynamicProcessorRegistrationTest {
                 f.subscribe(this, key);
                 subscribedFeeds.add(FEED_NAME);
             }
+            // last: the test reads this as "subscribed". Set before subscribing, the test could offer its events
+            // before the dynamic processor's queue existed and see it miss them (flaky under load)
+            startCalled = true;
         }
 
         @Override public void tearDown() { }
