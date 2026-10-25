@@ -39,11 +39,13 @@ public interface ReplayRouting {
 
     /**
      * Deliver to, or withdraw from, the replayed processor the service registered as {@code service}, as the recorded
-     * run did at this point. A positive version must identify the exact service incarnation being delivered.
-     * @return false while a later required registry version has not arrived
-     * @throws IllegalStateException if the recorded incarnation cannot be identified or its callback fails
+     * run did at this point. A positive version must identify the currently live registry binding;
+     * an unavailable historical incarnation or an unverified configured object cannot substitute for it.
+     *
+     * @return null once delivered; {@code "wait:<why>"} while it cannot be yet; otherwise why the replay cannot
+     *         reproduce it (a version no longer available, a callback that failed), which stops the replay
      */
-    default boolean deliverService(DataFlow flow, String service, boolean register, long version) {
-        return false;
+    default String deliverService(DataFlow flow, String service, boolean register, long version) {
+        return "wait:service delivery is not supported by this group";
     }
 }

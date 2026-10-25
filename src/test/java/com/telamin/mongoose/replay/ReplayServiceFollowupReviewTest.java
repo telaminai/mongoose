@@ -116,6 +116,29 @@ class ReplayServiceFollowupReviewTest {
         }
     }
 
+    @Test void aPreviouslyPublishedButWithdrawnIncarnationCannotBeResurrectedFromHistory() throws Exception {
+        var store = new InMemoryReplayStore();
+        store.append("p", new ReplayEntry.ServiceChanged("rate", true, 1, 100, List.of()));
+        var oldService = rate(1);
+        var replacement = rate(2);
+        var replayed = new Probe();
+        try (var rig = new Rig(store, true, null)) {
+            rig.start(replayed);
+            // All three publications precede the next agent turn. A historical object can still be referenced by
+            // queued broadcasts, but the registry has withdrawn it (and may already have stopped its lifecycle).
+            rig.services.put("rate", oldService);
+            rig.group.broadcastService(oldService, true, 1);
+            rig.services.remove("rate");
+            rig.group.broadcastService(oldService, false, 2);
+            rig.services.put("rate", replacement);
+            rig.group.broadcastService(replacement, true, 3);
+            rig.finishReplay();
+            assertNotNull(rig.group.replayer().stopped("p"));
+            assertTrue(rig.group.replayer().stopped("p").contains("version 1 is unavailable"));
+            assertEquals(List.of("start:0"), replayed.trace, "a withdrawn historical binding is not a live service");
+        }
+    }
+
     @Test void aThrowingReplayedServiceHandlerMustStopReplayInsteadOfReportingSuccess() throws Exception {
         var store = new InMemoryReplayStore();
         var service = rate(1);

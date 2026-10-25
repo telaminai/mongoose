@@ -747,12 +747,11 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         }
         if (runtimeChange && recorder != null) recorder.beforeControl(flow);
         ServiceDelivery delivery = deliverService(named, payload.service(), payload.register());
-        if (runtimeChange && recorder != null && delivery.invoked()) {
-            if (delivery.failure() == null) {
-                recorder.serviceChanged(flow, payload.service().serviceName(), payload.register(), payload.version());
-            } else {
-                recorder.controlFailed(flow, "service " + payload.service().serviceName(), delivery.failure());
-            }
+        if (runtimeChange && recorder != null) {
+            String name = payload.service().serviceName();
+            if (delivery.failure() != null) recorder.serviceFailed(flow, name, delivery.failure());
+            else if (delivery.invoked()) recorder.serviceChanged(flow, name, payload.register(), payload.version());
+            else recorder.discardControl(flow);
         }
         return result(effect, delivery.failure() == null ? ControlOutcome.SUCCEEDED : ControlOutcome.FAILED, delivery.failure());
     }
@@ -1112,39 +1111,42 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             }
 
             @Override
-            public boolean deliverService(DataFlow flow, String service, boolean register, long version) {
+            public String deliverService(DataFlow flow, String service, boolean register, long version) {
                 for (NamedEventProcessor np : registeredEventProcessors.values()) {
                     if (np.eventProcessor() != flow) continue;
                     Service<?> svc = register ? registeredServices.get(service) : null;
                     if (register && version > 0) {
                         PublishedService published = publishedServices.get(service);
-                        if (published == null && svc == null) return false; // a future publication can identify it
+                        if (published == null && svc == null) return "wait:service " + service + " is not registered";
                         if (published == null) {
-                            throw new IllegalStateException("no registry binding identifies recorded service " + service
-                                    + " at version " + version);
+                            return "no registry binding identifies recorded service " + service + " at version " + version;
                         }
-                        if (published.version() < version) return false; // its registration may still arrive
+                        if (published.version() < version) {
+                            return "wait:service " + service + " version " + version + " is not registered yet";
+                        }
+                        // A retained historical Java object may already have been stopped. Only the currently live,
+                        // versioned binding can be injected; reconstructing old incarnations needs an isolated registry.
                         if (published.version() != version || svc != published.service() || svc == null) {
-                            throw new IllegalStateException("recorded service " + service + " at version " + version
-                                    + " is unavailable; current published version is " + published.version());
+                            return "recorded service " + service + " at version " + version
+                                    + " is unavailable; current published version is " + published.version();
                         }
                     }
                     if (!register) {
                         for (Service<?> held : servicesDeliveredTo(flow)) {
                             if (held.serviceName().equals(service)) svc = held;
                         }
-                        if (svc == null) throw new IllegalStateException("recorded withdrawal of service " + service
-                                + " has no delivered incarnation");
+                        if (svc == null) return "recorded withdrawal of service " + service
+                                + " has no delivered incarnation";
                     }
-                    if (svc == null) return false;        // not registered yet in this run: wait for it
+                    if (svc == null) return "wait:service " + service + " is not registered";
                     ServiceDelivery delivery = ComposingEventProcessorAgent.this.deliverService(np, svc, register);
                     if (!delivery.invoked() || delivery.failure() != null) {
-                        throw new IllegalStateException("recorded service callback for " + service + " was not delivered: "
-                                + (delivery.failure() == null ? "already held" : delivery.failure()));
+                        return "recorded service callback for " + service + " was not delivered: "
+                                + (delivery.failure() == null ? "already held" : delivery.failure());
                     }
-                    return true;
+                    return null;
                 }
-                return false;
+                return "wait:the replayed processor is not running";
             }
 
             @Override
