@@ -769,11 +769,13 @@ public class MongooseServer implements MongooseServerController {
             }
         });
         if (!missed.isEmpty()) {
-            com.telamin.mongoose.service.error.ErrorReporting.report("MongooseServer",
+            // Reporting invokes a configurable handler. Never run that user callback under the publication lock.
+            com.telamin.mongoose.control.ControlReplies.executeSafely(replyExecutor, () ->
+                    com.telamin.mongoose.service.error.ErrorReporting.report("MongooseServer",
                     "service '" + service.serviceName() + "' is " + (register ? "registered" : "removed")
                             + ", but processor group(s) " + missed + " could not be told (control queue full, group not"
                             + " draining): their running processors were not " + (register ? "given" : "relieved of")
-                            + " it", null, com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
+                            + " it", null, com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR));
         }
         return sent;
     }
@@ -1110,8 +1112,9 @@ public class MongooseServer implements MongooseServerController {
 
     /**
      * Add a processor and return its outcome without waiting (design "Agent threads and replies"). Never throws for a
-     * duplicate name or a stopping server: the reply says {@code REFUSED} or {@code NOT_RUNNING}. The stage completes off
-     * agent threads. Use asynchronous continuations for blocking work: a synchronous dependent attached after
+     * duplicate name or a stopping server: the reply says {@code REFUSED} or {@code NOT_RUNNING}. Admitted requests'
+     * stages complete off agent threads; refusals may already be completed. Use asynchronous continuations for
+     * blocking work: a synchronous dependent attached after
      * completion executes on the attaching thread, as specified by CompletionStage.
      */
     public AddedProcessor addProcessor(
