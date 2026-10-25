@@ -151,4 +151,75 @@ class ChronicleShutdownFailureEvidenceTest {
             if (realQueue.get() != null) realQueue.get().close();
         }
     }
+
+    @Test void anIncompleteStopResumesAfterTheRealChronicleQueueFinishesClosing(@TempDir Path root) throws Exception {
+        String groupName = "chronicle-resume";
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var finished = new CountDownLatch(1);
+        var closeCalls = new AtomicInteger();
+        var realQueue = new AtomicReference<ChronicleQueue>();
+        var cfg = new AuditCaptureConfig(); cfg.setEnabled(true); cfg.setDirectory(root.toString());
+        var resources = new ChronicleAuditCaptureService(cfg, NoOpCountersService.INSTANCE, path -> {
+            ChronicleQueue queue = SingleChronicleQueueBuilder.binary(path).rollCycle(RollCycles.FAST_DAILY).build();
+            realQueue.set(queue);
+            return (ChronicleQueue) Proxy.newProxyInstance(ChronicleQueue.class.getClassLoader(),
+                    new Class<?>[]{ChronicleQueue.class}, (proxy, method, args) -> {
+                        if (method.getName().equals("close")) {
+                            closeCalls.incrementAndGet();
+                            entered.countDown();
+                            try { release.await(); queue.close(); }
+                            finally { finished.countDown(); }
+                            return null;
+                        }
+                        try { return method.invoke(queue, args); }
+                        catch (InvocationTargetException thrown) { throw thrown.getCause(); }
+                    });
+        });
+        var eventFlow = new EventFlowManager();
+        var group = new ComposingEventProcessorAgent(groupName, eventFlow, null, new DeadWheelScheduler(), new ConcurrentHashMap<>());
+        group.setAuditCaptureResources(resources); // real shared opener/closer threads
+        var registration = new ProcessorRegistration("p");
+        var processor = new Flow();
+        LogRecordListener configured = record -> { };
+        var add = group.addNamedEventProcessor(() -> {
+            resources.attachScoped(processor, new AuditCaptureIdentity(groupName, "p", registration.generation()),
+                    configured, group::runOnAgentThread);
+            return new NamedEventProcessor("p", processor);
+        }, registration);
+        var error = new AtomicReference<Throwable>();
+        var runner = new AgentRunner(new BusySpinIdleStrategy(), error::set, null, group);
+        var groups = new ConcurrentHashMap<String, LifecycleManager.GroupRunner>();
+        groups.put(groupName, new LifecycleManager.GroupRunner() {
+            public AgentRunner getGroupRunner() { return runner; }
+            public DynamicCompositeAgent getGroup() { return group; }
+        });
+        var manager = new LifecycleManager(null);
+        try {
+            AgentRunner.startOnThread(runner);
+            assertTrue(add.reply().get(5, TimeUnit.SECONDS).applied());
+            assertTrue(group.auditStart("p", registration).reply().get(5, TimeUnit.SECONDS).applied());
+            StopResult first = manager.stop(true, groups, new ConcurrentHashMap<>(), Map.of(), eventFlow, 0, 50);
+            assertEquals(new StopResult(false, false, null, List.of(groupName), List.of()), first);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertSame(configured, processor.installed);
+            assertFalse(realQueue.get().isClosed());
+            assertEquals(0, group.captureResourcesHeld());
+            assertEquals(1, group.captureResourceSlotsInUse());
+            assertTrue(group.captureCleanupFailures().isEmpty(), "a pending close is not a failed close");
+            release.countDown();
+            assertTrue(finished.await(5, TimeUnit.SECONDS));
+            StopResult resumed = manager.stop(true, groups, new ConcurrentHashMap<>(), Map.of(), eventFlow, 0, 5000);
+            assertEquals(StopResult.completed(), resumed);
+            assertTrue(realQueue.get().isClosed());
+            assertEquals(0, group.captureResourceSlotsInUse());
+            assertEquals(1, closeCalls.get());
+            assertNull(error.get());
+        } finally {
+            release.countDown();
+            runner.close();
+            if (entered.getCount() == 0) finished.await(5, TimeUnit.SECONDS);
+            if (realQueue.get() != null && !realQueue.get().isClosed()) realQueue.get().close();
+        }
+    }
 }
