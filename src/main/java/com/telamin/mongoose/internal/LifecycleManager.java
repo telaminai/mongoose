@@ -113,7 +113,7 @@ public final class LifecycleManager {
         // Start non-LifeCycleEventSource services
         registeredServices.values().forEach(svc -> {
             if (!(svc.instance() instanceof LifeCycleEventSource)) {
-                startStep(svc::start, svc::stop, svc);
+                startStep(svc::start, () -> server.stopStartupService(svc), svc);
             }
         });
         // Start flow manager
@@ -141,7 +141,7 @@ public final class LifecycleManager {
         log.info("calling startup complete on services");
         for (Service<?> service : registeredServices.values()) {
             if (!registeredAgentServices.contains(service)) {
-                startStep(service::startComplete, service::stop, service);
+                startStep(service::startComplete, () -> server.stopStartupService(service), service);
             }
         }
         // Notify start complete on agent groups

@@ -20,6 +20,49 @@ class FailedStartupCancellationReviewTest {
         checkCancellation(false);
     }
 
+    @Test void cancellationAfterReplacementDoesNotRepeatRetiredStopOrStopReplacementEarly() throws Exception {
+        var config = new MongooseServerConfig();
+        config.setShutdownTimeoutMillis(100);
+        var server = new MongooseServer(config);
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        AtomicInteger oldStops = new AtomicInteger();
+        AtomicInteger newStops = new AtomicInteger();
+        server.registerService(new Service<>(new Lifecycle() {
+            public void init() { }
+            public void start() {
+                entered.countDown();
+                try { release.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            }
+            public void stop() { oldStops.incrementAndGet(); }
+            public void tearDown() { }
+        }, Lifecycle.class, "replace-during-start"));
+        server.init();
+        ExecutorService thread = Executors.newSingleThreadExecutor();
+        Future<?> start = thread.submit(server::start);
+        try {
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            server.removeService("replace-during-start");
+            server.registerService(new Service<>(new Lifecycle() {
+                public void init() { }
+                public void start() { }
+                public void stop() { newStops.incrementAndGet(); }
+                public void tearDown() { }
+            }, Lifecycle.class, "replace-during-start"));
+            assertFalse(server.shutdown().complete());
+            assertEquals(1, oldStops.get(), "the retired incarnation was already stopped");
+            assertEquals(0, newStops.get(), "cancellation must not address a replacement by name");
+            release.countDown();
+            assertThrows(ExecutionException.class, () -> start.get(2, TimeUnit.SECONDS));
+            assertTrue(server.shutdown().complete());
+            assertEquals(1, newStops.get());
+            assertEquals(1, oldStops.get());
+        } finally {
+            release.countDown();
+            thread.shutdownNow();
+        }
+    }
+
     private void checkCancellation(boolean failCancellation) throws Exception {
         var config = new MongooseServerConfig();
         config.setShutdownTimeoutMillis(100);

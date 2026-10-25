@@ -877,6 +877,24 @@ public class MongooseServer implements MongooseServerController {
         });
     }
 
+    /**
+     * Internal startup-cancellation hook, used after shutdown has fenced service admission. Stop this exact wrapper:
+     * a removed incarnation is governed by its retirement ledger, and a replacement never inherits its callback.
+     */
+    public void stopStartupService(Service<?> service) {
+        if (registeredServices.get(service.serviceName()) == service) {
+            service.stop();
+            return;
+        }
+        for (RemovedService removed : removedServices.values()) {
+            if (removed.service == service) {
+                removed.stop();
+                return;
+            }
+        }
+        // No live or retired owner remains: its removal already completed the stop.
+    }
+
     /** Shutdown includes removed resources, including a stop callback already in progress. */
     private Map<String, Service<?>> shutdownServices() {
         return shutdownServices(true);
