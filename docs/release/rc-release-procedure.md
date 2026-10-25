@@ -1,7 +1,9 @@
 # RC release procedure
 
 Targets: **Mongoose 1.0.33-rc1** (`v1.0.33-rc1`) and **mongoose-plugins 1.0.46-rc1** (`v1.0.46-rc1`).
-Runtime: **Fluxtion 1.1.2**. Upstream failed-cycle recovery is outside this candidate.
+Target pairing: **Fluxtion runtime 1.1.3** and **compiler/BOM 1.0.80**. Resolve the published artifacts,
+regenerate the control processor and freeze new commits before qualification. Earlier runtime 1.1.2 results
+are baseline evidence only.
 Status: preparation; publication requires successful qualification and the approvals below.
 
 ## Existing mechanics and the RC adaptation
@@ -30,7 +32,7 @@ Approve this explicit adaptation before pushing the release tags. Never print re
    and jar checksum so a preview cannot be mistaken for a published artifact.
 5. On the exact plugin SHA run the entire Java 21 reactor with `mvn -o -fae clean verify`. Require every module
    to succeed and no new skips. Include both admin fixes (#40 and #41), the startup cache boundary migration and
-   schema checks. Keep the dependency tree proving Mongoose RC and runtime 1.1.2.
+   schema checks. Keep the dependency tree proving Mongoose RC and runtime 1.1.3.
 6. Publish evidence on a separate evidence branch or as release assets. Do not append an evidence commit and
    then tag it as though it were the previously tested SHA. Preserve full logs and report failures/flakes.
 

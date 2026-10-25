@@ -40,7 +40,7 @@ class ReplayRecordingAcceptanceTest {
 
     /** A booted server and its handles. */
     record Server(MongooseServer server, InMemoryEventSource<Object> orders, InMemoryEventSource<Object> controls,
-                  AdminCommandProcessor admin, InMemoryMessageSink sink) implements AutoCloseable {
+                  AdminCommandProcessor admin, InMemoryMessageSink sink, ReplayDemoHandler handler) implements AutoCloseable {
         /** A replay's result is what the replayed processor sent, captured (L2); a live run's is the real sink's. */
         List<String> lines() {
             GroupReplayer replayer = server.replayers().get("processor-agent");
@@ -91,9 +91,10 @@ class ReplayRecordingAcceptanceTest {
         controls.setCacheEventLog(true);
         InMemoryMessageSink sink = new InMemoryMessageSink();
         AdminCommandProcessor admin = new AdminCommandProcessor();
+        ReplayDemoHandler handler = new ReplayDemoHandler(ORDERS, CONTROLS);
         MongooseServerConfig config = MongooseServerConfig.builder()
                 .addProcessorGroup(EventProcessorGroupConfig.builder().agentName("processor-agent")
-                        .put(PROCESSOR, new EventProcessorConfig(new ReplayDemoHandler(ORDERS, CONTROLS))).build())
+                        .put(PROCESSOR, new EventProcessorConfig(handler)).build())
                 .addEventFeed(EventFeedConfig.builder().instance(orders).name(ORDERS).broadcast(true)
                         .agent("orders-agent", new BusySpinIdleStrategy()).build())
                 .addEventFeed(EventFeedConfig.builder().instance(controls).name(CONTROLS).broadcast(true)
@@ -104,7 +105,7 @@ class ReplayRecordingAcceptanceTest {
                 .build();
         MongooseServer server = MongooseServer.bootServer(config, rec -> { });
         Thread.sleep(200);                              // the processor subscribes in start()
-        return new Server(server, orders, controls, admin, sink);
+        return new Server(server, orders, controls, admin, sink, handler);
     }
 
     /** RECORD mode with the orders feed journalled; controls are recorded inline. */
@@ -261,16 +262,19 @@ class ReplayRecordingAcceptanceTest {
         try (Server s = boot(recording(store, journal))) {
             s.orders().offer("ord-1");  s.await(1);
             s.orders().offer("boom");
-            Thread.sleep(300);
-            // a node that throws leaves the processor's `processing` flag set (DefaultEventProcessor and generated
-            // processors alike: no try/finally), so every later event is queued as re-entrant and never processed.
-            // The retry "succeeds" by queuing. So after a failure the live processor is not just non-deterministic:
-            // it has stopped. ord-2 is never handled
+            long deadline = System.nanoTime() + 5_000_000_000L;
+            while (!s.server().controlGroupStatus("processor-agent").quarantinedProcessors().containsKey(PROCESSOR)
+                    && System.nanoTime() < deadline) Thread.sleep(5);
+            assertTrue(s.server().controlGroupStatus("processor-agent").quarantinedProcessors().containsKey(PROCESSOR),
+                    "the host must report quarantine rather than infer recovery from a normal return");
+            // Runtime cleanup permits another cycle, but does not roll back state or side effects. The host
+            // deliberately fences this instance instead of retrying boom or delivering ord-2 to it.
             s.orders().offer("ord-2");
             Thread.sleep(300);
             live = s.lines();
+            assertEquals(1, s.handler().failedAttempts.get(), "a failed event must not be retried");
         }
-        assertEquals(1, live.size(), "the processor stopped at the failure: " + live);
+        assertEquals(1, live.size(), "the host quarantined the processor at the failure: " + live);
         List<ReplayEntry> entries = store.entries(PROCESSOR);
         assertInstanceOf(ReplayEntry.Failed.class, entries.get(1), entries.toString());
         try (Server r = boot(replaying(store, journal))) {

@@ -2,7 +2,8 @@
 
 !!! warning "Pre-release candidate"
     Prepared from PR #76, including PR #69. Publication is subject to qualification and merge approval.
-    This candidate uses Fluxtion runtime **1.1.2**. It does not include the upstream failed-cycle recovery work.
+    This candidate targets Fluxtion runtime **1.1.3** and compiler **1.0.80**; the dependency upgrade and
+    regenerated control processor require fresh qualification before publication.
     **A pre-release is not clearance for client migration.** Complete the separate
     [client migration checklist](client-migration-1.0.33.md) before deployment.
 
@@ -182,9 +183,22 @@ applies)`.
 
 ## Known limits
 
-- The upstream generated processing-flag wedge remains open. Host containment prevents supported hosted paths
-  from treating a normal retry return as recovery; direct graph calls and wrappers hiding the runtime interface
-  still require a client-specific failure contract. Quarantine intentionally needs operator resolution.
+Failure cleanup comes from [runtime #47](https://github.com/telaminai/fluxtion/pull/47) and
+[compiler #118](https://github.com/telaminai/fluxtion-compiler/pull/118). The
+[upstream policy](https://github.com/telaminai/fluxtion/blob/v1.1.3/docs/runtime/failed-event-cycles.md)
+defines exception propagation, audit closure and queued-work/payload discard; the host chooses what happens next.
+
+- Runtime 1.1.3 and newly generated processors close failed cycles and discard queued work. They do not roll back
+  node state or external effects. Existing generated client classes remain wedge-prone until regenerated with
+  compiler 1.0.80 targeting runtime 1.1.3. Mongoose continues to quarantine failed generated processors without
+  retry or automatic restart; direct calls and wrappers hiding the runtime interface need their own contract.
+- The new runtime callback SPI adds abstract `discardQueuedCallbacks()`. Custom implementers must implement the
+  cleanup contract and rebuild; existing binaries can fail with `AbstractMethodError` when the new path calls it.
+- Failed buffered batches can have already applied earlier effects; resubmitting them is not safe by default.
+  A buffered-flush failure is not distinguished from failure of the triggering event. C++ recovery and runtime
+  targets older than 1.1.3 are outside the upstream recovery guarantee.
+- An auditor that throws during successful-cycle closure can be called again during failed-cycle cleanup.
+  Custom audit listeners must tolerate that cleanup attempt; it is not a second business-handler invocation.
 - Standalone legacy capture uses a shared name directory. Failed opens preserve nonempty directories rather than
   risking deletion of another live recording; partial files can remain for inspection. Server-routed unique session
   directories have operation-owned failed-open cleanup.
