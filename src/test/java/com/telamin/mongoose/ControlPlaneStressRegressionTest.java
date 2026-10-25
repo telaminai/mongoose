@@ -137,17 +137,24 @@ class ControlPlaneStressRegressionTest {
         assertEquals(1, victim.stops.get());
     }
 
-    /** As above, by name with a bounded wait: the refused stop is reported and the name stays with its processor. */
+    /**
+     * As above, by name with a bounded wait. The same chaos run found this form threw the mailbox-full exception too,
+     * though it is documented to return the reply or null: it now returns the REFUSED reply.
+     */
     @Test
     void aStopByNameRefusedOnAFullMailbox_keepsTheRunningProcessorsName() throws Exception {
         Proc victim = new Proc(false);
         ProcessorHandle handle = bootWithVictim(victim);
         Proc blocker = holdAndFill();
+        ControlReply reply;
         try {
-            server.stopProcessor("g", "victim", 1_000);
-        } catch (IllegalStateException refusedLoudly) {
-            // acceptable: the caller is told the stop was not queued
+            reply = server.stopProcessor("g", "victim", 1_000);
+        } catch (IllegalStateException thrown) {
+            throw new AssertionError("stopProcessor(group, name, wait) returns the reply or null, it must not throw: "
+                    + thrown, thrown);
         }
+        assertNotNull(reply, "a refused stop is answered at once");
+        assertEquals(ReplyOutcome.REFUSED, reply.outcome(), reply.toString());
         blocker.release.countDown();
         assertEquals(0, victim.stops.get());
         ProcessorHandle current = server.processorHandle("g", "victim");

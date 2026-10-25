@@ -1134,10 +1134,18 @@ public class MongooseServer implements MongooseServerController {
 
     /**
      * Stop the processor admitted as {@code processorName}, waiting at most {@code waitMillis} for the outcome (admin
-     * commands use 1 s). Returns the reply, or null if it did not come in time or nothing was admitted under the name.
+     * commands use 1 s). Returns the reply, or null if it did not come in time or nothing was admitted under the name; a
+     * stop the group's full mailbox would not take is answered {@code REFUSED}, and the processor keeps running.
      */
     public com.telamin.mongoose.control.ControlReply stopProcessor(String groupName, String processorName, long waitMillis) {
-        com.telamin.mongoose.control.ControlRequest request = sendStop(groupName, processorName);
+        com.telamin.mongoose.control.ControlRequest request;
+        try {
+            request = sendStop(groupName, processorName);
+        } catch (IllegalStateException notQueued) {
+            // refused unapplied (found by the chaos stress test): answered, not thrown, as the return type promises
+            return new com.telamin.mongoose.control.ControlReply(-1, com.telamin.mongoose.control.event.ReplyOutcome.REFUSED,
+                    String.valueOf(notQueued.getMessage()), -1, processorName);
+        }
         if (request == null || !safeToWait(groupName)) return null;
         return com.telamin.mongoose.control.ControlReplies.await(request, waitMillis);
     }
