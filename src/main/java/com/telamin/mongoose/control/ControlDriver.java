@@ -103,6 +103,16 @@ public final class ControlDriver {
      * spends it on admission and on the reply together (follow-up review, finding 7). Missing it answers the request
      * {@code REFUSED} and returns it, rather than throw; the full-mailbox timeout still bounds it when it is later.
      */
+    private volatile java.util.function.BooleanSupplier abandonWhen = () -> false;
+
+    /**
+     * A condition under which a sender waiting on a full mailbox gives up at once: the server's stop, so a sender
+     * holding the admission lock never blocks the stop's barrier for the whole backoff (failure-mode hunt, FM-2).
+     */
+    public void abandonWhen(java.util.function.BooleanSupplier condition) {
+        this.abandonWhen = condition == null ? () -> false : condition;
+    }
+
     public ControlRequest send(ControlRequest request, long admitByNanos) {
         if (request.requestId() < 0) request.assignId(requestIds.incrementAndGet());
         outstanding.add(request);
@@ -115,6 +125,15 @@ public final class ControlDriver {
             while (!mailbox.offer(request)) {
                 if (admitByNanos != Long.MAX_VALUE && System.nanoTime() - admitByNanos > 0) {
                     refuse(request, "not admitted within its deadline: mailbox full");
+                    return request;
+                }
+                if (abandonWhen.getAsBoolean()) {
+                    if (request.completeUnclaimed(ControlReply.notRunning(request.requestId(), "server is stopping"))) {
+                        request.runUnapplied();
+                        audit.fallback("NotRunning", "group", group, "requestId", request.requestId(),
+                                "request", request.description(), "reason", "server is stopping");
+                    }
+                    outstanding.remove(request);
                     return request;
                 }
                 if (ended()) {

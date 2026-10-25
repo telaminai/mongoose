@@ -972,6 +972,16 @@ public class MongooseServer implements MongooseServerController {
             // A shutdown helper must also wait for an already-running callback, not merely see that it was claimed.
             if (stopped) return;
             if (stopFailure != null) throw new IllegalStateException("removed service stop previously failed", stopFailure);
+            Service<?> live = registeredServices.get(service.serviceName());
+            if (live != null && live.instance() == service.instance()) {
+                // the exact instance was registered again: the live registry owns it now, so this retirement is
+                // superseded and must not stop it (failure-mode hunt, FM-1)
+                log.info("retirement of service '" + service.serviceName() + "' superseded: the same instance is registered"
+                        + " again, and is not stopped");
+                stopped = true;
+                removedServices.remove(id, this);
+                return;
+            }
             try {
                 service.stop();
             } catch (Throwable failure) {
@@ -1333,6 +1343,8 @@ public class MongooseServer implements MongooseServerController {
                     if (auditCaptureService instanceof com.telamin.mongoose.service.audit.AuditCaptureResources resources) {
                         group.setAuditCaptureResources(resources);
                     }
+                    // a sender waiting on this group's full mailbox leaves as soon as the server stops (FM-2)
+                    group.control().abandonWhen(this::isStopRequested);
                     return new ComposingEventProcessorAgentRunner(group, groupRunner, idleStrategyOverride);
                 });
 
