@@ -216,6 +216,14 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         this.idleCyclesCounter = eventFlowManager.getCountersService().agentIdleCyclesCounter(roleName);
         this.control = new ControlDriver(roleName, CONTROL_QUEUE_CAPACITY, this, new ControlAuditSink());
         this.control.onOrphanCompletion(this::orphanCompletion);
+        // a control request is in the processor's input order only on this group's own agent thread (fix review 7)
+        java.util.function.BooleanSupplier ownThread = () -> {
+            Thread agent = agentThread;
+            return agent == null ? com.telamin.mongoose.control.AgentThreads.isAgentOf(this)
+                    || com.telamin.mongoose.control.AgentThreads.isAgentThread() : agent == Thread.currentThread();
+        };
+        if (recorder != null) recorder.onOwnThread(ownThread);
+        if (replayer != null) replayer.onOwnThread(ownThread);
     }
 
     // ============================================================================================ requests
@@ -323,7 +331,24 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         return control.trySend(broadcastRequest(service, register, version));
     }
 
+    /** Remember the instance a versioned broadcast carries, as it is sent, so a replay can deliver exactly it. */
+    private void rememberServiceVersion(Service<?> service, boolean register, long version) {
+        if (version <= 0) return;
+        lastServiceVersions.merge(service.serviceName(), version, Math::max);
+        if (!register) return;
+        var versions = serviceHistory.computeIfAbsent(service.serviceName(), n -> new java.util.LinkedHashMap<>() {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<Long, Service<?>> eldest) {
+                return size() > SERVICE_VERSIONS_REMEMBERED;
+            }
+        });
+        synchronized (versions) {
+            versions.put(version, service);
+        }
+    }
+
     private ControlRequest broadcastRequest(Service<?> service, boolean register, long version) {
+        rememberServiceVersion(service, register, version);
         return new ControlRequest(ControlRequest.Kind.BROADCAST,
                 (register ? "register " : "deregister ") + service.serviceName(),
                 id -> new BroadcastIntent(id, service.serviceName(), register, version),
@@ -378,13 +403,14 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
 
     /** Per name, the processors built in this group: a replay stream's key. Agent thread only. */
     private final Map<String, AtomicInteger> builtOrdinals = new HashMap<>();
-    /** Per service, the registry version of the last broadcast applied here. Agent thread only. */
-    private final Map<String, Long> lastServiceVersions = new HashMap<>();
+    /** Per service, the registry version of the last broadcast sent to this group. */
+    private final Map<String, Long> lastServiceVersions = new ConcurrentHashMap<>();
     /**
      * Per service, the instances this group has been sent, by registry version, so a replay delivers the recorded
-     * version and never the current one in its place (follow-up review, finding 3). Bounded per name. Agent thread only.
+     * version and never the current one in its place (follow-up review, finding 3). Bounded per name. Recorded when a
+     * broadcast is sent to the group, whatever processors it holds (fix review 1), so read under the map's lock.
      */
-    private final Map<String, java.util.LinkedHashMap<Long, Service<?>>> serviceHistory = new HashMap<>();
+    private final Map<String, java.util.LinkedHashMap<Long, Service<?>>> serviceHistory = new ConcurrentHashMap<>();
     static final int SERVICE_VERSIONS_REMEMBERED = 32;
 
     /** What handing a processor a service did: delivered, skipped (it already held it), or delivered with a failure. */
@@ -745,21 +771,14 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         // the services a server registers while it boots (its feeds among them) are configuration, delivered live and
         // never recorded; a service change is what was sent once the server had started
         boolean runtimeChange = payload.runtime();
-        if (payload.version() > 0) {
-            lastServiceVersions.put(payload.service().serviceName(), payload.version());
-            if (payload.register()) {
-                serviceHistory.computeIfAbsent(payload.service().serviceName(), n -> new java.util.LinkedHashMap<>() {
-                    @Override
-                    protected boolean removeEldestEntry(Map.Entry<Long, Service<?>> eldest) {
-                        return size() > SERVICE_VERSIONS_REMEMBERED;
-                    }
-                }).put(payload.version(), payload.service());
-            }
-        }
+        // (the version history is recorded when the broadcast is sent: see rememberServiceVersion)
         if (replayer != null && (runtimeChange && replayer.suppressesLiveServices(flow)
                 || replayer.suppressesLiveService(flow, payload.service().serviceName()))) {
-            // replayed from a stream that records its service changes: delivered where the recorded run had it
-            return result(effect, ControlOutcome.SUCCEEDED, "replayed: delivered in position");
+            // replayed from a stream that records its service changes: delivered where the recorded run had it. A
+            // withdrawal is not confirmed to its sender: the processor still holds the service until the stream withdraws
+            // it, so removeService must keep the instance (fix review 3)
+            return payload.register() ? result(effect, ControlOutcome.SUCCEEDED, "replayed: delivered in position")
+                    : result(effect, ControlOutcome.FAILED, "replayed: withdrawn in position by the stream, not yet");
         }
         if (runtimeChange && recorder != null) recorder.beforeControl(flow);
         Delivery delivery = deliverService(named, payload.service(), payload.register());
@@ -1133,7 +1152,11 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                 if (register) {
                     // the recorded version, never the current one in its place (follow-up review, finding 3)
                     var versions = serviceHistory.get(service);
-                    svc = version > 0 && versions != null ? versions.get(version) : null;
+                    if (version > 0 && versions != null) {
+                        synchronized (versions) {
+                            svc = versions.get(version);
+                        }
+                    }
                     if (svc == null) {
                         Long live = lastServiceVersions.get(service);
                         if (version > 0 && live != null) {
@@ -1144,20 +1167,26 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                             return "service " + service + " version " + version + " cannot be reproduced: this run's"
                                     + " registry is at version " + live + " and no longer holds the recorded instance";
                         }
+                        if (version > 0) {
+                            // no version history here (a service configured at boot, never broadcast with a version):
+                            // the recorded instance cannot be verified, so it is refused, never substituted (fix review 1)
+                            if (registeredServices.get(service) == null) {
+                                return "wait:service " + service + " version " + version + " is not registered";
+                            }
+                            return "service " + service + " version " + version + " cannot be verified: this run has no"
+                                    + " version history for it, so the recorded instance cannot be reproduced";
+                        }
                         svc = registeredServices.get(service);
                         if (svc == null) return "wait:service " + service + " is not registered";
-                        if (version > 0) {
-                            // a registry with no version history here (configured at boot): the instance is the only one
-                            // this run has, and its identity with the recorded one cannot be checked; said, not silent
-                            log.warning("replay delivers service " + service + " recorded at version " + version
-                                    + " from a registry with no version history: the recorded instance is unverified");
-                        }
                     }
                 } else {
                     for (Service<?> held : servicesDeliveredTo(flow)) {
                         if (held.serviceName().equals(service)) svc = held;
                     }
-                    if (svc == null) return null;       // nothing held to withdraw
+                    if (svc == null) {
+                        // the recorded run withdrew it here; the replayed processor never held it (fix review 2)
+                        return "service " + service + " was not held: the recorded run withdrew it here";
+                    }
                 }
                 Delivery delivery = ComposingEventProcessorAgent.this.deliverService(np, svc, register);
                 if (delivery.failure() != null) {

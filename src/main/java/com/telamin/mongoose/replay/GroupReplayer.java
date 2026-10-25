@@ -72,6 +72,13 @@ public final class GroupReplayer {
         }
     }
 
+    private volatile java.util.function.BooleanSupplier ownThread = AgentThreads::isAgentThread;
+
+    /** How to tell the replaying group's own agent thread: only there is a control request in input order. */
+    public void onOwnThread(java.util.function.BooleanSupplier ownThread) {
+        this.ownThread = ownThread;
+    }
+
     public GroupReplayer(ReplayConfig config, ReplayRouting routing, ReplayScheduler scheduler) {
         this.config = config;
         this.routing = routing;
@@ -236,7 +243,7 @@ public final class GroupReplayer {
         Object target = service.instance();
         return ControlInterception.wrap(service, (method, args, m, raw) -> {
             controlRequests.computeIfAbsent(cursor.name, n -> new CopyOnWriteArrayList<>()).add(method + args);
-            if (!AgentThreads.isAgentThread()) {
+            if (!ownThread.getAsBoolean()) {
                 // off the processor's own thread: not part of its input order, so not reproducible (final review, 11)
                 stop(cursor, "control request " + method + args + " made off the processor's thread; not executed");
                 return null;

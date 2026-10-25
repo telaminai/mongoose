@@ -59,6 +59,13 @@ class ControlInvariantsMutationTest {
                         "record: Decision, requestId: 1, rule: captureOpened, generation: 7, resourceId: 41, effects: ''")),
                 Arguments.of("I12", audit(
                         "record: EffectOutcome, requestId: 1, opId: '1.1', effect: InstallCapture, outcome: succeeded, generation: 9")),
+                Arguments.of("I12", audit(          // a stale failed uninstall must not excuse a later capture
+                        "record: Decision, requestId: 1, rule: started, generation: 7, effects: ''",
+                        "record: EffectOutcome, requestId: 2, opId: '2.1', effect: InstallCapture, outcome: succeeded, generation: 7",
+                        "record: EffectOutcome, requestId: 3, opId: '3.1', effect: UninstallCapture, outcome: failed, generation: 7",
+                        "record: EffectOutcome, requestId: 3, opId: '3.2', effect: UninstallCapture, outcome: succeeded, generation: 7",
+                        "record: EffectOutcome, requestId: 4, opId: '4.1', effect: InstallCapture, outcome: succeeded, generation: 7",
+                        "record: Decision, requestId: 5, rule: released, generation: 7, effects: ''")),
                 Arguments.of("I13", audit(
                         "record: Reply, requestId: 1, opId: '1.1', outcome: APPLIED, completed: true",
                         "record: Reply, requestId: 1, opId: '1.2', outcome: APPLIED, completed: true")),

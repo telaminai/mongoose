@@ -286,6 +286,7 @@ public final class ControlInvariants {
                     }
                 } else if ("UninstallCapture".equals(r.str("effect"))) {
                     installedOn.merge(gen, -1, Integer::sum);
+                    failedUninstall.remove(gen);    // the retry succeeded: it excuses nothing installed after it
                 }
             }
         }

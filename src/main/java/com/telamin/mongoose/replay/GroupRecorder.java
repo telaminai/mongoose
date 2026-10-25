@@ -49,6 +49,13 @@ public final class GroupRecorder {
         }
     }
 
+    private volatile java.util.function.BooleanSupplier ownThread = com.telamin.mongoose.control.AgentThreads::isAgentThread;
+
+    /** How to tell the recording group's own agent thread: only there is a control request in input order. */
+    public void onOwnThread(java.util.function.BooleanSupplier ownThread) {
+        this.ownThread = ownThread;
+    }
+
     public GroupRecorder(ReplayConfig config, LongSupplier live) {
         this.config = config;
         this.live = live;
@@ -125,7 +132,7 @@ public final class GroupRecorder {
                 failure = t;
             }
             Recorded r = byFlow.get(flow);
-            if (r != null && !com.telamin.mongoose.control.AgentThreads.isAgentThread()) {
+            if (r != null && !ownThread.getAsBoolean()) {
                 // off the processor's own thread: outside its input order, so the stream cannot reproduce it (final 11)
                 append(r, new ReplayEntry.Failed("control", "control request " + method + args
                         + " made off the processor's thread", live.getAsLong()));

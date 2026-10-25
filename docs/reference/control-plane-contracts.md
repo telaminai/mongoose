@@ -696,13 +696,15 @@ A replay stops **one processor's** replay, never the group or the server, and re
 | This run's registry has moved past the recorded version and no longer holds that instance | `service S version V cannot be reproduced` | Stops. The current instance is never substituted |
 | A replayed `@ServiceRegistered` or `@ServiceDeregistered` callback throws | `service S registration callback failed during replay` | Stops. A failed callback is never counted as delivered |
 | The processor already held the service when the entry is replayed | `service S was already held` | Stops: it reached the processor before its recorded position |
+| The recorded run withdrew a service the replayed processor never held | `service S was not held` | Stops: the withdrawal cannot be reproduced |
+| The replay run has no version history for the service (for example it was configured at boot and never broadcast with a version) | `service S version V cannot be verified` | Stops. An instance whose identity with the recorded one cannot be checked is never delivered in its place |
 
 Only deliveries that reached the processor are recorded. A broadcast it already held (skipped live) records nothing, and
 a delivery whose callback failed records a `Failed` entry, past which the stream is not reproducible.
 
-**Limitation:** a registry that has no version history in the replay run (for example, services configured at boot and
-never broadcast with a version) cannot prove that its instance is the recorded one. The replay uses it, and logs a
-warning that the recorded instance is unverified.
+Versions are remembered when a broadcast is sent to the group, whatever processors it holds, and the last 32 versions
+per service name are kept. In a replay, a withdrawal the stream records is not confirmed to its sender until the stream
+delivers it, so `removeService` keeps the instance meanwhile (until shutdown if the stream never withdraws it).
 
 `complete()` with a `null` `stopped(...)` means every entry was delivered. It does not prove the run was reproduced.
 Compare `outputs(processor)` or the audit logs.
