@@ -34,10 +34,10 @@ Advantages of agent execution
 
 - Single-threaded event handling: Processors execute events on a dedicated agent thread, avoiding external
   synchronization inside handlers.
-- Uniform lifecycle and observability: Agents participate in the server lifecycle (
-  `init → start → startComplete → stop → tearDown`) and are visible with consistent names, logs, and metrics.
-- Backpressure and dispatch integration: Publishing to processors uses Mongoose’s queues and policies (
-  `EventToQueuePublisher`), ensuring safe cross-thread handoff.
+- Lifecycle and observability: Agents participate in server startup and shutdown and expose names, logs and metrics.
+  Callback sequences differ between processors, feeds and services.
+- Dispatch integration: Publishing uses `EventToQueuePublisher` and group queues. Full-queue retries can end in
+  counted drops; see [overload behaviour](event-flow.md#publisher-serialisation-and-slow-subscribers).
 - Tunable latency and CPU use: Idle strategies (busy spin, yielding, backoff, sleeping) can be chosen per agent group;
   see [threading-model.md](threading-model.md#10-idle-strategies-and-host-environment-impact).
 
@@ -60,7 +60,8 @@ Trade-offs
 
 Mongoose provides several agent types and ways to host components:
 
-- Processor Agent Groups: Host one or more `StaticEventProcessor` instances. All event handlers run here.
+- Processor Agent Groups: Host application processors and one generated Fluxtion control processor. The latter
+  decides lifecycle changes; business events keep their own dispatch path. See [built with Fluxtion](built-with-fluxtion.md).
 - Service Agent Groups: Host worker services and optional agent-hosted event sources.
 - Scheduler Agent: Runs the deadline wheel (`DeadWheelScheduler`) for timed tasks.
 
@@ -129,7 +130,8 @@ Hybrid approach:
   library-managed IO threads). Either way, they publish into processor queues.
 - Services: Can be agent-hosted (cooperative `doWork()` in a service agent group) or run on their own threads if they
   are external/blocked; publish back to processors for state changes.
-- Sinks: Can be agent-hosted (as services) or run on their own threads, consuming outputs produced by processors.
+- Sinks: A synchronous sink method runs on its caller’s thread. A sink implementation may enqueue work for a
+  service agent or its own worker; that handoff is not automatic.
 
 Small diagram
 

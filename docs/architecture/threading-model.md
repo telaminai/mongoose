@@ -36,88 +36,33 @@ Mongoose server composes several “agents,” each typically running on its own
 - One Scheduler Agent (the deadline wheel)
 - Optional Agent‑hosted event sources (e.g., FileEventSource)
 
-Event data is handed between agents through lock‑free queues managed by EventFlowManager and EventToQueuePublisher.
+Event data is handed between agents through Agrona queues managed by EventFlowManager and EventToQueuePublisher.
 Control requests (add or stop a processor, deliver a service) reach each processor group through its own ordered
 control mailbox, which the group drains before it dispatches events. Each processor runs single‑threaded on its agent
 thread — your processor code is not concurrently executed by multiple threads.
 
-### Component/Thread overview
+### Component/thread overview
 
-```mermaid
-flowchart TD
-    subgraph ServiceAgentGroup [Service Agent Group thread]
-        ES1[Agent-hosted Event Source]
-        WS1[Worker Service A]
-        WS2[Worker Service B]
-    end
+[The runtime diagram](overview.md#runtime-structure) separates application delivery, group control and helper I/O.
+A feed/group queue may serve several processors; assigning two processors to the same group does not give each
+its own thread or necessarily its own feed queue.
 
-    subgraph ProcessorAgentGroup [Processor Agent Group thread]
-        P1[StaticEventProcessor #1]
-        P2[StaticEventProcessor #2]
-    end
-
-    subgraph SchedulerAgent [Scheduler Agent thread]
-        Svc[DeadWheelScheduler]
-    end
-
-    ES1 -- publish via EventToQueuePublisher --> Q1[(Queue: fileFeed)] --> P1
-    ES1 -- publish via EventToQueuePublisher --> Q2[(Queue: fileFeed)] --> P2
-    WS1 -- optional publish/events --> Q3[(Queue: serviceFeed)] --> P1
-    Svc -- expiry Runnable --> WS1
-    Svc -- expiry Runnable --> ES1
-
-    style ServiceAgentGroup fill:#234,stroke:#88a
-    style ProcessorAgentGroup fill:#418,stroke:#8a8
-    style SchedulerAgent fill:#333,stroke:#a88
-```
-
-Notes:
-
-- Each Agent Group is a thread that can host multiple components.
-- Event publication crosses threads via queues. The publisher thread enqueues, the subscriber processor dequeues on its
-  own thread.
-- Scheduler expiry actions run on the scheduler agent thread; to affect a processor, schedule a trigger that publishes
-  into the processor or use `ScheduledTriggerNode`.
+Scheduler expiry actions run on the scheduler thread. To change processor state, publish into its group or use
+`ScheduledTriggerNode`; do not run the processor directly from the scheduler.
 
 ## 2) Lifecycle and when things start
 
-All lifecycle participants (event sources, processors, services) follow this sequence:
+Lifecycle participants expose different callbacks; they do not all follow one identical sequence on one thread.
+Server startup coordinates service and source preparation, starts group runners and waits for startup progress.
+The group's admitted adds build and start business processors on its agent thread. Start failures at boot follow
+the configured boot failure policy, which differs from the default isolation of a later dynamic add.
 
-- `init()` — light setup
-- `start()` — allocate resources; event sources may enable pre‑start caching
-- `startComplete()` — system is ready; sources replay caches and switch to publishing
-- `stop()` — stop work, flush/close resources
-- `tearDown()` — final cleanup
+The group checks control inputs before normal event delivery. A call made inside a handler or lifecycle callback
+queues follow-on control work; it must not synchronously wait for that work to run on the same group.
 
-Processor and service agents add their components and then call `startComplete()` once the group is active.
-
-### Startup sequence (high level)
-
-```mermaid
-sequenceDiagram
-    participant CFG as ServerConfigurator
-    participant SVR as MongooseServer
-    participant PGA as ComposingEventProcessorAgent <br>(thread)
-    participant SGA as ComposingServiceAgent <br>(thread)
-    participant SCH as DeadWheelScheduler <br>(thread)
-
-    CFG->>SVR: register services / feeds / processors
-    SVR->>SGA: register worker services
-    SGA->>SGA: init() services
-    SGA->>SGA: inject scheduler + services
-    SGA->>SGA: start() services
-    SGA->>SGA: add Agent delegates
-
-    SVR->>PGA: add processors
-    PGA->>PGA: inject scheduler + services
-    PGA->>PGA: start() processors
-    PGA->>PGA: startComplete() processors
-
-    Note over SGA: When group ACTIVE
-    SGA->>SGA: startComplete() services
-
-    Note over SCH: Scheduler agent thread running doWork()
-```
+Startup and shutdown are fenced against one another. A shutdown deadline can expire while startup is still
+inside user code: the server then reports incomplete shutdown rather than pretending startup was cancelled.
+See [control requests](sequence-diagrams/control-request.md) and [shutdown](sequence-diagrams/shutdown.md).
 
 ## 3) Event dispatch path
 
@@ -169,14 +114,15 @@ Implications:
 
 ### Calling server control methods from agent threads
 
-Adding or stopping a processor, registering or removing a service, and starting an audit capture are control
-requests to a processor group. Each group decides its requests in order, on its own
+Adding or stopping a processor, delivering a service change, and starting an audit capture use group control
+requests. The server registry changes outside the group; each group decides its deliveries on its own
 [agent thread](../reference/glossary.md#agent-thread), before it dispatches events.
 
 - **An agent thread never waits for a control reply.** Called from a processor's handler, its `start()` or `stop()`,
   a `@ServiceRegistered` callback or an agent-hosted service, `addEventProcessor`, `stopProcessor`,
   `registerService` and `removeService` queue the request and return at once. From an ordinary thread they wait up
-  to `controlWaitMillis` (default 10 s) for the outcome.
+  to `controlWaitMillis` (default 10 s) for the outcome. This skips reply waiting, not arbitrary synchronous service
+  preparation or plugin callbacks. Capture start/stop have their own waits in the capture contract.
 - **Do not block on a reply stage from an agent thread** (`join()`, `get()`). Use the `...Async` continuation forms.
   A dependent attached after the stage has completed runs on the attaching thread.
 - **`stop()` from an agent thread is handed off** to a `mongoose-server-stop` thread.
@@ -231,6 +177,8 @@ public class MySchedulerAwareHandler extends ObjectEventHandlerNode {
 - How to core‑pin agent threads: [how-to-core-pin](../example/how-to/how-to-core-pin.md)
 - Architecture + sequence diagrams: [architecture](index.md)
 
+<a id="optional-core-pinning-for-agent-threads"></a>
+
 ## 9) Optional: Core pinning for agent threads
 
 Mongoose server supports best-effort CPU core pinning for agent threads. This can help reduce context switches and
@@ -284,7 +232,7 @@ Optional dependency for pinning:
 
 - To enable actual OS-level pinning, add the test/runtime dependency on OpenHFT Affinity in your project.
   See this repository’s POM for an example test-scoped optional
-  dependency: [pom.xml](https://github.com/gregv12/fluxtion-server/blob/main/pom.xml) (artifact
+  dependency: [pom.xml](https://github.com/telaminai/mongoose/blob/feature/control-plane/pom.xml) (artifact
   net.openhft:affinity).
 - A simple optional test that exercises pinning via reflection is provided
   here: [CoreAffinityOptionalTest]({{source_root}}/test/java/com/telamin/mongoose/internal/CoreAffinityOptionalTest.java).
@@ -292,7 +240,7 @@ Optional dependency for pinning:
 Notes:
 
 - Core IDs are zero-based and depend on your OS/CPU topology.
-- Pinning can improve determinism but may reduce OS scheduling flexibility; benchmark your workload.
+- Pinning can reduce scheduling variation but does not guarantee deterministic timing; benchmark your workload.
 
 ## 10) Idle strategies and host environment impact
 
@@ -302,8 +250,8 @@ application. Choose deliberately per agent group.
 
 Common strategies (from org.agrona.concurrent):
 
-- BusySpinIdleStrategy — tight loop, no yielding. Lowest median latency when work arrives, highest constant CPU usage.
-- YieldingIdleStrategy — spin briefly, then Thread.yield(). Lower CPU pressure than pure busy spin; more scheduler
+- BusySpinIdleStrategy — tight loop, no yielding. Avoids idle wake-up delay at the cost of constant CPU use; measure latency on the target host.
+- YieldingIdleStrategy — yields the thread when idle. Lower CPU pressure than pure busy spin; more scheduler
   friendly.
 - BackoffIdleStrategy — progressive spin/yield/park sequence. Good latency/CPU balance for mixed workloads.
 - SleepingIdleStrategy — sleeps for a configured period when idle. Very low CPU during idle, higher wake-up latency.
@@ -316,7 +264,7 @@ Effects on the host environment:
       throttling risk under sustained load.
     - Yield/backoff reduce average CPU when idle; sleeping minimizes it.
 - Latency and jitter
-    - Busy spin typically provides the lowest queuing latency and the tightest p50–p99 latency distribution.
+    - Busy spin avoids park/unpark delay, but tail latency still depends on scheduling, callbacks and host load.
     - Yield/backoff introduce small, scheduler-dependent jitter; sleeping introduces millisecond-level wake-up delays
       unless tuned very carefully.
 - OS scheduler interaction

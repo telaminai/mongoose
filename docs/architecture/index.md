@@ -1,76 +1,23 @@
-# Mongoose server Architecture Documentation
+# Architecture and design
 
-## Introduction
+Mongoose hosts event processors on Agrona agent threads. Each processor group also runs a generated Fluxtion
+control processor that decides its lifecycle changes. These pages describe the **unreleased control-plane candidate**;
+see the [release notes](../release/release-notes-unreleased.md) for caller-visible changes.
 
-This directory contains comprehensive architecture documentation for the Mongoose server project. The documentation is
-organized into several sections, each focusing on a different aspect of the architecture.
+| Start here | What it explains |
+| --- | --- |
+| [Architecture overview](overview.md) | The runtime, its thread boundaries and the two event paths |
+| [Components and ownership](components.md) | Who owns registrations, queues, services and capture resources |
+| [Mongoose built with Fluxtion](built-with-fluxtion.md) | Why the runtime uses its own event-processing technology |
+| [Event flow](event-flow.md) | Publication, subscriptions, delivery, retries and overload |
+| [Sequence diagrams](sequence-diagrams/index.md) | Subscription, event delivery, control, capture and shutdown |
+| [Agent execution](agent-execution.md) | Choosing and hosting cooperative workers |
+| [Threading model](threading-model.md) | Callback contexts, waiting rules, core pinning and idle strategies |
+| [Object pooling](object_pooling.md) | Reference ownership across fan-out and release |
+| [Server control](server-control.md) | Admin commands and the programmatic controller |
+| [Deployment](deployment.md) | JVM requirements, shutdown and recovery limits |
+| [Case study: a late capture completion](../case-studies/control-audit-investigation.md) | Following real qualification evidence through the analyser |
 
-## Table of Contents
-
-1. [Architecture Overview](overview.md)
-
-    - High-level architecture description
-    - Main components and their relationships
-    - System architecture diagrams
-
-2. [Component Architecture](components.md)
-
-    - Detailed description of key components
-    - Component responsibilities
-    - Class diagrams
-    - Component relationships
-
-3. [Event Flow Architecture](event-flow.md)
-    - Event flow components
-    - Event processing pipeline
-    - Subscription model
-    - Event types and wrapping
-    - Queue implementation
-
-4. [Agent Execution](agent-execution.md)
-    - What agent execution is and how it differs from user threads
-    - How agents are supported in Mongoose Server
-    - When to choose agent execution; execution contexts (handlers vs services/feeds/sinks)
-
-5. [Deployment Guide](deployment.md)
-    - Deployment models
-    - Performance considerations
-    - Availability and recovery (and what is not yet supported)
-    - Monitoring and observability
-    - Security considerations
-    - Configuration management
-    - Deployment checklist
-
-## How to Use This Documentation
-
-- Start with the [Architecture Overview](overview.md) to get a high-level understanding of the system
-- Dive into [Component Architecture](components.md) to understand the key components and their relationships
-- Explore [Event Flow Architecture](event-flow.md) to understand how events flow through the system
-- Refer to the [Deployment Guide](deployment.md) when planning a deployment
-
-## Diagrams
-
-The documentation includes various diagrams to help visualize the architecture:
-
-- System architecture diagrams
-- Component interaction diagrams
-- Event flow diagrams
-- Class diagrams
-
-These diagrams are provided in ASCII format for easy viewing in any text editor.
-
-## Contributing to the Documentation
-
-When contributing to this documentation, please follow these guidelines:
-
-1. Use Markdown format for all documents
-2. Include diagrams where appropriate
-3. Keep the documentation up-to-date with code changes
-4. Organize content logically
-5. Use clear and concise language
-
-## Conclusion
-
-This architecture documentation provides a comprehensive overview of the Mongoose server project. It serves as a
-reference for developers, architects, and operators working with the system. By understanding the architecture, you can
-more effectively develop, extend, and maintain applications built on the Mongoose server framework.
+The diagrams are editable SVGs, scale without losing detail and follow the site's light/dark theme. Solid arrows
+show the flow labelled on each diagram; they do not imply that the entire server has one global event order.
+The [control-plane contracts](../reference/control-plane-contracts.md) give the exact API guarantees and failure outcomes.

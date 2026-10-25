@@ -36,6 +36,16 @@ The core types are:
 - Optional CLI driver (example) that reads commands and sends them to the registry.
   Source: [CliAdminCommandProcessor.java]({{source_root}}/main/java/com/telamin/mongoose/service/admin/impl/CliAdminCommandProcessor.java)
 
+## Lifecycle control behind the admin surface
+
+Admin transports invoke registered functions. A processor-bound function runs in that processor's event cycle;
+when it calls the server controller, it submits a separate lifecycle request to the group's control mailbox.
+The generated control processor decides the transition and records its effects and outcome.
+
+See [the control request sequence](sequence-diagrams/control-request.md),
+[components and ownership](components.md), and [the diagnostic case study](../case-studies/control-audit-investigation.md).
+An admin command's output is not itself proof that asynchronous physical cleanup has finished.
+
 ## Registering commands on the fly
 
 Any service or processor can register admin commands at startup (or later) using AdminCommandRegistry. Registration can
@@ -149,7 +159,7 @@ server-level commands to the admin registry:
 | `server.service.list` | Lists registered services |
 | `server.processors.list` | Lists processors by group |
 | `server.processors.stop <group>/<name>` | Stops a processor and prints `stop <OUTCOME>: <reason>`. It waits at most one second; if no reply comes in time it prints `stop pending (still applies)`, and the stop still happens ([contract](../reference/control-plane-contracts.md#the-admin-stop-command)) |
-| `audit.start <name>`, `audit.stop <name>`, `audit.status`, `audit.list` | Audit capture ([contract](../reference/control-plane-contracts.md#audit-capture)) |
+| `audit.start <group/name>`, `audit.stop <group/name>`, `audit.status`, `audit.list` | Audit capture ([contract](../reference/control-plane-contracts.md#audit-capture)) |
 | `latency.status`, `latency.enable`, `latency.disable`, `latency.toggle`, `latency.reset` | Latency monitoring |
 
 Source: [MongooseServerAdmin.java]({{source_root}}/main/java/com/telamin/mongoose/service/servercontrol/MongooseServerAdmin.java)

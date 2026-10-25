@@ -47,20 +47,21 @@ server.start();
 
 Mongoose server can be deployed in containers such as Docker, which provides isolation and portability.
 
-#### Dockerfile Example:
-```dockerfile
-FROM openjdk:11-jre-slim
+#### Container requirements
 
-WORKDIR /app
+This candidate targets **Java 21**. Package your application entry point, processor classes, plugins and runtime
+dependencies together using your application's build. Mongoose is a library; there is no universal
+`fluxtion-server.jar` to copy into an image.
 
-COPY target/fluxtion-server.jar /app/
-COPY config/server-config.yaml /app/config/
+For an executable application jar that calls `MongooseServer.bootServer()`, a launch command can be:
 
-ENV JAVA_OPTS="-Xmx2g -Xms1g"
-ENV CONFIG_FILE="/app/config/server-config.yaml"
-
-CMD ["java", "-jar", "fluxtion-server.jar", "-Dfluxtionserver.config.file=${CONFIG_FILE}"]
+```shell
+java -Xms1g -Xmx1g -DmongooseServer.config.file=/app/config/server.yaml -jar /app/application.jar
 ```
+
+The system property belongs before `-jar`. Supply the YAML and plugin configuration appropriate to your application.
+Set the supervisor's termination grace period to allow the configured shutdown budget and any operational response
+to an incomplete result. Monitor `StopResult`; a bounded stop can return while a callback remains blocked.
 
 ### Cloud Deployment
 
@@ -93,34 +94,22 @@ Recommended settings:
 
 Mongoose server uses a threading model based on agents. Configure threads appropriately:
 
-```yaml
-threadConfig:
-  - name: "default"
-    idleStrategy: "BusySpin"
-  - name: "lowLatency"
-    idleStrategy: "BusySpin"
-  - name: "highThroughput"
-    idleStrategy: "BackOff"
-```
+Use `MongooseServerConfig.agentThreads` / `ThreadConfig` to choose each agent's idle strategy and optional core id.
+For low latency, busy spin needs sufficient dedicated CPU capacity. Backoff/yield/sleep trade wake-up latency for
+idle CPU use; measure your actual workload rather than choosing a strategy from its name alone.
+See [thread configuration](threading-model.md#9-optional-core-pinning-for-agent-threads).
 
-Considerations:
-- Use `BusySpin` for low-latency requirements
-- Use `BackOff` for high-throughput scenarios
-- Balance the number of threads with available CPU cores
+### Queues and overload
 
-### Queue Sizing
+Monitor queue depth and drops. The current publisher retries a full queue for about 10 ms and then drops that
+queue's copy. Increasing capacity absorbs bursts but cannot make a sustained overload lossless.
+See [event flow](event-flow.md#publisher-serialisation-and-slow-subscribers).
 
-Configure queue sizes based on expected load:
+### Shutdown and remaining resources
 
-```java
-// In EventFlowManager.java
-new ManyToOneConcurrentArrayQueue<T>(queueSize);
-```
-
-Recommendations:
-- Start with a queue size of 1024 or 2048
-- Monitor queue overflow and adjust as needed
-- Consider using different queue sizes for different event types
+Use `shutdown()` and inspect `StopResult`. Processor groups must close before their remaining service dependencies
+are stopped. Unresolved capture resources or failed callbacks can leave the server `STOPPING`; another shutdown
+attempt resumes unfinished phases. See [the shutdown sequence](sequence-diagrams/shutdown.md).
 
 ## Availability and recovery
 
@@ -231,9 +220,3 @@ Before deploying Mongoose server to production, ensure:
 4. **Backup Strategy**: Implement backup and recovery procedures
 5. **Documentation**: Document deployment procedures and configurations
 6. **Rollback Plan**: Prepare a rollback plan in case of issues
-
-## Conclusion
-
-Deploying Mongoose server requires careful consideration of performance, availability and recovery, monitoring, and security. By following the guidelines in this document, you can ensure a successful deployment that meets your application's requirements.
-
-Remember that deployment is not a one-time activity but an ongoing process. Continuously monitor, evaluate, and improve your deployment to maintain optimal performance and reliability.

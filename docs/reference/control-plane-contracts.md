@@ -439,7 +439,7 @@ public record StopResult(boolean complete, boolean handedOff, String blockedStar
 | `complete` | Everything stopped. The server is `STOPPED`. |
 | `handedOff` | Called on one of the server's own threads. The stop runs on a `mongoose-server-stop` thread and its outcome is not known yet. Use `awaitStopped` from another thread. |
 | `blockedStartup` | The startup, admission or coordination step that blocked this attempt, or `null`. |
-| `groupsRunning` | Groups or cleanup tasks not confirmed finished. Entries are prefixed `processor:` or `service:`, or are bracketed notes such as `<event sources stopping>` or `<audit capture stopping>`. |
+| `groupsRunning` | Groups or cleanup tasks not confirmed finished. Current group entries are raw group names; the internal helper keys use `processor:` / `service:`. Bracketed notes include `<event sources stopping>` and `<audit capture stopping>`. Do not parse raw names as a stable typed protocol. |
 | `servicesLeftRunning` | Services not confirmed stopped: a group may still use them, their stop is still running, or their stop failed. |
 
 ### Phases and the deadline
@@ -449,7 +449,8 @@ One deadline, `shutdownTimeoutMillis` (default 30 000 ms), covers the whole stop
 1. Fence startup: ask an in-progress startup step to return, and wait for it.
 2. Stop feeds: close agent groups that host only event sources; take event sources off shared groups; stop every
    event source. This phase is also capped at 5 s.
-3. Drain events already queued to processors, at most `shutdownDrainTimeoutMillis` (default 2000 ms).
+3. Drain events already queued to processors, at most `shutdownDrainTimeoutMillis` (default 2000 ms). On expiry,
+   log the pending count and proceed to release the queues; remaining entries may be dropped, not delivered.
 4. Close every processor group, each from its own tracked helper thread.
 5. **Only if every processor group closed**: close the service agent groups, then stop the registered services
    (including removed services the server still owns), each on a helper thread.
@@ -460,7 +461,8 @@ One deadline, `shutdownTimeoutMillis` (default 30 000 ms), covers the whole stop
 
 - `shutdown()` returns by the deadline (plus scheduling slack) with a truthful `StopResult`. It never reports
   `complete` while something it started is still running.
-- If any processor group did not close, **no service is stopped**. Any running processor may hold any service.
+- If any processor group did not close, remaining service dependencies are retained. Event sources were already
+  stopped in the feed phase; this guarantee does not keep their inbound streams available.
 - Groups closing do not run queued adds: their suppliers never run and they are answered `NOT_RUNNING`.
 
 ### Resuming an incomplete stop
@@ -476,6 +478,14 @@ resume.** A resumed stop:
 
 Concurrent callers on ordinary threads are serialised: a second caller waits for the attempt in progress (within its
 own deadline), then resumes it if it ran out.
+
+Capture uninstall restores the configured listener before processor `stop()` and `tearDown()`. Their audit records
+therefore go to that restored listener, not the ended capture; physical closure follows on a helper. If uninstall
+fails, that restoration is not established and the unresolved resource remains diagnostic evidence.
+
+Failed physical closes are not retried: the backend's partial side effects are unknown. An unresolved close keeps
+the stop incomplete. Follow the [shutdown runbook](../operations/shutdown-runbook.md) to preserve the capture,
+export control evidence, distinguish failed detach from failed close, and escalate process termination.
 
 ### awaitStopped
 
@@ -524,7 +534,8 @@ agent thread.
 - Off an agent thread, on a running group, `start` returns once the capture is recording. `isRecording(name)` is
   then `true`.
 - Calling `start` on a processor that is already recording is a no-op (`APPLIED`, `already recording`). Calling it
-  while an open is in progress joins that open and is answered with it.
+  while an open is in progress joins that open and is answered with it. A start while an earlier session is closing
+  can open a new session; the earlier resource keeps its independent cleanup ownership and capacity slot.
 - The request is bound to the processor admitted under the name when it is sent. A late open never installs on a
   replacement processor. It is closed instead.
 
@@ -550,7 +561,7 @@ agent thread.
 | No processor admitted under the name | `IllegalArgumentException` |
 | Processor has left its group | `IllegalArgumentException` |
 | Group closed (`NOT_RUNNING`) | `start`: `IllegalStateException`; `stop`: no-op |
-| Processor not started yet, capture closing, open limit reached, open failed or timed out | `IllegalStateException` with the reason |
+| Processor not started yet, open limit reached, open failed or timed out | `IllegalStateException` with the reason |
 | Called on an agent thread, or the group has not started | Returns at once without waiting. The request applies later, and only a failure is logged |
 | Interrupted while waiting | `IllegalStateException`; the request still applies |
 
@@ -561,7 +572,8 @@ thread, `start` returns before the capture is installed, so that line means "req
 
 ### Naming the processor to capture
 
-`start(name)` and `stop(name)` (and the admin `audit.start` / `audit.stop`) take a processor name. A name admitted in
+The following selection rules apply to the **built-in Chronicle capture service**. `start(name)` and `stop(name)`
+(and the admin `audit.start` / `audit.stop`) take a processor name. A name admitted in
 one group addresses that processor. A name admitted in **several** groups is ambiguous: the call throws
 `IllegalArgumentException` naming the groups, and you address one as `group/name`. A processor never inherits a capture
 recording another processor of the same name in a different group.
@@ -572,6 +584,24 @@ The built-in Chronicle service pins each resource to its group, name and registr
 session has a fresh `capture-*` directory and capture id, with a `.mongoose-capture.properties` identity sidecar;
 the display selector is not a filesystem path. Replacement generations and late closes cannot share a queue.
 Historical discovery still reads the old standalone layout. See [capture resource identity](../design/capture-resource-identity.md).
+
+`MongooseAuditIntrospectionService.capturesFor(group, name)` returns immutable current/historical session handles;
+`latestCapture(group, name)` returns the preferred latest handle or `null`. Selector overloads are available.
+Use the returned id and path for importers; never construct a path from `group/name`. Old unqualified directories
+are discoverable but are not silently assigned to a group. `audit.list` / `audit.status` print id, selector and path.
+
+YAML auto-start submits capture work after processor admission. `start()` / `bootServer()` returning does not
+promise asynchronous capture I/O has completed. Poll status with a deployment-specific deadline before relying
+on recording. A failed fail-fast processor startup does not start its queued auto-capture.
+
+Sessions accumulate until external retention tooling removes them. Core Mongoose does not enforce `retainHours`.
+See the [migration guidance](../design/capture-resource-identity.md#migration-for-capture-importers-and-support-tooling).
+
+Custom capture plugins must implement scoped attachment, lookup and retirement to provide these guarantees.
+The interface's compatibility defaults forward `attachScoped`, `startScoped` and group-scoped lifecycle callbacks
+to the legacy bare-name methods. They do **not** add group or generation isolation to a name-keyed plugin. Such a
+plugin must reject duplicate names across groups or implement identity-aware storage before it can safely support
+them. A custom `CaptureRouter` must also implement scoped dispatch for scoped auto-start requests.
 
 ### Open and resource limits
 
@@ -584,7 +614,8 @@ Separately, each group reserves at most **1024** physical capture resource slots
 installed captures, queued closes and failed closes. A slot is returned after confirmed closure or an open that
 produced no resource. Failed closes retain their slots and are not blindly retried. This bounds resource retention
 when the closer stalls; it is not just an open-concurrency limit. `captureResourceSlotsInUse()` and
-`captureCloseFailures()` expose unresolved physical ownership. Shutdown remains incomplete while it exists.
+`captureCleanupFailures()` expose unresolved physical ownership and combined detach/close diagnostics.
+`captureCloseFailures()` reports physical close failures only. Shutdown remains incomplete while ownership exists.
 
 Set the limits with `ComposingEventProcessorAgent.setCaptureOpenLimit(int)` and `setCaptureResourceLimit(int)`,
 and the open timeout with `setCaptureOpenTimeout(Duration)`. `MongooseServer` does not expose its groups, and neither setting is a server
@@ -862,6 +893,51 @@ controlWaitMillis: 5000        # void control methods wait at most 5 s
 shutdownTimeoutMillis: 20000   # stop() returns, complete or not, within about 20 s
 addFailurePolicy: THROW        # void addEventProcessor throws when the add does not apply
 ```
+
+## Overload and loss
+
+Ordinary publication retries a full target queue by spinning for approximately **10 ms**, then drops that item's
+copy for that queue. Other target queues are still attempted. The dropped queue's pooled reference is released;
+this does not release another queue's reference. The publisher's aggregate `droppedCount()` increases.
+
+The publisher holds its existing serialization lock across dispatch. This bounds the retry loop, not the whole
+call: lock contention, several full queues, journal I/O, first-drop diagnostics and logging add time. The source
+can be delayed, but receives no lossless credit/backpressure protocol or failed-publication result; the void call
+returns normally after a drop. `publishReplay` has a separate immediate-offer path: a failed offer is dropped
+without this retry, counted with sequence `-1` and reason `replay offer full; no retry`.
+
+When warning logging is enabled, an ordinary full-queue drop logs:
+
+```text
+dropping publish to slow/contended queue: <queue> after ~<elapsed>ms seq:<sequence> queueSize:<size>
+```
+
+Per-queue monitoring uses `queue.<queuePath>.dropped` in `MongooseCountersService`, using the same queue path as
+the depth gauge. The feed's `queue-drops:<queuePath>` health check becomes `DEGRADED` after loss and is removed
+on unsubscribe. With counters disabled it reports `UNKNOWN`; publisher `droppedCount(queueName)` and first-drop
+evidence still work. The first drop of each queue binding emits `QueueDrop` in the group's control fallback audit
+and the publisher's bounded drop audit, with feed, queue, queue path, group, sequence, count and wall-clock time.
+This is a correlation point, not one audit record per lost item or a shared business-event ordering guarantee.
+
+`EventSource.SlowConsumerStrategy` (`DISCONNECT`, `EXIT_PROCESS`, `BACKOFF`) and its feed/pipe configuration are
+deprecated because they do not change this publish policy. They do not enable lossless blocking.
+
+This release retains existing bounded-spin/drop behaviour and exposes loss explicitly. A blocking-until-space
+policy is **not implemented**; [issue #77](https://github.com/telaminai/mongoose/issues/77) tracks the failure/overload
+design. Blocking propagates latency and can deadlock cyclic dependencies unless shutdown, cancellation and
+producer/consumer ownership are designed together.
+
+Decide per feed whether loss is acceptable. Replaceable market-data snapshots may permit loss with explicit
+freshness/recovery logic; incremental updates can also require gap detection and replay. Orders, fills, credit
+changes and hedge instructions must not depend on this queue path for guaranteed delivery. Until a suitable
+lossless transport/policy and recovery contract are in place, this candidate is not qualified for that guarantee.
+No setting in the current enum changes that fact.
+
+Shutdown drains queued events for `shutdownDrainTimeoutMillis`, capped by the remaining overall deadline. On
+expiry it logs `shutdown drain timed out after <bound>ms, dropping <pending> queued events` and proceeds with queue
+release. Pending items can be discarded; the logged count is a snapshot, not an exact committed loss ledger.
+Size the drain from backlog and conservative processing throughput, and test stalled consumers. See the
+[shutdown runbook](../operations/shutdown-runbook.md).
 
 ## Not guaranteed
 

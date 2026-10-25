@@ -85,9 +85,9 @@ ObjectPool<MyType> pool = Pools.SHARED.getOrCreate(
 
 ## Related source
 
-- [PoolAware](https://github.com/gregv12/fluxtion-server/tree/main/src/main/java/com/telamin/mongoose/service/pool/PoolAware.java)
-- [PoolTracker](https://github.com/gregv12/fluxtion-server/tree/main/src/main/java/com/telamin/mongoose/service/pool/impl/PoolTracker.java)
-- [ObjectPool](https://github.com/gregv12/fluxtion-server/tree/main/src/main/java/com/telamin/mongoose/service/pool/ObjectPool.java)
+- [PoolAware]({{source_root}}/main/java/com/telamin/mongoose/service/pool/PoolAware.java)
+- [PoolTracker]({{source_root}}/main/java/com/telamin/mongoose/service/pool/impl/PoolTracker.java)
+- [ObjectPool]({{source_root}}/main/java/com/telamin/mongoose/service/pool/ObjectPool.java)
 - [ObjectPoolsRegistry]({{source_root}}/main/java/com/telamin/mongoose/service/pool/ObjectPoolsRegistry.java)
 - End-to-end example using a pooled EventSource: [PoolEventSourceServerExample.java]({{source_root}}/test/java/com/telamin/mongoose/example/objectpool/PoolEventSourceServerExample.java)
 

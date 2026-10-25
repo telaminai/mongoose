@@ -52,3 +52,41 @@ a directory marked as a routed capture. New scoped standalone bindings also
 support start, stop and retirement. Historical discovery reads both layouts.
 Per-event record writing is unchanged; identity, filesystem and index work occurs
 at capture lifecycle boundaries and introspection queries.
+
+## Migration for capture importers and support tooling
+
+For server-managed captures, stop constructing `<root>/<processor-name>` paths. Each start creates a new
+`<root>/capture-<unique-suffix>/` directory containing Chronicle files and `.mongoose-capture.properties`.
+Keep the directory name as the capture id, including when copying evidence to another machine. Use the
+introspection API's returned `path`, not the encoded selector as a filesystem path.
+
+The sidecar is a Java properties file (schema `1`):
+
+| Key | Meaning |
+| --- | --- |
+| `schema` | `1`; reject unsupported versions in external importers |
+| `processor` | Display selector, for example `g/p`; legacy unscoped opens may contain only a bare name |
+| `group`, `name` | Original, unencoded identity components, present for scoped opens |
+| `generation` | Decimal registration generation within the owning group; not a global deployment id |
+| `openedAt` | Optional ISO-8601 UTC `Instant` for this session; older schema-1 files may omit it |
+
+Use `MongooseAuditIntrospectionService.capturesFor(group, name)` for current and historical session handles, or
+`latestCapture(group, name)` for the preferred latest handle (possibly `null`). Selector overloads also exist.
+Returned lists are immutable, active sessions first, then session-open time newest first, with id as a tie-breaker.
+Old metadata without `openedAt` falls back to last-write time. A group-qualified lookup never guesses which group
+an old bare-name directory belonged to; `listAvailable()` still exposes those directories for explicit migration.
+
+Discovery continues to read historical name-based directories. The routed server does not append new sessions
+to them or rename them. Unrouted legacy embedding retains its old name-directory behaviour; this compatibility
+does not make those old paths authoritative for new server captures. Back up old captures before changing import
+scripts. Preserve the sidecar alongside all Chronicle files when archiving a new capture.
+
+`currentSinks()` and `liveSinks()` now use `g/p` rather than `p`, and the built-in record counter is
+`audit.g/p.records`. Components containing `/` or `%` are percent-encoded individually. Counters, start times and
+last-write times restart for each session; dashboards must distinguish session identity from processor identity.
+
+There is no core retention janitor. `retainHours` is a configuration hint for external tooling, not an enforced
+expiry. Repeated starts accumulate directories. Update pruning jobs to discover metadata rather than glob a
+processor-name directory, exclude live and unresolved resources, preserve required incident evidence and delete
+whole closed sessions only under the deployment's retention policy. The client's existing pruning scripts have
+not been supplied or validated; checking them is a deployment acceptance item.

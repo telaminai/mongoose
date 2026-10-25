@@ -1558,8 +1558,9 @@ public class MongooseServer implements MongooseServerController {
             groups.add(entry.getKey().group());
         }
         if (groups.size() > 1) {
-            throw new IllegalArgumentException("processor '" + name + "' is in groups " + groups
-                    + ": name it as <group>/" + name);
+            throw new IllegalArgumentException("processor '" + name + "' is ambiguous: use one of " + groups.stream()
+                    .map(groupName -> com.telamin.mongoose.service.audit.AuditCaptureIdentity.selector(groupName, name))
+                    .sorted().toList());
         }
         return found;
     }
