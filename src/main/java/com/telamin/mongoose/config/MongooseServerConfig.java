@@ -118,7 +118,8 @@ public class MongooseServerConfig {
      * the agent error handler (under {@code bootServer}, {@code GlobalErrorHandler}, which logs it and, under the opt-in
      * {@link FatalErrorPolicy#EXIT_PROCESS}, exits the process); the server's start fails either way. True: the
      * failure is isolated, reported through {@code ErrorReporting} and the processor dropped, and the server boots
-     * without it. A processor added after the server has started is always isolated, whatever this says.
+     * without it. A Fluxtion-generated processor whose start failed is quarantined instead of dropped: its name stays
+     * reserved and shutdown stays incomplete (no tearDown is called). A processor added after the server has started is always isolated, whatever this says.
      * YAML: {@code isolateProcessorStartFailuresAtBoot: true}.
      */
     private boolean isolateProcessorStartFailuresAtBoot;

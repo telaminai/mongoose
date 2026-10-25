@@ -171,6 +171,16 @@ class GroupContainmentTest {
         }
     }
 
+    /** rc1 review N1 (evidence part): the quarantine reason of an opaque dispatch carries the real cause. */
+    @Test
+    void anOpaqueDispatchFailureNamesItsCause() {
+        var failure = new ProcessorDispatchException(null, "event dispatch", new IllegalStateException("handwritten threw"));
+        assertTrue(failure.getMessage().contains("opaque dispatch") && failure.getMessage()
+                .contains("cause: java.lang.IllegalStateException: handwritten threw"), failure.getMessage());
+        var control = new ProcessorDispatchException(null, "event dispatch", null);
+        assertTrue(!control.getMessage().contains("cause:"), "control: no cause, no cause text");
+    }
+
     @Test
     void exitIsAnExplicitOptIn() {
         AtomicInteger status = new AtomicInteger(Integer.MIN_VALUE);

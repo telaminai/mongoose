@@ -18,8 +18,10 @@ public final class ProcessorDispatchException extends AgentTerminationException 
 
     public ProcessorDispatchException(DataFlow processor, String phase, Throwable cause) {
         super("generated processor execution failed during " + phase + "; processor="
-                + (processor == null ? "unknown" : processor.getClass().getName())
-                + "; processor requires isolation; no retry or automatic recovery", cause);
+                + (processor == null ? "unknown (opaque dispatch: the failed target cannot be identified)"
+                : processor.getClass().getName())
+                + "; processor requires isolation; no retry or automatic recovery"
+                + (cause == null ? "" : "; cause: " + cause), cause);
         this.processor = processor;
         this.phase = phase;
     }

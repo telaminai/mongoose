@@ -64,6 +64,13 @@ import java.util.function.Supplier;
  *   <li>Adds/removes queue reader agents dynamically as subscriptions change</li>
  * </ul>
  * <h2>Failure isolation (mongoose#57)</h2>
+ * <b>Generated processors</b> ({@code InternalEventProcessor}) are handled differently from the list below: after
+ * any non-VM callback failure they are quarantined (fenced from inputs and timers, never retried, never stopped or
+ * torn down, name retained, shutdown incomplete), see the contracts' "Generated processor failure containment". A
+ * {@code ProcessorDispatchException} can escape to the agent error handler when the failed target cannot be identified
+ * (an opaque dispatcher quarantines every generated subscriber on that reader and ends the group).
+ * The list describes handwritten {@code DataFlow} processors.
+ * <p>
  * One processor's failure is kept from the group's agent error handler (under bootServer, {@code GlobalErrorHandler},
  * which logs it and exits the JVM only under the opt-in {@code FatalErrorPolicy.EXIT_PROCESS}), reported once through {@code ErrorReporting} at {@code ERROR}, and the rest of the group runs on:
  * <ul>

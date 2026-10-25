@@ -3,7 +3,7 @@
     "name": "baseline",
     "exitCode": 0,
     "caughtBy": [],
-    "tests": 120,
+    "tests": 218,
     "failures": 0,
     "errors": 0,
     "skipped": 0
@@ -15,8 +15,8 @@
       "ControlScenarioHarnessTest",
       "GeneratedProcessorFailureIsolationTest"
     ],
-    "tests": 120,
-    "failures": 6,
+    "tests": 218,
+    "failures": 31,
     "errors": 0,
     "skipped": 0
   },
@@ -24,11 +24,12 @@
     "name": "missing-stop-reply",
     "exitCode": 1,
     "caughtBy": [
+      "AuditFailurePolicyTest",
       "CaptureAsEffectsTest",
       "ControlScenarioHarnessTest"
     ],
-    "tests": 120,
-    "failures": 21,
+    "tests": 218,
+    "failures": 88,
     "errors": 0,
     "skipped": 0
   },
@@ -43,8 +44,8 @@
       "ReplayIdentityTest",
       "Review77ProbesTest"
     ],
-    "tests": 120,
-    "failures": 28,
+    "tests": 218,
+    "failures": 93,
     "errors": 0,
     "skipped": 0
   },
@@ -55,8 +56,8 @@
       "CaptureAsEffectsTest",
       "ControlScenarioHarnessTest"
     ],
-    "tests": 120,
-    "failures": 3,
+    "tests": 218,
+    "failures": 10,
     "errors": 0,
     "skipped": 0
   },
@@ -66,7 +67,7 @@
     "caughtBy": [
       "ControlScenarioHarnessTest"
     ],
-    "tests": 120,
+    "tests": 218,
     "failures": 1,
     "errors": 0,
     "skipped": 0
@@ -77,8 +78,8 @@
     "caughtBy": [
       "ControlScenarioHarnessTest"
     ],
-    "tests": 120,
-    "failures": 7,
+    "tests": 218,
+    "failures": 42,
     "errors": 0,
     "skipped": 0
   },
@@ -86,12 +87,13 @@
     "name": "missing-stop-reply-relabelled-as-effect-failure",
     "exitCode": 1,
     "caughtBy": [
+      "AuditFailurePolicyTest",
       "CaptureAsEffectsTest",
       "ControlScenarioHarnessTest",
       "FailureKindFlowTest"
     ],
-    "tests": 120,
-    "failures": 22,
+    "tests": 218,
+    "failures": 89,
     "errors": 0,
     "skipped": 0
   },
@@ -99,12 +101,13 @@
     "name": "applied-reply-classified-as-failure",
     "exitCode": 1,
     "caughtBy": [
+      "AuditFailurePolicyTest",
       "CaptureAsEffectsTest",
       "ControlScenarioHarnessTest",
       "FailureKindFlowTest"
     ],
-    "tests": 120,
-    "failures": 42,
+    "tests": 218,
+    "failures": 123,
     "errors": 0,
     "skipped": 0
   },
@@ -114,7 +117,7 @@
     "caughtBy": [
       "GeneratedProcessorFailureIsolationTest"
     ],
-    "tests": 120,
+    "tests": 218,
     "failures": 2,
     "errors": 0,
     "skipped": 0
@@ -126,7 +129,7 @@
       "ControlTerminationAndAdmissionTest",
       "FailureKindFlowTest"
     ],
-    "tests": 120,
+    "tests": 218,
     "failures": 1,
     "errors": 1,
     "skipped": 0
@@ -137,7 +140,7 @@
     "caughtBy": [
       "CaptureAsEffectsTest"
     ],
-    "tests": 120,
+    "tests": 218,
     "failures": 1,
     "errors": 0,
     "skipped": 0
@@ -149,7 +152,7 @@
       "FailureKindQuarantineTest",
       "Review77ProbesTest"
     ],
-    "tests": 120,
+    "tests": 218,
     "failures": 2,
     "errors": 0,
     "skipped": 0
@@ -160,7 +163,7 @@
     "caughtBy": [
       "FailureKindQuarantineTest"
     ],
-    "tests": 120,
+    "tests": 218,
     "failures": 1,
     "errors": 0,
     "skipped": 0
@@ -171,7 +174,7 @@
     "caughtBy": [
       "Review77ProbesTest"
     ],
-    "tests": 120,
+    "tests": 218,
     "failures": 1,
     "errors": 0,
     "skipped": 0
@@ -182,7 +185,7 @@
     "caughtBy": [
       "IndependentReviewReplayProbesTest"
     ],
-    "tests": 120,
+    "tests": 218,
     "failures": 1,
     "errors": 0,
     "skipped": 0
@@ -191,10 +194,11 @@
     "name": "driver-rule-failure-relabelled",
     "exitCode": 1,
     "caughtBy": [
-      "FailureKindFlowTest"
+      "FailureKindFlowTest",
+      "Review77bProbesTest"
     ],
-    "tests": 120,
-    "failures": 1,
+    "tests": 218,
+    "failures": 2,
     "errors": 0,
     "skipped": 0
   },
@@ -204,7 +208,7 @@
     "caughtBy": [
       "FailureKindFlowTest"
     ],
-    "tests": 120,
+    "tests": 218,
     "failures": 1,
     "errors": 0,
     "skipped": 0
@@ -216,8 +220,75 @@
       "BoundedShutdownTest",
       "FailureKindFlowTest"
     ],
-    "tests": 120,
+    "tests": 218,
     "failures": 3,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "observer-not-reported-when-attached-late",
+    "exitCode": 1,
+    "caughtBy": [
+      "Review77bProbesTest"
+    ],
+    "tests": 218,
+    "failures": 2,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "observer-failure-fails-install",
+    "exitCode": 1,
+    "caughtBy": [
+      "Review77bProbesTest"
+    ],
+    "tests": 218,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "cancel-replies-unmarked",
+    "exitCode": 1,
+    "caughtBy": [
+      "Review77bProbesTest"
+    ],
+    "tests": 218,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "server-replies-unmarked",
+    "exitCode": 1,
+    "caughtBy": [
+      "Review77bProbesTest"
+    ],
+    "tests": 218,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "dead-control-plane-not-fenced",
+    "exitCode": 1,
+    "caughtBy": [
+      "GroupContainmentTest",
+      "Review77bProbesTest"
+    ],
+    "tests": 218,
+    "failures": 2,
+    "errors": 0,
+    "skipped": 0
+  },
+  {
+    "name": "contain-policy-exits",
+    "exitCode": 1,
+    "caughtBy": [
+      "GroupContainmentTest"
+    ],
+    "tests": 218,
+    "failures": 2,
     "errors": 0,
     "skipped": 0
   },
@@ -227,7 +298,7 @@
     "caughtBy": [
       "ReplayIdentityTest"
     ],
-    "tests": 120,
+    "tests": 218,
     "failures": 1,
     "errors": 0,
     "skipped": 0
