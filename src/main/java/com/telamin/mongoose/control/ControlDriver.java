@@ -95,6 +95,15 @@ public final class ControlDriver {
      *                               {@code REFUSED}, so it is never left pending.
      */
     public ControlRequest send(ControlRequest request) {
+        return send(request, Long.MAX_VALUE);
+    }
+
+    /**
+     * Send a request that must be admitted by {@code admitByNanos} ({@link System#nanoTime}): a caller with a deadline
+     * spends it on admission and on the reply together (follow-up review, finding 7). Missing it answers the request
+     * {@code REFUSED} and returns it, rather than throw; the full-mailbox timeout still bounds it when it is later.
+     */
+    public ControlRequest send(ControlRequest request, long admitByNanos) {
         if (request.requestId() < 0) request.assignId(requestIds.incrementAndGet());
         outstanding.add(request);
         if (ended()) {
@@ -104,6 +113,10 @@ public final class ControlDriver {
         if (!mailbox.offer(request)) {
             long deadline = System.nanoTime() + fullTimeoutNanos;
             while (!mailbox.offer(request)) {
+                if (admitByNanos != Long.MAX_VALUE && System.nanoTime() - admitByNanos > 0) {
+                    refuse(request, "not admitted within its deadline: mailbox full");
+                    return request;
+                }
                 if (ended()) {
                     refuseTerminal(request);
                     return request;
@@ -321,7 +334,10 @@ public final class ControlDriver {
                     "description", "control processor threw during dispatch: " + t);
             if (request != null) complete(request, ReplyOutcome.FAILED, "control processor threw: " + t);
             markDead("control processor threw during dispatch");
-            if (t instanceof VirtualMachineError e) throw e;
+            if (t instanceof VirtualMachineError e) {
+                failClaimed("group died: " + e);   // the agent owns what it claimed: answered before the thread ends
+                throw e;
+            }
             return;
         }
         settle(input, request);
@@ -348,7 +364,10 @@ public final class ControlDriver {
                         "description", "control processor threw during batchEnd: " + t);
                 if (request != null) complete(request, ReplyOutcome.FAILED, "control processor threw: " + t);
                 markDead("control processor threw during batchEnd");
-                if (t instanceof VirtualMachineError e) throw e;
+                if (t instanceof VirtualMachineError e) {
+                    failClaimed("group died: " + e);
+                    throw e;
+                }
                 return;
             }
             Throwable fatal = processor.effectQueue.takeFatal();
@@ -362,6 +381,9 @@ public final class ControlDriver {
                     audit.fallback("Anomaly", "group", group, "requestId", input.requestId(), "description", "fatal: " + e);
                     if (request != null) complete(request, ReplyOutcome.FAILED, "fatal error: " + e);
                     markDead("fatal error while performing effects");
+                    // earlier requests it claimed and still owes (an audit start waiting on its open) are answered by the
+                    // agent itself now, before its thread ends: no later call is needed (follow-up review, finding 1)
+                    failClaimed("group died: " + e);
                     throw e;
                 }
                 audit.fallback("Anomaly", "group", group, "requestId", input.requestId(),
