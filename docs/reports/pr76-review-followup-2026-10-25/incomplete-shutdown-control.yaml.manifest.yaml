@@ -1,0 +1,8 @@
+format: mongoose-control-audit
+version: 1
+sha256: "25a0dc7e2876fe9112f19a08a09615befd27b2e2357312b2a7216367f9c261b4"
+total: 29
+retained: 29
+dropped: 0
+sinkFailures: 0
+complete: true

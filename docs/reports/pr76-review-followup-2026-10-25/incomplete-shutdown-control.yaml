@@ -1,0 +1,314 @@
+---
+eventLogRecord: 
+    eventTime: -1
+    logTime: 1792934010069
+    groupingId: null
+    event: EventLogControlEvent
+    thread: main
+    nodeLogs: 
+    endTime: 1792934010070
+---
+eventLogRecord: 
+    eventTime: 1792934010070
+    logTime: 1792934010070
+    groupingId: null
+    event: LifecycleEvent
+    thread: main
+    nodeLogs: 
+    endTime: 1792934010070
+---
+eventLogRecord: 
+    eventTime: 1792934010070
+    logTime: 1792934010070
+    groupingId: null
+    event: LifecycleEvent
+    thread: main
+    nodeLogs: 
+    endTime: 1792934010070
+---
+eventLogRecord: 
+    eventTime: -1
+    logTime: 1792934010070
+    groupingId: null
+    event: ExportFunctionAuditEvent
+    thread: main
+    nodeLogs: 
+    endTime: 1792934010070
+---
+eventLogRecord: 
+    eventTime: 1792934010071
+    logTime: 1792934010071
+    groupingId: null
+    event: AddIntent
+    thread: chronicle-close
+    nodeLogs: 
+        - controlInputs: { thread: chronicle-close, method: onAdd, annotation: OnEventHandler, record: Input, seq: 1, requestId: 1, rootId: 1, fact: "Add", generation: 1, incarnation: 1, name: "p", cancelled: false, boot: true, legacy: false}
+        - lifecycleRules: { thread: chronicle-close, method: onAdd, annotation: OnEventHandler, record: Decision, seq: 2, requestId: 1, rootId: 1, causeSeq: 1, rule: "addAdmitted", generation: 1, name: "p", from: "Admitted", to: "Starting", effects: "1.1 BuildAndStart(1)"}
+    endTime: 1792934010071
+---
+eventLogRecord: 
+    eventTime: 1792934010071
+    logTime: 1792934010071
+    groupingId: null
+    event: LifecycleEvent
+    thread: chronicle-close
+    nodeLogs: 
+    endTime: 1792934010071
+---
+eventLogRecord: 
+    eventTime: 1792934010071
+    logTime: 1792934010071
+    groupingId: null
+    event: EffectResult
+    thread: chronicle-close
+    nodeLogs: 
+        - effectOutcomes: { thread: chronicle-close, method: onResult, annotation: OnEventHandler, record: EffectOutcome, seq: 3, requestId: 1, rootId: 1, causeOp: "1.1", opId: "1.1", effect: "BuildAndStart", outcome: "succeeded", generation: 1, name: "p"}
+        - captureRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+        - lifecycleRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler, record: Decision, seq: 4, requestId: 1, rootId: 1, causeSeq: 3, causeOp: "1.1", rule: "started", generation: 1, name: "p", from: "Starting", to: "Started", effects: "1.2 Reply(1)"}
+        - serviceRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+    endTime: 1792934010071
+---
+eventLogRecord: 
+    eventTime: 1792934010071
+    logTime: 1792934010071
+    groupingId: null
+    event: LifecycleEvent
+    thread: chronicle-close
+    nodeLogs: 
+    endTime: 1792934010071
+---
+eventLogRecord: 
+    eventTime: 1792934010071
+    logTime: 1792934010071
+    groupingId: null
+    event: EffectResult
+    thread: chronicle-close
+    nodeLogs: 
+        - effectOutcomes: { thread: chronicle-close, method: onResult, annotation: OnEventHandler, record: Reply, seq: 5, requestId: 1, rootId: 1, causeOp: "1.2", opId: "1.2", outcome: "APPLIED", generation: 1, name: "p", completed: true}
+        - captureRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+        - lifecycleRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+        - serviceRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+    endTime: 1792934010071
+---
+eventLogRecord: 
+    eventTime: 1792934010071
+    logTime: 1792934010071
+    groupingId: null
+    event: AuditStartIntent
+    thread: chronicle-close
+    nodeLogs: 
+        - controlInputs: { thread: chronicle-close, method: onAuditStart, annotation: OnEventHandler, record: Input, seq: 6, requestId: 2, rootId: 2, fact: "AuditStart", generation: 1, name: "p", bound: true}
+        - captureRules: { thread: chronicle-close, method: onAuditStart, annotation: OnEventHandler, record: Decision, seq: 7, requestId: 2, rootId: 2, causeSeq: 6, rule: "auditStartOnStarted", generation: 1, name: "p", capture: "Off->Opening", effects: "2.1 OpenCapture(1)"}
+    endTime: 1792934010071
+---
+eventLogRecord: 
+    eventTime: 1792934010071
+    logTime: 1792934010071
+    groupingId: null
+    event: LifecycleEvent
+    thread: chronicle-close
+    nodeLogs: 
+    endTime: 1792934010073
+---
+eventLogRecord: 
+    eventTime: 1792934010073
+    logTime: 1792934010073
+    groupingId: null
+    event: EffectResult
+    thread: chronicle-close
+    nodeLogs: 
+        - effectOutcomes: { thread: chronicle-close, method: onResult, annotation: OnEventHandler, record: EffectOutcome, seq: 8, requestId: 2, rootId: 2, causeOp: "2.1", opId: "2.1", effect: "OpenCapture", outcome: "pending", generation: 1, name: "p"}
+        - captureRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+        - lifecycleRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+        - serviceRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+    endTime: 1792934010073
+---
+eventLogRecord: 
+    eventTime: 1792934010073
+    logTime: 1792934010073
+    groupingId: null
+    event: CaptureCompletion
+    thread: chronicle-close
+    nodeLogs: 
+        - controlInputs: { thread: chronicle-close, method: onCompletion, annotation: OnEventHandler, record: Input, seq: 9, requestId: 2, rootId: 2, causeOp: "2.1", fact: "CaptureOpened", completionId: 1, opId: "2.1", resourceId: 1, ok: true}
+        - effectOutcomes: { thread: chronicle-close, method: onCompletion, annotation: OnEventHandler, record: EffectOutcome, seq: 10, requestId: 2, rootId: 2, causeSeq: 9, causeOp: "2.1", opId: "2.1", effect: "OpenCapture", outcome: "succeeded", resourceId: 1}
+        - captureRules: { thread: chronicle-close, method: onCompletion, annotation: OnEventHandler, record: Decision, seq: 11, requestId: 2, rootId: 2, causeSeq: 9, causeOp: "2.1", rule: "captureOpened", generation: 1, name: "p", resourceId: 1, effects: "2.2 InstallCapture(1)"}
+    endTime: 1792934010073
+---
+eventLogRecord: 
+    eventTime: 1792934010073
+    logTime: 1792934010073
+    groupingId: null
+    event: LifecycleEvent
+    thread: chronicle-close
+    nodeLogs: 
+    endTime: 1792934010073
+---
+eventLogRecord: 
+    eventTime: 1792934010073
+    logTime: 1792934010073
+    groupingId: null
+    event: EffectResult
+    thread: chronicle-close
+    nodeLogs: 
+        - effectOutcomes: { thread: chronicle-close, method: onResult, annotation: OnEventHandler, record: EffectOutcome, seq: 12, requestId: 2, rootId: 2, causeOp: "2.2", opId: "2.2", effect: "InstallCapture", outcome: "succeeded", generation: 1, name: "p", resourceId: 1}
+        - captureRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler, record: Decision, seq: 13, requestId: 2, rootId: 2, causeSeq: 12, causeOp: "2.2", rule: "captureInstalled", generation: 1, name: "p", capture: "Opening->Recording", effects: "2.3 Reply(1)"}
+        - lifecycleRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+        - serviceRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+    endTime: 1792934010073
+---
+eventLogRecord: 
+    eventTime: 1792934010073
+    logTime: 1792934010073
+    groupingId: null
+    event: LifecycleEvent
+    thread: chronicle-close
+    nodeLogs: 
+    endTime: 1792934010073
+---
+eventLogRecord: 
+    eventTime: 1792934010073
+    logTime: 1792934010073
+    groupingId: null
+    event: EffectResult
+    thread: chronicle-close
+    nodeLogs: 
+        - effectOutcomes: { thread: chronicle-close, method: onResult, annotation: OnEventHandler, record: Reply, seq: 14, requestId: 2, rootId: 2, causeOp: "2.3", opId: "2.3", outcome: "APPLIED", generation: 1, name: "p", completed: true}
+        - captureRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+        - lifecycleRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+        - serviceRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+    endTime: 1792934010073
+---
+eventLogRecord: 
+    eventTime: 1792934010073
+    logTime: 1792934010073
+    groupingId: null
+    event: CloseIntent
+    thread: chronicle-close
+    nodeLogs: 
+        - controlInputs: { thread: chronicle-close, method: onClose, annotation: OnEventHandler, record: Input, seq: 15, requestId: 3, rootId: 3, fact: "Close"}
+        - lifecycleRules: { thread: chronicle-close, method: onClose, annotation: OnEventHandler, record: Decision, seq: 16, requestId: 3, rootId: 3, causeSeq: 15, rule: "closeGroup", generation: -1, from: "Running", to: "Closing", pendingCleanup: "3.2", effects: "3.1 UninstallCapture(1);3.3 Release(1);3.2 CloseCapture(1)"}
+    endTime: 1792934010073
+---
+eventLogRecord: 
+    eventTime: 1792934010073
+    logTime: 1792934010073
+    groupingId: null
+    event: LifecycleEvent
+    thread: chronicle-close
+    nodeLogs: 
+    endTime: 1792934010073
+---
+eventLogRecord: 
+    eventTime: 1792934010073
+    logTime: 1792934010073
+    groupingId: null
+    event: EffectResult
+    thread: chronicle-close
+    nodeLogs: 
+        - effectOutcomes: { thread: chronicle-close, method: onResult, annotation: OnEventHandler, record: EffectOutcome, seq: 17, requestId: 3, rootId: 3, causeOp: "3.1", opId: "3.1", effect: "UninstallCapture", outcome: "succeeded", generation: 1, name: "p", resourceId: 1}
+        - captureRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+        - lifecycleRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+        - serviceRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+    endTime: 1792934010073
+---
+eventLogRecord: 
+    eventTime: 1792934010073
+    logTime: 1792934010073
+    groupingId: null
+    event: EffectResult
+    thread: chronicle-close
+    nodeLogs: 
+        - effectOutcomes: { thread: chronicle-close, method: onResult, annotation: OnEventHandler, record: EffectOutcome, seq: 18, requestId: 3, rootId: 3, causeOp: "3.3", opId: "3.3", effect: "Release", outcome: "succeeded", generation: 1, name: "p"}
+        - captureRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+        - lifecycleRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler, record: Decision, seq: 19, requestId: 3, rootId: 3, causeSeq: 18, causeOp: "3.3", rule: "released", generation: 1, name: "p", from: "Releasing", to: "Released", effects: "3.4 ReleaseName(1)"}
+        - serviceRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+    endTime: 1792934010073
+---
+eventLogRecord: 
+    eventTime: 1792934010073
+    logTime: 1792934010073
+    groupingId: null
+    event: EffectResult
+    thread: chronicle-close
+    nodeLogs: 
+        - effectOutcomes: { thread: chronicle-close, method: onResult, annotation: OnEventHandler, record: EffectOutcome, seq: 20, requestId: 3, rootId: 3, causeOp: "3.2", opId: "3.2", effect: "CloseCapture", outcome: "pending", generation: 1, name: "p", resourceId: 1}
+        - captureRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+        - lifecycleRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+        - serviceRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+    endTime: 1792934010073
+---
+eventLogRecord: 
+    eventTime: 1792934010073
+    logTime: 1792934010073
+    groupingId: null
+    event: LifecycleEvent
+    thread: chronicle-close
+    nodeLogs: 
+    endTime: 1792934010073
+---
+eventLogRecord: 
+    eventTime: 1792934010073
+    logTime: 1792934010073
+    groupingId: null
+    event: EffectResult
+    thread: chronicle-close
+    nodeLogs: 
+        - effectOutcomes: { thread: chronicle-close, method: onResult, annotation: OnEventHandler, record: EffectOutcome, seq: 21, requestId: 3, rootId: 3, causeOp: "3.4", opId: "3.4", effect: "ReleaseName", outcome: "succeeded", generation: 1, name: "p"}
+        - captureRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+        - lifecycleRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler, record: Decision, seq: 22, requestId: 3, rootId: 3, causeSeq: 21, causeOp: "3.4", rule: "groupClosed", generation: 1, name: "p", from: "Closing", to: "Closed", effects: "3.5 Reply(-1)"}
+        - serviceRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+    endTime: 1792934010073
+---
+eventLogRecord: 
+    eventTime: 1792934010073
+    logTime: 1792934010073
+    groupingId: null
+    event: LifecycleEvent
+    thread: chronicle-close
+    nodeLogs: 
+    endTime: 1792934010073
+---
+eventLogRecord: 
+    eventTime: 1792934010073
+    logTime: 1792934010073
+    groupingId: null
+    event: EffectResult
+    thread: chronicle-close
+    nodeLogs: 
+        - effectOutcomes: { thread: chronicle-close, method: onResult, annotation: OnEventHandler, record: Reply, seq: 23, requestId: 3, rootId: 3, causeOp: "3.5", opId: "3.5", outcome: "APPLIED", generation: -1, completed: true}
+        - captureRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+        - lifecycleRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+        - serviceRules: { thread: chronicle-close, method: onResult, annotation: OnEventHandler}
+    endTime: 1792934010073
+---
+eventLogRecord: 
+    eventTime: 1792934010073
+    logTime: 1792934010073
+    groupingId: null
+    event: CaptureCompletion
+    thread: chronicle-close
+    nodeLogs: 
+        - controlInputs: { thread: chronicle-close, method: onCompletion, annotation: OnEventHandler, record: Input, seq: 24, requestId: 3, rootId: 3, causeOp: "3.2", fact: "CaptureClosed", completionId: 2, opId: "3.2", resourceId: 1, ok: false, reason: "java.lang.IllegalStateException: forced Chronicle close failure", cleanup: true}
+        - effectOutcomes: { thread: chronicle-close, method: onCompletion, annotation: OnEventHandler, record: EffectOutcome, seq: 25, requestId: 3, rootId: 3, causeSeq: 24, causeOp: "3.2", opId: "3.2", effect: "CloseCapture", outcome: "failed", resourceId: 1, reason: "java.lang.IllegalStateException: forced Chronicle close failure", cleanup: true}
+        - captureRules: { thread: chronicle-close, method: onCompletion, annotation: OnEventHandler, record: Decision, seq: 26, requestId: 3, rootId: 3, causeSeq: 24, causeOp: "3.2", rule: "captureCloseFailed", generation: 1, name: "p", resourceId: 1, cleared: "3.2", retained: true, cleanup: true, effects: ""}
+    endTime: 1792934010073
+---
+controlFallback:
+    record: CleanupPending
+    fallbackSeq: 1
+    group: "chronicle-close"
+    processorsLeft: 0
+    captureResourcesLeft: 1
+    failedPhysicalCloses: 1
+    failedCaptureDetaches: 0
+---
+controlFallback:
+    record: CleanupPending
+    fallbackSeq: 2
+    group: "chronicle-close"
+    processorsLeft: 0
+    captureResourcesLeft: 1
+    failedPhysicalCloses: 1
+    failedCaptureDetaches: 0
+---

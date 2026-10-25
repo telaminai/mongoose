@@ -4,8 +4,60 @@ This work follows the independent review of `4f5851e`. It addresses engine defec
 and makes capture migration, overload and shutdown behaviour operationally visible. It is not a production
 certification. PR #76 remains unmerged for independent review.
 
-Qualification results and the exact runtime commit are recorded in `results.json` beside this report after the
-campaign completes. No source changes are made during that campaign; the report/artifact commit is documentary.
+The qualified runtime/source/test revision is **`761060947f6087437ccfff2e4dde21f41f7e77ba`**. The following
+report/artifact commit changes only this report directory; it does not change runtime code, tests or build settings.
+The machine-readable [results](results.json) record the commands and limits. The independent review material is
+published on [review/pr76-external-review at 72ecb67](https://github.com/telaminai/mongoose/tree/72ecb67/docs/review/pr76-external).
+
+## Frozen-revision qualification
+
+| Check | Result |
+| --- | --- |
+| Full regression suite and package build | `mvn -o test` and `mvn -o package`: 993 tests each, zero failures/errors, 14 skipped |
+| Fresh scenario ranges | 8101–8500 and 9101–9500: 411 tests each, including 11 focused cases per run |
+| Chaos | Two 30-second runs, seeds 94117 and 94118; complete exports, no invariant violations |
+| Replay | 30-second workload; all 359,021 output lines from three boot anchors match |
+| Shutdown storm | 20 cycles plus the permanent-failure case; both tests pass |
+| Soak | 600 seconds, seed 2026102502; 49,763 async requests, 8,860 synchronous calls; no reported anomalies or leaked server threads; complete shutdown |
+| High-volume delivery | Three tests pass; 48 million paced deliveries without loss; overload has 339 counted queue-copy drops / 678 missing processor deliveries, no duplicates or reorder |
+| File-only audit verification | All 12 healthy audit/manifest pairs COMPLETE and verified, with no violations or unverifiable obligations |
+| Forced physical-close failure | Export is COMPLETE but **not verified**: resource closure remains unestablished, as expected |
+
+The default suite skips eight opt-in stress cases (all exercised separately above) and six pre-existing disabled
+cases. Throughput and GC observations in these functional workloads are not pinned-core performance results.
+The soak samples include retained audit history and do not establish a zero-allocation or leak-free claim.
+
+## Preserved evidence
+
+- [First chaos exports](chaos-audits.tar.gz), [second chaos exports](chaos-second-audits.tar.gz),
+  [replay workload exports](replay-audits.tar.gz), [full soak exports](soak-audits.tar.gz).
+- [Compressed build and qualification logs](qualification-logs.tar.gz), [archive hashes](archives.json),
+  [file-only verification results](audit-verification.yaml), [verification program](VerifyAudit.java).
+- [All 29 migration items with pinned code/test references](migration-disposition.md).
+- [Complete YAML-server shutdown log](complete-shutdown.log), [forced incomplete shutdown log](incomplete-shutdown.log),
+  [failure audit](incomplete-shutdown-control.yaml) and its [manifest](incomplete-shutdown-control.yaml.manifest.yaml).
+
+Extract the audit archives. From the qualified checkout, after `mvn -o test`, run the supplied Java source with
+`target/classes`, `target/test-classes` and SnakeYAML 2.5 on the classpath, passing the extracted `*.yaml` files.
+It ignores manifest arguments and validates each audit against its sidecar before checking invariants. It exits
+nonzero for an unverified trace, including the intentional failed-close example. The verifier uses only the files;
+it is a second invocation of the same checked-in invariant implementation, not an independently authored oracle.
+YAML document counts in manifests differ from structured record counts because a document can contain several
+control records.
+
+The reviewer’s Q1–Q5 and Q7 campaign is recorded here. **Q6 remains open:** the client’s actual plugin set and
+connector reconnect/deployment checks have not been run against this revision. Q8 remains the explicitly open
+pinned-core Linux comparison. Deterministic fault fixtures and mutation checks supplement random traces; this
+report does not claim every invariant was exercised by a bad seed or every fault appeared in each chaos export.
+Upstream compiler and maintainability changes are separate work; the second review correctly identifies the
+client's data-processor exception behaviour as an open deployment gate. Mongoose's control guards remain intact.
+
+## Second review
+
+[Response to c184e5b](second-review-response.md): the stronger retirement reproduction passes five repetitions.
+The generated-processor wedge remains reproduced outside the guarded control driver and is an **open client
+deployment gate**, alongside per-feed loss-policy acceptance. The runnable source mutations and their results
+are preserved with this report. No BLOCK policy or upstream compiler recovery is introduced here.
 
 ## Review dispositions
 

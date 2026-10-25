@@ -1,0 +1,208 @@
+{
+  "schema": 1,
+  "date": "2026-10-25",
+  "status": "ready for independent review; not merge or client-release approval",
+  "runtimeSourceAndTestCommit": "761060947f6087437ccfff2e4dde21f41f7e77ba",
+  "reportOnlySuccessor": "Only docs/reports/pr76-review-followup-2026-10-25 changes after the qualified revision.",
+  "environment": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "java": "Amazon Corretto 21.0.9",
+  "fluxtionRuntime": "1.1.2",
+  "commands": {
+    "fullSuite": "mvn -o test",
+    "package": "mvn -o package",
+    "firstCampaign": "mvn -o -Dtest=ControlScenarioHarnessTest,ControlPlaneChaosStressTest,ChaosReplayStressTest,ShutdownStormStressTest -Dmongoose.harness.seedStart=8101 -Dmongoose.harness.seedCount=400 -Dmongoose.stress=true -Dmongoose.stress.seed=94117 -Dmongoose.stress.seconds=30 -Dmongoose.stress.replay.seconds=30 -Dmongoose.stress.shutdown.cycles=20 -Dmongoose.stress.auditDir=/private/tmp/pr76-review-qualification/audit/chaos test",
+    "soak": "mvn -o -Dtest=ControlPlaneSoakTest -Dmongoose.soak=true -Dmongoose.soak.seconds=600 -Dmongoose.soak.seed=2026102502 -Dmongoose.stress.auditDir=/private/tmp/pr76-review-qualification/audit/soak test",
+    "secondCampaign": "mvn -o -Dtest=ControlScenarioHarnessTest,ControlPlaneChaosStressTest,HighVolumeEventStressTest -Dmongoose.harness.seedStart=9101 -Dmongoose.harness.seedCount=400 -Dmongoose.stress=true -Dmongoose.stress.seed=94118 -Dmongoose.stress.seconds=30 -Dmongoose.stress.eventsPerSource=1000000 -Dmongoose.stress.auditDir=/private/tmp/pr76-review-qualification/audit/chaos-second test"
+  },
+  "fullSuite": {
+    "tests": 993,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 14,
+    "buildSuccess": true
+  },
+  "skips": "8 opt-in stress tests exercised separately, 6 pre-existing disabled tests remain disabled.",
+  "scenarioRanges": [
+    {
+      "start": 8101,
+      "count": 400,
+      "testsIncludingFocusedCases": 411
+    },
+    {
+      "start": 9101,
+      "count": 400,
+      "testsIncludingFocusedCases": 411
+    }
+  ],
+  "campaigns": [
+    {
+      "seed": 94117,
+      "tests": 415,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "seed": 94118,
+      "tests": 415,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "shutdownStorm": {
+    "cycles": 20,
+    "tests": 2
+  },
+  "replay": {
+    "seconds": 30,
+    "seed": 94117,
+    "bootAnchorOutputLines": [
+      119673,
+      119674,
+      119674
+    ],
+    "matches": true,
+    "limit": "Boot-anchor replay; not arbitrary dynamic service-history reconstruction."
+  },
+  "chaos": [
+    {
+      "seconds": 30,
+      "seed": 94117,
+      "auditDocuments": [
+        19476,
+        18251,
+        18412
+      ]
+    },
+    {
+      "seconds": 30,
+      "seed": 94118,
+      "auditDocuments": [
+        17943,
+        17946,
+        18549
+      ]
+    }
+  ],
+  "soak": {
+    "seconds": 600,
+    "seed": 2026102502,
+    "feedEventsOffered": 2400838,
+    "instancesBuilt": 3956,
+    "asyncRequests": 49763,
+    "syncCalls": 8860,
+    "floods": 10,
+    "maxAsyncReplyMillis": 3081,
+    "maxSyncCallMillis": 1002,
+    "shutdownMillis": 4,
+    "shutdownComplete": true,
+    "auditDocuments": [
+      60293,
+      88719,
+      62336
+    ],
+    "auditDropped": 0,
+    "reportedFailures": [],
+    "limit": "Ten-minute synthetic fault workload, not overnight soak or a performance/leak proof."
+  },
+  "volume": {
+    "sources": 4,
+    "groups": 3,
+    "processors": 6,
+    "eventsPerSource": 1000000,
+    "pacedDeliveries": 48000000,
+    "pacedDrops": 0,
+    "overloadQueueCopyDrops": 339,
+    "overloadMissingProcessorDeliveries": 678,
+    "duplicatesOrReordered": 0,
+    "limit": "Correctness with credit pacing or deliberately stalled consumer, not a peak-throughput benchmark."
+  },
+  "fileOnlyAuditVerification": {
+    "healthyPairs": 12,
+    "complete": 12,
+    "verified": 12,
+    "intentionalCloseFailureComplete": true,
+    "intentionalCloseFailureVerified": false
+  },
+  "openGates": [
+    "Client plugin rebuild/regressions and forced connector reconnect on this SHA (review Q6).",
+    "Client-specific pruning/import scripts, application shutdown acceptance.",
+    "Pinned-core Linux latency/throughput/GC comparison (Q8).",
+    "Client generated-data-processor exception/retry path: known generated processing flag wedge reproduced by reviewer test.",
+    "Per-feed/subscriber loss classification and application response, including pooled retry semantics."
+  ],
+  "otherLimits": [
+    "No promise of lossless delivery; bounded-spin/drop remains; explicit policy design is issue #77.",
+    "Post-release upstream Fluxtion throw/callback/audit semantics are not changed here.",
+    "Mutation checks reject documented defects, not all possible incorrect implementations."
+  ],
+  "package": {
+    "tests": 993,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 14,
+    "buildSuccess": true
+  },
+  "secondReview": {
+    "reviewCommit": "c184e5b",
+    "runtimeCommit": "761060947f6087437ccfff2e4dde21f41f7e77ba",
+    "retirementRepetitions": 5,
+    "retirementFailures": 0,
+    "generatedProcessorWedge": "CONFIRMED, unresolved outside guarded control driver; not a recovery test",
+    "sourceMutations": [
+      {
+        "name": "baseline",
+        "exitCode": 0,
+        "tests": 37,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "missing-stop-reply",
+        "exitCode": 1,
+        "tests": 37,
+        "failures": 18,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "applied-without-release-renamed-rule",
+        "exitCode": 1,
+        "tests": 37,
+        "failures": 19,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "missing-stale-open-close",
+        "exitCode": 1,
+        "tests": 37,
+        "failures": 2,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "skip-terminal-sweep",
+        "exitCode": 1,
+        "tests": 37,
+        "failures": 1,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "name": "drop-claimed-stop",
+        "exitCode": 1,
+        "tests": 37,
+        "failures": 7,
+        "errors": 0,
+        "skipped": 0
+      }
+    ]
+  },
+  "docsBuild": {
+    "strict": true,
+    "success": true
+  }
+}
