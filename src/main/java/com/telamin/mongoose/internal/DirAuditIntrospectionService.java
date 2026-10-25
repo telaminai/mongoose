@@ -36,9 +36,19 @@ public final class DirAuditIntrospectionService implements MongooseAuditIntrospe
 
     private final AuditCaptureConfig config;
     private final ChronicleAuditCaptureService captureService;
-    private final AtomicReference<List<AuditSinkHandle>> cachedList = new AtomicReference<>();
+    private record CachedSnapshot(List<AuditSinkHandle> entries) { }
+    // Each invalidation has a distinct token, including when the previous snapshot was already empty.
+    private final AtomicReference<CachedSnapshot> cachedList = new AtomicReference<>(new CachedSnapshot(null));
+    private final Runnable beforeCachePublish;
 
     public DirAuditIntrospectionService(AuditCaptureConfig config, ChronicleAuditCaptureService captureService) {
+        this(config, captureService, () -> { });
+    }
+
+    // Allows deterministic tests to invalidate between the filesystem snapshot and its publication.
+    DirAuditIntrospectionService(AuditCaptureConfig config, ChronicleAuditCaptureService captureService,
+                                Runnable beforeCachePublish) {
+        this.beforeCachePublish = beforeCachePublish;
         this.config = config;
         this.captureService = captureService;
         // The cache's own comment says it "is invalidated on each live-sink mutation reported by the
@@ -49,17 +59,24 @@ public final class DirAuditIntrospectionService implements MongooseAuditIntrospe
 
     /** Drop the cached listAvailable() snapshot — call on capture roll / janitor sweep. */
     public void invalidate() {
-        cachedList.set(null);
+        cachedList.set(new CachedSnapshot(null));
     }
 
     @Override
     public List<AuditSinkHandle> listAvailable() {
-        List<AuditSinkHandle> cached = cachedList.get();
+        CachedSnapshot observed = cachedList.get();
+        List<AuditSinkHandle> cached = observed.entries();
         if (cached == null) {
             List<AuditSinkHandle> fresh = walk();
-            // Race-safe: if another walk landed first, just discard ours.
-            cachedList.compareAndSet(null, fresh);
-            cached = cachedList.get() == null ? fresh : cachedList.get();
+            beforeCachePublish.run();
+            if (cachedList.compareAndSet(observed, new CachedSnapshot(fresh))) {
+                cached = fresh;
+            } else {
+                // A concurrent mutation must not have its invalidation overwritten by this earlier walk.
+                // Returning this one stale snapshot is allowed; the next read rebuilds if no newer walk won.
+                List<AuditSinkHandle> newer = cachedList.get().entries();
+                cached = newer == null ? fresh : newer;
+            }
         }
         return withLiveCounters(cached);
     }
