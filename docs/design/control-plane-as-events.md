@@ -716,7 +716,7 @@ design left open:
 
 | Area | Design | Built | Why |
 | --- | --- | --- | --- |
-| Void add | A failed start throws `ProcessorStartException` (Threading and API) | A failed start is isolated and reported, and the void add returns, as since mongoose#57; the outcome is in `addProcessor`'s reply | Released behaviour, pinned by four tests; the reply gives callers the outcome |
+| Void add | A failed start throws `ProcessorStartException` (Threading and API) | `MongooseServerConfig.addFailurePolicy`: `REPORT` (the default, as since mongoose#57: isolated, reported, returns) or `THROW` (the table's behaviour). The outcome is in `addProcessor`'s reply either way | Released behaviour, pinned by four tests, stays the default; the design's behaviour is one setting away |
 | `addProcessor` | Returns a stage with a handle | Returns `AddedProcessor {handle, reply}`; the handle is built from the registration this add admitted | A handle looked up by name later could name a replacement |
 | Void waits | Single deadline | `MongooseServerConfig.controlWaitMillis`, 10 s by default | Configurable for callers that cannot block that long |
 | Reply executor | Per server | An elastic daemon pool per server, shut down once the server has stopped | One thread deadlocked when a dependent waited on another stage |
@@ -734,7 +734,8 @@ design left open:
 | Data-processor framing | Capture install/uninstall and service delivery framed with `runInEventCycle` | Not framed. Each is already one audited cycle in the processor: an exported service call, or an `EventLogControlEvent`. `runInEventCycle` stays for admin lambdas | A frame around an exported call nested a second record header; around a listener swap it flushed to the listener being replaced |
 | Replayed stops and service changes | In position | In position, with the clock readings their action took: pinned on replay and checked. A replayed processor is not given, at build, a service its stream registers later | Otherwise a `stop()` or `@ServiceRegistered` handler saw another entry's clock, or a service before its start |
 | Replayed service changes | Recorded per stream, replayed in position | Only changes after the server has started are recorded. Live deliveries are suppressed only for streams that record service changes | Boot-time services are configuration; earlier recordings stay readable (partial) |
-| Not built | Initialisation provenance per stream; interception of control requests from replayed processors | — | Left for a later PR |
+| Provenance | Initialisation provenance per stream (factory key, configuration hash) | The processor class, the handler class it wraps, and its incarnation, recorded beside the stream (a `BEGAN` line, never an entry) and checked on replay. `ReplayConfig.withProvenance`, on by default | Class identity is what a replay can verify without a factory registry; a configuration hash needs one |
+| Control requests from replayed processors | Intercepted; the recorded outcome is fed back | Changes made through `MongooseServerController` (stop/start a service or processor, register/remove a service or event source) are recorded as `ControlCall` entries with their outcome. In a replay they are never executed: each is matched and answered with the recorded outcome, and a mismatch is reported. `ReplayConfig.withControlInterception`, on by default | — |
 
 ## Review responses
 
