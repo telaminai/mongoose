@@ -792,11 +792,17 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                     + captureOpenLimit + "): a helper has not returned");
         }
         var io = captureIo;
-        var timeout = io.schedule(() -> {
-            openTimeouts.remove(op);
-            control.complete(new CaptureCompletion(root, op, completionIds.incrementAndGet(),
-                    CaptureCompletion.Kind.TIMED_OUT, -1, null));
-        }, captureOpenTimeoutMillis);
+        com.telamin.mongoose.control.CaptureIo.Cancellable timeout;
+        try {
+            timeout = io.schedule(() -> {
+                openTimeouts.remove(op);
+                control.complete(new CaptureCompletion(root, op, completionIds.incrementAndGet(),
+                        CaptureCompletion.Kind.TIMED_OUT, -1, null));
+            }, captureOpenTimeoutMillis);
+        } catch (RuntimeException refused) {
+            opensInFlight.decrementAndGet();        // nothing was started: the permit is returned (FM-5)
+            return result(effect, ControlOutcome.FAILED, "the open's timeout could not be scheduled: " + refused);
+        }
         openTimeouts.put(op, timeout);
         try {
             io.open(() -> {

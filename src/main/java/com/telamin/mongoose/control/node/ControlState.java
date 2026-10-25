@@ -75,12 +75,17 @@ public class ControlState {
         public long owner;
         public ResourceState state;
         public final String openedBy;
+        /** The generation and processor it was opened for: its close is recorded against them, owned or not (FM-3). */
+        public final long openedFor;
+        public final String openedName;
 
-        Resource(long id, long owner, ResourceState state, String openedBy) {
+        Resource(long id, long owner, ResourceState state, String openedBy, long openedFor, String openedName) {
             this.id = id;
             this.owner = owner;
             this.state = state;
             this.openedBy = openedBy;
+            this.openedFor = openedFor;
+            this.openedName = openedName;
         }
     }
 
@@ -313,8 +318,9 @@ public class ControlState {
         return settledOpens.containsKey(opId);
     }
 
-    public Resource addResource(long id, long owner, ResourceState resourceState, String openedBy) {
-        Resource r = new Resource(id, owner, resourceState, openedBy);
+    public Resource addResource(long id, long owner, ResourceState resourceState, String openedBy, long openedFor,
+                                String openedName) {
+        Resource r = new Resource(id, owner, resourceState, openedBy, openedFor, openedName);
         resources.put(id, r);
         return r;
     }

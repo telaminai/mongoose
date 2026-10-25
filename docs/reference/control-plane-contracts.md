@@ -167,6 +167,7 @@ Adds a processor to a group, creating the group (and starting its thread, if the
 | Server is stopping or stopped | `IllegalStateException` ("server is stopping") |
 | Mailbox full, on an agent thread | `IllegalStateException`, at once; the name is released |
 | Mailbox full, off an agent thread | Backs off up to the group's full-mailbox timeout (10 s), then `IllegalStateException`; the name is released |
+| Mailbox full when a server stop begins | A sender still backing off leaves at once: the request is answered `NOT_RUNNING` ("server is stopping") and its name released, so it never holds up the stop |
 | `start()` throws, `REPORT` | Reported through `ErrorReporting`; processor dropped; call returns |
 | `start()` throws, `THROW` | `ProcessorStartException` |
 | No reply within `controlWaitMillis` | Warning logged; call returns; the add still applies |
@@ -679,16 +680,21 @@ A replay stops **one processor's** replay, never the group or the server, and re
 | A control request made off the processor's agent thread | `control request ... made off the processor's thread` | Outside the input order, so not reproducible |
 | The recorded stop could not be replayed | `the recorded stop could not be replayed` | The processor is no longer in the group |
 
-**Known gaps: these do not stop a replay in this build.** They are open review findings on PR #76, and the work to
-close them is in progress:
+**Service changes** are replayed with the recorded instance, or the replay says why it cannot (fixed in `0dea3b3`):
 
-- **Unavailable service version.** A `ServiceChanged` recorded at one version is replayed with whatever the replay
-  server's registry holds under that name now. A version mismatch is only logged as a warning, and the replay carries
-  on, possibly with a different service instance.
-- **Failed service callbacks.** If a replayed `@ServiceRegistered` or `@ServiceDeregistered` handler throws, the
-  failure is reported, but the replay treats the entry as delivered.
-- **Skipped deliveries.** A live registration broadcast that was skipped as a duplicate (the processor already had the
-  service from its build) is still recorded as a `ServiceChanged`, and the replay may deliver it at a different point.
+| Situation | Reason starts with | What happens |
+| --- | --- | --- |
+| The recorded service version is not registered in this run yet | (waits) | The entry waits for the broadcast of that version, then stops after `deliveryTimeout` with `entry N could not be delivered within` |
+| This run's registry has moved past the recorded version and no longer holds that instance | `service S version V cannot be reproduced` | Stops. The current instance is never substituted |
+| A replayed `@ServiceRegistered` or `@ServiceDeregistered` callback throws | `service S registration callback failed during replay` | Stops. A failed callback is never counted as delivered |
+| The processor already held the service when the entry is replayed | `service S was already held` | Stops: it reached the processor before its recorded position |
+
+Only deliveries that reached the processor are recorded. A broadcast it already held (skipped live) records nothing, and
+a delivery whose callback failed records a `Failed` entry, past which the stream is not reproducible.
+
+**Limitation:** a registry that has no version history in the replay run (for example, services configured at boot and
+never broadcast with a version) cannot prove that its instance is the recorded one. The replay uses it, and logs a
+warning that the recorded instance is unverified.
 
 `complete()` with a `null` `stopped(...)` means every entry was delivered. It does not prove the run was reproduced.
 Compare `outputs(processor)` or the audit logs.
