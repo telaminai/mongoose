@@ -39,6 +39,8 @@ public final class ControlRequest {
     private volatile long requestId = -1;
     private volatile Runnable onReply;
     private volatile Runnable onUnapplied;
+    /** Applied to every completion, whoever completes it: the group marks replies made while its audit is degraded. */
+    private volatile java.util.function.UnaryOperator<ControlReply> replyMarker;
 
     /**
      * @param intentOnAgent builds the intent from the request id; called on the agent thread when the request is
@@ -146,7 +148,14 @@ public final class ControlRequest {
         return true;
     }
 
+    /** Set by the group at send (issue #77, review R3): a cancel or a sweep is marked like any other reply. */
+    void markRepliesWith(java.util.function.UnaryOperator<ControlReply> marker) {
+        this.replyMarker = marker;
+    }
+
     private void finish(ControlReply answer) {
+        java.util.function.UnaryOperator<ControlReply> marker = replyMarker;
+        if (marker != null) answer = marker.apply(answer);
         Runnable action = onReply;
         try {
             if (action != null) action.run();

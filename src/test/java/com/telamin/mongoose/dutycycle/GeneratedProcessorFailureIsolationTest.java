@@ -142,7 +142,12 @@ class GeneratedProcessorFailureIsolationTest {
             assertEquals(ControlDriver.GroupState.RUNNING, server.controlGroupStatus("g").state());
             assertTrue(errors.isEmpty(), "the group stays live");
             flow.failAudit = false;
-            assertFalse(server.shutdown().complete(), "unknown graph-owned cleanup must remain explicit");
+            var stopResult = server.shutdown();
+            assertFalse(stopResult.complete(), "unknown graph-owned cleanup must remain explicit");
+            // issue #77 M4: the typed result names what is still held, and why
+            assertEquals(List.of("g/generated"), stopResult.heldNames().stream().map(h -> h.group() + "/" + h.name()).toList(),
+                    stopResult.toString());
+            assertTrue(stopResult.heldNames().get(0).reason().startsWith("quarantined: "), stopResult.toString());
             assertEquals(0, flow.tornDown.get(), "never re-enter damaged generated lifecycle methods");
             assertEquals(1, healthyStops.get(), "healthy lifecycle still closes");
         } finally { server.stop(); }

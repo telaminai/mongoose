@@ -97,7 +97,7 @@ class AuditFailurePolicyTest {
         ControlRequest healthyAdd = group.addNamedEventProcessor(() -> new NamedEventProcessor("before", new Proc()), before);
         group.doWork();
         assertTrue(reply(healthyAdd).applied());
-        assertTrue(reply(healthyAdd).evidenceVerified(), "control: a reply before any audit failure is verified");
+        assertFalse(reply(healthyAdd).madeWhileAuditDegraded(), "control: a reply before any audit failure is not marked");
 
         failOneAuditWrite(group.control().audit());
         ProcessorRegistration after = new ProcessorRegistration("after");
@@ -108,11 +108,11 @@ class AuditFailurePolicyTest {
         for (ControlRequest r : new ControlRequest[]{add, stop}) {
             ControlReply answer = reply(r);
             assertEquals(ReplyOutcome.APPLIED, answer.outcome(), "a degraded group still applies: " + answer);
-            assertEquals(FailureKind.UNVERIFIED, answer.evidence(), answer.toString());
-            assertFalse(answer.evidenceVerified());
+            assertEquals(com.telamin.mongoose.control.event.EvidenceStatus.UNVERIFIED, answer.evidence(), answer.toString());
+            assertTrue(answer.madeWhileAuditDegraded());
         }
         assertEquals(FailureKind.REFUSED_STATE, reply(unknown).kind(), "the kind still says why");
-        assertEquals(FailureKind.UNVERIFIED, reply(unknown).evidence());
+        assertEquals(com.telamin.mongoose.control.event.EvidenceStatus.UNVERIFIED, reply(unknown).evidence());
 
         ControlInvariants.Result result = ControlInvariants.check(ControlEvidence.parse(group.control().audit().exportText(),
                 group.control().audit().isComplete()));
@@ -123,7 +123,7 @@ class AuditFailurePolicyTest {
         ControlRequest afterAck = group.removeEventProcessorByName("after", after, null);
         group.doWork();
         assertTrue(reply(afterAck).applied());
-        assertTrue(reply(afterAck).evidenceVerified(), "acknowledged: later replies are no longer marked");
+        assertFalse(reply(afterAck).madeWhileAuditDegraded(), "acknowledged: later replies are no longer marked");
         group.onClose();
         assertEquals(ControlDriver.GroupState.CLOSED, group.control().state(), "a degraded group still closes");
     }
@@ -135,7 +135,7 @@ class AuditFailurePolicyTest {
         ProcessorRegistration reg = new ProcessorRegistration("p");
         ControlRequest add = group.addNamedEventProcessor(() -> new NamedEventProcessor("p", new Proc()), reg);
         group.doWork();
-        assertTrue(reply(add).evidenceVerified());
+        assertFalse(reply(add).madeWhileAuditDegraded());
         group.onClose();
         ControlInvariants.Result result = ControlInvariants.check(ControlEvidence.parse(group.control().audit().exportText(),
                 group.control().audit().isComplete()));
@@ -158,7 +158,7 @@ class AuditFailurePolicyTest {
             assertTrue(server.controlGroupStatus("g").controlAuditDegraded());
             ControlReply stop = server.stopProcessor("g", "p", 1_000);
             assertEquals(ReplyOutcome.APPLIED, stop.outcome(), "stop always accepted when degraded: " + stop);
-            assertEquals(FailureKind.UNVERIFIED, stop.evidence());
+            assertEquals(com.telamin.mongoose.control.event.EvidenceStatus.UNVERIFIED, stop.evidence());
             server.acknowledgeControlAuditGap("g");
             assertEquals(HealthStatus.Verdict.UP, awaitVerdict(health, HealthStatus.Verdict.UP));
         } finally {
@@ -219,6 +219,13 @@ class AuditFailurePolicyTest {
             assertTrue(group.control().audit().records().stream().anyMatch(r -> r.contains("record: CaptureWriteFailed")
                     && r.contains("processorStopped: false")), group.control().audit().records().toString());
             assertFalse(group.control().audit().evidenceDegraded(), "a capture failure does not degrade the control audit");
+            // review R10: acknowledgement clears the alert, never the gap
+            assertTrue(group.unacknowledgedCaptureFailures() != null, "the audit-capture alert is raised");
+            group.acknowledgeCaptureFailures();
+            assertEquals(null, group.unacknowledgedCaptureFailures(), "acknowledged: the alert clears");
+            assertEquals(1, group.captureWriteFailures(), "the failure stays counted");
+            observer.get().accept("a second injected write failure");
+            assertTrue(group.unacknowledgedCaptureFailures() != null, "a new failure raises the alert again");
         } finally {
             group.onClose();
             while (!tasks.isEmpty()) tasks.remove().run();

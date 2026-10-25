@@ -43,21 +43,23 @@ with one `ControlReply`.
 ```java
 package com.telamin.mongoose.control;
 public record ControlReply(long requestId, ReplyOutcome outcome, String reason, long generation, String name,
-                           FailureKind kind) {
+                           FailureKind kind, EvidenceStatus evidence) {
     public boolean applied();   // outcome == APPLIED
 }
 
 package com.telamin.mongoose.control.event;
 public enum ReplyOutcome { APPLIED, REFUSED, FAILED, NOT_RUNNING }
-public enum FailureKind { NONE, REFUSED_ADMISSION, REFUSED_STATE, REFUSED_DEADLINE, FAILED_RULE, FAILED_EFFECT,
+public enum FailureKind { NONE, REFUSED_ADMISSION, REFUSED_STATE, REFUSED_DEADLINE, REFUSED_INVALID, FAILED_RULE, FAILED_EFFECT,
     FAILED_DRIVER_FALLBACK, FAILED_DEAD, FAILED_SHUTDOWN, QUARANTINED, DETACHED, UNVERIFIED, LEFTOVER_RECOVERED,
     REPLAY_IDENTITY_MISMATCH, REPLAY_STOPPED }
+public enum EvidenceStatus { NOT_DEGRADED, UNVERIFIED }
 ```
 
 `kind` is never null: `NONE` exactly when the outcome is `APPLIED`. Classify a reply by `outcome` and `kind`; the
 `reason` text is human detail and may change. `evidence` is `UNVERIFIED` when the reply was made while the group's
 control audit had an unacknowledged write failure (the group is then DEGRADED but still applies every request,
-stops and closes included), otherwise `NONE`. A full mailbox is always refused with reason `mailbox full`; exceptions
+stops and closes included), otherwise `NOT_DEGRADED`, which does not prove that every record of the request was
+written. A full mailbox is always refused with reason `mailbox full`; exceptions
 thrown for it say `request refused: mailbox full (capacity N)`. The meaning of each kind is in the
 [failure-handling design](../design/failure-handling.md#failure-taxonomy). (Issue #77, after 1.0.33-rc1.)
 
@@ -344,7 +346,7 @@ On an agent thread with a full mailbox this reply-returning form returns `REFUSE
 <reason>`, or `stop pending (still applies): <group>/<name>` when no reply came within one second. An unknown group or
 name prints `stop REFUSED (REFUSED_STATE): no such ...`, never `pending`. A missing or malformed argument (not exactly
 one `<group>/<name>` with both parts non-blank) is refused on the error stream with
-`stop REFUSED (REFUSED_STATE): usage: ...` and stops nothing. On a `MongooseServerController` that is not a
+`stop REFUSED (REFUSED_INVALID): usage: ...` and stops nothing. On a `MongooseServerController` that is not a
 `MongooseServer`, it calls the void form.
 
 ## Services

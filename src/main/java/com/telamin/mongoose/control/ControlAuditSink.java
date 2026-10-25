@@ -53,7 +53,10 @@ public final class ControlAuditSink implements LogRecordListener {
     public synchronized void processLogRecord(LogRecord logRecord) {
         try {
             add(withoutRawEventText(logRecord.asCharSequence().toString()));
-        } catch (RuntimeException e) {
+        } catch (VirtualMachineError fatal) {
+            throw fatal;
+        } catch (Throwable e) {
+            // any non-VM failure (an Error included) is an audit write failure: DEGRADED, never a dead control plane
             boolean wasDegraded = evidenceDegraded();
             sinkFailures++;
             if (firstSinkFailure == null) firstSinkFailure = e.toString();

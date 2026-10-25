@@ -158,7 +158,7 @@ server-level commands to the admin registry:
 | --- | --- |
 | `server.service.list` | Lists registered services |
 | `server.processors.list` | Lists processors by group |
-| `server.processors.stop <group>/<name>` | Stops a processor and prints `stop <OUTCOME>: <reason>`. It waits at most one second; if no reply comes in time it prints `stop pending (still applies)`, and the stop still happens ([contract](../reference/control-plane-contracts.md#the-admin-stop-command)) |
+| `server.processors.stop <group>/<name>` | Stops a processor and prints `stop <OUTCOME> (<KIND>): <reason>`, for example `stop APPLIED (NONE): stopped`. It waits at most one second; if no reply comes in time it prints `stop pending (still applies)`, and the stop still happens. An unknown group or name prints `stop REFUSED (REFUSED_STATE): no such ...`; a malformed argument is refused with `stop REFUSED (REFUSED_INVALID): usage: ...` ([contract](../reference/control-plane-contracts.md#the-admin-stop-command)) |
 | `audit.start <group/name>`, `audit.stop <group/name>`, `audit.status`, `audit.list` | Audit capture ([contract](../reference/control-plane-contracts.md#audit-capture)) |
 | `latency.status`, `latency.enable`, `latency.disable`, `latency.toggle`, `latency.reset` | Latency monitoring |
 

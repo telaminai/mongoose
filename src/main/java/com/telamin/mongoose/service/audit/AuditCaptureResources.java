@@ -46,11 +46,20 @@ public interface AuditCaptureResources {
 
     /**
      * Fail open (issue #77, M3): a capture whose record writes fail never stops the processor, but must not fail silently.
-     * The group calls this after a successful install; the implementation calls {@code observer} (with a description)
-     * at the first write failure of that recording, on whatever thread wrote, and must catch anything it throws. The
-     * default observes nothing, for implementations that cannot fail a write.
+     * The group calls this <b>before</b> installing the resource (the install's own listener-swap record is the
+     * recording's first write); the implementation calls {@code observer} (with a description) once per recording, at
+     * its first write failure or, if that failure came before the observer, when the observer attaches. It is called on
+     * whatever thread wrote and must catch anything the observer throws. If this method throws, the group logs it,
+     * marks the capture unobservable (audit-capture health) and installs the capture anyway.
      */
     default void observeWriteFailures(Object resource, java.util.function.Consumer<String> observer) { }
+
+    /**
+     * Whether {@link #observeWriteFailures} reports anything. The default is false (an implementation that cannot fail
+     * a write, or one written before issue #77); the group records such a capture as unobservable in the control audit.
+     * This stays a default method at the next minor: implementations opt in by overriding both.
+     */
+    default boolean observesWriteFailures() { return false; }
 
     /** Flush and close the resource. */
     void closeCapture(Object resource) throws Exception;

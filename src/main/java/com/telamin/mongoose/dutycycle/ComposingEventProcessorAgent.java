@@ -65,7 +65,7 @@ import java.util.function.Supplier;
  * </ul>
  * <h2>Failure isolation (mongoose#57)</h2>
  * One processor's failure is kept from the group's agent error handler (under bootServer, {@code GlobalErrorHandler},
- * which exits the JVM), reported once through {@code ErrorReporting} at {@code ERROR}, and the rest of the group runs on:
+ * which logs it and exits the JVM only under the opt-in {@code FatalErrorPolicy.EXIT_PROCESS}), reported once through {@code ErrorReporting} at {@code ERROR}, and the rest of the group runs on:
  * <ul>
  *   <li>a failed {@code start()} of a processor added at runtime: the processor is dropped and everything the group
  *       holds for it released (its tearDown, subscriptions, timers, replay bindings, the server's bindings);</li>
@@ -605,6 +605,13 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             if (terminalProcessorFailure != null) throw terminalProcessorFailure;
             int work = control.isEmpty() ? 0 : control.drain(DRAIN_MAX, drainBudgetNanos);
             if (terminalProcessorFailure != null) throw terminalProcessorFailure;
+            if (control.state() == ControlDriver.GroupState.DEAD) {
+                // review R5 (owner confirmed: isolate, no automatic restart, as for a quarantined processor): a dead
+                // control plane cannot stop or release these processors, so they receive nothing more
+                fenceDeadControlPlane();
+                idleCyclesCounter.increment();
+                return 0;
+            }
             checkQueueReaders();
             work += super.doWork();
             if (replayer != null) work += replayer.doWork();
@@ -626,6 +633,34 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             control.failClaimed("group died: " + fatal);    // on the agent thread, which owns what it claimed
             throw fatal;
         }
+    }
+
+    private boolean deadControlFenced;
+
+    /**
+     * The control plane died while this thread lives (a rule threw, review R5): fence every processor from its inputs
+     * and timers, once, as quarantine does for one processor. Instances and names stay owned; nothing restarts. The
+     * remedy is to close the group or stop the server, which release what the dead control plane could not.
+     */
+    private void fenceDeadControlPlane() {
+        if (deadControlFenced) return;
+        deadControlFenced = true;
+        List<String> fenced = new ArrayList<>();
+        for (NamedEventProcessor named : new ArrayList<>(registeredEventProcessors.values())) {
+            try {
+                removeAllSubscriptions(named.eventProcessor());
+                scheduler.cancelTimersOf(named.eventProcessor());
+                fenced.add(named.name());
+            } catch (VirtualMachineError fatal) {
+                throw fatal;
+            } catch (Throwable failed) {
+                log.log(java.util.logging.Level.WARNING, "could not fence processor '" + named.name()
+                        + "' of dead group " + roleName(), failed);
+            }
+        }
+        control.audit().fallback("DataPathFenced", "group", roleName(), "processors", String.join(",", fenced),
+                "reason", "control plane DEAD: no further delivery, no restart; close the group or stop the server",
+                "kind", com.telamin.mongoose.control.event.FailureKind.FAILED_DEAD);
     }
 
     /** Containment only: lifecycle release is still decided and audited by the control processor. */
@@ -1109,14 +1144,12 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             return result(effect, ControlOutcome.FAILED, handle == null ? "unknown resource" : "processor gone");
         }
         if (quarantined.containsKey(named)) return quarantinedResult(effect, "processor quarantined");
+        // observed before install (review R1): the listener swap's own record is the recording's first write
+        observeCaptureWrites(resources, handle, effect.resourceId(), effect.generation(), named.name());
         // not framed: swapping the audit listener is already its own audited cycle in the processor (an
         // EventLogControlEvent), and a frame around it would flush to the listener being replaced (review of PR 6, 3)
         try {
             resources.installCapture(handle, named.name(), named.eventProcessor());
-            long resourceId = effect.resourceId();
-            String processorName = named.name();
-            long generation = effect.generation();
-            resources.observeWriteFailures(handle, failure -> captureWriteFailed(resourceId, generation, processorName, failure));
         } catch (VirtualMachineError fatal) {
             throw fatal;
         } catch (RuntimeException | Error failure) {
@@ -1310,6 +1343,68 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     }
 
     private final java.util.concurrent.atomic.AtomicLong captureWriteFailures = new java.util.concurrent.atomic.AtomicLong();
+    /** Installs whose write failures cannot be observed because the observer registration threw (review R2). */
+    private final java.util.concurrent.atomic.AtomicLong captureUnobservable = new java.util.concurrent.atomic.AtomicLong();
+
+    /**
+     * Register the write-failure observer. Its failure never fails the install (review R2): it is logged, recorded and
+     * raises audit-capture health as unobservable. A resource that does not observe writes is recorded once per install.
+     */
+    private void observeCaptureWrites(com.telamin.mongoose.service.audit.AuditCaptureResources resources, Object handle,
+                                      long resourceId, long generation, String processorName) {
+        try {
+            resources.observeWriteFailures(handle, failure -> captureWriteFailed(resourceId, generation, processorName, failure));
+            if (!resources.observesWriteFailures()) {
+                control.audit().fallback("CaptureUnobservable", "group", roleName(), "resourceId", resourceId,
+                        "generation", generation, "name", processorName,
+                        "reason", "capture resources do not declare observesWriteFailures()");
+            }
+        } catch (VirtualMachineError fatal) {
+            throw fatal;
+        } catch (Throwable failed) {
+            captureUnobservable.incrementAndGet();
+            log.log(java.util.logging.Level.WARNING, "capture write failures of '" + processorName
+                    + "' cannot be observed; installing anyway", failed);
+            control.audit().fallback("CaptureUnobservable", "group", roleName(), "resourceId", resourceId,
+                    "generation", generation, "name", processorName, "reason", String.valueOf(failed),
+                    "kind", com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT);
+        }
+    }
+
+    private volatile long acknowledgedWriteFailures;
+    private volatile long acknowledgedUnobservable;
+    private final java.util.Set<Long> acknowledgedCaptureFailureIds = ConcurrentHashMap.newKeySet();
+
+    /**
+     * Acknowledge the capture failures known now (review R10): the audit-capture alert clears until a new one occurs.
+     * The failures stay listed ({@link #captureCloseFailures()}, {@link #captureCleanupFailures()}, the counters) and
+     * resources stay owned: acknowledgement clears the alert, never the gap.
+     */
+    public void acknowledgeCaptureFailures() {
+        acknowledgedWriteFailures = captureWriteFailures.get();
+        acknowledgedUnobservable = captureUnobservable.get();
+        acknowledgedCaptureFailureIds.addAll(captureCloseFailures().keySet());
+        acknowledgedCaptureFailureIds.addAll(captureCleanupFailures().keySet());
+        control.audit().fallback("CaptureFailuresAcknowledged", "group", roleName(),
+                "writeFailures", acknowledgedWriteFailures, "unobservable", acknowledgedUnobservable,
+                "resources", acknowledgedCaptureFailureIds.toString());
+    }
+
+    /** Capture failures not yet acknowledged, described for health; null when there are none. */
+    public String unacknowledgedCaptureFailures() {
+        long writes = captureWriteFailures.get() - acknowledgedWriteFailures;
+        long unobservable = captureUnobservable.get() - acknowledgedUnobservable;
+        long closes = captureCloseFailures().keySet().stream().filter(id -> !acknowledgedCaptureFailureIds.contains(id)).count();
+        long cleanups = captureCleanupFailures().keySet().stream().filter(id -> !acknowledgedCaptureFailureIds.contains(id)).count();
+        if (writes + unobservable + closes + cleanups == 0) return null;
+        return "unacknowledged capture failures: writes=" + writes + " unobservable=" + unobservable + " closes=" + closes
+                + " cleanups=" + cleanups + " (processors keep running)";
+    }
+
+    /** Installs whose write failures could not be observed because registering the observer threw. */
+    public long captureUnobservable() {
+        return captureUnobservable.get();
+    }
 
     /**
      * Fail open (issue #77, M3): a capture's record writes failed. The processor keeps running and nothing is retried;

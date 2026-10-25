@@ -767,6 +767,7 @@ public class MongooseServer implements MongooseServerController {
                 // Keep a refusal in the result set: omission must never look like confirmed withdrawal.
                 var refused = new com.telamin.mongoose.control.ControlRequest(
                         com.telamin.mongoose.control.ControlRequest.Kind.BROADCAST, "missed service broadcast", null, null);
+                runner.group().control().markReplies(refused);   // marked like the group's own replies (review R3)
                 refused.cancel("group could not accept service broadcast: " + notQueued.getMessage());
                 sent.put(groupName, refused);
                 log.fine("group " + groupName + " not told of service " + service.serviceName() + ": " + notQueued);
@@ -1290,17 +1291,17 @@ public class MongooseServer implements MongooseServerController {
         boolean locked = read.tryLock();
         try {
             if (!locked || isStopRequested()) {
-                return refusedAdd(processorName, com.telamin.mongoose.control.event.ReplyOutcome.NOT_RUNNING, "server is stopping");
+                return markedFor(groupName, refusedAdd(processorName, com.telamin.mongoose.control.event.ReplyOutcome.NOT_RUNNING, "server is stopping"));
             }
             Admission admission;
             try {
                 admission = admitEventProcessor(processorName, groupName, idleStrategy, feedConsumer, System.nanoTime());
             } catch (IllegalArgumentException duplicate) {
-                return refusedAdd(processorName, com.telamin.mongoose.control.event.ReplyOutcome.REFUSED, "name in use");
+                return markedFor(groupName, refusedAdd(processorName, com.telamin.mongoose.control.event.ReplyOutcome.REFUSED, "name in use"));
             } catch (IllegalStateException notQueued) {
                 // a full mailbox or an ended group: refused, the name released by the admission
-                return refusedAdd(processorName, com.telamin.mongoose.control.event.ReplyOutcome.REFUSED,
-                        com.telamin.mongoose.control.event.FailureKind.REFUSED_ADMISSION, String.valueOf(notQueued.getMessage()));
+                return markedFor(groupName, refusedAdd(processorName, com.telamin.mongoose.control.event.ReplyOutcome.REFUSED,
+                        com.telamin.mongoose.control.event.FailureKind.REFUSED_ADMISSION, String.valueOf(notQueued.getMessage())));
             }
             // the handle of exactly this add's registration, not whatever answers to the name by the time it is asked for
             var immediate = admission.request().reply().getNow(null);
@@ -1324,6 +1325,23 @@ public class MongooseServer implements MongooseServerController {
                 new com.telamin.mongoose.control.ControlReply(-1, outcome, reason, -1, processorName, kind)));
     }
 
+    /**
+     * Issue #77 review R3: a reply the server authors about an existing group is marked UNVERIFIED while that group's
+     * control audit is degraded, as the group's own replies are. A reply about no group has no audit to consult.
+     */
+    private com.telamin.mongoose.control.ControlReply markedFor(String groupName, com.telamin.mongoose.control.ControlReply reply) {
+        var runner = groupName == null ? null : composingEventProcessorAgents.get(groupName);
+        return runner != null && runner.group().control().audit().evidenceDegraded() ? reply.unverified() : reply;
+    }
+
+    private AddedProcessor markedFor(String groupName, AddedProcessor refused) {
+        var reply = refused.reply().toCompletableFuture().getNow(null);
+        if (reply == null) return refused;
+        var marked = markedFor(groupName, reply);
+        return marked == reply ? refused
+                : new AddedProcessor(refused.handle(), java.util.concurrent.CompletableFuture.completedFuture(marked));
+    }
+
     /** An admitted add: the request sent, and the registration it was admitted under. */
     private record Admission(com.telamin.mongoose.control.ControlRequest request, ProcessorRegistration registration) { }
 
@@ -1344,7 +1362,7 @@ public class MongooseServer implements MongooseServerController {
         if (!handle.belongsTo(processorHandleOwner)) {
             return java.util.concurrent.CompletableFuture.completedFuture(new com.telamin.mongoose.control.ControlReply(
                     -1, com.telamin.mongoose.control.event.ReplyOutcome.REFUSED, "handle belongs to another server",
-                    handle.generation(), handle.name()));
+                    handle.generation(), handle.name(), com.telamin.mongoose.control.event.FailureKind.REFUSED_INVALID));
         }
         var processorAgent = composingEventProcessorAgents.get(handle.group());
         if (processorAgent == null) {
@@ -1371,15 +1389,15 @@ public class MongooseServer implements MongooseServerController {
         } catch (IllegalStateException notQueued) {
             // The group's full-mailbox timeout can expire before this call's deadline. This reply API answers a
             // refused admission; the void overload retains its exception contract.
-            return new com.telamin.mongoose.control.ControlReply(-1,
+            return markedFor(groupName, new com.telamin.mongoose.control.ControlReply(-1,
                     com.telamin.mongoose.control.event.ReplyOutcome.REFUSED,
-                    String.valueOf(notQueued.getMessage()), -1, processorName, com.telamin.mongoose.control.event.FailureKind.REFUSED_ADMISSION);
+                    String.valueOf(notQueued.getMessage()), -1, processorName, com.telamin.mongoose.control.event.FailureKind.REFUSED_ADMISSION));
         }
         if (request == null) {
-            return new com.telamin.mongoose.control.ControlReply(-1,
+            return markedFor(groupName, new com.telamin.mongoose.control.ControlReply(-1,
                     com.telamin.mongoose.control.event.ReplyOutcome.REFUSED,
                     composingEventProcessorAgents.containsKey(groupName) ? "no such processor" : "no such group",
-                    -1, processorName, com.telamin.mongoose.control.event.FailureKind.REFUSED_STATE);
+                    -1, processorName, com.telamin.mongoose.control.event.FailureKind.REFUSED_STATE));
         }
         return awaitWhereSafe(groupName, request, deadline);
     }
@@ -1444,6 +1462,65 @@ public class MongooseServer implements MongooseServerController {
                                      Map<Long, String> captureCloseFailures, Map<Long, String> captureCleanupFailures,
                                      Map<String, String> quarantinedProcessors, boolean controlAuditDegraded,
                                      long captureWriteFailures) {
+        /** The 1.0.33-rc1 shape (review R6): not degraded, no write failures. */
+        public ControlGroupStatus(String group, com.telamin.mongoose.control.ControlDriver.GroupState state,
+                                  int outstandingRequests, int captureResourcesHeld, int captureResourceSlotsInUse,
+                                  Map<Long, String> captureCloseFailures, Map<Long, String> captureCleanupFailures,
+                                  Map<String, String> quarantinedProcessors) {
+            this(group, state, outstandingRequests, captureResourcesHeld, captureResourceSlotsInUse, captureCloseFailures,
+                    captureCleanupFailures, quarantinedProcessors, false, 0);
+        }
+
+        /** A JSON object of every field, for the admin web console (issue #77, M4). Map keys are strings. */
+        public String toJson() {
+            StringBuilder b = new StringBuilder("{");
+            json(b, "group", group).append(',');
+            json(b, "state", String.valueOf(state)).append(',');
+            b.append("\"outstandingRequests\":").append(outstandingRequests).append(',');
+            b.append("\"captureResourcesHeld\":").append(captureResourcesHeld).append(',');
+            b.append("\"captureResourceSlotsInUse\":").append(captureResourceSlotsInUse).append(',');
+            jsonMap(b, "captureCloseFailures", captureCloseFailures).append(',');
+            jsonMap(b, "captureCleanupFailures", captureCleanupFailures).append(',');
+            jsonMap(b, "quarantinedProcessors", quarantinedProcessors).append(',');
+            b.append("\"controlAuditDegraded\":").append(controlAuditDegraded).append(',');
+            b.append("\"captureWriteFailures\":").append(captureWriteFailures);
+            return b.append('}').toString();
+        }
+
+        private static StringBuilder json(StringBuilder b, String key, String value) {
+            return b.append(quote(key)).append(':').append(value == null ? "null" : quote(value));
+        }
+
+        private static StringBuilder jsonMap(StringBuilder b, String key, Map<?, String> map) {
+            b.append(quote(key)).append(":{");
+            boolean first = true;
+            for (var e : new java.util.TreeMap<>(map.entrySet().stream().collect(java.util.stream.Collectors.toMap(
+                    x -> String.valueOf(x.getKey()), x -> String.valueOf(x.getValue())))).entrySet()) {
+                if (!first) b.append(',');
+                first = false;
+                b.append(quote(e.getKey())).append(':').append(quote(e.getValue()));
+            }
+            return b.append('}');
+        }
+
+        private static String quote(String raw) {
+            StringBuilder q = new StringBuilder(raw.length() + 2).append('"');
+            for (char c : raw.toCharArray()) {
+                switch (c) {
+                    case '"' -> q.append("\\\"");
+                    case '\\' -> q.append("\\\\");
+                    case '\n' -> q.append("\\n");
+                    case '\r' -> q.append("\\r");
+                    case '\t' -> q.append("\\t");
+                    default -> {
+                        if (c < 0x20) q.append(String.format("\\u%04x", (int) c));
+                        else q.append(c);
+                    }
+                }
+            }
+            return q.append('"').toString();
+        }
+
         public ControlGroupStatus {
             captureCloseFailures = Map.copyOf(captureCloseFailures);
             captureCleanupFailures = Map.copyOf(captureCleanupFailures);
@@ -1465,13 +1542,16 @@ public class MongooseServer implements MongooseServerController {
                 + group.control().audit().firstSinkFailure() + "); replies are UNVERIFIED until the evidence is exported")
                 : com.telamin.mongoose.service.health.HealthStatus.up());
         health.registerCheck("group:" + groupName, "audit-capture", ctx -> {
-            long writes = group.captureWriteFailures();
-            int closes = group.captureCloseFailures().size();
-            int cleanups = group.captureCleanupFailures().size();
-            return writes + closes + cleanups == 0 ? com.telamin.mongoose.service.health.HealthStatus.up()
-                    : com.telamin.mongoose.service.health.HealthStatus.degraded("capture failures: writes=" + writes
-                    + " closes=" + closes + " cleanups=" + cleanups + " (processors keep running)");
+            String unacknowledged = group.unacknowledgedCaptureFailures();
+            return unacknowledged == null ? com.telamin.mongoose.service.health.HealthStatus.up()
+                    : com.telamin.mongoose.service.health.HealthStatus.degraded(unacknowledged);
         });
+        // review R5: a DEAD control plane is DOWN, even while the group's thread lives
+        health.registerCheck("group:" + groupName, "control", ctx -> group.control().state()
+                == com.telamin.mongoose.control.ControlDriver.GroupState.DEAD
+                ? com.telamin.mongoose.service.health.HealthStatus.down("group control plane is DEAD; its processors"
+                + " receive no events. Remedy: close the group or stop the server")
+                : com.telamin.mongoose.service.health.HealthStatus.up());
     }
 
     /**
@@ -1482,6 +1562,13 @@ public class MongooseServer implements MongooseServerController {
         var runner = composingEventProcessorAgents.get(Objects.requireNonNull(groupName, "groupName"));
         if (runner == null) throw new IllegalArgumentException("unknown processor group: " + groupName);
         runner.group().control().audit().acknowledgeEvidenceGap();
+    }
+
+    /** Acknowledge a group's capture failures: its audit-capture health clears; the failures stay listed. */
+    public void acknowledgeCaptureFailures(String groupName) {
+        var runner = composingEventProcessorAgents.get(Objects.requireNonNull(groupName, "groupName"));
+        if (runner == null) throw new IllegalArgumentException("unknown processor group: " + groupName);
+        runner.group().acknowledgeCaptureFailures();
     }
 
     /** Non-blocking counters and failure snapshots; does not enter the group's mailbox or wait for its thread. */
@@ -2200,6 +2287,7 @@ public class MongooseServer implements MongooseServerController {
                 stopCompleted.countDown();
                 replyExecutor.shutdown();           // queued completions still run; later ones get a thread of their own
             } else {
+                result = result.withHeldNames(heldNames());
                 log.warning("server stop incomplete: " + result);
                 lastStopResult = result;
             }
@@ -2211,6 +2299,26 @@ public class MongooseServer implements MongooseServerController {
             if (acquired) stopAttempt.unlock();
             if (interrupted) Thread.currentThread().interrupt();
         }
+    }
+
+    /** Names still reserved by a dead group or a quarantined processor (issue #77, M4): reported, never released. */
+    private java.util.List<StopResult.HeldName> heldNames() {
+        java.util.List<StopResult.HeldName> held = new java.util.ArrayList<>();
+        reservedProcessorNames.forEach((reservation, registration) -> {
+            var runner = composingEventProcessorAgents.get(reservation.group());
+            if (runner == null) return;
+            var group = runner.group();
+            String quarantine = group.quarantinedProcessors().get(reservation.name());
+            if (quarantine != null) {
+                held.add(new StopResult.HeldName(reservation.group(), reservation.name(), registration.generation(),
+                        "quarantined: " + quarantine));
+            } else if (group.control().state() == com.telamin.mongoose.control.ControlDriver.GroupState.DEAD) {
+                held.add(new StopResult.HeldName(reservation.group(), reservation.name(), registration.generation(),
+                        "group dead"));
+            }
+        });
+        held.sort(java.util.Comparator.comparing(StopResult.HeldName::group).thenComparing(StopResult.HeldName::name));
+        return held;
     }
 
     private static long remainingStopNanos(long deadline) {

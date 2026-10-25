@@ -115,7 +115,8 @@ public class MongooseServerConfig {
      * What happens when a processor's {@code start()} throws while the server boots (review of mongoose#57). False, the
      * default: the boot fails. The processor is dropped and the group's start fails with a
      * {@link com.telamin.mongoose.dutycycle.ProcessorStartException} naming the group and the processor, which reaches
-     * the agent error handler (under {@code bootServer}, {@code GlobalErrorHandler}, which exits the process). True: the
+     * the agent error handler (under {@code bootServer}, {@code GlobalErrorHandler}, which logs it and, under the opt-in
+     * {@link FatalErrorPolicy#EXIT_PROCESS}, exits the process); the server's start fails either way. True: the
      * failure is isolated, reported through {@code ErrorReporting} and the processor dropped, and the server boots
      * without it. A processor added after the server has started is always isolated, whatever this says.
      * YAML: {@code isolateProcessorStartFailuresAtBoot: true}.
@@ -169,6 +170,24 @@ public class MongooseServerConfig {
      * stopping group throws {@code IllegalStateException}. Either way the outcome is in {@code addProcessor}'s reply.
      */
     public enum AddFailurePolicy { REPORT, THROW }
+
+    /**
+     * What the boot error handler ({@code GlobalErrorHandler}, installed by {@code bootServer}) does with an error that
+     * escapes a group's agent (issue #77, A1; owner confirmed: exit is never the default).
+     */
+    public enum FatalErrorPolicy {
+        /**
+         * Default. Log it and keep the process alive: an {@code Error} ends that group's thread, so the group is DEAD
+         * (health {@code group:<name>/control} DOWN, its requests answered {@code FAILED_DEAD}); other groups keep
+         * serving. Any other throwable leaves the group running, as Agrona does.
+         */
+        CONTAIN,
+        /** Opt-in deployment policy: log it and exit the JVM with status -1 (the behaviour before issue #77). */
+        EXIT_PROCESS
+    }
+
+    /** YAML: {@code fatalErrorPolicy: EXIT_PROCESS} to restore process exit on a fatal group error. */
+    private FatalErrorPolicy fatalErrorPolicy = FatalErrorPolicy.CONTAIN;
 
     private AddFailurePolicy addFailurePolicy = AddFailurePolicy.REPORT;
 

@@ -41,7 +41,7 @@ class AdminStopCommandValidationTest {
 
             for (String[] bad : new String[][]{{}, {"trading"}, {"trading/"}, {"/quotes"}, {"a/b/c"}, {"trading/quotes", "x"}}) {
                 String out = commands.call("server.processors.stop", bad);
-                assertTrue(out.startsWith("ERROR stop REFUSED (REFUSED_STATE): usage:"), String.join(" ", bad) + " -> " + out);
+                assertTrue(out.startsWith("ERROR stop REFUSED (REFUSED_INVALID): usage:"), String.join(" ", bad) + " -> " + out);
             }
             String unknownName = commands.call("server.processors.stop", "trading/nobody");
             assertTrue(unknownName.contains("stop REFUSED (REFUSED_STATE): no such processor"), unknownName);
@@ -52,6 +52,13 @@ class AdminStopCommandValidationTest {
             ControlReply direct = server.stopProcessor("trading", "nobody", 1_000);
             assertEquals(ReplyOutcome.REFUSED, direct.outcome());
             assertEquals(FailureKind.REFUSED_STATE, direct.kind());
+
+            // issue #77 M4: the group status as JSON for the admin web console
+            String json = commands.call("control.group.status", "trading", "--json");
+            assertTrue(json.startsWith("{\"group\":\"trading\",\"state\":\"RUNNING\",") && json.endsWith("}"), json);
+            assertTrue(json.contains("\"quarantinedProcessors\":{}") && json.contains("\"controlAuditDegraded\":false")
+                    && json.contains("\"captureWriteFailures\":0"), json);
+            assertTrue(commands.call("control.group.status", "trading", "--yaml").startsWith("ERROR usage:"));
 
             String stopped = commands.call("server.processors.stop", "trading/quotes");
             assertTrue(stopped.contains("stop APPLIED (NONE)"), stopped);

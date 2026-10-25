@@ -41,7 +41,7 @@ public final class ServerConfigurator {
         Objects.requireNonNull(logRecordListener, "logRecordListener must be non-null");
 
         MongooseServer mongooseServer = new MongooseServer(mongooseServerConfig);
-        mongooseServer.setDefaultErrorHandler(new GlobalErrorHandler());
+        mongooseServer.setDefaultErrorHandler(new GlobalErrorHandler(mongooseServerConfig.getFatalErrorPolicy()));
 
         // Register any configured event-to-invocation strategies with the flow manager
         if (mongooseServerConfig.getEventInvokeStrategies() != null && !mongooseServerConfig.getEventInvokeStrategies().isEmpty()) {

@@ -9,12 +9,20 @@ Client migration requires its own [checklist](client-migration-1.0.33.md).
 
 Target: the next **minor** version. See the [failure-handling design](../design/failure-handling.md).
 
-**Breaking (record shape).** `ControlReply` gained two trailing components, `kind` and `evidence`
-(`FailureKind`); `EffectResult` and `ControlEffect.Reply` gained `kind`; `MongooseServer.ControlGroupStatus` gained
-`controlAuditDegraded` and `captureWriteFailures`. The previous constructors remain, so construction compiles
-unchanged. Record deconstruction patterns that list every component no longer compile, and `equals` now compares the
-new components. A typed `StopResult` replacement (held names and services per dead group) is planned for the same
-release so the shape changes once.
+**Breaking (record shape).** `ControlReply` gained two trailing components, `kind` (`FailureKind`) and `evidence`
+(`EvidenceStatus`); `EffectResult` and `ControlEffect.Reply` gained `kind`; `MongooseServer.ControlGroupStatus` gained
+`controlAuditDegraded` and `captureWriteFailures`; `StopResult` gained `heldNames` (typed `StopResult.HeldName`). The
+previous canonical constructors of all of these remain as secondary constructors, so construction compiles unchanged.
+Record deconstruction patterns that list every component no longer compile, and `equals` now compares the new
+components. `FailureKind` gained `REFUSED_INVALID` (a malformed request or a foreign handle).
+
+**Containment scope.** A failing processor is quarantined and a dead control plane fences its group's processors;
+other groups keep serving. Under `bootServer`, a fatal error that escapes a group no longer exits the JVM by default
+(`fatalErrorPolicy: CONTAIN`): that group dies and its `group:<name>/control` health is DOWN. Set
+`fatalErrorPolicy: EXIT_PROCESS` to keep the pre-#77 exit. Embedders with their own error handler are unaffected. Under
+`CONTAIN` a failed `bootServer` throws to its caller instead of exiting; the server's other agent threads are not
+stopped, so an application that lets the exception escape `main` keeps running: catch it and exit (or stop the server),
+or opt into `EXIT_PROCESS`.
 
 **Behaviour.**
 
@@ -30,3 +38,10 @@ release so the shape changes once.
   the `audit-capture` health check. `AuditCaptureResources.observeWriteFailures` is a new default SPI method.
 - Audit exports carry `kind` on replies, failed outcomes and fallback records, and `leftover` / `retry` on offline
   capture cleanup. `failureKind` keeps its rc1 meaning.
+- A group whose control plane dies while its thread lives (a rule threw) stops delivering events and timers to its
+  processors (`DataPathFenced` record) and reports `group:<name>/control` DOWN; close the group or stop the server.
+- Capture failures can be acknowledged (`acknowledgeCaptureFailures`, admin `control.capture.acknowledge`): the
+  audit-capture alert clears, the failures stay listed. `control.group.status <group> --json` prints the status as
+  JSON. The admin stop command refuses a malformed argument as `REFUSED_INVALID`.
+- Verify each control-audit export separately: concatenating an rc1 export with a newer one makes the result a
+  taxonomy export, in which rc1 records without a kind fail I20.

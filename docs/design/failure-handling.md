@@ -77,7 +77,7 @@ was correct.
 | --- | --- | --- | --- |
 | Data processor (handwritten `DataFlow`) | its group's agent | handler, lifecycle or service callback throws | the processor: retried by `RetryPolicy` for dispatch, reported and released for lifecycle |
 | Data processor (Fluxtion-generated, `InternalEventProcessor`) | its group's agent | any generated callback throws | the processor: quarantined, never retried or restarted |
-| Processor group | its agent thread and control processor | agent thread ends abnormally; control processor throws or wedges | the group: `DEAD`; other groups keep running |
+| Processor group | its agent thread and control processor | agent thread ends abnormally; control processor throws or wedges | the group: `DEAD`, health `group:<name>/control` DOWN. A rule failure leaves the thread alive, so the group then fences every processor from its inputs and timers (`DataPathFenced`), as quarantine does for one processor, with no restart; remedy: close the group or stop the server. Other groups keep running **[Implemented: M4]** (`GroupContainmentTest#aDeadControlPlaneIsDownAndFencedWhileOtherGroupsKeepServing`) |
 | Control processor | the group's driver | a rule throws, effects do not settle | the group: driver answers and marks it dead |
 | Service | the server's registry, under `serviceLock` | `start`/`stop` throws, retirement races re-registration | the service instance: retained, reported, never stopped twice |
 | Feed / sink | the event flow manager | full queue, failing source | the queue binding (drop accounting: see #79) |
@@ -142,10 +142,10 @@ third review. "Status" refers to the containment and evidence columns together; 
 
 | # | Trigger | Containment and evidence | Status |
 | --- | --- | --- | --- |
-| A1 | A fatal error reaches a group's Agrona error handler | `GlobalErrorHandler` (used by `bootServer`) calls `System.exit(-1)`: one group's fatal error ends the JVM, contradicting containment. Proposed: keep the process alive, mark the group `DEAD`, report it (health, `StopResult`), and make exit an explicit opt-in | **[Proposed: M4]** (behaviour unchanged on this branch; it changes what a fatal error means for every deployment and needs its own tests) |
+| A1 | A fatal error reaches a group's Agrona error handler | `GlobalErrorHandler` (used by `bootServer`) called `System.exit(-1)`: one group's fatal error ended the JVM. Now (owner confirmed: exit is never the default) the default `fatalErrorPolicy: CONTAIN` logs it and keeps the process up: an `Error` ends that group's thread, so it is `DEAD` and its health `control` check DOWN, while other groups keep serving. `fatalErrorPolicy: EXIT_PROCESS` restores the exit as an explicit deployment policy | **[Implemented: M4]** `GroupContainmentTest#aFatalGroupErrorKillsThatGroupOnlyAndNeverExitsByDefault`, `#exitIsAnExplicitOptIn` |
 | A2 | `server.processors.stop` with a missing or malformed argument, or an unknown group or name | Argument validated before any stop; unknown group or name answered `REFUSED` (`REFUSED_STATE`) instead of an index error or "pending" | **[Implemented: M2]** `AdminStopCommandValidationTest#malformedAndUnknownStopsAreRefusedNeverPending` |
 | A3 | Two wordings for one refusal (`mailbox full` in replies and docs, `queue stayed full` / `queue is full` in exceptions) | Every refusal and exception says `mailbox full` | **[Implemented: M2]** (wording only) |
-| A4 | `control.group.status` exists only as `toString()` | A JSON form for the UI, with typed fields | **[Proposed: M4]**, with the typed `StopResult` |
+| A4 | `control.group.status` exists only as `toString()` | `control.group.status <group> --json` and `ControlGroupStatus.toJson()` give every field as a JSON object | **[Implemented: M4]** `AdminStopCommandValidationTest`, `FailureKindFlowTest#jsonGroupStatusEscapesEveryString` |
 
 ## Terminal-state contract
 
@@ -154,7 +154,7 @@ the post-join backstop, then shutdown.
 
 | State | Outstanding requests | Resources | Names and services | Who settles | Status |
 | --- | --- | --- | --- | --- | --- |
-| **Dead** (agent thread ended abnormally, or the control processor threw) | Claimed: answered `FAILED` by the agent before it exits, or by the post-join backstop. Unclaimed: swept `NOT_RUNNING`. New: refused at admission | Captures stay owned. `releaseLeftoverCaptures` runs after the join and records each release in the fallback stream. Failures stay listed | Processor names stay reserved until death cleanup releases them. Quarantined processors keep theirs until shutdown, which reports them | Agent, then post-join backstop (`cleanupAfterDeath`), then shutdown | **[Implemented]** rows R4, M5, M8. Names held by a dead group reported in `StopResult`: groups are listed in `groupsRunning`; a per-name listing is **[Proposed: M4]** |
+| **Dead** (agent thread ended abnormally, or the control processor threw) | Claimed: answered `FAILED` by the agent before it exits, or by the post-join backstop. Unclaimed: swept `NOT_RUNNING`. New: refused at admission | Captures stay owned. `releaseLeftoverCaptures` runs after the join and records each release in the fallback stream. Failures stay listed | Processor names stay reserved until death cleanup releases them. Quarantined processors keep theirs until shutdown, which reports them | Agent, then post-join backstop (`cleanupAfterDeath`), then shutdown | **[Implemented]** rows R4, M5, M8. Names still reserved by a dead group or a quarantined processor are listed, typed, in `StopResult.heldNames` **[Implemented: M4]** (`GeneratedProcessorFailureIsolationTest#realAgentKeepsHealthyProcessorsRunningAndReportsQuarantinedOwnership`; the dead-group branch has no dedicated test, because death cleanup normally releases a dead group's names) |
 | **Closed** (orderly) | None outstanding by construction (terminal admission). A request still claimed at close is answered `FAILED` ("group ended", kind `FAILED_SHUTDOWN`, or `FAILED_DEAD` if the group died first); this backstop is not reached by any non-defective path and has no test. A late completion is handed to the orphan handler exactly once | All closed, or listed as failed (`captureCloseFailures`) | Released, except quarantined processors | The agent thread in `onClose` | **[Implemented]** `ControlTerminalAdmissionTest#requestsQueuedAtCloseAreAnsweredByTheRulesWithoutStartingAnything`, `ControlTerminationAndAdmissionTest#completionRacingCloseIsDispatchedOrOrphanedExactlyOnce`, `CaptureShutdownRetryTest#aClosedGroupRetainsFailedCaptureCleanupAndTheNextStopResumesIt` |
 | **Stopped** (one processor) | Replies in flight complete normally | Its captures are uninstalled before release and closed after it, or listed | The name is released on confirmed teardown, never on a refusal or a failed start before its release callback | The agent thread | **[Implemented]** `ProcessorStopReleaseTest`, `FailedStartNameOwnershipTest#failedStartKeepsItsNameThroughTheReleaseCallback`, `IntegrationReleaseRegressionTest#aDropCannotFreeANewerReservationUnderTheSameName` |
 | **Quarantined** (one generated processor) | Later stops of it are answered `FAILED` ("processor quarantined") | Existing capture is detached without calling the graph; new installs refused; generated `stop()`/`tearDown()` never invoked | Instance and name retained until shutdown; shutdown stays incomplete and keeps dependent services | Nobody automatically. The operator, per the [shutdown runbook](../operations/shutdown-runbook.md#quarantined-processors) | **[Implemented]** `GeneratedProcessorFailureIsolationTest#generatedStopFailureCannotReenterTearDownOrReleaseItsName`, `#captureAfterQuarantineRefusesInstallAndDetachesWithoutCallingTheGraph`, `#groupReplayFailureCannotReenterGeneratedLifecycleOnShutdown` |
@@ -243,7 +243,9 @@ All additions are source compatible except record-shape changes (owner confirmed
 documented in the [unreleased release notes](../release/release-notes-unreleased.md) and the
 [client migration checklist](../release/client-migration-1.0.33.md)):
 
-- **Breaking (record shape):** `ControlReply` gained trailing `kind` and `evidence` components; `EffectResult` and
+- **Breaking (record shape):** `ControlReply` gained trailing `kind` (`FailureKind`) and `evidence`
+  (`EvidenceStatus { NOT_DEGRADED, UNVERIFIED }`, its own enum since review R9) components; `StopResult` gained
+  `heldNames` (typed `HeldName(group, name, generation, reason)`, M4); `EffectResult` and
   `ControlEffect.Reply` gained `kind`; `ControlGroupStatus` gained `controlAuditDegraded` and `captureWriteFailures`. The previous canonical constructors remain as secondary constructors, so `new
   ControlReply(id, outcome, reason, generation, name)` still compiles. Record deconstruction patterns that list every
   component, and `equals`, now include `kind`. Two replies equal before may differ by kind.
@@ -292,8 +294,9 @@ That is dispatch retry, not control-effect retry, and it is not applied to gener
 
 ## Supervision and callback failure
 
-**Working decision 1, owner to confirm: isolate the processor, keep the group, no automatic restart.** (The
-downstream policy comment on #77 already keeps quarantine with no automatic retry or restart.)
+**Decision 1, owner confirmed: isolate the processor, keep the group, no automatic restart.** The same rule applies to
+the control graph: after a rule failure the group's control plane is DEAD (health DOWN) and its processors are fenced,
+never restarted.
 
 - A generated processor whose callback throws is quarantined: removed from every input reader, timers cancelled,
   instance and name retained, health and ERROR raised. The group keeps running the others. **[Implemented]** (row R3).
@@ -306,10 +309,9 @@ downstream policy comment on #77 already keeps quarantine with no automatic retr
 
 - No supervisor restarts a dead group. **[Implemented]** (no restart path exists).
 - Names and services it held stay reserved; `StopResult` lists the group and `controlGroupStatus` reports its state
-  and cleanup failures. **[Implemented]** for groups. The names and services held per dead group go into a **typed
-  `StopResult` replacement** (for example `HeldName(group, name, generation, reason)`), shipped in the same minor
-  release as the `ControlReply` shape change so clients migrate once. An "additive" record field would itself be a
-  shape break. **[Proposed: M4]**.
+  and cleanup failures. **[Implemented]** for groups. Held names are typed in `StopResult.heldNames`
+  (`HeldName(group, name, generation, reason)`), shipped in the same minor release as the `ControlReply` shape change
+  so clients migrate once **[Implemented: M4]**. Services stay in `servicesLeftRunning` (strings).
 
 ## Audit failure
 
@@ -320,8 +322,8 @@ later). Its replies are marked `UNVERIFIED` until the evidence is exported or ac
 
 | Audit | Policy | Today | Status |
 | --- | --- | --- | --- |
-| Control audit (`ControlAuditSink`) | Fail closed. A sink write failure marks the group DEGRADED (`evidenceDegraded()`, `controlGroupStatus(..).controlAuditDegraded()`, health check `group:<name>/control-audit`) and writes one `EvidenceDegraded` fallback record per degraded span. Every later reply carries `evidence = UNVERIFIED`; every request is still applied, stops and closes included. Exporting (`exportControlAudit`, admin `control.audit.export`) acknowledges the failures it exported; `acknowledgeControlAuditGap` / admin `control.audit.acknowledge` acknowledges without exporting. Either writes `EvidenceAcknowledged`; neither makes the evidence whole (`isComplete()` stays false, I21 still reports the span unverifiable) | Evidence side **[Implemented]** (`ControlAuditExportTest#sinkFailureSurvivesExportAndFalseCompleteClaimIsRejected`). DEGRADED, marker, health, acknowledgement, I21 **[Implemented: M3]** (`AuditFailurePolicyTest#theSinkDegradesOnceAndOnlyExportOrAcknowledgementEndsTheMarking`, `#aDegradedGroupAcceptsStopAndCloseAndMarksEveryReplyUnverified`, `#serverHealthAndStatusReportTheDegradedControlAudit`, control `#aHealthyGroupsTraceStillVerifies`). Ring overflow (dropped oldest records) keeps its existing meaning (export incomplete) and does not degrade the group, because the newest records, those of current replies, are kept |
-| Chronicle data capture | Fail open. A record write failure is counted and logged and never stops the processor or the capture; the first failure of each recording calls the group's observer (`AuditCaptureResources.observeWriteFailures`, a new default SPI method), which writes a `CaptureWriteFailed` control-audit record (`processorStopped: false`, kind `FAILED_EFFECT`) and raises the health check `group:<name>/audit-capture` (also raised by failed closes and detaches). It does not degrade the control audit | A failed capture effect fails the capture request, not the processor **[Implemented]** (`CaptureAsEffectsTest#anOpenThatFailsIsAnsweredFailedAndHoldsNothing`, `#anInstallThatFailsIsCompensated`); quarantine of a generated graph on a routed install/restore failure **[Implemented]** (`GeneratedProcessorFailureIsolationTest#routedChronicleInstallFailureQuarantinesGeneratedGraph`). Write-failure record, counter and health **[Implemented: M3]** (`AuditFailurePolicyTest#aCaptureWriteFailureNeverStopsTheProcessorButIsRecordedAndRaisesHealth`, through a fake resource). The Chronicle implementation's observer call has no test against a real failing queue |
+| Control audit (`ControlAuditSink`) | Fail closed. A sink write failure marks the group DEGRADED (`evidenceDegraded()`, `controlGroupStatus(..).controlAuditDegraded()`, health check `group:<name>/control-audit`) and writes one `EvidenceDegraded` fallback record per degraded span. Every later reply carries `evidence = UNVERIFIED` (`EvidenceStatus`); every request is still applied, stops and closes included. The marking reaches every reply about the group, including caller cancels and sweeps (a hook the group installs on each request at send) and the server's own refusals about the group (`stopProcessor`, `addProcessor`) **[Implemented: M4]** (`Review77bProbesTest#cancelledRequestDuringDegradedSpanIsMarkedUnverified`, `#serverAuthoredStopRefusalDuringDegradedSpanIsMarkedUnverified`). `NOT_DEGRADED` means only that the audit was not degraded when the reply was made: a record of the request written after the reply can still be lost (the export is then incomplete and never passes, `Review77bProbesTest#recordOfTheReplyingRequestLostAfterTheReplyIsDelivered`). Exporting (`exportControlAudit`, admin `control.audit.export`) acknowledges the failures it exported; `acknowledgeControlAuditGap` / admin `control.audit.acknowledge` acknowledges without exporting. Either writes `EvidenceAcknowledged`; neither makes the evidence whole (`isComplete()` stays false, I21 still reports the span unverifiable) | Evidence side **[Implemented]** (`ControlAuditExportTest#sinkFailureSurvivesExportAndFalseCompleteClaimIsRejected`). DEGRADED, marker, health, acknowledgement, I21 **[Implemented: M3]** (`AuditFailurePolicyTest#theSinkDegradesOnceAndOnlyExportOrAcknowledgementEndsTheMarking`, `#aDegradedGroupAcceptsStopAndCloseAndMarksEveryReplyUnverified`, `#serverHealthAndStatusReportTheDegradedControlAudit`, control `#aHealthyGroupsTraceStillVerifies`). Ring overflow (dropped oldest records) keeps its existing meaning (export incomplete) and does not degrade the group, because the newest records, those of current replies, are kept |
+| Chronicle data capture | Fail open. A record write failure is counted and logged and never stops the processor or the capture; the group registers its observer (`AuditCaptureResources.observeWriteFailures`, a new default SPI method) **before** installing, because the listener swap's own record is the recording's first write; the first failure of each recording is reported once, latched separately from the failure count, and reported on attach if it came first (`Review77bProbesTest#firstWriteFailureDuringInstallIsReported`, real Chronicle queue; `#realClosedChronicleQueueReportsCaptureWriteFailedAndKeepsTheProcessor`). If registering throws, the install still proceeds; the capture is recorded `CaptureUnobservable` and raises audit-capture health (`#throwingObserverRegistrationDoesNotFailASuccessfulInstall`). `observesWriteFailures()` (default false, and it stays a default method) tells whether a resource reports at all; one that does not is recorded `CaptureUnobservable` without raising health. The observer, which writes a `CaptureWriteFailed` control-audit record (`processorStopped: false`, kind `FAILED_EFFECT`) and raises the health check `group:<name>/audit-capture` (also raised by failed closes and detaches). `acknowledgeCaptureFailures` / admin `control.capture.acknowledge` clears that alert until a new failure; the failures stay listed and owned (review R10). It does not degrade the control audit | A failed capture effect fails the capture request, not the processor **[Implemented]** (`CaptureAsEffectsTest#anOpenThatFailsIsAnsweredFailedAndHoldsNothing`, `#anInstallThatFailsIsCompensated`); quarantine of a generated graph on a routed install/restore failure **[Implemented]** (`GeneratedProcessorFailureIsolationTest#routedChronicleInstallFailureQuarantinesGeneratedGraph`). Write-failure record, counter and health **[Implemented: M3]** (`AuditFailurePolicyTest#aCaptureWriteFailureNeverStopsTheProcessorButIsRecordedAndRaisesHealth`, through a fake resource). The Chronicle implementation's observer call has no test against a real failing queue |
 
 Policy execution never depends on the failed sink: fallback records and replies are written by the group, not by the
 audit listener **[Implemented]** (`ControlAuditSink` fallback stream).
@@ -363,8 +365,8 @@ and answers `FAILED_RULE` (`FailureKindFlowTest#aRuleThatThrowsIsAnsweredByTheDr
 | M1 | This document |
 | M2 | `FailureKind` on replies, effect results, `StopResult`, replay stops and audit records; oracle and harness keyed on kind; leftover marker |
 | M3 | Audit fail-closed: group `DEGRADED` on control-audit failure, `UNVERIFIED` marker on later replies, acknowledgement; capture fail-open record and health (done) |
-| M4 | Typed `StopResult` replacement listing names and services held by dead groups and quarantined processors; JSON group status; reply author on every record; typed replay-routing answer; fatal errors mark the group `DEAD` instead of exiting the JVM (opt-in exit) |
-| M5 | Fault-injection test API in a separate `mongoose-testing` artifact |
+| M4 | Done: `StopResult.heldNames` (typed held names of dead groups and quarantined processors); JSON group status; fatal errors contained by default (A1); dead control plane fenced and DOWN (R5). Not done: a reply author on every record; a typed replay-routing answer (still the `mismatch:` / `wait:` text protocol) |
+| M5 | Fault-injection test API in a separate `mongoose-testing` artifact (not started: needs a multi-module build) |
 | M6 | Oracle vacuity reporting (absence is not evidence); retry classification recorded on `ControlEffect` and checked |
 
 ## Open questions for the owner
@@ -374,9 +376,8 @@ typed `StopResult` replacement in the same release as the `ControlReply` break; 
 `mongoose-testing` artifact with `CaptureIo` kept in main as an SPI; record-shape breaks go in a minor version,
 documented.
 
-Still open:
+Confirmed after round 2: isolate the processor, no automatic restart, also for the control graph (health DOWN);
+refusing non-stop requests while DEGRADED may become a future opt-in, default off, never refusing stop, close or
+acknowledge; exiting on a fatal error is never the default (A1, implemented).
 
-1. Confirm working decision 1 (callback failure: isolate, no automatic restart) formally.
-2. Should refusal of non-stop requests by a DEGRADED group become an opt-in policy, and under what name?
-3. A1: is a process exit on a fatal group error ever wanted by default (for example when a process manager restarts
-   the JVM), or always opt-in?
+Still open: the name and scope of the future DEGRADED refusal opt-in.

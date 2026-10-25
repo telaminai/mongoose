@@ -173,6 +173,16 @@ class FailureKindFlowTest {
     }
 
     @Test
+    void jsonGroupStatusEscapesEveryString() {
+        var status = new com.telamin.mongoose.MongooseServer.ControlGroupStatus("g\"1", ControlDriver.GroupState.DEAD, 1, 2, 3,
+                java.util.Map.of(7L, "close \"failed\"\n"), java.util.Map.of(), java.util.Map.of("p", "x\\y"));
+        assertEquals("{\"group\":\"g\\\"1\",\"state\":\"DEAD\",\"outstandingRequests\":1,\"captureResourcesHeld\":2,"
+                + "\"captureResourceSlotsInUse\":3,\"captureCloseFailures\":{\"7\":\"close \\\"failed\\\"\\n\"},"
+                + "\"captureCleanupFailures\":{},\"quarantinedProcessors\":{\"p\":\"x\\\\y\"},"
+                + "\"controlAuditDegraded\":false,\"captureWriteFailures\":0}", status.toJson());
+    }
+
+    @Test
     void stopResultClassifiesItselfInTheSameTaxonomy() {
         assertEquals(FailureKind.NONE, StopResult.completed().failureKind());
         assertEquals(FailureKind.DETACHED, StopResult.handedOffToStopThread().failureKind());

@@ -85,6 +85,22 @@ mutations = [
         ("src/main/java/com/telamin/mongoose/StopResult.java",
          'return handedOff ? com.telamin.mongoose.control.event.FailureKind.DETACHED\n                : com.telamin.mongoose.control.event.FailureKind.FAILED_SHUTDOWN;',
          'return handedOff ? com.telamin.mongoose.control.event.FailureKind.FAILED_SHUTDOWN\n                : com.telamin.mongoose.control.event.FailureKind.DETACHED;', False)]),
+    # ---- round 3 (review of 69e5ef3): R1, R2, R3, R5, A1
+    ("observer-not-reported-when-attached-late", [
+        ("src/main/java/com/telamin/mongoose/internal/ChronicleAuditCaptureService.java",
+         'sink.useObserver(handle.writeFailureObserver);', 'sink.useObserver(null);', False)]),
+    ("observer-failure-fails-install", [(agent,
+        '} catch (Throwable failed) {\n            captureUnobservable.incrementAndGet();',
+        '} catch (IllegalArgumentException failed) {\n            captureUnobservable.incrementAndGet();', False)]),
+    ("cancel-replies-unmarked", [("src/main/java/com/telamin/mongoose/control/ControlRequest.java",
+        'if (marker != null) answer = marker.apply(answer);', '', False)]),
+    ("server-replies-unmarked", [("src/main/java/com/telamin/mongoose/MongooseServer.java",
+        'return runner != null && runner.group().control().audit().evidenceDegraded() ? reply.unverified() : reply;',
+        'return reply;', False)]),
+    ("dead-control-plane-not-fenced", [(agent, 'fenceDeadControlPlane();\n                idleCyclesCounter.increment();\n                return 0;',
+        'idleCyclesCounter.increment();', False)]),
+    ("contain-policy-exits", [("src/main/java/com/telamin/mongoose/dutycycle/GlobalErrorHandler.java",
+        'if (policy == FatalErrorPolicy.EXIT_PROCESS) {', 'if (policy != null) {', False)]),
     ("replay-identity-kind-dropped", [(replayer,
         'failed = "no stream was recorded for " + cursor.name;    // loud, never an instantly complete cursor\n'
         '                    failedKind = FailureKind.REPLAY_IDENTITY_MISMATCH;',
@@ -94,8 +110,9 @@ mutations = [
 tests = ",".join(["ControlScenarioHarnessTest", "IndependentEvidenceMutationTest", "FailureKindEvidenceMutationTest",
                   "FailureKindFlowTest", "FailureKindQuarantineTest", "CaptureAsEffectsTest",
                   "GeneratedProcessorFailureIsolationTest", "ReplayIdentityTest", "IndependentReviewReplayProbesTest",
-                  "ControlTerminationAndAdmissionTest", "BoundedShutdownTest", "Review77ProbesTest"])
-cmd = ["mvn", "-o", "-Dtest=" + tests, "-Dmongoose.harness.seedStart=12001", "-Dmongoose.harness.seedCount=20", "test"]
+                  "ControlTerminationAndAdmissionTest", "BoundedShutdownTest", "Review77ProbesTest",
+                  "Review77bProbesTest", "GroupContainmentTest", "AuditFailurePolicyTest"])
+cmd = ["mvn", "-o", "-Dtest=" + tests, "-Dmongoose.harness.seedStart=12001", "-Dmongoose.harness.seedCount=100", "test"]
 results = []
 
 
