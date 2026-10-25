@@ -175,6 +175,41 @@ class GroupContainmentTest {
         }
     }
 
+    /**
+     * External review 3: a failed boot whose cleanup cannot complete (here the generated processor whose start failed is
+     * quarantined, so shutdown stays incomplete by design) hands the caller the server in a typed exception, with the
+     * original failure as the cause and the held name reported.
+     */
+    @Test
+    void aFailedBootWhoseCleanupIsIncompleteHandsTheServerToTheCaller() throws Exception {
+        String yaml = """
+                shutdownTimeoutMillis: 300
+                eventHandlers:
+                  - agentName: good
+                    eventHandlers:
+                      g:
+                        eventHandler: !!%s {}
+                  - agentName: bad
+                    eventHandlers:
+                      b:
+                        eventHandler: !!%s {}
+                """.formatted(com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest.TrackedProcessor.class.getName(),
+                com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest.FailedStart.class.getName());
+        var failed = org.junit.jupiter.api.Assertions.assertThrows(com.telamin.mongoose.BootFailedException.class,
+                () -> MongooseServer.bootServer(new java.io.StringReader(yaml), r -> { }));
+        try {
+            assertTrue(String.valueOf(failed.getCause()).contains("server start failed") && String.valueOf(failed.getCause())
+                    .contains("[bad]"), "the original boot failure is the cause: " + failed.getCause());
+            assertTrue(!failed.stopResult().complete(), failed.stopResult().toString());
+            assertEquals(java.util.List.of("bad/b"), failed.stopResult().heldNames().stream()
+                    .map(h -> h.group() + "/" + h.name()).toList(), failed.stopResult().toString());
+            assertTrue(failed.server().controlGroupStatus("bad").quarantinedProcessors().containsKey("b"),
+                    "the caller now owns the partly started server");
+        } finally {
+            failed.server().shutdown();
+        }
+    }
+
     /** rc1 review N1 (evidence part): the quarantine reason of an opaque dispatch carries the real cause. */
     @Test
     void anOpaqueDispatchFailureNamesItsCause() {

@@ -27,8 +27,15 @@ Read this before regenerating with the public `fluxtion-builder` 1.0.80.
   every regeneration posts the graph to the hosted generator. Its default host is
   `https://fluxtion-source-gen.p.rapidapi.com` (override with `fluxtion.remote.host`). Checked against the
   `fluxtion-builder-1.0.80.jar` classes.
-- **What is sent.** The serialized graph model includes the values of **all** node fields, private ones too. They are
-  readable by the hosted service. HTTPS protects them in transit to the default host; nothing else encrypts them.
+- **What is sent.** The serialized graph model carries node field values as captured by builder-api 1.1.3
+  `FieldValueCapture`. **Private** field values are captured. Static, transient, synthetic and author-excluded fields
+  are not. Values can still reach the model by other routes, such as constructor arguments rendered as strings or
+  custom serialization, so exclusion is not a guarantee of secrecy. Everything sent is readable by the hosted service.
+  HTTPS protects it in transit to the default host; nothing else encrypts it (`BuilderDisclosureTest` checks the
+  capture rules).
+- **Source generation is a separate step.** After the model, the builder chooses a source generator and backend
+  (`fluxtion.sourceGeneratorId`, or `ServiceLoader` discovery). The model-provider order above does not by itself
+  describe the whole route.
 - **Keep secrets out of node fields.** Supply credentials and other secrets at runtime instead:
   `registerService(new Service<>(...))` received by an `@ServiceRegistered` method, or `injectInstance`.
 - **The API key.** `fluxtion.apiKey` travels only in the `X-RapidAPI-Key` request header.

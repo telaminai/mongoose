@@ -110,6 +110,9 @@ public final class ControlInvariants {
                             + " without a kind: " + r);
                 } else if (kind == FailureKind.NONE && !"APPLIED".equals(r.type())) {
                     violations.add("I20 " + r.type() + " record classified NONE: " + r);
+                } else if (fallbackReply && "APPLIED".equals(r.type()) && kind != FailureKind.NONE) {
+                    // APPLIED <=> NONE holds for fallback replies too (external review 4)
+                    violations.add("I20 APPLIED fallback reply classified " + kind + ": " + r);
                 }
             }
             for (Rec r : evidence.ofType("Reply")) {

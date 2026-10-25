@@ -1023,13 +1023,22 @@ close receive a refusal instead of waiting for a processor that can no longer di
 
 There is no automatic restart, flag reset, callback replay, or operator acknowledgement that converts unknown
 cleanup into success. Preserve the audit and application state and use the deployment's incident procedure.
-The failed input may already have produced partial external effects. Healthy subscribers can still receive that
-input once; this is not transactional rollback. A custom dispatcher that reports no failed position (an opaque
-strategy) is still resolved through the processor captured at throw time (issue #77, rc1 review N1): a handwritten
-thrower is retried under the legacy whole-dispatch policy and never quarantines a generated peer, and a generated
-thrower is quarantined alone. Only a strategy that also records no processor (it bypasses the base dispatch loop)
-leaves the target unidentifiable; the group then ends with a `ProcessorDispatchException` saying so, and no peer is
-quarantined.
+The failed input may already have produced partial external effects. Healthy subscribers receive that input at most
+once: a subscriber that already handled it is never given it again. This is not transactional rollback.
+
+A custom dispatcher that reports no failed position (an opaque strategy) is resolved through the processor and dispatch
+position the base dispatch loop captures at throw time (issue #77, rc1 review N1 and external review 1):
+
+- A handwritten thrower is retried alone under the retry policy, resumed at its position. It never quarantines a
+  generated peer.
+- A generated thrower is quarantined alone, and dispatch resumes with the subscribers after it.
+- Subscribers before the thrower, which handled the input, never receive it again.
+- If a strategy records the thrower but not its position, the thrower is still contained (a generated one is
+  quarantined) and the input is skipped for the remaining subscribers rather than redispatched.
+- A strategy that records nothing (it bypasses the base dispatch loop) leaves the target unidentifiable. With a
+  generated subscriber on the reader, the group ends with a `ProcessorDispatchException` saying so, and no peer is
+  quarantined. With handwritten subscribers only, it keeps the pre-#53 whole-dispatch retry, which can redeliver to
+  peers.
 
 An admin cycle refused before its command action remains a command refusal. The runtime's `runInEventCycle`
 already clears its processing flag in `finally`; a custom override that executes other graph calls before entering

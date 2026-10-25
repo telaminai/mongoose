@@ -33,8 +33,13 @@ thread and can race whatever the caller is doing. Embedders with their own error
 
 Other groups keep serving.
 
-**A failed `bootServer` stops what it started, then throws.** The partial server's `StopResult` is attached as a
-suppressed exception, so under CONTAIN nothing is left running once the caller's `main` returns.
+**A failed `bootServer` stops what it started, then throws.**
+
+- If that cleanup completes, the original failure is rethrown with the cleanup's `StopResult` as a suppressed
+  exception, so under CONTAIN nothing is left running once the caller's `main` returns.
+- If it does not complete (for example, a quarantined processor or a blocked stop), `bootServer` throws
+  `BootFailedException`. Its cause is the original failure, and it carries `stopResult()` and `server()`. The caller
+  then owns what is still running: call `server().shutdown()` again or exit.
 
 **Behaviour.**
 
@@ -59,10 +64,13 @@ suppressed exception, so under CONTAIN nothing is left running once the caller's
 - The dead-control-plane fence covers inputs and timers delivered by the group. It cannot stop other threads calling
   a processor's exported services directly. Fenced readers keep their queued backlog until the group closes.
 - Opaque dispatch strategies (`failedPosition() == -1`): the processor whose handler threw is captured at throw time
-  (`ProcessorContext.recordFailedProcessor`, called by `AbstractEventToInvocationStrategy`). A handwritten failure is
-  retried under the legacy policy and no longer quarantines generated peers or ends the group; a generated thrower is
-  quarantined alone. A strategy that records no processor ends the group without quarantining any peer.
-  `ProcessorDispatchException` messages include their cause.
+  with its dispatch position (`ProcessorContext.recordFailedProcessor`, called by `AbstractEventToInvocationStrategy`).
+  - A handwritten thrower is retried alone, resumed at its position.
+  - A generated thrower is quarantined alone and dispatch resumes after it.
+  - A subscriber that already handled the event never receives it again.
+  - A strategy that records no processor ends the group without quarantining any peer (handwritten-only readers keep
+    the pre-#53 whole retry).
+  - `ProcessorDispatchException` messages include their cause.
 - Regenerating with the public `fluxtion-builder` uses the hosted generator by default; see the
   [client migration checklist](client-migration-1.0.33.md#regenerating-through-the-public-builder).
 - Verify each control-audit export separately: concatenating an rc1 export with a newer one makes the result a

@@ -67,8 +67,10 @@ import java.util.function.Supplier;
  * <b>Generated processors</b> ({@code InternalEventProcessor}) are handled differently from the list below: after
  * any non-VM callback failure they are quarantined (fenced from inputs and timers, never retried, never stopped or
  * torn down, name retained, shutdown incomplete), see the contracts' "Generated processor failure containment". A
- * {@code ProcessorDispatchException} can escape to the agent error handler when the failed target cannot be identified
- * (an opaque dispatcher quarantines every generated subscriber on that reader and ends the group).
+ * {@code ProcessorDispatchException} can escape to the agent error handler only when the failed target cannot be
+ * identified at all (a strategy that neither reports a failed position nor lets the base dispatch loop record the
+ * thrower): the group then ends and no subscriber is quarantined. An opaque strategy that uses the base loop is
+ * resolved to the one thrower, and no peer that already handled the event is given it again.
  * The list describes handwritten {@code DataFlow} processors.
  * <p>
  * One processor's failure is kept from the group's agent error handler (under bootServer, {@code GlobalErrorHandler},
@@ -214,6 +216,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         private volatile Object handle;
         private volatile String closeFailure;
         private volatile String detachFailure;
+        /** Occurrence ids of the current close and detach failures (external review 2): acknowledged by id, not resource. */
+        private volatile long closeFailureSeq;
+        private volatile long detachFailureSeq;
         void release() {
             if (held.compareAndSet(true, false)) {
                 handle = null;
@@ -445,7 +450,10 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     private void captureDetachFailed(long id, Throwable failure) {
         captureDetachFailures.add(id);
         CaptureResourcePermit permit = captureResourcePermits.get(id);
-        if (permit != null) permit.detachFailure = String.valueOf(failure);
+        if (permit != null) {
+            permit.detachFailure = String.valueOf(failure);
+            permit.detachFailureSeq = captureFailureOccurrences.incrementAndGet();
+        }
         signalCaptureResourceCompletion();
     }
 
@@ -1242,7 +1250,10 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             return new CaptureCompletion(root, op, completionIds.incrementAndGet(), CaptureCompletion.Kind.CLOSED, resourceId, null);
         } catch (Throwable t) {
             CaptureResourcePermit permit = captureResourcePermits.get(resourceId);
-            if (permit != null) permit.closeFailure = String.valueOf(t);
+            if (permit != null) {
+                permit.closeFailure = String.valueOf(t);
+                permit.closeFailureSeq = captureFailureOccurrences.incrementAndGet();
+            }
             signalCaptureResourceCompletion();
             return new CaptureCompletion(root, op, completionIds.incrementAndGet(), CaptureCompletion.Kind.CLOSE_FAILED,
                     resourceId, String.valueOf(t));
@@ -1382,7 +1393,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
 
     private volatile long acknowledgedWriteFailures;
     private volatile long acknowledgedUnobservable;
-    private final java.util.Set<Long> acknowledgedCaptureFailureIds = ConcurrentHashMap.newKeySet();
+    /** Every close or detach failure gets a new occurrence id; acknowledgement covers the ids issued so far. */
+    private final AtomicLong captureFailureOccurrences = new AtomicLong();
+    private volatile long acknowledgedFailureOccurrence;
 
     /**
      * Acknowledge the capture failures known now (review R10): the audit-capture alert clears until a new one occurs.
@@ -1392,22 +1405,27 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     public void acknowledgeCaptureFailures() {
         acknowledgedWriteFailures = captureWriteFailures.get();
         acknowledgedUnobservable = captureUnobservable.get();
-        acknowledgedCaptureFailureIds.addAll(captureCloseFailures().keySet());
-        acknowledgedCaptureFailureIds.addAll(captureCleanupFailures().keySet());
+        // occurrences, not resource ids (external review 2): a later failure of the same resource, in any phase, gets a
+        // new id and is unacknowledged; the bookkeeping lives on the permit, so it ends with the resource's ownership
+        acknowledgedFailureOccurrence = captureFailureOccurrences.get();
         control.audit().fallback("CaptureFailuresAcknowledged", "group", roleName(),
                 "writeFailures", acknowledgedWriteFailures, "unobservable", acknowledgedUnobservable,
-                "resources", acknowledgedCaptureFailureIds.toString());
+                "failureOccurrences", acknowledgedFailureOccurrence);
     }
 
     /** Capture failures not yet acknowledged, described for health; null when there are none. */
     public String unacknowledgedCaptureFailures() {
         long writes = captureWriteFailures.get() - acknowledgedWriteFailures;
         long unobservable = captureUnobservable.get() - acknowledgedUnobservable;
-        long closes = captureCloseFailures().keySet().stream().filter(id -> !acknowledgedCaptureFailureIds.contains(id)).count();
-        long cleanups = captureCleanupFailures().keySet().stream().filter(id -> !acknowledgedCaptureFailureIds.contains(id)).count();
+        long acked = acknowledgedFailureOccurrence;
+        long closes = 0, cleanups = 0;
+        for (CaptureResourcePermit permit : captureResourcePermits.values()) {
+            if (permit.closeFailure != null && permit.closeFailureSeq > acked) closes++;
+            if (permit.detachFailure != null && permit.detachFailureSeq > acked) cleanups++;
+        }
         if (writes + unobservable + closes + cleanups == 0) return null;
         return "unacknowledged capture failures: writes=" + writes + " unobservable=" + unobservable + " closes=" + closes
-                + " cleanups=" + cleanups + " (processors keep running)";
+                + " detaches=" + cleanups + " (processors keep running)";
     }
 
     /** Installs whose write failures could not be observed because registering the observer threw. */

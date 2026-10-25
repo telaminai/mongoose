@@ -188,10 +188,22 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                     } catch (VirtualMachineError fatal) {
                         throw fatal;        // OutOfMemoryError, StackOverflowError, ...: never retried or swallowed (as #57)
                     } catch (Throwable t) {
-                        // the processor whose handler threw, captured at throw time by the strategy (rc1 review N1)
-                        DataFlow thrower = com.telamin.mongoose.dispatch.ProcessorContext.takeFailedProcessor();
+                        // the processor whose handler threw and its dispatch position, captured at throw time by the
+                        // strategy (rc1 review N1)
+                        var captured = com.telamin.mongoose.dispatch.ProcessorContext.takeFailure();
+                        DataFlow thrower = captured == null ? null : captured.processor();
                         int at = wholeFailed ? -1 : eventToInvokeStrategy.failedPosition();
                         DataFlow failed = at < 0 ? null : eventToInvokeStrategy.failedProcessor();
+                        if (at < 0 && !wholeFailed && thrower != null && captured.position() >= 0) {
+                            boolean present;
+                            synchronized (subscribed) { present = subscribed.contains(thrower); }
+                            if (present) {
+                                // an opaque strategy's progress is known from the capture: resume at the thrower, so a
+                                // processor that already handled the event is never given it again (external review 1)
+                                at = captured.position();
+                                failed = thrower;
+                            }
+                        }
                         if (at < 0) {
                             // legacy: the whole dispatch is the unit of retry. D4: a retry is a failure; the recording is
                             // marked for every target, not continued as if nothing happened (the recorder never throws)
@@ -254,11 +266,11 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                             }
                             if (drainDisabled) return processed + 1; // finally releases this input; close owns backlog
                             if (at < 0) {
-                                // opaque strategy: the remaining subscribers get the event again under the legacy whole-
-                                // dispatch retry (peers that already handled it may see it twice, as before #53)
-                                from = 0;
-                                failingAt = -1;
-                                attempt = 0;
+                                // the thrower is known but not the dispatch progress: never redispatch to peers that may
+                                // already have handled the event; the event is skipped for the rest (external review 1)
+                                logger.warning("event skipped for the remaining subscribers after quarantining " + identified
+                                        + ": the dispatch progress is unknown, so no peer is given it again; agent=" + name);
+                                done = true;
                                 continue;
                             }
                             // Isolation removes this target from the strategy. Its successor shifts into this index.

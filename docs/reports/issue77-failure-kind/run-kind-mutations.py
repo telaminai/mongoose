@@ -120,6 +120,20 @@ mutations = [
         'if (agentGroup != null) return com.telamin.mongoose.service.health.HealthStatus.up();', False)]),
     ("contain-log-not-rate-limited", [("src/main/java/com/telamin/mongoose/dutycycle/GlobalErrorHandler.java",
         'if (state[0] != Long.MIN_VALUE && now - state[0] < REPEAT_LOG_INTERVAL_MILLIS) {', 'if (false) {', False)]),
+    # ---- external review of 2fa536c
+    ("opaque-progress-ignored-and-redispatched", [
+        ("src/main/java/com/telamin/mongoose/dutycycle/EventQueueToEventProcessorAgent.java",
+         'at = captured.position();\n                                failed = thrower;', '', False),
+        ("src/main/java/com/telamin/mongoose/dutycycle/EventQueueToEventProcessorAgent.java",
+         'done = true;\n                                continue;', 'from = 0; failingAt = -1; attempt = 0;\n                                continue;', False)]),
+    ("capture-ack-hides-later-close-failure", [(agent,
+        'if (permit.closeFailure != null && permit.closeFailureSeq > acked) closes++;',
+        'if (permit.closeFailure != null && false) closes++;', False)]),
+    ("i20-applied-fallback-unchecked", [("src/test/java/com/telamin/mongoose/control/validation/ControlInvariants.java",
+        '} else if (fallbackReply && "APPLIED".equals(r.type()) && kind != FailureKind.NONE) {',
+        '} else if (false) {', False)]),
+    ("incomplete-boot-cleanup-untyped", [("src/main/java/com/telamin/mongoose/internal/ServerConfigurator.java",
+        'if (stopped != null && stopped.complete()) {', 'if (true) {', False)]),
     ("replay-identity-kind-dropped", [(replayer,
         'failed = "no stream was recorded for " + cursor.name;    // loud, never an instantly complete cursor\n'
         '                    failedKind = FailureKind.REPLAY_IDENTITY_MISMATCH;',
@@ -132,7 +146,8 @@ tests = ",".join(["ControlScenarioHarnessTest", "IndependentEvidenceMutationTest
                   "ControlTerminationAndAdmissionTest", "BoundedShutdownTest", "Review77ProbesTest",
                   "Review77bProbesTest", "GroupContainmentTest", "AuditFailurePolicyTest",
                   "OpaqueDispatchHandwrittenFailureTest", "Review77cProbesTest", "CaptureMigrationAcceptanceTest",
-                  "AdminStopCommandValidationTest"])
+                  "AdminStopCommandValidationTest", "OpaquePeerRedeliveryTest", "OpaqueHandwrittenPeerTest",
+                  "CaptureAcknowledgementTest", "FallbackKindInvariantTest", "FailedBootContainmentTest"])
 cmd = ["mvn", "-o", "-Dtest=" + tests, "-Dmongoose.harness.seedStart=12001", "-Dmongoose.harness.seedCount=100", "test"]
 results = []
 

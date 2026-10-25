@@ -122,6 +122,24 @@ class FailureKindEvidenceMutationTest {
         assertTrue(has(check(audit(trace)), "I20"));
     }
 
+    /**
+     * External review 4: every fallback reply outcome against every kind. A fallback reply is valid only when it is
+     * APPLIED with NONE, or not APPLIED with a non-NONE kind.
+     */
+    @Test
+    void everyFallbackOutcomeAndKindCombinationIsJudgedByI20() {
+        for (String outcome : new String[]{"APPLIED", "FAILED", "REFUSED", "NOT_RUNNING", "Failed", "Refused", "NotRunning"}) {
+            for (com.telamin.mongoose.control.event.FailureKind kind : com.telamin.mongoose.control.event.FailureKind.values()) {
+                String text = "---\ncontrolFallback: {record: " + outcome + ", fallbackSeq: 1, group: g, requestId: 99, kind: "
+                        + kind + "}\n";
+                ControlInvariants.Result result = check(text);
+                boolean applied = outcome.equals("APPLIED");
+                boolean valid = applied == (kind == com.telamin.mongoose.control.event.FailureKind.NONE);
+                assertTrue(valid != has(result, "I20"), outcome + "/" + kind + " -> " + result);
+            }
+        }
+    }
+
     /** I1: a name-only stop is resolved to the generation live under the name, with no rule name involved. */
     @Test
     void aCaptureInstalledAfterANameOnlyStopIsRejectedWithoutRuleNames() {

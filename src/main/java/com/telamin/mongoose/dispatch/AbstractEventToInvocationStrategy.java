@@ -118,8 +118,8 @@ public abstract class AbstractEventToInvocationStrategy implements EventToInvoke
             try {
                 dispatchEvent(event, eventProcessor);
             } catch (Throwable thrown) {
-                // captured at throw time, whatever failedPosition() reports (rc1 review N1)
-                ProcessorContext.recordFailedProcessor(eventProcessor);
+                // captured at throw time with the dispatch progress, whatever failedPosition() reports (rc1 review N1)
+                ProcessorContext.recordFailedProcessor(eventProcessor, i);
                 throw thrown;
             } finally {
                 ProcessorContext.removeCurrentProcessor();
@@ -157,8 +157,8 @@ public abstract class AbstractEventToInvocationStrategy implements EventToInvoke
             try {
                 dispatchEvent(event, eventProcessor);
             } catch (Throwable thrown) {
-                // captured at throw time, whatever failedPosition() reports (rc1 review N1)
-                ProcessorContext.recordFailedProcessor(eventProcessor);
+                // captured at throw time with the dispatch progress, whatever failedPosition() reports (rc1 review N1)
+                ProcessorContext.recordFailedProcessor(eventProcessor, i);
                 throw thrown;
             } finally {
                 ProcessorContext.removeCurrentProcessor();
