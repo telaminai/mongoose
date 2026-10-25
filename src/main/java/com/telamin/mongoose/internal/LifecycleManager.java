@@ -36,8 +36,10 @@ public final class LifecycleManager {
     private final Set<Thread> stopHelpers = ConcurrentHashMap.newKeySet();
     private final Map<Thread, Throwable> helperFailures = new ConcurrentHashMap<>();
     /** A stop may first ask an in-progress synchronous startup callback to return. */
-    private volatile Runnable cancelStartup;
+    private record StartupCancellation(Runnable action, Service<?> service) { }
+    private volatile StartupCancellation cancelStartup;
     private Thread startupCancellation;
+    private String cancelledStartupService;
     /**
      * Runners whose thread has been started (review of #69). Agrona's losing {@code run()} still marks the runner closed,
      * so a second start of the same runner would report it closed while its real thread runs.
@@ -111,7 +113,7 @@ public final class LifecycleManager {
         // Start non-LifeCycleEventSource services
         registeredServices.values().forEach(svc -> {
             if (!(svc.instance() instanceof LifeCycleEventSource)) {
-                startStep(svc::start, svc::stop);
+                startStep(svc::start, svc::stop, svc);
             }
         });
         // Start flow manager
@@ -139,7 +141,7 @@ public final class LifecycleManager {
         log.info("calling startup complete on services");
         for (Service<?> service : registeredServices.values()) {
             if (!registeredAgentServices.contains(service)) {
-                startStep(service::startComplete, service::stop);
+                startStep(service::startComplete, service::stop, service);
             }
         }
         // Notify start complete on agent groups
@@ -165,10 +167,14 @@ public final class LifecycleManager {
     }
 
     private void startStep(Runnable effect, Runnable cancel) {
+        startStep(effect, cancel, null);
+    }
+
+    private void startStep(Runnable effect, Runnable cancel, Service<?> service) {
         startupLock.lock();
         try {
             requireStarting();
-            cancelStartup = cancel;
+            cancelStartup = cancel == null ? null : new StartupCancellation(cancel, service);
             try {
                 // A stop may have won between the first check and publishing the cancellation hook.
                 requireStarting();
@@ -319,13 +325,28 @@ public final class LifecycleManager {
         // 1. fence startup. Signal outside the lock: a callback may need stop() to unblock. Once it returns, holding the
         // lock means the last synchronous startup effect has returned, and all later ones see stopped == true
         if (!progress.fenced) {
-            Runnable cancel = cancelStartup;
+            StartupCancellation cancel = cancelStartup;
             if (cancel != null && startupCancellation == null) {
-                startupCancellation = helper(cancel, "mongoose-cancel-startup");
+                Service<?> owner = cancel.service();
+                // A replacement may reuse the name. A cancellation can stand for only this exact service's stop.
+                cancelledStartupService = owner != null && registeredServices.get(owner.serviceName()) == owner
+                        ? owner.serviceName() : null;
+                startupCancellation = helper(cancel.action(), "mongoose-cancel-startup");
+                if (cancelledStartupService != null) {
+                    // Cancellation is this service's stop attempt, even when it fails. Reuse the same result in the
+                    // final service phase instead of either stranding all other cleanup or invoking stop twice.
+                    progress.helpers.put("service-stop:" + cancelledStartupService, startupCancellation);
+                }
             }
             if (startupCancellation != null && !join(startupCancellation, deadline)) {
-                return com.telamin.mongoose.StopResult.incomplete("startup cancellation has not returned",
-                        new java.util.ArrayList<>(composingEventProcessorAgents.keySet()), servicesNotStopped(registeredServices));
+                if (startupCancellation.isAlive() || cancelledStartupService == null) {
+                    String reason = startupCancellation.isAlive() ? "startup cancellation has not returned"
+                            : "startup cancellation failed for an untracked source/service: " + helperFailures.get(startupCancellation);
+                    return com.telamin.mongoose.StopResult.incomplete(reason,
+                            new java.util.ArrayList<>(composingEventProcessorAgents.keySet()), servicesNotStopped(registeredServices));
+                }
+                // A failed service cancellation has ended. Once startup is fenced, other groups and services can
+                // still be released; the failed helper remains the named service's incomplete stop outcome.
             }
             boolean fenced = false;
             try {
