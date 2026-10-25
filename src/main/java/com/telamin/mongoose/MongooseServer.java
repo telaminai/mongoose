@@ -154,6 +154,8 @@ public class MongooseServer implements MongooseServerController {
     private volatile Throwable auditStopFailure;
     /** Design PR 4: service lifecycle is server-owned; registry changes and their broadcasts happen in one order. */
     private final java.util.concurrent.locks.ReentrantLock serviceLock = new java.util.concurrent.locks.ReentrantLock();
+    /** Identity claims held only during a retirement's physical stop; guarded by serviceLock with name admission. */
+    private final Map<Object, Integer> retirementStops = new java.util.IdentityHashMap<>();
     /** A handle is scoped to this server, since group generations are local counters. */
     private final Object processorHandleOwner = new Object();
     /** Reply completion runs off agent threads; late synchronous dependents run on their attaching thread. */
@@ -702,6 +704,10 @@ public class MongooseServer implements MongooseServerController {
 
     private void reserveServiceName(Service<?> service) {
         String serviceName = service.serviceName();
+        if (retirementStops.containsKey(service.instance())) {
+            throw new com.telamin.mongoose.exception.ServiceRegistrationException(
+                    "cannot register service instance while its retirement stop is running:" + serviceName);
+        }
         log.info("registerService:" + service);
         // mongoose#60: reserve the name atomically, so of two concurrent registrations exactly one wins
         if (registeredServices.putIfAbsent(serviceName, service) != null) {
@@ -906,7 +912,8 @@ public class MongooseServer implements MongooseServerController {
      * resources. Retain that exact incarnation for one final stop even when its earlier retirement completed.
      */
     public Map<String, Service<?>> includeFinalStartupCleanup(Map<String, Service<?>> services, Service<?> owner) {
-        if (services.get(owner.serviceName()) == owner) return services;
+        Service<?> live = services.get(owner.serviceName());
+        if (live != null && live.instance() == owner.instance()) return services;
         Map<String, Service<?>> out = new java.util.LinkedHashMap<>(services);
         RemovedService retired = null;
         for (var entry : services.entrySet()) {
@@ -975,14 +982,26 @@ public class MongooseServer implements MongooseServerController {
             // A shutdown helper must also wait for an already-running callback, not merely see that it was claimed.
             if (stopped) return;
             if (stopFailure != null) throw new IllegalStateException("removed service stop previously failed", stopFailure);
-            Service<?> live = registeredServices.get(service.serviceName());
-            if (live != null && live.instance() == service.instance()) {
-                // the exact instance was registered again: the live registry owns it now, so this retirement is
-                // superseded and must not stop it (failure-mode hunt, FM-1)
+            boolean superseded;
+            serviceLock.lock();
+            try {
+                Service<?> live = registeredServices.get(service.serviceName());
+                superseded = live != null && live.instance() == service.instance();
+                if (superseded) {
+                    // Re-registration won before physical stop was claimed: the live registry owns this instance.
+                    stopped = true;
+                    removedServices.remove(id, this);
+                } else {
+                    // Name admission uses this same lock. Once claimed, re-registering this exact instance is refused
+                    // until the callback returns, including registration under another name. Other instances proceed.
+                    retirementStops.merge(service.instance(), 1, Integer::sum);
+                }
+            } finally {
+                serviceLock.unlock();
+            }
+            if (superseded) {
                 log.info("retirement of service '" + service.serviceName() + "' superseded: the same instance is registered"
                         + " again, and is not stopped");
-                stopped = true;
-                removedServices.remove(id, this);
                 return;
             }
             try {
@@ -990,6 +1009,13 @@ public class MongooseServer implements MongooseServerController {
             } catch (Throwable failure) {
                 stopFailure = failure;
                 throw failure;
+            } finally {
+                serviceLock.lock();
+                try {
+                    retirementStops.computeIfPresent(service.instance(), (instance, count) -> count == 1 ? null : count - 1);
+                } finally {
+                    serviceLock.unlock();
+                }
             }
             stopped = true;
             removedServices.remove(id, this);
