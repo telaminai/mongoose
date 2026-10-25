@@ -166,22 +166,18 @@ public class CaptureRules extends EventLogNode {
                 state.retain(req);
                 out.add(tracked(new ControlEffect.CloseCapture(close, req, reg.generation, reg.name, reg.captureResource)));
                 reg.captureCloseOp = close;
-                pendingCleanup.add(close);
             }
             case OPENING -> {
                 pendingCleanup.add(reg.captureOp);
-                // an earlier capture's close may still be with the closer: outstanding too (FM-4)
-                if (reg.captureCloseOp != null) pendingCleanup.add(reg.captureCloseOp);
                 out.addAll(cancelOpen(reg, "generation " + reg.generation + " released before the capture opened"));
             }
-            case CLOSING -> {
-                // its close is already with the closer: outstanding, and the stop does not wait for it
-                if (reg.captureCloseOp != null) pendingCleanup.add(reg.captureCloseOp);
-            }
             default -> {
-                // OFF
+                // OFF or CLOSING: earlier closes are enumerated below.
             }
         }
+        // Resource entries outlive the latest capture sub-state and are removed on close completion.
+        // This covers every old close even while a successor is Recording, Opening or already Off.
+        pendingCleanup.addAll(state.pendingCaptureCloses(reg.generation));
         return out;
     }
 
@@ -441,6 +437,10 @@ public class CaptureRules extends EventLogNode {
             default -> -1;
         };
         state.trackEffectResource(effect.opId(), resourceId);
+        if (effect instanceof ControlEffect.CloseCapture) {
+            Resource resource = state.resource(resourceId);
+            if (resource != null) resource.closeOp = effect.opId();
+        }
         return effect;
     }
 
