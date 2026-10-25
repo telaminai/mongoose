@@ -1208,6 +1208,7 @@ public class MongooseServer implements MongooseServerController {
         } finally {
             read.unlock();
         }
+        refuseIfNotAdmitted(request, "event processor '" + processorName + "' was not added to group '" + groupName + "'");
         // design PR 3: wait for the outcome where waiting is safe; a timeout detaches, the add still applies
         com.telamin.mongoose.control.ControlReply reply = awaitWhereSafe(groupName, request, deadline);
         if (reply == null || reply.applied()) {
@@ -1230,7 +1231,7 @@ public class MongooseServer implements MongooseServerController {
     /**
      * Add a processor and return its outcome without waiting for it (design "Agent threads and replies"). Never throws
      * for a duplicate name, a stopping server or a full mailbox: the reply says {@code REFUSED} or {@code NOT_RUNNING}.
-     * Admission into a full mailbox may back off, off agent threads, up to the group's full-mailbox timeout first. Admitted requests'
+     * Admission never backs off for mailbox capacity; a full mailbox is refused at once. Admitted requests'
      * stages complete off agent threads; refusals may already be completed. Use asynchronous continuations for
      * blocking work: a synchronous dependent attached after
      * completion executes on the attaching thread, as specified by CompletionStage.
@@ -1316,6 +1317,16 @@ public class MongooseServer implements MongooseServerController {
 
     /** How long a void control method waits for its outcome before detaching (the request still applies). */
     static final long CONTROL_WAIT_MILLIS = 10_000;
+
+    /** A void call whose request missed its deadline at admission throws, as one refused for a full mailbox does. */
+    private static void refuseIfNotAdmitted(com.telamin.mongoose.control.ControlRequest request, String what) {
+        if (request == null) return;
+        com.telamin.mongoose.control.ControlReply reply = request.reply().getNow(null);
+        if (reply != null && reply.outcome() == com.telamin.mongoose.control.event.ReplyOutcome.REFUSED
+                && reply.reason() != null && reply.reason().startsWith("not admitted within its deadline")) {
+            throw new IllegalStateException(what + ": " + reply.reason());
+        }
+    }
 
     private com.telamin.mongoose.control.ControlReply awaitWhereSafe(String groupName,
                                                                      com.telamin.mongoose.control.ControlRequest request,
@@ -1463,24 +1474,44 @@ public class MongooseServer implements MongooseServerController {
         return new com.telamin.mongoose.internal.ChronicleAuditCaptureService.CaptureRouter() {
             @Override
             public com.telamin.mongoose.control.ControlRequest send(String processorName, boolean start) {
-                for (var entry : reservedProcessorNames.entrySet()) {
-                    if (!entry.getKey().name().equals(processorName)) continue;
-                    var runner = composingEventProcessorAgents.get(entry.getKey().group());
-                    if (runner == null) continue;
-                    return start ? runner.group().auditStart(processorName, entry.getValue())
-                            : runner.group().auditStop(processorName, entry.getValue());
-                }
-                return null;
+                var entry = admitted(processorName);
+                if (entry == null) return null;
+                var runner = composingEventProcessorAgents.get(entry.getKey().group());
+                if (runner == null) return null;
+                String name = entry.getKey().name();
+                return start ? runner.group().auditStart(name, entry.getValue())
+                        : runner.group().auditStop(name, entry.getValue());
             }
 
             @Override
             public boolean safeToWait(String processorName) {
-                for (ProcessorName key : reservedProcessorNames.keySet()) {
-                    if (key.name().equals(processorName)) return MongooseServer.this.safeToWait(key.group());
-                }
-                return false;
+                var entry = admitted(processorName);
+                return entry != null && MongooseServer.this.safeToWait(entry.getKey().group());
             }
         };
+    }
+
+    /**
+     * The admission a capture request names: {@code group/name} exactly, or a bare name admitted in one group only. A
+     * bare name admitted in several groups is ambiguous and refused, never resolved to whichever is found first (FM-7).
+     */
+    private java.util.Map.Entry<ProcessorName, ProcessorRegistration> admitted(String processorName) {
+        int slash = processorName.indexOf('/');
+        String group = slash > 0 ? processorName.substring(0, slash) : null;
+        String name = slash > 0 ? processorName.substring(slash + 1) : processorName;
+        java.util.Map.Entry<ProcessorName, ProcessorRegistration> found = null;
+        java.util.List<String> groups = new java.util.ArrayList<>();
+        for (var entry : reservedProcessorNames.entrySet()) {
+            if (!entry.getKey().name().equals(name)) continue;
+            if (group != null && !entry.getKey().group().equals(group)) continue;
+            found = entry;
+            groups.add(entry.getKey().group());
+        }
+        if (groups.size() > 1) {
+            throw new IllegalArgumentException("processor '" + name + "' is in groups " + groups
+                    + ": name it as <group>/" + name);
+        }
+        return found;
     }
 
     /** Build a processor from its supplier and wire it into the server (audit, perf monitor, capture). */
@@ -1592,7 +1623,9 @@ public class MongooseServer implements MongooseServerController {
         long deadline = controlDeadline(controlWaitMillis());
         log.info("stopProcessor:" + processorName + " in group:" + groupName);
         // design PR 3: wait for the outcome where waiting is safe; a timeout detaches, the stop still applies
-        awaitWhereSafe(groupName, sendStop(groupName, processorName, deadline), deadline);
+        com.telamin.mongoose.control.ControlRequest request = sendStop(groupName, processorName, deadline);
+        refuseIfNotAdmitted(request, "processor '" + processorName + "' in group '" + groupName + "' was not stopped");
+        awaitWhereSafe(groupName, request, deadline);
     }
 
     /** Send a stop bound, now, to the registration admitted under the name; null when nothing is admitted. */

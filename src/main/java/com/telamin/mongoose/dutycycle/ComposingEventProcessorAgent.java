@@ -576,9 +576,14 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             throw new IllegalStateException("group " + roleName() + " is not running: it has closed");
         }
         Thread agent = agentThread;
-        if (agent == null || agent == Thread.currentThread() || !agent.isAlive()) {
-            work.run();
+        if (agent == null || agent == Thread.currentThread()) {
+            work.run();                 // never started (nothing else drives its processors), or already on its thread
             return;
+        }
+        if (!agent.isAlive()) {
+            // its thread has ended: refused, never run on the caller's thread against a dead group (FM-6)
+            control.detectDeath();
+            throw new IllegalStateException("group " + roleName() + " is not running: its thread has ended");
         }
         ControlRequest request = control.send(new ControlRequest(ControlRequest.Kind.RUN, "run", RunIntent::new, work));
         ControlReply answer = request.reply().getNow(null);

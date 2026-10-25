@@ -175,8 +175,8 @@ Adds a processor to a group, creating the group (and starting its thread, if the
 | --- | --- |
 | Name already admitted in the group | `IllegalArgumentException`, at once |
 | Server is stopping or stopped | `IllegalStateException` ("server is stopping") |
-| Mailbox full, on an agent thread | `REFUSED` at once; the name is released. The add failure policy determines whether the void call throws |
-| Mailbox full, off an agent thread | Admission spends the remaining control deadline; expiry answers `REFUSED` and releases the name. A shorter group full-mailbox timeout can throw `IllegalStateException` |
+| Mailbox full, on an agent thread | `IllegalStateException`, at once; the name is released |
+| Mailbox full, off an agent thread | Backs off until `controlWaitMillis` from the call (or the group's 10 s full-mailbox timeout, if sooner), then `IllegalStateException`; the name is released. One deadline covers admission and the reply |
 | Mailbox full when a server stop begins | A sender still backing off leaves at once: the request is answered `NOT_RUNNING` ("server is stopping") and its name released, so it never holds up the stop |
 | `start()` throws, `REPORT` | Reported through `ErrorReporting`; processor dropped; call returns |
 | `start()` throws, `THROW` | `ProcessorStartException` |
@@ -304,9 +304,9 @@ the processor is replaced before the stop is applied, the replacement keeps runn
 
 **Failure modes**
 
-- Mailbox full: admission uses the remaining control deadline on a thread allowed to wait, and is immediate
-  otherwise. Deadline expiry refuses the request; a shorter group full-mailbox timeout can throw. Nothing is stopped
-  and the name stays reserved.
+- Mailbox full: `IllegalStateException`, at once on an agent thread, or once `controlWaitMillis` from the call (or the
+  10 s full-mailbox timeout, if sooner) has passed
+  elsewhere. Nothing is stopped and the name stays reserved.
 - The method does not report the outcome. Use the `waitMillis` form, or a handle, if you need it.
 
 ### stopProcessor(group, name, waitMillis)
@@ -558,6 +558,13 @@ The admin commands `audit.start <name>` and `audit.stop <name>` call these metho
 on failure. `audit.start` prints `audit: RECORDING <name>` once `start` returns. If the admin command runs on an agent
 thread, `start` returns before the capture is installed, so that line means "requested", not "recording". Check with
 `audit.status`.
+
+### Naming the processor to capture
+
+`start(name)` and `stop(name)` (and the admin `audit.start` / `audit.stop`) take a processor name. A name admitted in
+one group addresses that processor. A name admitted in **several** groups is ambiguous: the call throws
+`IllegalArgumentException` naming the groups, and you address one as `group/name`. A processor never inherits a capture
+recording another processor of the same name in a different group.
 
 ### Open and resource limits
 
