@@ -114,6 +114,7 @@ nav:
           - Investigate control audit: example/how-to/how-to-investigate-control-audit.md
           - Write a custom EventToInvokeStrategy: example/how-to/how-to-writing-a-custom-event-to-invoke-strategy.md
           - Event source read strategy: guide/read-strategy.md
+          - Configuring overload and loss: guide/overload-configuration.md
           - Zero‑GC object pooling: example/how-to/how-to-object-pool.md
           - Core pin agent threads: example/how-to/how-to-core-pin.md
           - Performance monitoring: example/how-to/how-to-performance-monitoring.md

@@ -915,7 +915,11 @@ addFailurePolicy: THROW        # void addEventProcessor throws when the add does
 
 ## Overload and loss
 
-Ordinary publication retries a full target queue by spinning for approximately **10 ms**, then drops that item's
+Since telaminai/mongoose#79, each feed has an explicit overload policy. The default is described first, then the
+policies a feed can configure. See [Configuring overload and loss](../guide/overload-configuration.md) and
+[the design](../design/overload-policy.md).
+
+**Default (`DROP_AFTER_SPIN`, and any feed without an `overload` block).** Ordinary publication retries a full target queue by spinning for approximately **10 ms**, then drops that item's
 copy for that queue. Other target queues are still attempted. The dropped queue's pooled reference is released;
 this does not release another queue's reference. The publisher's aggregate `droppedCount()` increases.
 
@@ -941,18 +945,47 @@ These records consume the same bounded group control-audit capacity; repeated su
 that capacity and make the export incomplete. It is a correlation point, not one audit record per lost item
 or a shared business-event ordering guarantee.
 
-`EventSource.SlowConsumerStrategy` (`DISCONNECT`, `EXIT_PROCESS`, `BACKOFF`) and its feed/pipe configuration are
-deprecated because they do not change this publish policy. They do not enable lossless blocking.
+On a feed without an `overload` block this health behaviour is exactly that of PR #76: `DEGRADED` after loss, with
+no recovery while the queue is bound.
 
-This release retains existing bounded-spin/drop behaviour and exposes loss explicitly. A blocking-until-space
-policy is **not implemented**; [issue #77](https://github.com/telaminai/mongoose/issues/77) tracks the failure/overload
-design. Blocking propagates latency and can deadlock cyclic dependencies unless shutdown, cancellation and
-producer/consumer ownership are designed together.
+**Configured policies (#79).**
+
+- `overload.policy: DROP_AFTER_SPIN` with a `spinBoundMillis` (default 10) behaves as the default, with two
+  additions. A queue's health returns to `UP` after `quietPeriodMillis` (default 60 s, minimum 1 s) without
+  further loss. Every state change writes one `OverloadState` record to the publisher's state audit.
+- `overload.policy: BLOCK_WITH_DEADLINE` with `blockDeadlineMillis` makes a publish all-or-nothing:
+  - A publish from a non-agent thread waits, without holding the publish lock, until every blocking queue has
+    room. It is then delivered to all of them.
+  - If there is still no room at the deadline, or when the server begins to stop, the publish throws
+    `PublishRefusedException`. No queue holds the item and no sequence number is used.
+  - A refused pooled item is back in its pool, already reset: copy the payload before publishing if you may retry.
+  - On an agent thread, or nested in a dispatch, the publish falls back to drop-after-spin, counted in
+    `downgradedCount()`.
+- Any loss on a blocking queue **latches** it.
+  - The latch outlasts an unsubscribe: `LATCHED→REMOVED`, then `REMOVED→LATCHED` if the queue is re-added.
+  - The queue's health check reports the latch until the admin `overload.clear <feed>` clears it.
+  - Each change also writes an `OverloadState` record to the group control audit.
+  - With `killSwitch: true`, the hook set by `MongooseServer.setOverloadKillSwitch` runs once per latch, on the
+    feed's own daemon thread. It does not run while the server is stopping.
+- Overrides per subscriber group: `overload.subscribers.<group>`.
+- Counters: `queue.<path>.refused`, `.blocked`, `.blockedNanos`, `.blockedMaxNanos`, and `feed.<name>.downgraded`.
+
+`EventSource.SlowConsumerStrategy` is deprecated. In feed and pipe configuration without an `overload` block,
+`BACKOFF` means `DROP_AFTER_SPIN` (warned), and `DISCONNECT` and `EXIT_PROCESS` **fail boot**, naming the feed. Set
+on a source directly, the strategy is still ignored.
+
+In RECORD mode, a dropped item keeps its journal entry and sequence number. The processor's recording gets a
+`Dropped` entry where the items were lost. A replay carries on and reports the loss through
+`GroupReplayer.losses()` and `lossless()`, which completeness checks must read beside `complete()`.
+
+Unbounded blocking, conflation, priority lanes and spill to disk are not implemented. Blocking propagates latency
+to the publisher, which is why the deadline is bounded and agent threads never wait.
 
 Decide per feed whether loss is acceptable. Replaceable market-data snapshots may permit loss with explicit
 freshness/recovery logic; incremental updates can also require gap detection and replay. Orders, fills, credit
-changes and hedge instructions must not depend on this queue path for guaranteed delivery. Until a suitable
-lossless transport/policy and recovery contract are in place, this candidate is not qualified for that guarantee.
+changes and hedge instructions need `BLOCK_WITH_DEADLINE`, published from non-agent threads whose callers handle a
+refusal. The policy ends at the feed's publish call: it does not provide end-to-end delivery from the venue, and
+the client must still reconcile with the venue after a latch.
 No setting in the current enum changes that fact.
 
 Shutdown drains queued events for `shutdownDrainTimeoutMillis`, capped by the remaining overall deadline. On
