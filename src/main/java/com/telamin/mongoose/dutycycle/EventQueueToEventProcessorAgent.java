@@ -142,6 +142,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                 boolean done = false;
                 if (recorder != null) recorder.beforeDispatch(sourceName, seq, targets);
                 while (!done) {
+                    com.telamin.mongoose.dispatch.ProcessorContext.takeFailedProcessor(); // never a previous dispatch's
                     try {
                         if (recorder != null && wholeFailed) recorder.beforeDispatch(sourceName, seq, targets);
                         if (event instanceof ReplayRecord replayRecord) {
@@ -187,6 +188,8 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                     } catch (VirtualMachineError fatal) {
                         throw fatal;        // OutOfMemoryError, StackOverflowError, ...: never retried or swallowed (as #57)
                     } catch (Throwable t) {
+                        // the processor whose handler threw, captured at throw time by the strategy (rc1 review N1)
+                        DataFlow thrower = com.telamin.mongoose.dispatch.ProcessorContext.takeFailedProcessor();
                         int at = wholeFailed ? -1 : eventToInvokeStrategy.failedPosition();
                         DataFlow failed = at < 0 ? null : eventToInvokeStrategy.failedProcessor();
                         if (at < 0) {
@@ -210,35 +213,33 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                         }
                         // Generated graphs are not retry-safe after a throw: processing/callback state may be
                         // wedged and a retry can return normally without dispatching anything. This is failure-only.
-                        boolean unsafe = ProcessorDispatchException.requiresIsolation(failed);
-                        if (failed == null) {
+                        // An opaque strategy (failedPosition() == -1) cannot name the target, but the processor captured at
+                        // throw time can (rc1 review N1): a handwritten thrower is retried under the legacy policy and
+                        // never quarantines its generated peers; a generated thrower is quarantined alone.
+                        DataFlow identified = failed;
+                        if (identified == null && thrower != null) {
+                            synchronized (subscribed) { if (subscribed.contains(thrower)) identified = thrower; }
+                        }
+                        boolean unsafe = ProcessorDispatchException.requiresIsolation(identified);
+                        if (identified == null) {
                             synchronized (subscribed) {
                                 unsafe = subscribed.stream().anyMatch(ProcessorDispatchException::requiresIsolation);
                             }
                         }
                         if (unsafe) {
-                            var failure = new ProcessorDispatchException(failed, "event dispatch", t);
-                            if (failed == null || at < 0) {
-                                terminalFailure = failure; // opaque strategy: cannot safely identify one target
-                                java.util.List<DataFlow> candidates;
-                                synchronized (subscribed) { candidates = java.util.List.copyOf(subscribed); }
-                                for (DataFlow candidate : candidates) {
-                                    if (!ProcessorDispatchException.requiresIsolation(candidate)) continue;
-                                    try {
-                                        if (processorFailureHandler != null) processorFailureHandler.accept(candidate, failure);
-                                        else deregisterProcessor(candidate);
-                                    } catch (VirtualMachineError fatal) {
-                                        throw fatal;
-                                    } catch (Throwable isolationFailure) {
-                                        if (isolationFailure != failure) failure.addSuppressed(isolationFailure);
-                                    }
-                                }
-                                throw failure;
+                            if (identified == null) {
+                                // truly unidentifiable (a strategy that records no processor), with a generated graph on the
+                                // reader that may be the one left half-processed: contain by ending the group, blame no peer
+                                var unknown = new ProcessorDispatchException(null, "opaque event dispatch (no failed position and"
+                                        + " no processor captured at throw time; no subscriber is quarantined, the group ends)", t);
+                                terminalFailure = unknown;
+                                throw unknown;
                             }
+                            var failure = new ProcessorDispatchException(identified, "event dispatch", t);
                             try {
-                                if (processorFailureHandler != null) processorFailureHandler.accept(failed, failure);
+                                if (processorFailureHandler != null) processorFailureHandler.accept(identified, failure);
                                 else {
-                                    deregisterProcessor(failed);
+                                    deregisterProcessor(identified);
                                     com.telamin.mongoose.service.error.ErrorReporting.report(
                                             "EventQueueToEventProcessorAgent:" + name,
                                             "generated processor quarantined; no retry: " + failure.getMessage(), failure,
@@ -252,6 +253,14 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                                 throw failure;
                             }
                             if (drainDisabled) return processed + 1; // finally releases this input; close owns backlog
+                            if (at < 0) {
+                                // opaque strategy: the remaining subscribers get the event again under the legacy whole-
+                                // dispatch retry (peers that already handled it may see it twice, as before #53)
+                                from = 0;
+                                failingAt = -1;
+                                attempt = 0;
+                                continue;
+                            }
                             // Isolation removes this target from the strategy. Its successor shifts into this index.
                             // Earlier processors already received the event and must not see it again.
                             from = at;

@@ -1019,8 +1019,12 @@ close receive a refusal instead of waiting for a processor that can no longer di
 There is no automatic restart, flag reset, callback replay, or operator acknowledgement that converts unknown
 cleanup into success. Preserve the audit and application state and use the deployment's incident procedure.
 The failed input may already have produced partial external effects. Healthy subscribers can still receive that
-input once; this is not transactional rollback. An opaque custom dispatcher that cannot identify the failed target
-quarantines all possible generated targets on its reader and terminates the group.
+input once; this is not transactional rollback. A custom dispatcher that reports no failed position (an opaque
+strategy) is still resolved through the processor captured at throw time (issue #77, rc1 review N1): a handwritten
+thrower is retried under the legacy whole-dispatch policy and never quarantines a generated peer, and a generated
+thrower is quarantined alone. Only a strategy that also records no processor (it bypasses the base dispatch loop)
+leaves the target unidentifiable; the group then ends with a `ProcessorDispatchException` saying so, and no peer is
+quarantined.
 
 An admin cycle refused before its command action remains a command refusal. The runtime's `runInEventCycle`
 already clears its processing flag in `finally`; a custom override that executes other graph calls before entering

@@ -43,5 +43,12 @@ or opt into `EXIT_PROCESS`.
 - Capture failures can be acknowledged (`acknowledgeCaptureFailures`, admin `control.capture.acknowledge`): the
   audit-capture alert clears, the failures stay listed. `control.group.status <group> --json` prints the status as
   JSON. The admin stop command refuses a malformed argument as `REFUSED_INVALID`.
+- Opaque dispatch strategies (`failedPosition() == -1`): the processor whose handler threw is captured at throw time
+  (`ProcessorContext.recordFailedProcessor`, called by `AbstractEventToInvocationStrategy`). A handwritten failure is
+  retried under the legacy policy and no longer quarantines generated peers or ends the group; a generated thrower is
+  quarantined alone. A strategy that records no processor ends the group without quarantining any peer.
+  `ProcessorDispatchException` messages include their cause.
+- Regenerating with the public `fluxtion-builder` uses the hosted generator by default; see the
+  [client migration checklist](client-migration-1.0.33.md#regenerating-through-the-public-builder).
 - Verify each control-audit export separately: concatenating an rc1 export with a newer one makes the result a
   taxonomy export, in which rc1 records without a kind fail I20.

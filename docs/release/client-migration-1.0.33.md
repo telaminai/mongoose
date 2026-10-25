@@ -6,7 +6,7 @@ These are deployment gates, not reasons to claim that an unpublished candidate h
 
 | Check | Owner | Required proof |
 |---|---|---|
-| Generated processor exceptions and retries | Application lead | Run the actual compiled client graphs through handler, callback, timer, service and lifecycle failures. Show isolation and detection, no duplicate external actions, and an operator recovery procedure. Regenerate client processors with compiler 1.0.80 targeting runtime 1.1.3; upgrading the runtime alone does not repair old generated code. Failed-cycle cleanup does not roll back partial state or external effects. |
+| Generated processor exceptions and retries | Application lead | Run the actual compiled client graphs through handler, callback, timer, service and lifecycle failures. Show isolation and detection, no duplicate external actions, and an operator recovery procedure. Regenerate client processors with compiler 1.0.80 targeting runtime 1.1.3; upgrading the runtime alone does not repair old generated code (see [regenerating through the public builder](#regenerating-through-the-public-builder) first). Failed-cycle cleanup does not roll back partial state or external effects. |
 | Overload for every feed and subscriber | Application lead and operations | Record rates, burst assumptions, capacity and acceptable loss. Demonstrate behaviour at the limit. Current bounded spin then drop is counted; BLOCK is not implemented. See issue #77 for future failure design. |
 | Plugins, reconnect and capture retention | Integration lead | Build client plugins against the RC. Exercise disconnect/reconnect. Verify importers, dashboards and pruning understand qualified selectors, `capture-*` directories and identity sidecars. Custom capture plugins must prove ownership and safe offline detach. |
 | Deployment soak | Test lead | A run longer than ten minutes using the client's topology, configuration and failure injection. Preserve resource ledgers, complete audit exports and shutdown results. |
@@ -14,6 +14,25 @@ These are deployment gates, not reasons to claim that an unpublished candidate h
 | Old server configuration and APIs | Integration lead | Map each old Fluxtion server setting, dependency and API to the RC. Compile applications, review changed signatures and run acceptance tests. Consult the migration disposition below. |
 | Control reply records and kinds (after rc1, issue #77, next minor) | Integration lead | Recompile code that deconstructs `ControlReply` (now `kind` and `evidence` components), `EffectResult` or `ControlGroupStatus` with record patterns, or compares replies with `equals`. Classify replies by `outcome` and `kind`, never `reason` text. Handle `REFUSED`/`REFUSED_STATE` (not `null`) from `stopProcessor(group, name, wait)` for unknown names, and `evidence = UNVERIFIED` while a group's control audit is degraded. See the [unreleased notes](release-notes-unreleased.md). |
 | Shutdown and recovery runbook | Operations | Set `shutdownTimeoutMillis` within the process manager's grace period. Rehearse incomplete shutdown, quarantine, external action reconciliation and operator escalation without automatically re-entering a failed graph. |
+
+## Regenerating through the public builder
+
+Read this before regenerating with the public `fluxtion-builder` 1.0.80.
+
+- **The hosted generator is the default.** The builder picks its model generator with `ServiceLoader`, in this order:
+  the provider named by `-Dfluxtion.modelGeneratorId`; otherwise a provider with id `local`; otherwise `remote-http`.
+  The public builder jar ships only `remote-http` (`META-INF/services/...SimpleEventProcessorModelGenerator` lists
+  `RemoteHttpModelGenerator`). Without a local generator on the classpath (the private `fluxtion-generator-core`),
+  every regeneration posts the graph to the hosted generator. Its default host is
+  `https://fluxtion-source-gen.p.rapidapi.com` (override with `fluxtion.remote.host`). Checked against the
+  `fluxtion-builder-1.0.80.jar` classes.
+- **What is sent.** The serialized graph model includes the values of **all** node fields, private ones too. They are
+  readable by the hosted service. HTTPS protects them in transit to the default host; nothing else encrypts them.
+- **Keep secrets out of node fields.** Supply credentials and other secrets at runtime instead:
+  `registerService(new Service<>(...))` received by an `@ServiceRegistered` method, or `injectInstance`.
+- **The API key.** `fluxtion.apiKey` travels only in the `X-RapidAPI-Key` request header.
+- See [cloud generation and your API key](https://github.com/telaminai/fluxtion#cloud-generation-and-your-api-key).
+  The link resolves once fluxtion PR #48 merges.
 
 References: [migration disposition](../reports/pr76-review-followup-2026-10-25/migration-disposition.md),
 [control contracts](../reference/control-plane-contracts.md), [capture identity](../design/capture-resource-identity.md),

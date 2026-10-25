@@ -378,7 +378,11 @@ class GeneratedProcessorFailureIsolationTest {
         assertEquals(0, flow.tornDown.get());
     }
 
-    @Test void opaqueDispatcherQuarantinesAllPossibleGeneratedTargetsBeforeEndingGroup() throws Exception {
+    /**
+     * rc1 review N1: an opaque strategy (failedPosition() == -1) cannot name the target, but the processor captured at
+     * throw time can. Each generated thrower is quarantined alone, as it fails; the group keeps running.
+     */
+    @Test void opaqueDispatcherQuarantinesEachIdentifiedGeneratedThrowerAndTheGroupRunsOn() throws Exception {
         var manager = new EventFlowManager();
         manager.registerEventMapperFactory(() -> new EventToOnEventInvokeStrategy() {
             @Override public int failedPosition() { return -1; }
@@ -395,12 +399,46 @@ class GeneratedProcessorFailureIsolationTest {
         try {
             first.failAudit = true; second.failAudit = true;
             publisher.publish(new RunIntent(1));
-            assertThrows(ProcessorDispatchException.class, () -> {
-                for (int i = 0; i < 100; i++) group.doWork();
-            });
-            assertEquals(2, group.quarantinedProcessors().size(), "unknown failure position retains every possible damaged graph");
+            assertDoesNotThrow(() -> { for (int i = 0; i < 100; i++) group.doWork(); });
+            assertEquals(java.util.Set.of("first", "second"), group.quarantinedProcessors().keySet(),
+                    "each thrower is identified and quarantined alone");
+            assertTrue(group.quarantinedProcessors().get("first").contains(Generated.class.getName()),
+                    "the reason names the identified processor: " + group.quarantinedProcessors());
+            assertEquals(ControlDriver.GroupState.RUNNING, group.control().state());
         } finally { group.onClose(); }
         assertEquals(0, first.tornDown.get()); assertEquals(0, second.tornDown.get());
+    }
+
+    /**
+     * A strategy that neither names a position nor records the thrower leaves the target truly unidentifiable: the group
+     * is contained by ending it, no peer is quarantined, and the failure says why.
+     */
+    @Test void aTrulyUnidentifiableOpaqueFailureEndsTheGroupWithoutBlamingAPeer() throws Exception {
+        var manager = new EventFlowManager();
+        manager.registerEventMapperFactory(() -> new EventToOnEventInvokeStrategy() {
+            @Override public int failedPosition() { return -1; }
+            @Override public DataFlow failedProcessor() { return null; }
+            @Override public void processEvent(Object event) {       // dispatches without the base class's capture
+                for (DataFlow target : eventProcessorSinks) target.onEvent(event);
+            }
+        }, CallBackType.ON_EVENT_CALL_BACK);
+        var publisher = manager.registerEventSource("feed", new com.telamin.mongoose.connector.memory.InMemoryEventSource<>());
+        var group = new ComposingEventProcessorAgent("unknown", manager, null,
+                new DeadWheelScheduler(), new ConcurrentHashMap<>());
+        Generated first = new Generated(), second = new Generated();
+        group.addNamedEventProcessor(() -> new NamedEventProcessor("first", first));
+        group.addNamedEventProcessor(() -> new NamedEventProcessor("second", second));
+        group.onStart();
+        group.subscribe(first, key("feed")); group.subscribe(second, key("feed"));
+        try {
+            first.failAudit = true;
+            publisher.publish(new RunIntent(1));
+            var thrown = assertThrows(ProcessorDispatchException.class, () -> {
+                for (int i = 0; i < 100; i++) group.doWork();
+            });
+            assertTrue(thrown.getMessage().contains("no subscriber is quarantined"), thrown.getMessage());
+            assertTrue(group.quarantinedProcessors().isEmpty(), "no peer is blamed: " + group.quarantinedProcessors());
+        } finally { group.onClose(); }
     }
 
     @Test void removingAReaderAnswersItsQueuedAdminCallerWithoutExecutingTheCommand() throws Exception {

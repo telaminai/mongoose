@@ -101,6 +101,8 @@ mutations = [
         'idleCyclesCounter.increment();', False)]),
     ("contain-policy-exits", [("src/main/java/com/telamin/mongoose/dutycycle/GlobalErrorHandler.java",
         'if (policy == FatalErrorPolicy.EXIT_PROCESS) {', 'if (policy != null) {', False)]),
+    ("opaque-thrower-not-captured", [("src/main/java/com/telamin/mongoose/dispatch/ProcessorContext.java",
+        'FAILED.set(processor);', '', False)]),
     ("replay-identity-kind-dropped", [(replayer,
         'failed = "no stream was recorded for " + cursor.name;    // loud, never an instantly complete cursor\n'
         '                    failedKind = FailureKind.REPLAY_IDENTITY_MISMATCH;',
@@ -111,7 +113,8 @@ tests = ",".join(["ControlScenarioHarnessTest", "IndependentEvidenceMutationTest
                   "FailureKindFlowTest", "FailureKindQuarantineTest", "CaptureAsEffectsTest",
                   "GeneratedProcessorFailureIsolationTest", "ReplayIdentityTest", "IndependentReviewReplayProbesTest",
                   "ControlTerminationAndAdmissionTest", "BoundedShutdownTest", "Review77ProbesTest",
-                  "Review77bProbesTest", "GroupContainmentTest", "AuditFailurePolicyTest"])
+                  "Review77bProbesTest", "GroupContainmentTest", "AuditFailurePolicyTest",
+                  "OpaqueDispatchHandwrittenFailureTest"])
 cmd = ["mvn", "-o", "-Dtest=" + tests, "-Dmongoose.harness.seedStart=12001", "-Dmongoose.harness.seedCount=100", "test"]
 results = []
 
