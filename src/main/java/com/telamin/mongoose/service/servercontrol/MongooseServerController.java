@@ -138,11 +138,13 @@ public interface MongooseServerController {
     /**
      * Deregister a previously registered service.
      * <p>
-     * Removes from the global registry, stops the service, and
-     * broadcasts {@code @ServiceDeregistered} to every running
-     * processor — processor-internal nodes with matching
-     * {@code @ServiceDeregistered} handlers unbind. No-op when
-     * {@code serviceName} isn't registered.
+     * Removes from the global registry and broadcasts
+     * {@code @ServiceDeregistered} to every running processor, so
+     * processor-internal nodes with matching handlers unbind. The
+     * {@code MongooseServer} implementation stops the service only once
+     * every processor group has confirmed the withdrawal; otherwise it
+     * keeps the service until shutdown. No-op when {@code serviceName}
+     * isn't registered.
      * <p>
      * Distinct from {@link #stopService(String)} which is the
      * lifecycle-pause callback (the service stays in the registry and
