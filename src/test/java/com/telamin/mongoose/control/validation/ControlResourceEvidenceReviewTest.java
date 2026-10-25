@@ -93,4 +93,14 @@ class ControlResourceEvidenceReviewTest {
         var result = ControlInvariants.check(ControlEvidence.parse(yaml, true));
         assertTrue(result.violations().stream().anyMatch(s -> s.startsWith("I9 ")), result.toString());
     }
+
+    @Test void successfulOfflineDetachmentProvesTerminalResourceOwnershipWasReleased() {
+        var result = check(
+                "record: Decision, rule: started, generation: 7, name: p, effects: ''",
+                "record: Decision, rule: captureOpened, generation: 7, resourceId: 41, effects: ''",
+                "record: EffectOutcome, effect: InstallCapture, outcome: succeeded, generation: 7, resourceId: 41",
+                "record: EffectOutcome, effect: UninstallCapture, outcome: succeeded, generation: -1, resourceId: 41, offline: true",
+                "record: EffectOutcome, effect: CloseCapture, outcome: succeeded, resourceId: 41");
+        assertTrue(result.verified(), result.toString());
+    }
 }

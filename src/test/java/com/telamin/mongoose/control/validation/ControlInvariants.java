@@ -337,13 +337,23 @@ public final class ControlInvariants {
                         unverifiable.add("I12 InstallCapture " + r.str("opId") + " has no resource identity");
                     }
                 } else if ("UninstallCapture".equals(r.str("effect"))) {
-                    if (installedOn.getOrDefault(gen, 0) <= 0) {
-                        violations.add("I12 generation " + gen + " uninstalled a capture without an installation");
-                    } else installedOn.merge(gen, -1, Integer::sum);
-                    if (resource >= 0 && !resourceOwners.remove(resource, gen)) {
-                        violations.add("I12 resource " + resource + " uninstalled by generation " + gen + " without ownership");
+                    if (Boolean.TRUE.equals(r.fields().get("offline")) && resource >= 0) {
+                        // Post-termination cleanup detaches the resource without calling the old processor. Its
+                        // explicit physical outcome, not the absence of a graph decision, proves that detachment.
+                        Long owner = resourceOwners.remove(resource);
+                        if (owner != null) {
+                            installedOn.merge(owner, -1, Integer::sum);
+                            failedUninstall.remove(owner);
+                        }
+                    } else {
+                        if (installedOn.getOrDefault(gen, 0) <= 0) {
+                            violations.add("I12 generation " + gen + " uninstalled a capture without an installation");
+                        } else installedOn.merge(gen, -1, Integer::sum);
+                        if (resource >= 0 && !resourceOwners.remove(resource, gen)) {
+                            violations.add("I12 resource " + resource + " uninstalled by generation " + gen + " without ownership");
+                        }
+                        failedUninstall.remove(gen);
                     }
-                    failedUninstall.remove(gen);
                 } else if ("CloseCapture".equals(r.str("effect")) && resource >= 0
                         && !Boolean.TRUE.equals(r.fields().get("duplicate"))) {
                     physicallyClosed.add(resource);
