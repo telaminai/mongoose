@@ -184,6 +184,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     /** Includes queued opens, installed captures, handed-off closes and unresolved failed physical closes. */
     private volatile int captureResourceLimit = 1024;
     private final AtomicInteger captureResourceSlots = new AtomicInteger();
+    private final Object captureResourceCompletion = new Object();
     private final ConcurrentHashMap<Long, CaptureResourcePermit> captureResourcePermits = new ConcurrentHashMap<>();
     private final AtomicLong physicalCleanupOps = new AtomicLong();
 
@@ -195,6 +196,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             if (held.compareAndSet(true, false)) {
                 handle = null;
                 captureResourceSlots.decrementAndGet();
+                signalCaptureResourceCompletion();
             }
         }
     }
@@ -392,6 +394,25 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             if (permit.closeFailure != null) failures.put(id, permit.closeFailure);
         });
         return java.util.Collections.unmodifiableMap(failures);
+    }
+
+    /** Only a tracked shutdown helper waits here; its caller joins that helper with the shutdown deadline. */
+    public boolean awaitCaptureResourceCleanup() throws InterruptedException {
+        if (com.telamin.mongoose.control.AgentThreads.isAgentThread()) {
+            throw new IllegalStateException("an agent thread cannot wait for physical capture cleanup");
+        }
+        synchronized (captureResourceCompletion) {
+            while (captureResourceSlots.get() != 0 && captureCloseFailures().isEmpty()) {
+                captureResourceCompletion.wait();
+            }
+            return captureResourceSlots.get() == 0;
+        }
+    }
+
+    private void signalCaptureResourceCompletion() {
+        synchronized (captureResourceCompletion) {
+            captureResourceCompletion.notifyAll();
+        }
     }
 
     private CaptureResourcePermit admitCaptureResource() {
@@ -966,6 +987,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         } catch (Throwable t) {
             CaptureResourcePermit permit = captureResourcePermits.get(resourceId);
             if (permit != null) permit.closeFailure = String.valueOf(t);
+            signalCaptureResourceCompletion();
             return new CaptureCompletion(root, op, completionIds.incrementAndGet(), CaptureCompletion.Kind.CLOSE_FAILED,
                     resourceId, String.valueOf(t));
         }

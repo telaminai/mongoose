@@ -451,7 +451,10 @@ class CaptureAsEffectsTest {
         assertTrue(group.control().audit().records().stream()
                 .anyMatch(r -> r.contains("released without the control processor")), "recorded in the fallback stream");
         assertEquals(0, group.captureResourceSlotsInUse());
-        var records = ControlEvidence.parse(group.control().audit().exportText(), true).records();
+        var evidence = ControlEvidence.parse(group.control().audit().exportText(), true);
+        var validation = ControlInvariants.check(evidence);
+        assertTrue(validation.verified(), validation.toString());
+        var records = evidence.records();
         var detachRequest = records.stream().filter(r -> r.type().equals("EffectRequested")
                 && "UninstallCapture".equals(r.str("effect")) && Boolean.TRUE.equals(r.fields().get("offline")))
                 .findFirst().orElseThrow();

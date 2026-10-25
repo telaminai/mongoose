@@ -59,6 +59,18 @@ class CapturePhysicalShutdownTest {
             assertTrue(rig.stop().complete()); assertEquals(1,resources.closes.get());
         } finally { release.countDown(); }
     }
+    @Test void ordinaryAsyncCloseGetsRemainingShutdownBudget() throws Exception {
+        var resources=new CaptureShutdownRetryTest.Resources() {
+            @Override public void closeCapture(Object handle) {
+                try { Thread.sleep(50); } catch(InterruptedException e) { Thread.currentThread().interrupt(); }
+                super.closeCapture(handle);
+            }
+        };
+        try(var rig=started(resources)) {
+            assertTrue(rig.stop().complete(),"a pending close should get the available shutdown budget");
+            assertEquals(0,rig.group.captureResourceSlotsInUse()); assertEquals(1,resources.closes.get());
+        }
+    }
     @Test void failedPhysicalCloseKeepsShutdownIncompleteWithoutRepeatingCallback() throws Exception {
         var resources=new CaptureShutdownRetryTest.Resources() {
             @Override public void closeCapture(Object handle) { super.closeCapture(handle); throw new IllegalStateException("physical close failed"); }
