@@ -1,0 +1,62 @@
+[
+  {
+    "pair": 1,
+    "build": "base",
+    "exit": 0,
+    "result": [
+      26.907,
+      26.307,
+      27.261
+    ]
+  },
+  {
+    "pair": 1,
+    "build": "candidate",
+    "exit": 0,
+    "result": [
+      25.624,
+      24.926,
+      26.335
+    ]
+  },
+  {
+    "pair": 2,
+    "build": "candidate",
+    "exit": 0,
+    "result": [
+      26.871,
+      25.937,
+      27.187
+    ]
+  },
+  {
+    "pair": 2,
+    "build": "base",
+    "exit": 0,
+    "result": [
+      12.855,
+      10.271,
+      18.865
+    ]
+  },
+  {
+    "pair": 3,
+    "build": "base",
+    "exit": 0,
+    "result": [
+      26.695,
+      26.19,
+      26.802
+    ]
+  },
+  {
+    "pair": 3,
+    "build": "candidate",
+    "exit": 0,
+    "result": [
+      17.407,
+      13.622,
+      26.993
+    ]
+  }
+]

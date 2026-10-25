@@ -1,0 +1,105 @@
+Oct 25, 2026 10:12:49 PM com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent onStart
+INFO: onStart bench
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.MongooseServer bootServer
+INFO: booting fluxtion server
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.MongooseServer registerService
+INFO: registerService:Service(serviceClass=interface com.telamin.mongoose.service.counters.MongooseCountersService, serviceName=com.telamin.mongoose.service.counters.MongooseCountersService, instance=com.telamin.mongoose.internal.NoOpCountersService@402f32ff)
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.MongooseServer registerService
+INFO: registerService:Service(serviceClass=interface com.telamin.mongoose.service.counters.MongooseLatencyService, serviceName=com.telamin.mongoose.service.counters.MongooseLatencyService, instance=com.telamin.mongoose.internal.NoOpLatencyService@51efea79)
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.MongooseServer registerService
+INFO: registerService:Service(serviceClass=interface com.telamin.mongoose.service.audit.MongooseAuditCaptureService, serviceName=com.telamin.mongoose.service.audit.MongooseAuditCaptureService, instance=com.telamin.mongoose.internal.NoOpAuditCaptureService@4520ebad)
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.MongooseServer registerService
+INFO: registerService:Service(serviceClass=interface com.telamin.mongoose.service.audit.MongooseAuditIntrospectionService, serviceName=com.telamin.mongoose.service.audit.MongooseAuditIntrospectionService, instance=com.telamin.mongoose.internal.NoOpAuditIntrospectionService@7c16905e)
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.MongooseServer registerService
+INFO: registerService:Service(serviceClass=interface com.telamin.mongoose.service.health.MongooseHealthService, serviceName=com.telamin.mongoose.service.health.MongooseHealthService, instance=com.telamin.mongoose.internal.DefaultMongooseHealth@675d3402)
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.MongooseServer registerService
+INFO: registerService:Service(serviceClass=interface com.telamin.mongoose.service.introspection.MongooseIntrospectionService, serviceName=com.telamin.mongoose.service.introspection.MongooseIntrospectionService, instance=com.telamin.mongoose.internal.DefaultMongooseIntrospection@8bd1b6a)
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.MongooseServer registerService
+INFO: registerService:Service(serviceClass=interface com.telamin.mongoose.service.servercontrol.MongooseServerController, serviceName=com.telamin.mongoose.service.servercontrol.MongooseServerController, instance=com.telamin.mongoose.MongooseServer@5b275dab)
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.MongooseServer registerService
+INFO: registerService:Service(serviceClass=interface com.telamin.mongoose.service.pool.ObjectPoolsRegistry, serviceName=com.telamin.mongoose.pool.ObjectPoolsRegistry, instance=com.telamin.mongoose.service.pool.impl.GlobalObjectPool@548e7350)
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.MongooseServer registerWorkerService
+INFO: registerWorkerService:ServiceAgent[agentGroup=feed-agent, idleStrategy=BusySpinIdleStrategy{alias=spin}, exportedService=Service(serviceClass=interface com.telamin.fluxtion.runtime.input.NamedFeed, serviceName=feed, instance=com.telamin.mongoose.connector.memory.InMemoryEventSource@4cb2c100), delegate=com.telamin.mongoose.connector.memory.InMemoryEventSource@4cb2c100] agentGroup:feed-agent idleStrategy:BusySpinIdleStrategy{alias=spin}
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.dutycycle.ComposingServiceAgent registerServer
+INFO: registerServer toCallStartupCompleteList size:1
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.internal.LifecycleManager init
+INFO: init
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.internal.LifecycleManager start
+INFO: start
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.internal.LifecycleManager start
+INFO: start flowManager
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.internal.LifecycleManager start
+INFO: start agent hosted services
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.internal.LifecycleManager lambda$start$4
+INFO: starting composing service agent feed-agent
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.internal.LifecycleManager start
+INFO: waiting for agent hosted services to start
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.dutycycle.ComposingServiceAgent onStart
+INFO: onStart toStartList size:1
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.MongooseServer registerService
+INFO: registerService:Service(serviceClass=interface com.telamin.fluxtion.runtime.input.NamedFeed, serviceName=feed, instance=com.telamin.mongoose.connector.memory.InMemoryEventSource@4cb2c100)
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.internal.LifecycleManager start
+INFO: start event processor agent workers
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.internal.LifecycleManager lambda$start$5
+INFO: starting composing event processor agent processor-agent
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.internal.LifecycleManager start
+INFO: waiting for event processor agents to start
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent onStart
+INFO: onStart processor-agent
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.service.extension.AbstractEventSourceService registerSubscriber
+INFO: registerSubscriber for broadcast receive com.telamin.mongoose.internal.ConfigAwareEventProcessor@38082d64
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.service.extension.AbstractEventSourceService subscribe
+INFO: adding subscription for service 'feed' to 'com.telamin.mongoose.internal.ConfigAwareEventProcessor@38082d64'
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent registerSubscriber
+INFO: registerSubscriber:com.telamin.mongoose.internal.ConfigAwareEventProcessor@38082d64 processor-agent
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent subscribe
+INFO: subscribe subscriptionKey:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=feed], callBackType=com.telamin.mongoose.service.CallBackType$OnEventCallBack@42110406] subscriber:com.telamin.mongoose.internal.ConfigAwareEventProcessor@38082d64
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent subscribe
+INFO: added new subscribe subscriptionKey:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=feed], callBackType=com.telamin.mongoose.service.CallBackType$OnEventCallBack@42110406] subscriber:com.telamin.mongoose.internal.ConfigAwareEventProcessor@38082d64
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.dutycycle.EventQueueToEventProcessorAgent registerProcessor
+INFO: registerProcessor: com.telamin.mongoose.internal.ConfigAwareEventProcessor@38082d64
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.dutycycle.EventQueueToEventProcessorAgent registerProcessor
+INFO: listener count:1
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.service.extension.AbstractEventSourceService subscribe
+INFO: subscribe request for EventSubscription{feedName=feed, eventClass=interface com.telamin.fluxtion.runtime.event.NamedFeedEvent, filterString=feed} from com.telamin.mongoose.internal.ConfigAwareEventProcessor@38082d64
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.service.extension.AbstractEventSourceService subscribe
+INFO: subscribe request for EventSubscription{feedName=feed, eventClass=interface com.telamin.fluxtion.runtime.event.NamedFeedEvent, filterString=feed} from com.telamin.mongoose.internal.ConfigAwareEventProcessor@38082d64 matches service name:feed
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.service.extension.AbstractEventSourceService subscribe
+INFO: adding subscription for service 'feed' to 'com.telamin.mongoose.internal.ConfigAwareEventProcessor@38082d64'
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.dutycycle.EventQueueToEventProcessorAgent onStart
+INFO: start
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.internal.LifecycleManager start
+INFO: calling startup complete on services
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.internal.LifecycleManager start
+INFO: calling startup complete on agent hosted services
+Oct 25, 2026 10:12:50 PM com.telamin.mongoose.dutycycle.ComposingServiceAgent startComplete
+INFO: startComplete toCallStartupCompleteList size:1
+Oct 25, 2026 10:12:51 PM com.telamin.mongoose.internal.LifecycleManager stop
+INFO: stopping server
+Oct 25, 2026 10:12:51 PM com.telamin.mongoose.internal.LifecycleManager stop
+INFO: stopping feeds
+Oct 25, 2026 10:12:51 PM com.telamin.mongoose.internal.LifecycleManager closeGroup
+INFO: stopping composing event source agent feed-agent
+Oct 25, 2026 10:12:51 PM com.telamin.mongoose.dutycycle.ComposingServiceAgent onClose
+INFO: onClose
+Oct 25, 2026 10:12:51 PM com.telamin.mongoose.internal.LifecycleManager stop
+INFO: draining queued events, at most 2000ms
+Oct 25, 2026 10:12:51 PM com.telamin.mongoose.internal.LifecycleManager stop
+INFO: stopping event processor agents
+Oct 25, 2026 10:12:51 PM com.telamin.mongoose.internal.LifecycleManager closeGroup
+INFO: stopping composing event processor agent processor-agent
+Oct 25, 2026 10:12:51 PM com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent removeAllSubscriptions
+INFO: removing all subscriptions for:com.telamin.mongoose.internal.ConfigAwareEventProcessor@38082d64 processor-agent
+Oct 25, 2026 10:12:51 PM com.telamin.mongoose.dutycycle.EventQueueToEventProcessorAgent deregisterProcessor
+INFO: deregisterProcessor: com.telamin.mongoose.internal.ConfigAwareEventProcessor@38082d64
+Oct 25, 2026 10:12:51 PM com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent deregister
+INFO: EventQueueToEventProcessor listener count = 0, removing subscription:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=feed], callBackType=com.telamin.mongoose.service.CallBackType$OnEventCallBack@42110406]
+Oct 25, 2026 10:12:51 PM com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent onClose
+INFO: onClose processor-agent
+Oct 25, 2026 10:12:51 PM com.telamin.mongoose.dutycycle.EventQueueToEventProcessorAgent onClose
+INFO: onClose
+Oct 25, 2026 10:12:51 PM com.telamin.mongoose.internal.LifecycleManager stop
+INFO: stopping agent hosted services
+Oct 25, 2026 10:12:51 PM com.telamin.mongoose.internal.LifecycleManager stop
+INFO: stopping registered services
+RESULT base idleDoWork_ns median=0.00 min=0.00 max=0.00 | throughput_Mev/s median=26.907 min=26.307 max=27.261 (sink 0)

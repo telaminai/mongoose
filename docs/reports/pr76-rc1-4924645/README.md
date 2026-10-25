@@ -41,7 +41,8 @@ exact installed core candidate; it is not proof that published artifacts resolve
 Maven repository after core publication, before publishing plugins.
 
 The previous same-machine throughput comparison timed out in its overloaded baseline and produced no valid
-comparison. No new throughput ratio is claimed. Pinned-core Linux performance remains a client migration gate.
+comparison. A subsequent [bounded benchmark rerun](benchmark/README.md) completed six forks, but its large
+variance does not support a stable performance claim. Pinned-core Linux performance remains a client migration gate.
 The six source mutations were verified on parent 72b6fd4, not rerun on this constructor/test-only follow-up;
 those historical results are not presented as fresh results on 4924645.
 
