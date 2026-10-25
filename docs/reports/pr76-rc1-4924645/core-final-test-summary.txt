@@ -1,0 +1,45 @@
+
+Oct 25, 2026 9:12:38 PM com.telamin.mongoose.internal.LifecycleManager stopPhases
+WARNING: stop incomplete: services still stopping [removed[1]:review-service]
+Oct 25, 2026 9:12:38 PM com.telamin.mongoose.MongooseServer runOrderedStop
+WARNING: server stop incomplete: StopResult[complete=false, handedOff=false, blockedStartup=null, groupsRunning=[], servicesLeftRunning=[removed[1]:review-service]]
+Oct 25, 2026 9:12:38 PM com.telamin.mongoose.MongooseServer shutdown
+INFO: server stop already in progress, or incomplete and resumed
+Oct 25, 2026 9:12:38 PM com.telamin.mongoose.internal.LifecycleManager stop
+INFO: stopping server
+Oct 25, 2026 9:12:38 PM com.telamin.mongoose.internal.LifecycleManager stopPhases
+INFO: stopping event processor agents
+Oct 25, 2026 9:12:38 PM com.telamin.mongoose.internal.LifecycleManager stopPhases
+INFO: stopping agent hosted services
+Oct 25, 2026 9:12:38 PM com.telamin.mongoose.internal.LifecycleManager stopPhases
+INFO: stopping registered services
+Oct 25, 2026 9:12:38 PM com.telamin.mongoose.internal.LifecycleManager stopPhases
+WARNING: stop incomplete: services still stopping [removed[1]:review-service]
+Oct 25, 2026 9:12:38 PM com.telamin.mongoose.MongooseServer runOrderedStop
+WARNING: server stop incomplete: StopResult[complete=false, handedOff=false, blockedStartup=null, groupsRunning=[], servicesLeftRunning=[removed[1]:review-service]]
+[INFO] Tests run: 8, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.137 s -- in com.telamin.mongoose.control.IndependentServiceReviewTest
+[INFO] Running com.telamin.mongoose.stress.ChaosAuditVerdictTest
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.001 s -- in com.telamin.mongoose.stress.ChaosAuditVerdictTest
+[INFO] Running com.telamin.mongoose.stress.ShutdownStormStressTest
+[WARNING] Tests run: 2, Failures: 0, Errors: 0, Skipped: 2, Time elapsed: 0 s -- in com.telamin.mongoose.stress.ShutdownStormStressTest
+[INFO] Running com.telamin.mongoose.stress.ControlPlaneSoakTest
+[WARNING] Tests run: 1, Failures: 0, Errors: 0, Skipped: 1, Time elapsed: 0 s -- in com.telamin.mongoose.stress.ControlPlaneSoakTest
+[INFO] Running com.telamin.mongoose.stress.StressPublisherCancellationTest
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0 s -- in com.telamin.mongoose.stress.StressPublisherCancellationTest
+[INFO] Running com.telamin.mongoose.stress.HighVolumeEventStressTest
+[WARNING] Tests run: 3, Failures: 0, Errors: 0, Skipped: 3, Time elapsed: 0 s -- in com.telamin.mongoose.stress.HighVolumeEventStressTest
+[INFO] Running com.telamin.mongoose.stress.ChaosReplayStressTest
+[WARNING] Tests run: 1, Failures: 0, Errors: 0, Skipped: 1, Time elapsed: 0 s -- in com.telamin.mongoose.stress.ChaosReplayStressTest
+[INFO] Running com.telamin.mongoose.stress.ControlPlaneChaosStressTest
+[WARNING] Tests run: 1, Failures: 0, Errors: 0, Skipped: 1, Time elapsed: 0 s -- in com.telamin.mongoose.stress.ControlPlaneChaosStressTest
+[INFO] 
+[INFO] Results:
+[INFO] 
+[WARNING] Tests run: 1019, Failures: 0, Errors: 0, Skipped: 14
+[INFO] 
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD SUCCESS
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  02:36 min
+[INFO] Finished at: 2026-10-25T21:12:38Z
+[INFO] ------------------------------------------------------------------------

@@ -1,0 +1,45 @@
+  sync stopProcessor(g,n) ISE: 1
+  sync stopProcessor(g,n) returned: 204
+  sync stopProcessor(g,n,1000) APPLIED: 91
+  sync stopProcessor(g,n,1000) null: 93
+  sync addEventProcessor: n=187 max=183 ms
+  sync capture.start: n=232 max=160 ms
+  sync capture.stop: n=230 max=1000 ms
+  sync registerService: n=254 max=267 ms
+  sync removeService: n=257 max=196 ms
+  sync stopProcessor(g,n): n=205 max=1000 ms
+  sync stopProcessor(g,n,1000): n=184 max=267 ms
+  slowest async reply: 3056 ms; replies over 5 s: 0
+  instances NORMAL: 281 received 470131
+  instances NODE: 113 received 229816
+  instances START_THROWS: 41 received 0
+  instances START_SLOW: 54 received 89939
+  instances STOP_THROWS: 41 received 80822
+  instances STOP_SLOW: 42 received 96923
+  instances TEARDOWN_THROWS: 17 received 41265
+  instances HANDLER_THROWS: 39 received 74686
+  instances HANDLER_SLOW: 43 received 92376
+  instances FLOOD: 40 received 0
+  instances BLOCKER: 2 received 115241
+  instances ANCHOR: 3 received 364387
+  audit chaos-g0: records=20152 dropped=0 complete=true violations=[]
+  audit chaos-g0 export: /private/tmp/mongoose-rc1-final-4924645/audit/stress/chaos-g0-202610251.yaml
+  audit chaos-g1: records=19805 dropped=0 complete=true violations=[]
+  audit chaos-g1 export: /private/tmp/mongoose-rc1-final-4924645/audit/stress/chaos-g1-202610251.yaml
+  audit chaos-g2: records=5964 dropped=0 complete=true violations=[]
+  audit chaos-g2 export: /private/tmp/mongoose-rc1-final-4924645/audit/stress/chaos-g2-202610251.yaml
+  threads before=21 after=21 (daemon helper pools may linger)
+  max synchronous admin call: 1000 ms
+  failures: 0
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 31.95 s -- in com.telamin.mongoose.stress.ControlPlaneChaosStressTest
+[INFO] 
+[INFO] Results:
+[INFO] 
+[INFO] Tests run: 419, Failures: 0, Errors: 0, Skipped: 0
+[INFO] 
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD SUCCESS
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  01:33 min
+[INFO] Finished at: 2026-10-25T21:16:48Z
+[INFO] ------------------------------------------------------------------------

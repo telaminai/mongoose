@@ -1,0 +1,45 @@
+[INFO] -------------------------------------------------------
+[INFO]  T E S T S
+[INFO] -------------------------------------------------------
+OpenJDK 64-Bit Server VM warning: Ignoring option --illegal-access=permit; support was removed in 17.0
+[INFO] Running com.telamin.mongoose.tooling.schemagen.SchemaGeneratorTest
+[INFO] Tests run: 9, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.269 s -- in com.telamin.mongoose.tooling.schemagen.SchemaGeneratorTest
+[INFO] Running com.telamin.mongoose.tooling.schemagen.CoreSourceVersionGateTest
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.001 s -- in com.telamin.mongoose.tooling.schemagen.CoreSourceVersionGateTest
+[INFO] 
+[INFO] Results:
+[INFO] 
+[INFO] Tests run: 10, Failures: 0, Errors: 0, Skipped: 0
+[INFO] 
+[INFO] 
+[INFO] --- jar:3.4.1:jar (default-jar) @ config-schema-gen ---
+[INFO] Building jar: /private/tmp/mongoose-plugins-rc1-check/tooling/config-schema-gen/target/config-schema-gen-1.0.46-rc1.jar
+[INFO] ------------------------------------------------------------------------
+[INFO] Reactor Summary for telamin :: mongoose-plugins 1.0.46-rc1:
+[INFO] 
+[INFO] telamin :: mongoose-plugins ........................ SUCCESS [  0.065 s]
+[INFO] telamin :: mongoose-plugins :: svc-admin-rest ...... SUCCESS [  2.568 s]
+[INFO] telamin :: mongoose-plugins :: svc-admin-telnet .... SUCCESS [  0.579 s]
+[INFO] telamin :: mongoose-plugins :: svc-admin-web ....... SUCCESS [ 17.764 s]
+[INFO] telamin :: mongoose-plugins :: svc-micrometer ...... SUCCESS [  0.926 s]
+[INFO] telamin :: mongoose-plugins :: svc-cache ........... SUCCESS [  0.877 s]
+[INFO] telamin :: mongoose-plugins :: svc-jdbc ............ SUCCESS [  3.480 s]
+[INFO] telamin :: mongoose-plugins :: svc-loader-yaml ..... SUCCESS [  0.734 s]
+[INFO] telamin :: mongoose-plugins :: svc-loader-spring ... SUCCESS [  0.654 s]
+[INFO] telamin :: mongoose-plugins :: svc-loader-feed ..... SUCCESS [  0.549 s]
+[INFO] telamin :: mongoose-plugins :: svc-loader-sink ..... SUCCESS [  0.542 s]
+[INFO] telamin :: mongoose-plugins :: connector-aeron ..... SUCCESS [  2.446 s]
+[INFO] telamin :: mongoose-plugins :: mongoose-test-support SUCCESS [  2.197 s]
+[INFO] telamin :: mongoose-plugins :: connector-chronicle . SUCCESS [  1.381 s]
+[INFO] telamin :: mongoose-plugins :: connector-file ...... SUCCESS [  6.233 s]
+[INFO] telamin :: mongoose-plugins :: connector-kafka ..... SUCCESS [  1.038 s]
+[INFO] telamin :: mongoose-plugins :: connector-multicast . SUCCESS [  1.590 s]
+[INFO] telamin :: mongoose-plugins :: lib-jsonserialiser .. SUCCESS [  0.841 s]
+[INFO] telamin :: mongoose-plugins :: lib-fanout .......... SUCCESS [  0.680 s]
+[INFO] mongoose-plugins :: tooling :: config-schema-gen ... SUCCESS [  0.801 s]
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD SUCCESS
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  46.017 s
+[INFO] Finished at: 2026-10-25T21:27:44Z
+[INFO] ------------------------------------------------------------------------
