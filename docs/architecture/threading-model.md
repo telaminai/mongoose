@@ -36,9 +36,10 @@ Mongoose server composes several “agents,” each typically running on its own
 - One Scheduler Agent (the deadline wheel)
 - Optional Agent‑hosted event sources (e.g., FileEventSource)
 
-Data is handed between agents through lock‑free single‑producer/single‑consumer queues managed by EventFlowManager and
-EventToQueuePublisher. Each processor runs single‑threaded on its agent thread — your processor code is not concurrently
-executed by multiple threads.
+Event data is handed between agents through lock‑free queues managed by EventFlowManager and EventToQueuePublisher.
+Control requests (add or stop a processor, deliver a service) reach each processor group through its own ordered
+control mailbox, which the group drains before it dispatches events. Each processor runs single‑threaded on its agent
+thread — your processor code is not concurrently executed by multiple threads.
 
 ### Component/Thread overview
 
@@ -165,6 +166,23 @@ Implications:
   that processor.
 - To update a processor from another thread (service, scheduler), publish an event into the processor’s queue. Don’t
   directly mutate processor state from other threads.
+
+### Calling server control methods from agent threads
+
+Adding or stopping a processor, registering or removing a service, and starting an audit capture are control
+requests to a processor group. Each group decides its requests in order, on its own
+[agent thread](../reference/glossary.md#agent-thread), before it dispatches events.
+
+- **An agent thread never waits for a control reply.** Called from a processor's handler, its `start()` or `stop()`,
+  a `@ServiceRegistered` callback or an agent-hosted service, `addEventProcessor`, `stopProcessor`,
+  `registerService` and `removeService` queue the request and return at once. From an ordinary thread they wait up
+  to `controlWaitMillis` (default 10 s) for the outcome.
+- **Do not block on a reply stage from an agent thread** (`join()`, `get()`). Use the `...Async` continuation forms.
+  A dependent attached after the stage has completed runs on the attaching thread.
+- **`stop()` from an agent thread is handed off** to a `mongoose-server-stop` thread.
+
+The full rules, per caller and per method, are in
+[Control-plane contracts: Threading rules](../reference/control-plane-contracts.md#threading-rules).
 
 ## 5) Moving work between threads safely
 
