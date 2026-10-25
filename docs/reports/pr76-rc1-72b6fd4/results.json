@@ -1,0 +1,280 @@
+{
+  "runs": [
+    {
+      "name": "core-final-test",
+      "sha": "72b6fd44cf20973924745a6d5a7aafce8a30a75a",
+      "command": [
+        "mvn",
+        "-o",
+        "clean",
+        "test"
+      ],
+      "startedUtc": "2026-10-25T19:57:48.075177+00:00",
+      "elapsedSeconds": 154.626,
+      "exitCode": 0,
+      "log": "core-final-test.log",
+      "logSha256": "1b84b67ff469319dbc6fa670bd7192978ccfd11482dbc324eeb2607bb90f6b7f",
+      "surefire": {
+        "tests": 1018,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 14
+      },
+      "buildSuccess": true
+    },
+    {
+      "name": "core-package",
+      "sha": "72b6fd44cf20973924745a6d5a7aafce8a30a75a",
+      "command": [
+        "mvn",
+        "-o",
+        "package"
+      ],
+      "startedUtc": "2026-10-25T20:00:22.884600+00:00",
+      "elapsedSeconds": 149.439,
+      "exitCode": 0,
+      "log": "core-package.log",
+      "logSha256": "cc38468dd6dd0fd05396fe4ef6f530c015171ca240718f61ff319b5cdf768d38",
+      "surefire": {
+        "tests": 1018,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 14
+      },
+      "buildSuccess": true
+    },
+    {
+      "name": "core-release-package",
+      "sha": "72b6fd44cf20973924745a6d5a7aafce8a30a75a",
+      "command": [
+        "mvn",
+        "-o",
+        "-P",
+        "release",
+        "-Dgpg.skip=true",
+        "-DskipTests",
+        "package"
+      ],
+      "startedUtc": "2026-10-25T20:02:52.503006+00:00",
+      "elapsedSeconds": 3.303,
+      "exitCode": 0,
+      "log": "core-release-package.log",
+      "logSha256": "d33d55fcc09d5dcdec37c590a9d6312a5fb2e660ed6af7ddf6c7bb26b3f6b5ab",
+      "surefire": {
+        "tests": 0,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "buildSuccess": true
+    },
+    {
+      "name": "core-local-install",
+      "sha": "72b6fd44cf20973924745a6d5a7aafce8a30a75a",
+      "command": [
+        "mvn",
+        "-o",
+        "-DskipTests",
+        "install"
+      ],
+      "startedUtc": "2026-10-25T20:02:55.898837+00:00",
+      "elapsedSeconds": 1.01,
+      "exitCode": 0,
+      "log": "core-local-install.log",
+      "logSha256": "7dd755b4b7cafe72ef5e8c29ef570bc614a3e857736506fdc30aa4ffcc6549eb",
+      "surefire": {
+        "tests": 0,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "buildSuccess": true
+    },
+    {
+      "name": "core-stress",
+      "sha": "72b6fd44cf20973924745a6d5a7aafce8a30a75a",
+      "command": [
+        "mvn",
+        "-o",
+        "-Dtest=ControlScenarioHarnessTest,ControlPlaneChaosStressTest,ChaosReplayStressTest,ShutdownStormStressTest,HighVolumeEventStressTest",
+        "-Dmongoose.harness.seedStart=12001",
+        "-Dmongoose.harness.seedCount=400",
+        "-Dmongoose.stress=true",
+        "-Dmongoose.stress.seed=202610251",
+        "-Dmongoose.stress.seconds=30",
+        "-Dmongoose.stress.replay.seconds=30",
+        "-Dmongoose.stress.shutdown.cycles=20",
+        "-Dmongoose.stress.eventsPerSource=1000000",
+        "-Dmongoose.stress.auditDir=/private/tmp/mongoose-rc1-final-72b6fd4/audit/stress",
+        "test"
+      ],
+      "startedUtc": "2026-10-25T20:10:41.163515+00:00",
+      "elapsedSeconds": 96.461,
+      "exitCode": 0,
+      "log": "core-stress.log",
+      "logSha256": "dd966b8b303ea675f1a9a4a976b5e7d02a121d46cf0cef25ab6b0e9ef28dcc52",
+      "surefire": {
+        "tests": 419,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "buildSuccess": true
+    },
+    {
+      "name": "core-soak",
+      "sha": "72b6fd44cf20973924745a6d5a7aafce8a30a75a",
+      "command": [
+        "mvn",
+        "-o",
+        "-Dtest=ControlPlaneSoakTest",
+        "-Dmongoose.soak=true",
+        "-Dmongoose.soak.seconds=600",
+        "-Dmongoose.soak.seed=202610252",
+        "-Dmongoose.stress.auditDir=/private/tmp/mongoose-rc1-final-72b6fd4/audit/soak",
+        "test"
+      ],
+      "startedUtc": "2026-10-25T20:12:17.807908+00:00",
+      "elapsedSeconds": 609.781,
+      "exitCode": 0,
+      "log": "core-soak.log",
+      "logSha256": "6c22c7b08c1551ce3e416199f0af502c9d242ec6a923897fbcd1d6c13b0a6774",
+      "surefire": {
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "buildSuccess": true
+    },
+    {
+      "name": "plugins-verify",
+      "sha": "f1f90039909e3e6c1fd8b949bbf4f0712fffa4ab",
+      "command": [
+        "mvn",
+        "-o",
+        "-fae",
+        "clean",
+        "verify"
+      ],
+      "buildSuccess": true,
+      "surefire": {
+        "tests": 333,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "log": "plugins-verify.log",
+      "logSha256": "4d48d2df2da60968794bbeecd7dbf703c4818dddbb76107f7bbad76c92a6807d",
+      "note": "Reconstructed from preserved logs/XML after parallel qualification writers replaced the shared index; underlying logs and XML are unchanged."
+    },
+    {
+      "name": "plugins-dependencies",
+      "sha": "f1f90039909e3e6c1fd8b949bbf4f0712fffa4ab",
+      "command": [
+        "mvn",
+        "-o",
+        "dependency:tree",
+        "-Dincludes=com.telamin:mongoose,com.telamin.fluxtion:*"
+      ],
+      "buildSuccess": true,
+      "surefire": {
+        "tests": 0,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "log": "plugins-dependencies.log",
+      "logSha256": "1949eb75780902bd82f74e3a34e12a3a13757b34fd497e145e5afdd8ae4cb928",
+      "note": "Reconstructed from preserved logs/XML after parallel qualification writers replaced the shared index; underlying logs and XML are unchanged."
+    }
+  ],
+  "core": "72b6fd44cf20973924745a6d5a7aafce8a30a75a",
+  "plugins": "f1f90039909e3e6c1fd8b949bbf4f0712fffa4ab",
+  "published": false,
+  "clientMigrationCleared": false,
+  "java": "Amazon Corretto 21.0.9",
+  "platform": "unpinned macOS arm64",
+  "strictMkdocs": true,
+  "performanceComparison": {
+    "status": "incomplete",
+    "reason": "74ad868 baseline dropped queue copies and timed out after 90 seconds; no candidate comparison result"
+  },
+  "soak": {
+    "seconds": 600,
+    "seed": 202610252,
+    "completeShutdown": true,
+    "shutdownMillis": 4,
+    "records": [
+      75025,
+      73577,
+      74098
+    ],
+    "droppedRecords": 0,
+    "invariantViolations": 0
+  },
+  "sourceMutations": [
+    {
+      "name": "baseline",
+      "exitCode": 0,
+      "tests": 40,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "name-only-stop-without-release",
+      "exitCode": 1,
+      "tests": 40,
+      "failures": 5,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "missing-stop-reply",
+      "exitCode": 1,
+      "tests": 40,
+      "failures": 18,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "applied-without-release-renamed-rule",
+      "exitCode": 1,
+      "tests": 40,
+      "failures": 19,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "missing-stale-open-close",
+      "exitCode": 1,
+      "tests": 40,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "skip-terminal-sweep",
+      "exitCode": 1,
+      "tests": 40,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "drop-claimed-stop",
+      "exitCode": 1,
+      "tests": 40,
+      "failures": 7,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "coreJarSha256": "fab27cf0cfdad125db6d2bca2e1c695ea2ff23d055fb43ea6cf7c7eb5d49693e",
+  "auditArchive": {
+    "file": "audit-evidence.tar.gz",
+    "sha256": "50197e080b95696f90a131dd44134735b441178e177d66e94162ee214af52a0c",
+    "bytes": 5219901
+  }
+}

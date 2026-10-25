@@ -1,0 +1,10 @@
+[INFO] Tests run: 412, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 3.023 s -- in com.telamin.mongoose.control.ControlScenarioHarnessTest
+[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 15.58 s -- in com.telamin.mongoose.stress.ShutdownStormStressTest
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 11.60 s -- in com.telamin.mongoose.stress.HighVolumeEventStressTest
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 32.76 s -- in com.telamin.mongoose.stress.ChaosReplayStressTest
+  audit chaos-g0: records=31977 dropped=0 complete=true violations=[]
+  audit chaos-g1: records=18507 dropped=0 complete=true violations=[]
+  audit chaos-g2: records=5151 dropped=0 complete=true violations=[]
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 32.18 s -- in com.telamin.mongoose.stress.ControlPlaneChaosStressTest
+[INFO] Tests run: 419, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS

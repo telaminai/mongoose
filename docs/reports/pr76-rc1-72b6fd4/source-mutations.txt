@@ -1,0 +1,9 @@
+Scratch and preserved logs: /var/folders/jw/qy248v_j4_34b9l6c_wt_xcc0000gn/T/mongoose-source-mutations-n9l_u8_t
+{"name": "baseline", "exitCode": 0, "tests": 40, "failures": 0, "errors": 0, "skipped": 0}
+{"name": "name-only-stop-without-release", "exitCode": 1, "tests": 40, "failures": 5, "errors": 0, "skipped": 0}
+{"name": "missing-stop-reply", "exitCode": 1, "tests": 40, "failures": 18, "errors": 0, "skipped": 0}
+{"name": "applied-without-release-renamed-rule", "exitCode": 1, "tests": 40, "failures": 19, "errors": 0, "skipped": 0}
+{"name": "missing-stale-open-close", "exitCode": 1, "tests": 40, "failures": 2, "errors": 0, "skipped": 0}
+{"name": "skip-terminal-sweep", "exitCode": 1, "tests": 40, "failures": 1, "errors": 0, "skipped": 0}
+{"name": "drop-claimed-stop", "exitCode": 1, "tests": 40, "failures": 7, "errors": 0, "skipped": 0}
+All six mutants rejected by JUnit assertions; scratch runtime sources restored.

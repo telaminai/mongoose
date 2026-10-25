@@ -1,0 +1,32 @@
+SOAK elapsed=0s seed=202610252 requests=5 retainedInstances=7 pruned=0 outstanding=1 resources=0 auditRecords=108 heapUsed=12462072 threads=24 gcCount=1 gcMillis=1 anomalies=0
+SOAK elapsed=30s seed=202610252 requests=5195 retainedInstances=49 pruned=181 outstanding=0 resources=0 auditRecords=17817 heapUsed=43979256 threads=55 gcCount=7 gcMillis=11 anomalies=0
+SOAK elapsed=60s seed=202610252 requests=5909 retainedInstances=53 pruned=389 outstanding=0 resources=5 auditRecords=23259 heapUsed=59588832 threads=55 gcCount=8 gcMillis=12 anomalies=0
+SOAK elapsed=90s seed=202610252 requests=11091 retainedInstances=50 pruned=582 outstanding=0 resources=3 auditRecords=41428 heapUsed=168640736 threads=82 gcCount=8 gcMillis=12 anomalies=0
+SOAK elapsed=120s seed=202610252 requests=11775 retainedInstances=58 pruned=783 outstanding=0 resources=5 auditRecords=47529 heapUsed=72068016 threads=82 gcCount=9 gcMillis=16 anomalies=0
+SOAK elapsed=150s seed=202610252 requests=16987 retainedInstances=57 pruned=979 outstanding=0 resources=3 auditRecords=65975 heapUsed=176925616 threads=87 gcCount=9 gcMillis=16 anomalies=0
+SOAK elapsed=180s seed=202610252 requests=17687 retainedInstances=59 pruned=1174 outstanding=0 resources=3 auditRecords=71828 heapUsed=89219672 threads=87 gcCount=10 gcMillis=25 anomalies=0
+SOAK elapsed=210s seed=202610252 requests=22845 retainedInstances=53 pruned=1364 outstanding=0 resources=2 auditRecords=90301 heapUsed=198271576 threads=103 gcCount=10 gcMillis=25 anomalies=0
+SOAK elapsed=240s seed=202610252 requests=23549 retainedInstances=58 pruned=1556 outstanding=0 resources=2 auditRecords=96433 heapUsed=107558408 threads=103 gcCount=11 gcMillis=28 anomalies=0
+SOAK elapsed=270s seed=202610252 requests=28751 retainedInstances=59 pruned=1745 outstanding=0 resources=2 auditRecords=115004 heapUsed=216610312 threads=119 gcCount=11 gcMillis=28 anomalies=0
+SOAK elapsed=301s seed=202610252 requests=29424 retainedInstances=60 pruned=1919 outstanding=0 resources=3 auditRecords=120887 heapUsed=124482448 threads=119 gcCount=12 gcMillis=31 anomalies=0
+SOAK elapsed=331s seed=202610252 requests=34645 retainedInstances=57 pruned=2113 outstanding=0 resources=2 auditRecords=139132 heapUsed=229340048 threads=88 gcCount=12 gcMillis=31 anomalies=0
+SOAK elapsed=361s seed=202610252 requests=35369 retainedInstances=59 pruned=2289 outstanding=1 resources=3 auditRecords=145640 heapUsed=138413176 threads=88 gcCount=13 gcMillis=34 anomalies=0
+SOAK elapsed=391s seed=202610252 requests=40548 retainedInstances=64 pruned=2474 outstanding=0 resources=3 auditRecords=164045 heapUsed=247465080 threads=75 gcCount=13 gcMillis=34 anomalies=0
+SOAK elapsed=421s seed=202610252 requests=41266 retainedInstances=60 pruned=2670 outstanding=0 resources=0 auditRecords=170796 heapUsed=166695208 threads=75 gcCount=14 gcMillis=36 anomalies=0
+SOAK elapsed=451s seed=202610252 requests=46441 retainedInstances=66 pruned=2846 outstanding=0 resources=4 auditRecords=189020 heapUsed=149318120 threads=57 gcCount=15 gcMillis=39 anomalies=0
+SOAK elapsed=481s seed=202610252 requests=47118 retainedInstances=59 pruned=3041 outstanding=0 resources=3 auditRecords=195511 heapUsed=199649768 threads=57 gcCount=15 gcMillis=39 anomalies=0
+SOAK elapsed=511s seed=202610252 requests=47832 retainedInstances=63 pruned=3232 outstanding=0 resources=1 auditRecords=202313 heapUsed=249981416 threads=36 gcCount=15 gcMillis=39 anomalies=0
+SOAK elapsed=541s seed=202610252 requests=48554 retainedInstances=62 pruned=3415 outstanding=0 resources=2 auditRecords=208651 heapUsed=190150584 threads=37 gcCount=16 gcMillis=43 anomalies=0
+SOAK elapsed=571s seed=202610252 requests=49240 retainedInstances=61 pruned=3600 outstanding=0 resources=6 auditRecords=215589 heapUsed=236287928 threads=37 gcCount=16 gcMillis=43 anomalies=0
+SOAK shutdownMillis=4 result=StopResult[complete=true, handedOff=false, blockedStartup=null, groupsRunning=[], servicesLeftRunning=[]]
+SOAK workloadSeconds=600 seed=202610252
+SOAK audit chaos-g0 records=75025 dropped=0 complete=true violations=[]
+SOAK audit chaos-g0 export /private/tmp/mongoose-rc1-final-72b6fd4/audit/soak/chaos-g0-202610252.yaml
+SOAK audit chaos-g1 records=73577 dropped=0 complete=true violations=[]
+SOAK audit chaos-g1 export /private/tmp/mongoose-rc1-final-72b6fd4/audit/soak/chaos-g1-202610252.yaml
+SOAK audit chaos-g2 records=74098 dropped=0 complete=true violations=[]
+SOAK audit chaos-g2 export /private/tmp/mongoose-rc1-final-72b6fd4/audit/soak/chaos-g2-202610252.yaml
+SOAK failures=[]
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 608.6 s -- in com.telamin.mongoose.stress.ControlPlaneSoakTest
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS

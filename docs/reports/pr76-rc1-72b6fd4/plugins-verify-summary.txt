@@ -1,0 +1,74 @@
+[INFO] Tests run: 32, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.640 s -- in com.telamin.mongoose.plugin.svc.adminrest.JavalinAdminCommandServiceTest
+[INFO] Tests run: 32, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.087 s -- in com.telamin.mongoose.plugin.svc.admintelnet.TelnetAdminCommandProcessorTest
+[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 5.337 s -- in com.telamin.mongoose.plugin.svc.adminweb.AuditTailConnectWindowMeasurementTest
+[INFO] Tests run: 78, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.611 s -- in com.telamin.mongoose.plugin.svc.adminweb.WebAdminServiceTest
+[INFO] Tests run: 6, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.083 s -- in com.telamin.mongoose.plugin.svc.adminweb.AuditTailTickTest
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.012 s -- in com.telamin.mongoose.plugin.svc.adminweb.AuditTailThreadingTest
+[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.002 s -- in com.telamin.mongoose.plugin.svc.adminweb.YamlContainerWriterTest
+[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.010 s -- in com.telamin.mongoose.plugin.svc.adminweb.LogTailTest
+[INFO] Tests run: 6, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.006 s -- in com.telamin.mongoose.plugin.svc.adminweb.WebAdminServiceReadFromRootsTest
+[INFO] Tests run: 7, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.131 s -- in com.telamin.mongoose.plugin.svc.adminweb.AuditTailLifecycleTest
+[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.068 s -- in com.telamin.mongoose.plugin.svc.adminweb.MonitoringSamplerThroughputTest
+[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.026 s -- in com.telamin.mongoose.plugin.svc.adminweb.ServerRegistryFileTest
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.265 s -- in com.telamin.mongoose.plugin.svc.adminweb.AuditTailDeliveryAcceptanceTest
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.002 s -- in com.telamin.mongoose.plugin.svc.adminweb.LogFanOutCallSiteTest
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.001 s -- in com.telamin.mongoose.plugin.svc.adminweb.ExportFramingInjectionTest
+[INFO] Tests run: 6, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.002 s -- in com.telamin.mongoose.plugin.svc.adminweb.SessionTokenTest
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.441 s -- in com.telamin.mongoose.plugin.svc.adminweb.AuditRunningServerAcceptanceTest
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.015 s -- in com.telamin.mongoose.plugin.svc.adminweb.ChronicleIndexSemanticsTest
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 6.812 s -- in com.telamin.mongoose.plugin.svc.adminweb.AuditTailConnectWindowProbeTest
+[INFO] Tests run: 139, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 6, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.151 s -- in com.telamin.mongoose.plugin.svc.micrometer.MicrometerBridgeTest
+[INFO] Tests run: 6, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.361 s -- in com.telamin.mongoose.plugin.svc.cache.JsonFileCacheSurvivalIntegrationTest
+[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.014 s -- in com.telamin.mongoose.plugin.svc.cache.InMemoryCacheTest
+[INFO] Tests run: 7, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.045 s -- in com.telamin.mongoose.plugin.svc.cache.JsonFileCacheTest
+[INFO] Tests run: 15, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 7, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 3.219 s -- in com.telamin.mongoose.plugin.svc.jdbc.impl.JdbcConnectionLoaderServiceTest
+[INFO] Tests run: 7, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 6, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.213 s -- in com.telamin.mongoose.plugin.loader.yaml.EventHandlerLoaderDeriveClassNameTest
+[INFO] Tests run: 10, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.083 s -- in com.telamin.mongoose.plugin.loader.yaml.PersistedConfigStoreTest
+[INFO] Tests run: 16, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.217 s -- in com.telamin.mongoose.plugin.loader.spring.SpringEventHandlerLoaderDeriveClassNameTest
+[INFO] Tests run: 10, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.086 s -- in com.telamin.mongoose.plugin.loader.spring.PersistedConfigStoreTest
+[INFO] Tests run: 14, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.181 s -- in com.telamin.mongoose.plugin.loader.feed.FeedLoaderYamlParseTest
+[INFO] Tests run: 10, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.074 s -- in com.telamin.mongoose.plugin.loader.feed.PersistedConfigStoreTest
+[INFO] Tests run: 13, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.168 s -- in com.telamin.mongoose.plugin.loader.sink.SinkLoaderYamlParseTest
+[INFO] Tests run: 10, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.059 s -- in com.telamin.mongoose.plugin.loader.sink.PersistedConfigStoreTest
+[INFO] Tests run: 12, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.544 s -- in com.telamin.mongoose.plugin.connector.aeron.AeronArchiveEventSourceTest
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.002 s -- in com.telamin.mongoose.plugin.connector.aeron.StartupCacheBoundaryTest
+[INFO] Tests run: 8, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.596 s -- in com.telamin.mongoose.plugin.connector.aeron.AeronMessageSinkTest
+[INFO] Tests run: 14, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.551 s -- in com.telamin.mongoose.plugin.testsupport.DynamicProcessorRegistrationTest
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.290 s -- in com.telamin.mongoose.plugin.testsupport.MongooseTestHarnessTest
+[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.155 s -- in com.telamin.mongoose.plugin.connector.chronicle.StartupCacheBoundaryTest
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.589 s -- in com.telamin.mongoose.plugin.connector.chronicle.ChronicleMessageSinkTest
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.488 s -- in com.telamin.mongoose.plugin.connector.chronicle.ChronicleRoundTripIntegrationTest
+[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.156 s -- in com.telamin.mongoose.plugin.connector.file.FileEventSourceTest
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.009 s -- in com.telamin.mongoose.plugin.connector.file.StartupCacheBoundaryTest
+[INFO] Tests run: 8, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 5.539 s -- in com.telamin.mongoose.plugin.connector.file.FileMessageSinkTest
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.203 s -- in com.telamin.mongoose.plugin.connector.file.FileRoundTripIntegrationTest
+[INFO] Tests run: 13, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.394 s -- in com.telamin.mongoose.plugin.connector.kafka.KafkaRoundTripIntegrationTest
+[INFO] Tests run: 6, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.433 s -- in com.telamin.mongoose.plugin.connector.kafka.KafkaMessagePublisherTest
+[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.008 s -- in com.telamin.mongoose.plugin.connector.kafka.KafkaMessageConsumerTest
+[INFO] Tests run: 11, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.146 s -- in com.telamin.mongoose.plugin.connector.multicast.StartupCacheBoundaryTest
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.040 s -- in com.telamin.mongoose.plugin.connector.multicast.MulticastMessageSinkTest
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.037 s -- in com.telamin.mongoose.plugin.connector.multicast.MulticastEventSourceTest
+[INFO] Tests run: 7, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.194 s -- in com.telamin.mongoose.plugin.lib.json.JsonlTest
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 9, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.127 s -- in com.telamin.mongoose.plugin.lib.fanout.FanOutSinkTest
+[INFO] Tests run: 9, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 9, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.391 s -- in com.telamin.mongoose.tooling.schemagen.SchemaGeneratorTest
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.003 s -- in com.telamin.mongoose.tooling.schemagen.CoreSourceVersionGateTest
+[INFO] Tests run: 10, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
