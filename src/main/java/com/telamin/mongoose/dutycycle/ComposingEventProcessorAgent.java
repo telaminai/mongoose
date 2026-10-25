@@ -228,7 +228,13 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         if (registration != null) admit(registration, name);
         ControlRequest request = new ControlRequest(ControlRequest.Kind.STOP, "stop " + name,
                 id -> stopIntent(id, name, registration), registration);
-        if (completed != null) request.onReply(completed);
+        // only a stop that was applied completes: one refused for a full mailbox, or swept unapplied, changed nothing
+        // and must not run what follows a stop, such as freeing a name (final review, finding 4)
+        if (completed != null) {
+            request.reply().thenAccept(reply -> {
+                if (reply.applied()) completed.run();
+            });
+        }
         return control.send(request);
     }
 
@@ -677,7 +683,8 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         // never recorded; a service change is what was sent once the server had started
         boolean runtimeChange = payload.runtime();
         if (payload.version() > 0) lastServiceVersions.put(payload.service().serviceName(), payload.version());
-        if (runtimeChange && replayer != null && replayer.suppressesLiveServices(flow)) {
+        if (replayer != null && (runtimeChange && replayer.suppressesLiveServices(flow)
+                || replayer.suppressesLiveService(flow, payload.service().serviceName()))) {
             // replayed from a stream that records its service changes: delivered where the recorded run had it
             return result(effect, ControlOutcome.SUCCEEDED, "replayed: delivered in position");
         }
@@ -803,8 +810,12 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                 Object handle = captureHandles.remove(c.resourceId());
                 CaptureCompletion closed = handle == null ? null : closeResource(c.requestId(), c.opId(), c.resourceId(), handle);
                 // the open's final outcome, then the compensating close: as the control processor would have recorded
+                // an open its timeout already settled has had its final outcome: this one is a duplicate. The group has
+                // ended, so its control state no longer changes and is read safely here
+                boolean settled = control.processor().controlState.pendingOpen(c.opId()) == null;
                 audit.fallback("EffectOutcome", "group", roleName(), "requestId", c.requestId(), "opId", c.opId(),
-                        "effect", "OpenCapture", "outcome", "succeeded", "stale", true, "resourceId", c.resourceId());
+                        "effect", "OpenCapture", "outcome", "succeeded", "stale", true, "resourceId", c.resourceId(),
+                        "duplicate", settled ? Boolean.TRUE : null);
                 audit.fallback("CaptureCompensated", "group", roleName(), "opId", c.opId(), "resourceId", c.resourceId(),
                         "closed", closed != null && closed.kind() == CaptureCompletion.Kind.CLOSED);
             }
@@ -812,7 +823,8 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                     "opId", c.opId(), "effect", "CloseCapture", "outcome", c.kind() == CaptureCompletion.Kind.CLOSED
                             ? "succeeded" : "failed", "resourceId", c.resourceId(), "reason", c.reason());
             case OPEN_FAILED -> audit.fallback("EffectOutcome", "group", roleName(), "requestId", c.requestId(),
-                    "opId", c.opId(), "effect", "OpenCapture", "outcome", "failed", "stale", true, "reason", c.reason());
+                    "opId", c.opId(), "effect", "OpenCapture", "outcome", "failed", "stale", true, "reason", c.reason(),
+                    "duplicate", control.processor().controlState.pendingOpen(c.opId()) == null ? Boolean.TRUE : null);
             default -> audit.fallback("CaptureOrphan", "group", roleName(), "opId", c.opId(), "fact", c.fact());
         }
     }

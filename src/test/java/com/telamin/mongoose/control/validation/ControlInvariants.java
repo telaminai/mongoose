@@ -169,6 +169,16 @@ public final class ControlInvariants {
                 live.remove(name, gen);
             }
         }
+        // I7: nothing is started, opened or installed once the group has decided to close
+        long closingFrom = evidence.ofType("Decision").stream()
+                .filter(d -> "closeGroup".equals(d.str("rule")) || "closeEmpty".equals(d.str("rule")))
+                .mapToLong(Rec::seq).min().orElse(Long.MAX_VALUE);
+        for (Requested q : requested) {
+            if (q.decisionSeq() > closingFrom && Set.of("BuildAndStart", "OpenCapture", "InstallCapture").contains(q.effect())) {
+                violations.add("I7 " + q.effect() + " " + q.opId() + " requested after the group decided to close (seq "
+                        + closingFrom + ")");
+            }
+        }
         // I1: no InstallCapture for a generation once a decision has moved it to Releasing
         Map<Long, Long> releasingFrom = new HashMap<>();
         for (Rec d : evidence.ofType("Decision")) {

@@ -852,7 +852,16 @@ public class MongooseServer implements MongooseServerController {
                                 + " withdrawn within " + REMOVED_SERVICE_STOP_DEFER_MILLIS + " ms");
                     }
                     stopRemovedService(removed);
-                }, replyExecutor);
+                }, task -> {
+                    // never lost to the executor's shutdown at server stop (final review, finding 9)
+                    try {
+                        replyExecutor.execute(task);
+                    } catch (java.util.concurrent.RejectedExecutionException shutDown) {
+                        Thread t = new Thread(task, "mongoose-removed-service-stop");
+                        t.setDaemon(true);
+                        t.start();
+                    }
+                });
     }
 
     /** How long a deferred stop of a removed service waits for every group to confirm the withdrawal. */
@@ -1115,10 +1124,11 @@ public class MongooseServer implements MongooseServerController {
             return java.util.concurrent.CompletableFuture.completedFuture(new com.telamin.mongoose.control.ControlReply(
                     -1, com.telamin.mongoose.control.event.ReplyOutcome.REFUSED, "no such group", -1, handle.name()));
         }
-        ProcessorName reservation = new ProcessorName(handle.group(), handle.name());
         ProcessorRegistration registration = handle.registration();
+        // the name is freed by the control processor's ReleaseName effect once the stop is applied; never by the reply,
+        // which a stop refused for a full mailbox also completes (final review, finding 4)
         return com.telamin.mongoose.control.ControlReplies.isolated(processorAgent.group().removeEventProcessorByName(
-                handle.name(), registration, () -> reservedProcessorNames.remove(reservation, registration)), replyExecutor);
+                handle.name(), registration, null), replyExecutor);
     }
 
     /**
@@ -1385,10 +1395,10 @@ public class MongooseServer implements MongooseServerController {
         ProcessorName reservation = new ProcessorName(groupName, processorName);
         ProcessorRegistration registration = reservedProcessorNames.get(reservation);
         if (registration == null) return null;
-        // A stop belongs to this accepted add, including before its supplier runs. Release the name only when that
-        // stop is consumed, and never remove a newer reservation or stop a replacement under that name.
-        return processorAgent.group().removeEventProcessorByName(processorName, registration,
-                () -> reservedProcessorNames.remove(reservation, registration));
+        // A stop belongs to this accepted add, including before its supplier runs. The name is released by the control
+        // processor's ReleaseName effect when the stop is applied (the registration's own releaser), never by the reply:
+        // a stop refused for a full mailbox is replied too, and its processor keeps running (final review, finding 4)
+        return processorAgent.group().removeEventProcessorByName(processorName, registration, null);
     }
 
     /**

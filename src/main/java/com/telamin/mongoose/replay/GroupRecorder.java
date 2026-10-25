@@ -125,7 +125,11 @@ public final class GroupRecorder {
                 failure = t;
             }
             Recorded r = byFlow.get(flow);
-            if (r != null) {
+            if (r != null && !com.telamin.mongoose.control.AgentThreads.isAgentThread()) {
+                // off the processor's own thread: outside its input order, so the stream cannot reproduce it (final 11)
+                append(r, new ReplayEntry.Failed("control", "control request " + method + args
+                        + " made off the processor's thread", live.getAsLong()));
+            } else if (r != null) {
                 append(r, new ReplayEntry.ControlCall(method, List.copyOf(args), failure == null ? "ok" : "failed: " + failure,
                         live.getAsLong()));
             }

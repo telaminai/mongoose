@@ -125,7 +125,7 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
 
     @Override
     public boolean has(String processor) {
-        return entries.containsKey(processor);
+        return entries.containsKey(processor) || provenance.containsKey(processor);   // a BEGAN line proves it existed
     }
 
     @Override

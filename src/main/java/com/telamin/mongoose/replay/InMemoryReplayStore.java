@@ -33,7 +33,7 @@ public class InMemoryReplayStore implements ReplayStore {
 
     @Override
     public boolean has(String processor) {
-        return entries.containsKey(processor);
+        return entries.containsKey(processor) || provenance.containsKey(processor);
     }
 
     @Override
