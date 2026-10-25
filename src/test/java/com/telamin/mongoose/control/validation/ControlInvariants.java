@@ -141,9 +141,15 @@ public final class ControlInvariants {
             }
         }
         // I8: Applied only after every effect of that request succeeded
+        // indexed by request once: scanning every outcome for every reply made a long audit (100k+ records, the
+        // 10-minute chaos run) take tens of minutes to judge
+        Map<Long, List<Rec>> outcomesByRequest = new HashMap<>();
+        for (Rec o : evidence.ofType("EffectOutcome")) {
+            outcomesByRequest.computeIfAbsent(o.requestId(), k -> new ArrayList<>()).add(o);
+        }
         for (Rec reply : evidence.ofType("Reply")) {
             if (!"APPLIED".equals(reply.str("outcome"))) continue;
-            for (Rec o : evidence.ofType("EffectOutcome")) {
+            for (Rec o : outcomesByRequest.getOrDefault(reply.requestId(), List.of())) {
                 // a fallback record has no seq to order by; a failed physical close is recorded and never blocks a reply
                 if (o.requestId() == reply.requestId() && !o.fallback() && o.seq() < reply.seq()
                         && "failed".equals(o.str("outcome")) && !"DeliverService".equals(o.str("effect"))
