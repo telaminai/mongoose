@@ -162,6 +162,17 @@ public final class ControlDriver {
         return false;
     }
 
+    /**
+     * Mark the group dead if its captured thread has ended without closing it (the error handler threw, so Agrona's
+     * loop exited without the fatal wrapper or onClose). The server calls it before and after closing the group.
+     */
+    public void detectDeath() {
+        Thread t = agentThread;
+        GroupState s = state.get();
+        if (t == null || t.isAlive() || s == GroupState.CLOSED || s == GroupState.DEAD) return;
+        markDead("agent thread terminated without closing");
+    }
+
     private void refuseTerminal(ControlRequest request) {
         if (request.completeUnclaimed(ControlReply.notRunning(request.requestId(), "group " + group + " is " + state.get()))) {
             request.runUnapplied();

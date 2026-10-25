@@ -645,14 +645,37 @@ public class MongooseServer implements MongooseServerController {
     public void registerService(Service<?>... services) {
         for (Service<?> service : services) {
             Map<String, com.telamin.mongoose.control.ControlRequest> sent;
-            serviceLock.lock();     // design PR 4: registry mutation and broadcast publication in one order
-            try {
-                sent = registerServiceLocked(service);
-            } finally {
-                serviceLock.unlock();
+            java.util.concurrent.locks.Lock read = admitServiceChange();
+            if (read == null) {
+                throw new IllegalStateException("server is stopping: service '" + service.serviceName() + "' was not registered");
             }
-            awaitBroadcast(service, true, sent);   // never under the lock
+            try {
+                serviceLock.lock();     // design PR 4: registry mutation and broadcast publication in one order
+                try {
+                    sent = registerServiceLocked(service);
+                } finally {
+                    serviceLock.unlock();
+                }
+            } finally {
+                read.unlock();
+            }
+            awaitBroadcast(service, true, sent);   // never under a lock
         }
+    }
+
+    /**
+     * Admission for a service change, as for an add (design "Bounded shutdown"): the read lock, taken without waiting on
+     * an agent thread. @return the held lock, or null when the server is stopping (the stop owns the services then)
+     */
+    private java.util.concurrent.locks.Lock admitServiceChange() {
+        java.util.concurrent.locks.Lock read = admission.readLock();
+        boolean locked = isServerAgentThread(Thread.currentThread()) ? read.tryLock() : lockUninterruptibly(read);
+        if (!locked) return null;
+        if (isStopRequested()) {
+            read.unlock();
+            return null;
+        }
+        return read;
     }
 
     private Map<String, com.telamin.mongoose.control.ControlRequest> registerServiceLocked(Service<?> service) {
@@ -759,13 +782,23 @@ public class MongooseServer implements MongooseServerController {
         log.info("removeService:" + serviceName);
         Service<?> removed;
         Map<String, com.telamin.mongoose.control.ControlRequest> sent;
-        serviceLock.lock();     // design PR 4: registry mutation and broadcast publication in one order
+        java.util.concurrent.locks.Lock read = admitServiceChange();
+        if (read == null) {
+            // the stop stops every registered service once; removing it here too would stop it twice, concurrently
+            log.info("removeService:" + serviceName + " ignored: the server is stopping and stops it");
+            return;
+        }
         try {
-            removed = registeredServices.remove(serviceName);
-            if (removed == null) return;
-            sent = sendBroadcast(removed, false);
+            serviceLock.lock();     // design PR 4: registry mutation and broadcast publication in one order
+            try {
+                removed = registeredServices.remove(serviceName);
+                if (removed == null) return;
+                sent = sendBroadcast(removed, false);
+            } finally {
+                serviceLock.unlock();
+            }
         } finally {
-            serviceLock.unlock();
+            read.unlock();
         }
         // processors unbind before the service stops: wait (bounded, where safe) for the groups to apply it
         awaitBroadcast(removed, false, sent);
@@ -849,6 +882,19 @@ public class MongooseServer implements MongooseServerController {
      * @param service the worker service to register and host on its agent group
      */
     public void registerWorkerService(ServiceAgent<?> service) {
+        java.util.concurrent.locks.Lock read = admitServiceChange();
+        if (read == null) {
+            // a group created after the stop's snapshot would never be closed
+            throw new IllegalStateException("server is stopping: worker service " + service + " was not registered");
+        }
+        try {
+            registerWorkerServiceAdmitted(service);
+        } finally {
+            read.unlock();
+        }
+    }
+
+    private void registerWorkerServiceAdmitted(ServiceAgent<?> service) {
         String agentGroup = service.agentGroup();
         IdleStrategy idleStrategy = mongooseServerConfig.lookupIdleStrategyWhenNull(service.idleStrategy(), service.agentGroup());
         log.info("registerWorkerService:" + service + " agentGroup:" + agentGroup + " idleStrategy:" + idleStrategy);
@@ -1489,8 +1535,9 @@ public class MongooseServer implements MongooseServerController {
                         log.log(java.util.logging.Level.WARNING, "group " + name + " failed to close", t);
                     }
                 });
+                lastStopResult = StopResult.completed();
                 stopCompleted.countDown();
-                return StopResult.completed();
+                return lastStopResult;
             }
             if (state == LifecycleState.STOPPED) {
                 return StopResult.completed();
@@ -1498,7 +1545,9 @@ public class MongooseServer implements MongooseServerController {
             if (state == LifecycleState.STOPPING) {
                 log.info("server stop already in progress, or incomplete and resumed");
                 // on an ordinary thread: wait for the attempt in progress, then resume it if it ran out
-                return onAgentThread ? StopResult.handedOffToStopThread() : runOrderedStop();
+                if (!onAgentThread) return runOrderedStop();
+                // an incomplete attempt is resumed by nobody unless this hands it on (review of PR 2, finding 1)
+                return handOffStop();
             }
             // STARTING (a start in progress, or one that failed) or STARTED
             if (lifecycleState.compareAndSet(state, LifecycleState.STOPPING)) {
@@ -1508,12 +1557,27 @@ public class MongooseServer implements MongooseServerController {
         if (onAgentThread) {
             log.info("stop called on lifecycle or agent thread " + Thread.currentThread().getName()
                     + ", running the ordered shutdown on a separate thread");
-            Thread stopper = new Thread(this::runOrderedStop, "mongoose-server-stop");
-            stopper.setDaemon(false);
-            stopper.start();
-            return StopResult.handedOffToStopThread();
+            return handOffStop();
         }
         return runOrderedStop();
+    }
+
+    /** True while a handed-off stop thread is running or about to: one is enough, as attempts are serialised. */
+    private final java.util.concurrent.atomic.AtomicBoolean handedOffStopRunning = new java.util.concurrent.atomic.AtomicBoolean();
+
+    private StopResult handOffStop() {
+        if (handedOffStopRunning.compareAndSet(false, true)) {
+            Thread stopper = new Thread(() -> {
+                try {
+                    runOrderedStop();
+                } finally {
+                    handedOffStopRunning.set(false);
+                }
+            }, "mongoose-server-stop");
+            stopper.setDaemon(false);
+            stopper.start();
+        }
+        return StopResult.handedOffToStopThread();
     }
 
     /** The result of the last stop attempt, or null if none has run. */
@@ -1578,12 +1642,13 @@ public class MongooseServer implements MongooseServerController {
                 } catch (RuntimeException e) {
                     log.log(java.util.logging.Level.WARNING, "audit capture could not be stopped at server stop", e);
                 }
+                lastStopResult = result;            // before the latch: a woken awaitStopped reads this attempt
                 lifecycleState.set(LifecycleState.STOPPED);
                 stopCompleted.countDown();
             } else {
                 log.warning("server stop incomplete: " + result);
+                lastStopResult = result;
             }
-            lastStopResult = result;
             return result;
         }
     }

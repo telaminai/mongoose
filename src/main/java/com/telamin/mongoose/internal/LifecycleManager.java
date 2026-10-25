@@ -241,6 +241,7 @@ public final class LifecycleManager {
         boolean fenced;
         boolean feedsStopped;
         boolean drained;
+        final java.util.Set<String> sourcesRemoved = new java.util.HashSet<>();
         final java.util.Set<String> closed = new java.util.HashSet<>();
         final java.util.Map<String, Thread> helpers = new java.util.LinkedHashMap<>();
         final java.util.Set<String> servicesStopped = new java.util.HashSet<>();
@@ -283,6 +284,23 @@ public final class LifecycleManager {
         }
         stopped.set(true);
         long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(Math.max(0, shutdownTimeoutMillis));
+        // an interrupted stop thread would return from every wait at once and report everything as still running: the
+        // interrupt is set aside for the attempt and restored after it (review of PR 2, finding 6)
+        boolean interrupted = Thread.interrupted();
+        try {
+            return stopPhases(composingEventProcessorAgents, composingServiceAgents, registeredServices, flowManager,
+                    drainTimeoutMillis, deadline);
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+    }
+
+    private com.telamin.mongoose.StopResult stopPhases(ConcurrentHashMap<String, ? extends GroupRunner> composingEventProcessorAgents,
+                                                       ConcurrentHashMap<String, ? extends GroupRunner> composingServiceAgents,
+                                                       Map<String, Service<?>> registeredServices,
+                                                       EventFlowManager flowManager,
+                                                       long drainTimeoutMillis,
+                                                       long deadline) {
 
         // 1. fence startup. Signal outside the lock: a callback may need stop() to unblock. Once it returns, holding the
         // lock means the last synchronous startup effect has returned, and all later ones see stopped == true
@@ -304,26 +322,34 @@ public final class LifecycleManager {
             if (!fenced) {
                 String blocked = "a synchronous startup step did not return within the shutdown deadline";
                 log.warning("stop incomplete: " + blocked);
-                return com.telamin.mongoose.StopResult.incomplete(blocked, java.util.List.of(), java.util.List.of());
+                // nothing was closed: every group and service is still running
+                java.util.List<String> groups = new java.util.ArrayList<>(composingEventProcessorAgents.keySet());
+                groups.addAll(composingServiceAgents.keySet());
+                return com.telamin.mongoose.StopResult.incomplete(blocked, groups, servicesNotStopped(registeredServices));
             }
             startupLock.unlock();
             progress.fenced = true;
         }
 
-        // 2. stop the feeds
+        // 2. stop the feeds, bounded and capped (review of PR 2, finding 3): event-source-only groups close on tracked
+        // helpers and the sources are stopped on one, so a feed that does not stop cannot hold the whole stop. The stop
+        // carries on without it, and reports it at the end if it is still running then
+        java.util.List<String> feedsRunning = new java.util.ArrayList<>();
         if (!progress.feedsStopped) {
             log.info("stopping feeds");
+            long feedDeadline = Math.min(deadline,
+                    System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(EVENT_SOURCE_REMOVAL_TIMEOUT_MILLIS));
+            ConcurrentHashMap<String, GroupRunner> feedOnly = new ConcurrentHashMap<>();
             composingServiceAgents.forEach((k, v) -> {
                 if (!v.hostsEventSource()) {
                     return;
                 }
                 if (v.hostsOnlyEventSources()) {
-                    closeGroup("event source agent", k, v);
-                    progress.closed.add("service:" + k);
-                } else {
+                    feedOnly.put(k, v);
+                } else if (progress.sourcesRemoved.add(k)) {
                     log.info("removing the event sources from shared service agent " + k);
                     try {
-                        long bound = Math.min(EVENT_SOURCE_REMOVAL_TIMEOUT_MILLIS, remainingMillis(deadline));
+                        long bound = remainingMillis(feedDeadline);
                         if (!v.removeEventSources(bound)) {
                             log.warning("event sources in service agent " + k + " not removed after "
                                     + bound + "ms, stopping them anyway");
@@ -333,8 +359,15 @@ public final class LifecycleManager {
                     }
                 }
             });
-            flowManager.stop();
-            progress.feedsStopped = true;
+            feedsRunning.addAll(closeAll("event source agent", "service:", feedOnly, feedDeadline));
+            Thread sources = progress.helpers.computeIfAbsent("feeds:stop", k -> helper(flowManager::stop, "mongoose-stop-event-sources"));
+            if (join(sources, feedDeadline)) {
+                progress.helpers.remove("feeds:stop");
+                if (feedsRunning.isEmpty()) progress.feedsStopped = true;
+            } else {
+                feedsRunning.add("<event sources stopping>");
+            }
+            if (!feedsRunning.isEmpty()) log.warning("feeds still stopping after their bound, carrying on: " + feedsRunning);
         }
 
         // 3. drain
@@ -357,15 +390,33 @@ public final class LifecycleManager {
         log.info("stopping event processor agents");
         java.util.List<String> running = closeAll("event processor agent", "processor:", composingEventProcessorAgents, deadline);
         if (!running.isEmpty()) {
-            java.util.List<String> services = new java.util.ArrayList<>(registeredServices.keySet());
+            java.util.List<String> services = servicesNotStopped(registeredServices);
             log.warning("stop incomplete: processor group(s) " + running + " did not close within the shutdown deadline;"
                     + " services left running for them: " + services);
+            running.addAll(feedsRunning);
             return com.telamin.mongoose.StopResult.incomplete(null, running, services);
         }
 
-        // 5. service groups, then services
+        // 5. service groups, then services: a worker may use a registered service, so none is stopped while a service
+        // group is still closing (review of PR 2, finding 9)
         log.info("stopping agent hosted services");
         running = closeAll("service agent", "service:", composingServiceAgents, deadline);
+        if (!progress.feedsStopped) {
+            // re-join what was left of phase 2 with what is left of the whole deadline
+            Thread sources = progress.helpers.get("feeds:stop");
+            if (sources == null || join(sources, deadline)) {
+                progress.helpers.remove("feeds:stop");
+                if (running.isEmpty()) progress.feedsStopped = true;
+            } else {
+                running.add("<event sources stopping>");
+            }
+        }
+        if (!running.isEmpty()) {
+            java.util.List<String> services = servicesNotStopped(registeredServices);
+            log.warning("stop incomplete: service group(s) " + running + " did not close within the shutdown deadline;"
+                    + " services left running for them: " + services);
+            return com.telamin.mongoose.StopResult.incomplete(null, running, services);
+        }
         log.info("stopping registered services");
         java.util.List<String> servicesLeft = new java.util.ArrayList<>();
         for (Service<?> service : registeredServices.values()) {
@@ -373,19 +424,8 @@ public final class LifecycleManager {
                 continue;
             }
             String helperName = "service-stop:" + service.serviceName();
-            Thread helper = progress.helpers.computeIfAbsent(helperName, k -> {
-                Thread t = new Thread(() -> {
-                    try {
-                        service.stop();
-                    } catch (Throwable t1) {
-                        log.log(java.util.logging.Level.WARNING, "service " + service.serviceName() + " failed to stop", t1);
-                    }
-                }, "mongoose-stop-" + service.serviceName());
-                t.setDaemon(true);
-                stopHelpers.add(t);
-                t.start();
-                return t;
-            });
+            Thread helper = progress.helpers.computeIfAbsent(helperName, k -> helper(service::stop,
+                    "mongoose-stop-" + service.serviceName()));
             if (join(helper, deadline)) {
                 progress.helpers.remove(helperName);
                 progress.servicesStopped.add(service.serviceName());
@@ -393,8 +433,8 @@ public final class LifecycleManager {
                 servicesLeft.add(service.serviceName());
             }
         }
-        if (!running.isEmpty() || !servicesLeft.isEmpty()) {
-            log.warning("stop incomplete: groups still closing " + running + ", services still stopping " + servicesLeft);
+        if (!servicesLeft.isEmpty()) {
+            log.warning("stop incomplete: services still stopping " + servicesLeft);
             return com.telamin.mongoose.StopResult.incomplete(null, running, servicesLeft);
         }
         progress.complete = true;
@@ -407,11 +447,7 @@ public final class LifecycleManager {
         groups.forEach((k, v) -> {
             String key = prefix + k;
             if (progress.closed.contains(key) || progress.helpers.containsKey(key)) return;
-            Thread helper = new Thread(() -> closeGroup(kind, k, v), "mongoose-stop-" + k);
-            helper.setDaemon(true);
-            stopHelpers.add(helper);
-            progress.helpers.put(key, helper);
-            helper.start();
+            progress.helpers.put(key, helper(() -> closeGroup(kind, k, v), "mongoose-stop-" + k));
         });
         java.util.List<String> running = new java.util.ArrayList<>();
         for (String k : groups.keySet()) {
@@ -428,8 +464,36 @@ public final class LifecycleManager {
         return running;
     }
 
+    /** A tracked daemon helper running {@code work}; a throw is logged. */
+    private Thread helper(Runnable work, String name) {
+        Thread t = new Thread(() -> {
+            try {
+                work.run();
+            } catch (Throwable failed) {
+                log.log(java.util.logging.Level.WARNING, name + " failed", failed);
+            }
+        }, name);
+        t.setDaemon(true);
+        stopHelpers.add(t);
+        t.start();
+        return t;
+    }
+
+    /** The registered services the stop has not stopped yet (event sources are stopped with the feeds). */
+    private java.util.List<String> servicesNotStopped(Map<String, Service<?>> registeredServices) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        for (Service<?> service : registeredServices.values()) {
+            if (service.instance() instanceof LifeCycleEventSource || progress.servicesStopped.contains(service.serviceName())) {
+                continue;
+            }
+            out.add(service.serviceName());
+        }
+        return out;
+    }
+
     /** True for a thread a stop runs its closes and service stops on. */
     public boolean isStopHelper(Thread thread) {
+        stopHelpers.removeIf(h -> !h.isAlive());     // helpers that ended after the last attempt (review of PR 2, finding 8)
         return stopHelpers.contains(thread);
     }
 
@@ -451,16 +515,22 @@ public final class LifecycleManager {
     private static void closeGroup(String kind, String name, GroupRunner group) {
         log.info("stopping composing " + kind + " " + name);
         if (group.getGroup() instanceof com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent processors) {
+            // a thread that died unnoticed is found dead first: closing would otherwise hide the death from the
+            // cleanup below (review of PR 2, finding 4)
+            processors.control().detectDeath();
             processors.control().beginClosing();   // senders are answered NOT_RUNNING from here on
         }
         try {
-            group.getGroupRunner().close();
+            // Agrona's retry messages go to the log, not stderr (review of PR 2, finding 8)
+            group.getGroupRunner().close(AgentRunner.RETRY_CLOSE_TIMEOUT_MS,
+                    t -> log.warning("composing " + kind + " " + name + " still closing, retrying: thread " + t.getName()));
         } catch (Throwable t) {
             log.log(java.util.logging.Level.WARNING, "composing " + kind + " " + name + " failed to close", t);
         }
         // a group whose thread died never ran onClose (Agrona's close() returns at once for it): release what it held
         // here, now that its thread has ended, so its processors are stopped and its requests answered
         if (group.getGroup() instanceof com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent processors) {
+            processors.control().detectDeath();
             try {
                 processors.cleanupAfterDeath();
             } catch (Throwable t) {
