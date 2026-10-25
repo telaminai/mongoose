@@ -709,6 +709,31 @@ Seven stacked PRs after 1.0.33. Each is releasable alone and states its semantic
 | D6 | Fluxtion version: runtime 1.1.1 with builder 1.0.77 or later, or pin builder 1.0.76 for runtime 1.1.0? **Blocks PR 1** | Move to 1.1.1 / 1.0.77+, whose template was verified (PR 0) |
 | D7 | Add `try`/`finally` to the generated `onEvent` and `batchEnd()` in Fluxtion, so a throw no longer wedges a processor? | Yes; until then a rule throw makes the group Dead |
 
+## Implementation notes
+
+The build is on branch `feature/control-plane` (PR 0–6). Where it departs from this design, or settles something the
+design left open:
+
+| Area | Design | Built | Why |
+| --- | --- | --- | --- |
+| Void add | A failed start throws `ProcessorStartException` (Threading and API) | A failed start is isolated and reported, and the void add returns, as since mongoose#57; the outcome is in `addProcessor`'s reply | Released behaviour, pinned by four tests; the reply gives callers the outcome |
+| `addProcessor` | Returns a stage with a handle | Returns `AddedProcessor {handle, reply}`; the handle is built from the registration this add admitted | A handle looked up by name later could name a replacement |
+| Void waits | Single deadline | `MongooseServerConfig.controlWaitMillis`, 10 s by default | Configurable for callers that cannot block that long |
+| Reply executor | Per server | An elastic daemon pool per server, shut down once the server has stopped | One thread deadlocked when a dependent waited on another stage |
+| Service lock | Registry change and broadcast publication in one order | The lock covers only the name reservation and a versioned, non-blocking broadcast. Injection, `start()` and `stop()` run outside it, and a full mailbox is a group that missed the broadcast, reported | A wait or a user callback under the lock stalled every service change |
+| `removeService` that cannot wait | Queue and return | Defers the service's `stop()` until every group has answered (bounded at 60 s) | Stopping at once would stop it beneath processors still holding it |
+| Drain budget | Per-drain time budget | Off by default (`setControlDrainBudget`) | One slow effect pushed every request behind it to a later duty cycle |
+| Liveness | A server liveness check | No checker thread: senders, the stop path (`ControlDriver.detectDeath`) and close detect a dead group | Every path that needs the answer asks for it |
+| Close with requests queued | Queued requests answered by the rules | `Run` requests queued before the close run before it; the others are applied after the `Close` decision and answered by the rules | Work handed to the group's thread before the close still runs |
+| Legacy name-only stop before its add | Not covered | Lost, as before this design | Pre-existing; the add has no registration to bind to |
+| Audit capture, cancelled open | Worked example: the audit start is answered after the late completion | Answered `Refused` at once, as step 6 of "Audit capture" says; the late completion is cleanup | The caller does not wait on a dead open |
+| Audit capture records | Separate `PendingCleanup` and `CleanupCleared` records | Notes are fields on the one `Decision` (`pendingCleanup`, `cleared`, `anomaly`). Replies to waiting audit starts are effects of that decision, and evidence attributes each reply by its op-id prefix | A Fluxtion node logs one entry per event cycle: a second record overwrote the first |
+| Compensation op ids | `requestId.n` | `requestId.cN` for duplicate or unknown completions | They can arrive after the root's sequence was released |
+| Audit start while the previous capture closes | Unspecified | Opens a new capture; the closing resource closes on its own, owned by nothing | Matches the earlier service, which closed synchronously |
+| Replay stream keys | Name and incarnation | The first incarnation keeps the bare name; later ones are `name#n` | Recordings made before keyed incarnations still read |
+| Replayed service changes | Recorded per stream, replayed in position | Only changes after the server has started are recorded. Live deliveries are suppressed only for streams that record service changes | Boot-time services are configuration; earlier recordings stay readable (partial) |
+| Not built | Initialisation provenance per stream; interception of control requests from replayed processors | — | Left for a later PR |
+
 ## Review responses
 
 ### Review 3: PR #75 independent review
