@@ -56,9 +56,14 @@ public final class GroupRecorder {
 
     /** A processor joins the group: when it is recorded, its clock becomes a live {@link RecordingClock}. */
     public void attach(String name, DataFlow flow) {
+        attach(name, 1, flow);
+    }
+
+    /** As {@link #attach(String, DataFlow)}, into the stream of the processor's {@code incarnation} under the name. */
+    public void attach(String name, int incarnation, DataFlow flow) {
         if (!config.covers(name)) return;
         RecordingClock clock = new RecordingClock(live);
-        Recorded r = new Recorded(name, clock);
+        Recorded r = new Recorded(ReplayStreams.key(name, incarnation), clock);
         byFlow.put(flow, r);
         // on the group's agent thread: a processor that refuses the recording's clock must not reach the agent's error
         // handler, which ends the process (review of cd52628, F3; N1's RECORD counterpart). Its recording is FAILED, by
@@ -79,6 +84,20 @@ public final class GroupRecorder {
 
     public void detach(DataFlow flow) {
         byFlow.remove(flow);
+    }
+
+    /** The processor was stopped by a request (not by its group closing): its stream ends here. */
+    public void stopped(DataFlow flow) {
+        Recorded r = byFlow.get(flow);
+        if (r == null || r.broken != null) return;
+        append(r, new ReplayEntry.Stopped(live.getAsLong()));
+    }
+
+    /** A service was delivered to, or withdrawn from, the running processor, at registry {@code version}. */
+    public void serviceChanged(DataFlow flow, String service, boolean register, long version) {
+        Recorded r = byFlow.get(flow);
+        if (r == null || r.broken != null) return;
+        append(r, new ReplayEntry.ServiceChanged(service, register, version, live.getAsLong()));
     }
 
     /** A ReplayRecord input: pin a recorded processor's clock to its instant; false when {@code flow} is not recorded. */

@@ -46,6 +46,10 @@ public final class GroupReplayer {
         /** While the current entry cannot be delivered yet: since when (System.nanoTime) and why. */
         long waitingSince;
         String waitingFor;
+        /** Ended by a recorded Stop: the processor was stopped where the recorded run stopped it. */
+        boolean ended;
+        /** The stream records its service changes: they are replayed in position and live ones suppressed. */
+        boolean recordsServices;
 
         Cursor(String name, DataFlow flow, ReplayClock clock) {
             this.name = name;
@@ -54,7 +58,7 @@ public final class GroupReplayer {
         }
 
         boolean done() {
-            return stopped != null || next >= entries.size();
+            return stopped != null || ended || next >= entries.size();
         }
     }
 
@@ -76,9 +80,14 @@ public final class GroupReplayer {
      * refused the ReplayClock escaped before its cursor existed, unmuted, and a real server exited 255).
      */
     public void attach(String name, DataFlow flow) {
+        attach(name, 1, flow);
+    }
+
+    /** As {@link #attach(String, DataFlow)}, from the stream of the processor's {@code incarnation} under the name. */
+    public void attach(String name, int incarnation, DataFlow flow) {
         if (!config.covers(name)) return;
         ReplayClock clock = new ReplayClock();
-        Cursor cursor = new Cursor(name, flow, clock);
+        Cursor cursor = new Cursor(ReplayStreams.key(name, incarnation), flow, clock);
         cursors.add(cursor);
         scheduler.replay(flow);                          // its timers are the replay's, whatever follows
         String failed = null;
@@ -91,7 +100,8 @@ public final class GroupReplayer {
         }
         if (failed == null) {
             try {
-                cursor.entries = config.store().entries(name);
+                cursor.entries = config.store().entries(cursor.name);
+                cursor.recordsServices = cursor.entries.stream().anyMatch(e -> e instanceof ReplayEntry.ServiceChanged);
             } catch (VirtualMachineError e) {
                 throw e;
             } catch (Throwable t) {
@@ -150,6 +160,18 @@ public final class GroupReplayer {
         public void setValueMapper(java.util.function.Function<? super Object, ?> valueMapper) {
             this.mapper = (java.util.function.Function<Object, ?>) valueMapper;
         }
+    }
+
+    /**
+     * Whether a live service change must not reach {@code flow}: it is replayed from a stream that records its service
+     * changes, so they are delivered in position instead. A stream recorded without them (an earlier recording) gets
+     * live deliveries as before, and is partial in that respect.
+     */
+    public boolean suppressesLiveServices(DataFlow flow) {
+        for (Cursor c : cursors) {
+            if (c.flow == flow) return c.recordsServices;
+        }
+        return false;
     }
 
     /** Whether {@code flow} is replayed here: its live inputs are then muted. */
@@ -259,6 +281,20 @@ public final class GroupReplayer {
             }
             case ReplayEntry.Failed f -> {
                 return stop(c, "the recorded run failed here: " + f.description());
+            }
+            case ReplayEntry.Stopped s -> {
+                // the recorded run stopped the processor here: so does the replay, through its group's control processor
+                scheduler.setNow(s.instant());
+                if (!routing.stopProcessor(c.flow)) return stop(c, "the recorded stop could not be replayed");
+                c.ended = true;
+                return true;
+            }
+            case ReplayEntry.ServiceChanged sc -> {
+                scheduler.setNow(sc.instant());
+                if (!routing.deliverService(c.flow, sc.service(), sc.register())) {
+                    return waiting(c, "service " + sc.service() + " is not registered");
+                }
+                return true;
             }
         }
     }

@@ -27,4 +27,20 @@ public interface ReplayRouting {
 
     /** The admin command registered under {@code name} (by the replayed processor), or null until it is. */
     AdminCommand adminCommand(String name);
+
+    /**
+     * Stop the replayed processor {@code flow} as the recorded run did at this point (a {@code Stopped} entry), through
+     * the group's control processor, bound to its registration. @return false if the group cannot (no such processor)
+     */
+    default boolean stopProcessor(DataFlow flow) {
+        return false;
+    }
+
+    /**
+     * Deliver to, or withdraw from, the replayed processor the service registered as {@code service}, as the recorded
+     * run did at this point. @return false while a service to deliver is not registered yet
+     */
+    default boolean deliverService(DataFlow flow, String service, boolean register) {
+        return false;
+    }
 }
