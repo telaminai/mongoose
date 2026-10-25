@@ -732,7 +732,7 @@ historical object may already have been stopped and cannot be resurrected from a
 | --- | --- | --- |
 | The recorded service version is not registered in this run yet | (waits) | The entry waits for the broadcast of that version, then stops after `deliveryTimeout` with `entry N could not be delivered within` |
 | This run's registry has moved past the recorded version or the binding is no longer live | `recorded service S at version V is unavailable` | Stops. Neither the latest instance nor a historical stopped object is substituted |
-| A configured object has no published identity for a positive recorded version | `no registry binding identifies recorded service` | Stops; logging a warning is insufficient to establish equivalence |
+| A visible object has no published identity for a positive recorded version | `no registry binding identifies recorded service` (waiting reason) | Waits up to `deliveryTimeout` for version publication, then stops. Registry visibility alone never permits delivery |
 | A replayed `@ServiceRegistered` or `@ServiceDeregistered` callback throws | `recorded service callback for S was not delivered` | Stops. A failed callback is never counted as delivered |
 | The processor already held the service when the entry is replayed | `recorded service callback for S was not delivered` | Stops: it reached the processor before its recorded position |
 | The recorded run withdrew a service the replayed processor never held | `recorded withdrawal of service S has no delivered incarnation` | Stops: the withdrawal cannot be reproduced |
@@ -741,7 +741,8 @@ Only deliveries that reached the processor are recorded. A broadcast it already 
 a delivery whose callback failed records a `Failed` entry, past which the stream is not reproducible.
 
 **Limitations:** unversioned legacy entries still use configuration-based lookup; they cannot prove incarnation
-equivalence. Positive recorded versions fail closed when publication identity is missing. Version numbers identify
+equivalence. Positive recorded versions fail closed if publication identity is still missing after `deliveryTimeout`;
+a registration may be visible briefly before its versioned broadcast reaches the group. Version numbers identify
 bindings within the configured run, not a build, service state or cross-machine identity proof.
 
 In a replay, a withdrawal the stream records is not confirmed to its sender until the stream delivers it, so

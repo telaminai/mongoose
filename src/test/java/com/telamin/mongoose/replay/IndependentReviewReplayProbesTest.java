@@ -55,9 +55,13 @@ class IndependentReviewReplayProbesTest {
         final ConcurrentHashMap<String, Service<?>> services = new ConcurrentHashMap<>();
         final ComposingEventProcessorAgent group;
         Rig(InMemoryReplayStore store, boolean replay, Service<?> initial) {
+            this(store, replay, initial, java.time.Duration.ofSeconds(5));
+        }
+        Rig(InMemoryReplayStore store, boolean replay, Service<?> initial, java.time.Duration timeout) {
             if (initial != null) services.put(initial.serviceName(), initial);
-            var cfg = replay ? ReplayConfig.replay(Set.of("p"), Map.of(), null, store)
+            var base = replay ? ReplayConfig.replay(Set.of("p"), Map.of(), null, store)
                     : ReplayConfig.record(Set.of("p"), Map.of(), null, store);
+            var cfg = base.withDeliveryTimeout(timeout);
             var scheduler = new ReplayScheduler();
             group = new ComposingEventProcessorAgent("g", new EventFlowManager(), null, scheduler, services,
                     replay ? null : new GroupRecorder(cfg, () -> 1L),
@@ -100,7 +104,8 @@ class IndependentReviewReplayProbesTest {
         assertEquals(List.of("start:0", "register:1:true"), live.trace);
 
         var replayed = new Probe();
-        try (var rig = new Rig(store, true, rate(2))) {      // the replay's registry: a different instance, no history
+        // No publication will arrive: expire the permitted publication window without a wall-clock sleep.
+        try (var rig = new Rig(store, true, rate(2), java.time.Duration.ZERO)) { // different instance, no history
             rig.start(replayed);
             rig.finishReplay();
             String stopped = rig.group.replayer().stopped("p");

@@ -47,12 +47,18 @@ class ReplayServiceFollowupReviewTest {
         }
     }
     static final class Rig implements AutoCloseable {
-        final ConcurrentHashMap<String, Service<?>> services = new ConcurrentHashMap<>();
+        final ConcurrentHashMap<String, Service<?>> services;
         final ComposingEventProcessorAgent group;
         Rig(InMemoryReplayStore store, boolean replay, Service<?> initial) {
+            this(store, replay, initial, new ConcurrentHashMap<>(), java.time.Duration.ofSeconds(5));
+        }
+        Rig(InMemoryReplayStore store, boolean replay, Service<?> initial,
+            ConcurrentHashMap<String, Service<?>> services, java.time.Duration timeout) {
+            this.services = services;
             if (initial != null) services.put(initial.serviceName(), initial);
-            var cfg = replay ? ReplayConfig.replay(Set.of("p"), Map.of(), null, store)
+            var base = replay ? ReplayConfig.replay(Set.of("p"), Map.of(), null, store)
                     : ReplayConfig.record(Set.of("p"), Map.of(), null, store);
+            var cfg = base.withDeliveryTimeout(timeout);
             var scheduler = new ReplayScheduler();
             group = new ComposingEventProcessorAgent("g", new EventFlowManager(), null, scheduler, services,
                     replay ? null : new GroupRecorder(cfg, new java.util.concurrent.atomic.AtomicLong(100)::incrementAndGet),
@@ -199,11 +205,63 @@ class ReplayServiceFollowupReviewTest {
         }
     }
 
+    @Test void registryVisibilityBeforeVersionPublicationWaitsWithoutDeliveringAnUnverifiedObject() throws Exception {
+        var store = new InMemoryReplayStore();
+        store.append("p", new ReplayEntry.ServiceChanged("rate", true, 1, 100, List.of()));
+        var service = rate(1);
+        var replayed = new Probe();
+        try (var rig = new Rig(store, true, null)) {
+            rig.start(replayed);
+            // registerService publishes the shared registry before notifying each group's versioned mailbox.
+            rig.services.put("rate", service);
+            rig.group.doWork();
+            assertNull(rig.group.replayer().stopped("p"));
+            assertFalse(rig.group.replayer().complete());
+            assertEquals(List.of("start:0"), replayed.trace, "visibility alone does not prove a version");
+            rig.group.broadcastService(service, true, 1);
+            rig.finishReplay();
+            assertNull(rig.group.replayer().stopped("p"));
+            assertEquals(List.of("start:0", "register:1:true"), replayed.trace);
+        }
+    }
+
+    @Test void publicationDuringRegistryReadCannotPairAnOldValueWithANewVersion() throws Exception {
+        var store = new InMemoryReplayStore();
+        store.append("p", new ReplayEntry.ServiceChanged("rate", true, 3, 100, List.of()));
+        var publish = new java.util.concurrent.atomic.AtomicReference<Runnable>();
+        var services = new ConcurrentHashMap<String, Service<?>>() {
+            @Override public Service<?> get(Object key) {
+                Service<?> previous = super.get(key);
+                Runnable action = publish.getAndSet(null);
+                if (action != null) action.run(); // pause the reader after its old-value snapshot, then publish
+                return previous;
+            }
+        };
+        var previousService = rate(1);
+        var service = rate(2);
+        var replayed = new Probe();
+        try (var rig = new Rig(store, true, previousService, services, java.time.Duration.ofSeconds(5))) {
+            rig.start(replayed);
+            rig.group.broadcastService(previousService, true, 1);
+            publish.set(() -> {
+                services.put("rate", service);
+                rig.group.broadcastService(service, true, 3);
+            });
+            rig.group.doWork();
+            assertNull(rig.group.replayer().stopped("p"), "a mixed read must not reject a valid publication");
+            rig.finishReplay();
+            assertNull(rig.group.replayer().stopped("p"));
+            assertEquals(List.of("start:0", "register:2:true"), replayed.trace);
+        }
+    }
+
     @Test void anUnknownPositiveServiceVersionCannotSilentlyUseAConfiguredObject() throws Exception {
         var store = new InMemoryReplayStore();
         store.append("p", new ReplayEntry.ServiceChanged("rate", true, 7, 100, List.of()));
         var replayed = new Probe();
-        try (var rig = new Rig(store, true, rate(7))) {
+        // Missing publication is now allowed the bounded delivery window, to distinguish it from a paused sender.
+        // A zero window tests the same fail-closed result without a wall-clock sleep.
+        try (var rig = new Rig(store, true, rate(7), new ConcurrentHashMap<>(), java.time.Duration.ZERO)) {
             rig.start(replayed);
             rig.finishReplay();
             assertNotNull(rig.group.replayer().stopped("p"));

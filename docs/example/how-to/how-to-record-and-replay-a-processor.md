@@ -225,7 +225,8 @@ Sample code:
   replay; it does not end the server. The full list is in
   [When a replay stops](../../reference/control-plane-contracts.md#when-a-replay-stops).
 - **Service changes:** a positive recorded version must match the currently published live binding. Replay waits
-  for a future version, but refuses a missing identity or a past version, including cached objects already withdrawn.
+  for a future version or a publication still in progress, bounded by `deliveryTimeout`. Missing identity after that
+  window and past versions are refused, including cached objects already withdrawn.
   A failed replay callback stops replay. New recordings omit skipped duplicates and mark failed callbacks.
   Unversioned legacy entries retain configuration-based lookup and cannot establish incarnation equivalence.
 - **A recording is refused over a recording.** `RECORD` needs an empty journal and store: a second run numbers its

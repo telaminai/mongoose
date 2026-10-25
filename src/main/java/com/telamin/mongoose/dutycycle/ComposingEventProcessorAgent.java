@@ -1258,12 +1258,17 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             public String deliverService(DataFlow flow, String service, boolean register, long version) {
                 for (NamedEventProcessor np : registeredEventProcessors.values()) {
                     if (np.eventProcessor() != flow) continue;
+                    // The server publishes the registry before the group's versioned binding. Observe that binding
+                    // first, so its publication makes the preceding registry write visible; the reverse read order
+                    // could combine an old registry value with a newly published version and falsely stop replay.
+                    PublishedService published = register && version > 0 ? publishedServices.get(service) : null;
                     Service<?> svc = register ? registeredServices.get(service) : null;
                     if (register && version > 0) {
-                        PublishedService published = publishedServices.get(service);
-                        if (published == null && svc == null) return "wait:service " + service + " is not registered";
                         if (published == null) {
-                            return "no registry binding identifies recorded service " + service + " at version " + version;
+                            // A visible service may still be between registry publication and this group's broadcast.
+                            // Wait within deliveryTimeout, never substitute an unverified configured instance.
+                            return "wait:no registry binding identifies recorded service " + service + " at version "
+                                    + version + "; awaiting version publication";
                         }
                         if (published.version() < version) {
                             return "wait:service " + service + " version " + version + " is not registered yet";
