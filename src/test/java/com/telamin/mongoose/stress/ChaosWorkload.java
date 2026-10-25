@@ -1045,7 +1045,8 @@ final class ChaosWorkload implements AutoCloseable {
                     + audit.isComplete() + " " + result);
             if (!audit.isComplete()) failures.add(e.getKey() + " audit incomplete: dropped=" + audit.dropped()
                     + " sinkFailures=" + audit.sinkFailures() + " " + audit.firstSinkFailure());
-            if (!result.verified() || !audit.isComplete()) {
+            // An explicit destination also preserves successful traces for an independent file-only investigation.
+            if (!result.verified() || !audit.isComplete() || System.getProperty("mongoose.stress.auditDir") != null) {
                 try {
                     Path out = audit.export(Path.of(System.getProperty("mongoose.stress.auditDir", "target/stress-audit"),
                             e.getKey() + "-" + settings.seed + ".yaml"));
