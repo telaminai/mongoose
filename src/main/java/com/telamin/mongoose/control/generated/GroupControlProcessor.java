@@ -60,9 +60,9 @@ import java.util.function.Consumer;
  *
  * <pre>
  * generation time           : Not available
- * api version               : 1.1.2
- * analyser version          : 1.0.79
- * target generator version  : 1.0.79
+ * api version               : 1.1.3
+ * analyser version          : 1.0.80
+ * target generator version  : 1.0.80
  * </pre>
  *
  * Event classes supported:
@@ -174,7 +174,7 @@ public class GroupControlProcessor
           },
           new DescriptorSupport.Meta(
               null,
-              "1.0.79",
+              "1.0.80",
               "b954fa5595eb09cdce40daf8f7572c566b4e95b28ca88bfd41753f06f2de5343",
               null));
 
@@ -234,11 +234,17 @@ public class GroupControlProcessor
       throw new RuntimeException("init() must be called before start()");
     }
     processing = true;
-    auditEvent(Lifecycle.LifecycleEvent.Start);
+    try {
+      auditEvent(Lifecycle.LifecycleEvent.Start);
 
-    afterEvent();
-    callbackDispatcher.dispatchQueuedCallbacks();
-    processing = false;
+      afterEvent();
+      callbackDispatcher.dispatchQueuedCallbacks();
+    } catch (Throwable t) {
+      failedCycle(t);
+      throw t;
+    } finally {
+      processing = false;
+    }
   }
 
   @Override
@@ -247,11 +253,17 @@ public class GroupControlProcessor
       throw new RuntimeException("init() must be called before startComplete()");
     }
     processing = true;
-    auditEvent(Lifecycle.LifecycleEvent.StartComplete);
+    try {
+      auditEvent(Lifecycle.LifecycleEvent.StartComplete);
 
-    afterEvent();
-    callbackDispatcher.dispatchQueuedCallbacks();
-    processing = false;
+      afterEvent();
+      callbackDispatcher.dispatchQueuedCallbacks();
+    } catch (Throwable t) {
+      failedCycle(t);
+      throw t;
+    } finally {
+      processing = false;
+    }
   }
 
   @Override
@@ -260,11 +272,17 @@ public class GroupControlProcessor
       throw new RuntimeException("init() must be called before stop()");
     }
     processing = true;
-    auditEvent(Lifecycle.LifecycleEvent.Stop);
+    try {
+      auditEvent(Lifecycle.LifecycleEvent.Stop);
 
-    afterEvent();
-    callbackDispatcher.dispatchQueuedCallbacks();
-    processing = false;
+      afterEvent();
+      callbackDispatcher.dispatchQueuedCallbacks();
+    } catch (Throwable t) {
+      failedCycle(t);
+      throw t;
+    } finally {
+      processing = false;
+    }
   }
 
   @Override
@@ -303,13 +321,22 @@ public class GroupControlProcessor
       callbackDispatcher.queueReentrantEvent(event);
     } else {
       processing = true;
-      onEventInternal(event);
-      if (callbacksPending) {
-        final boolean sharedBefore = clock.shareReading(true);
-        callbackDispatcher.dispatchQueuedCallbacks();
-        clock.shareReading(sharedBefore);
+      try {
+        onEventInternal(event);
+        if (callbacksPending) {
+          final boolean sharedBefore = clock.shareReading(true);
+          try {
+            callbackDispatcher.dispatchQueuedCallbacks();
+          } finally {
+            clock.shareReading(sharedBefore);
+          }
+        }
+      } catch (Throwable t) {
+        failedCycle(t);
+        throw t;
+      } finally {
+        processing = false;
       }
-      processing = false;
     }
   }
 
@@ -540,10 +567,17 @@ public class GroupControlProcessor
     beforeServiceCall(
         "@Override\npublic void deRegisterService(com.telamin.fluxtion.runtime.service.Service<?> arg0)");
     ExportFunctionAuditEvent typedEvent = functionAudit;
-    auditInvocation(
-        serviceRegistry, "serviceRegistry", "deRegisterService", "ExportService", typedEvent);
-    serviceRegistry.deRegisterService(arg0);
-    afterServiceCall();
+    try {
+      auditInvocation(
+          serviceRegistry, "serviceRegistry", "deRegisterService", "ExportService", typedEvent);
+      serviceRegistry.deRegisterService(arg0);
+      afterServiceCall();
+    } catch (Throwable t) {
+      failedCycle(t);
+      throw t;
+    } finally {
+      processing = false;
+    }
   }
 
   @Override
@@ -551,104 +585,126 @@ public class GroupControlProcessor
     beforeServiceCall(
         "@Override\npublic void registerService(com.telamin.fluxtion.runtime.service.Service<?> arg0)");
     ExportFunctionAuditEvent typedEvent = functionAudit;
-    auditInvocation(
-        serviceRegistry, "serviceRegistry", "registerService", "ExportService", typedEvent);
-    serviceRegistry.registerService(arg0);
-    afterServiceCall();
+    try {
+      auditInvocation(
+          serviceRegistry, "serviceRegistry", "registerService", "ExportService", typedEvent);
+      serviceRegistry.registerService(arg0);
+      afterServiceCall();
+    } catch (Throwable t) {
+      failedCycle(t);
+      throw t;
+    } finally {
+      processing = false;
+    }
   }
   //EXPORTED SERVICE FUNCTIONS - END
 
   //EVENT BUFFERING - START
   public void bufferEvent(Object event) {
     buffering = true;
-    if (event instanceof EventLogControlEvent) {
-      EventLogControlEvent typedEvent = (EventLogControlEvent) event;
-      auditEvent(typedEvent);
-      auditInvocation(
-          eventLogger, "eventLogger", "calculationLogConfig", "OnEventHandler", typedEvent);
-      eventLogger.calculationLogConfig(typedEvent);
-    } else if (event instanceof ClockStrategyEvent) {
-      ClockStrategyEvent typedEvent = (ClockStrategyEvent) event;
-      auditEvent(typedEvent);
-      auditInvocation(clock, "clock", "setClockStrategy", "OnEventHandler", typedEvent);
-      clock.setClockStrategy(typedEvent);
-    } else if (event instanceof AddIntent) {
-      AddIntent typedEvent = (AddIntent) event;
-      auditEvent(typedEvent);
-      auditInvocation(controlInputs, "controlInputs", "onAdd", "OnEventHandler", typedEvent);
-      isDirty_controlInputs = controlInputs.onAdd(typedEvent);
-      auditInvocation(lifecycleRules, "lifecycleRules", "onAdd", "OnEventHandler", typedEvent);
-      lifecycleRules.onAdd(typedEvent);
-    } else if (event instanceof AuditStartIntent) {
-      AuditStartIntent typedEvent = (AuditStartIntent) event;
-      auditEvent(typedEvent);
-      auditInvocation(controlInputs, "controlInputs", "onAuditStart", "OnEventHandler", typedEvent);
-      isDirty_controlInputs = controlInputs.onAuditStart(typedEvent);
-      auditInvocation(captureRules, "captureRules", "onAuditStart", "OnEventHandler", typedEvent);
-      isDirty_captureRules = captureRules.onAuditStart(typedEvent);
-    } else if (event instanceof AuditStopIntent) {
-      AuditStopIntent typedEvent = (AuditStopIntent) event;
-      auditEvent(typedEvent);
-      auditInvocation(controlInputs, "controlInputs", "onAuditStop", "OnEventHandler", typedEvent);
-      isDirty_controlInputs = controlInputs.onAuditStop(typedEvent);
-      auditInvocation(captureRules, "captureRules", "onAuditStop", "OnEventHandler", typedEvent);
-      isDirty_captureRules = captureRules.onAuditStop(typedEvent);
-    } else if (event instanceof BroadcastIntent) {
-      BroadcastIntent typedEvent = (BroadcastIntent) event;
-      auditEvent(typedEvent);
-      auditInvocation(controlInputs, "controlInputs", "onBroadcast", "OnEventHandler", typedEvent);
-      isDirty_controlInputs = controlInputs.onBroadcast(typedEvent);
-      auditInvocation(serviceRules, "serviceRules", "onBroadcast", "OnEventHandler", typedEvent);
-      serviceRules.onBroadcast(typedEvent);
-    } else if (event instanceof CaptureCompletion) {
-      CaptureCompletion typedEvent = (CaptureCompletion) event;
-      auditEvent(typedEvent);
-      auditInvocation(controlInputs, "controlInputs", "onCompletion", "OnEventHandler", typedEvent);
-      isDirty_controlInputs = controlInputs.onCompletion(typedEvent);
-      auditInvocation(
-          effectOutcomes, "effectOutcomes", "onCompletion", "OnEventHandler", typedEvent);
-      isDirty_effectOutcomes = effectOutcomes.onCompletion(typedEvent);
-      auditInvocation(captureRules, "captureRules", "onCompletion", "OnEventHandler", typedEvent);
-      isDirty_captureRules = captureRules.onCompletion(typedEvent);
-    } else if (event instanceof CloseIntent) {
-      CloseIntent typedEvent = (CloseIntent) event;
-      auditEvent(typedEvent);
-      auditInvocation(controlInputs, "controlInputs", "onClose", "OnEventHandler", typedEvent);
-      isDirty_controlInputs = controlInputs.onClose(typedEvent);
-      auditInvocation(lifecycleRules, "lifecycleRules", "onClose", "OnEventHandler", typedEvent);
-      lifecycleRules.onClose(typedEvent);
-    } else if (event instanceof EffectResult) {
-      EffectResult typedEvent = (EffectResult) event;
-      auditEvent(typedEvent);
-      auditInvocation(effectOutcomes, "effectOutcomes", "onResult", "OnEventHandler", typedEvent);
-      isDirty_effectOutcomes = effectOutcomes.onResult(typedEvent);
-      auditInvocation(captureRules, "captureRules", "onResult", "OnEventHandler", typedEvent);
-      isDirty_captureRules = captureRules.onResult(typedEvent);
-      auditInvocation(lifecycleRules, "lifecycleRules", "onResult", "OnEventHandler", typedEvent);
-      lifecycleRules.onResult(typedEvent);
-      auditInvocation(serviceRules, "serviceRules", "onResult", "OnEventHandler", typedEvent);
-      serviceRules.onResult(typedEvent);
-    } else if (event instanceof RunIntent) {
-      RunIntent typedEvent = (RunIntent) event;
-      auditEvent(typedEvent);
-      auditInvocation(controlInputs, "controlInputs", "onRun", "OnEventHandler", typedEvent);
-      isDirty_controlInputs = controlInputs.onRun(typedEvent);
-      auditInvocation(serviceRules, "serviceRules", "onRun", "OnEventHandler", typedEvent);
-      serviceRules.onRun(typedEvent);
-    } else if (event instanceof StopIntent) {
-      StopIntent typedEvent = (StopIntent) event;
-      auditEvent(typedEvent);
-      auditInvocation(controlInputs, "controlInputs", "onStop", "OnEventHandler", typedEvent);
-      isDirty_controlInputs = controlInputs.onStop(typedEvent);
-      auditInvocation(lifecycleRules, "lifecycleRules", "onStop", "OnEventHandler", typedEvent);
-      lifecycleRules.onStop(typedEvent);
+    try {
+      if (event instanceof EventLogControlEvent) {
+        EventLogControlEvent typedEvent = (EventLogControlEvent) event;
+        auditEvent(typedEvent);
+        auditInvocation(
+            eventLogger, "eventLogger", "calculationLogConfig", "OnEventHandler", typedEvent);
+        eventLogger.calculationLogConfig(typedEvent);
+      } else if (event instanceof ClockStrategyEvent) {
+        ClockStrategyEvent typedEvent = (ClockStrategyEvent) event;
+        auditEvent(typedEvent);
+        auditInvocation(clock, "clock", "setClockStrategy", "OnEventHandler", typedEvent);
+        clock.setClockStrategy(typedEvent);
+      } else if (event instanceof AddIntent) {
+        AddIntent typedEvent = (AddIntent) event;
+        auditEvent(typedEvent);
+        auditInvocation(controlInputs, "controlInputs", "onAdd", "OnEventHandler", typedEvent);
+        isDirty_controlInputs = controlInputs.onAdd(typedEvent);
+        auditInvocation(lifecycleRules, "lifecycleRules", "onAdd", "OnEventHandler", typedEvent);
+        lifecycleRules.onAdd(typedEvent);
+      } else if (event instanceof AuditStartIntent) {
+        AuditStartIntent typedEvent = (AuditStartIntent) event;
+        auditEvent(typedEvent);
+        auditInvocation(
+            controlInputs, "controlInputs", "onAuditStart", "OnEventHandler", typedEvent);
+        isDirty_controlInputs = controlInputs.onAuditStart(typedEvent);
+        auditInvocation(captureRules, "captureRules", "onAuditStart", "OnEventHandler", typedEvent);
+        isDirty_captureRules = captureRules.onAuditStart(typedEvent);
+      } else if (event instanceof AuditStopIntent) {
+        AuditStopIntent typedEvent = (AuditStopIntent) event;
+        auditEvent(typedEvent);
+        auditInvocation(
+            controlInputs, "controlInputs", "onAuditStop", "OnEventHandler", typedEvent);
+        isDirty_controlInputs = controlInputs.onAuditStop(typedEvent);
+        auditInvocation(captureRules, "captureRules", "onAuditStop", "OnEventHandler", typedEvent);
+        isDirty_captureRules = captureRules.onAuditStop(typedEvent);
+      } else if (event instanceof BroadcastIntent) {
+        BroadcastIntent typedEvent = (BroadcastIntent) event;
+        auditEvent(typedEvent);
+        auditInvocation(
+            controlInputs, "controlInputs", "onBroadcast", "OnEventHandler", typedEvent);
+        isDirty_controlInputs = controlInputs.onBroadcast(typedEvent);
+        auditInvocation(serviceRules, "serviceRules", "onBroadcast", "OnEventHandler", typedEvent);
+        serviceRules.onBroadcast(typedEvent);
+      } else if (event instanceof CaptureCompletion) {
+        CaptureCompletion typedEvent = (CaptureCompletion) event;
+        auditEvent(typedEvent);
+        auditInvocation(
+            controlInputs, "controlInputs", "onCompletion", "OnEventHandler", typedEvent);
+        isDirty_controlInputs = controlInputs.onCompletion(typedEvent);
+        auditInvocation(
+            effectOutcomes, "effectOutcomes", "onCompletion", "OnEventHandler", typedEvent);
+        isDirty_effectOutcomes = effectOutcomes.onCompletion(typedEvent);
+        auditInvocation(captureRules, "captureRules", "onCompletion", "OnEventHandler", typedEvent);
+        isDirty_captureRules = captureRules.onCompletion(typedEvent);
+      } else if (event instanceof CloseIntent) {
+        CloseIntent typedEvent = (CloseIntent) event;
+        auditEvent(typedEvent);
+        auditInvocation(controlInputs, "controlInputs", "onClose", "OnEventHandler", typedEvent);
+        isDirty_controlInputs = controlInputs.onClose(typedEvent);
+        auditInvocation(lifecycleRules, "lifecycleRules", "onClose", "OnEventHandler", typedEvent);
+        lifecycleRules.onClose(typedEvent);
+      } else if (event instanceof EffectResult) {
+        EffectResult typedEvent = (EffectResult) event;
+        auditEvent(typedEvent);
+        auditInvocation(effectOutcomes, "effectOutcomes", "onResult", "OnEventHandler", typedEvent);
+        isDirty_effectOutcomes = effectOutcomes.onResult(typedEvent);
+        auditInvocation(captureRules, "captureRules", "onResult", "OnEventHandler", typedEvent);
+        isDirty_captureRules = captureRules.onResult(typedEvent);
+        auditInvocation(lifecycleRules, "lifecycleRules", "onResult", "OnEventHandler", typedEvent);
+        lifecycleRules.onResult(typedEvent);
+        auditInvocation(serviceRules, "serviceRules", "onResult", "OnEventHandler", typedEvent);
+        serviceRules.onResult(typedEvent);
+      } else if (event instanceof RunIntent) {
+        RunIntent typedEvent = (RunIntent) event;
+        auditEvent(typedEvent);
+        auditInvocation(controlInputs, "controlInputs", "onRun", "OnEventHandler", typedEvent);
+        isDirty_controlInputs = controlInputs.onRun(typedEvent);
+        auditInvocation(serviceRules, "serviceRules", "onRun", "OnEventHandler", typedEvent);
+        serviceRules.onRun(typedEvent);
+      } else if (event instanceof StopIntent) {
+        StopIntent typedEvent = (StopIntent) event;
+        auditEvent(typedEvent);
+        auditInvocation(controlInputs, "controlInputs", "onStop", "OnEventHandler", typedEvent);
+        isDirty_controlInputs = controlInputs.onStop(typedEvent);
+        auditInvocation(lifecycleRules, "lifecycleRules", "onStop", "OnEventHandler", typedEvent);
+        lifecycleRules.onStop(typedEvent);
+      }
+    } catch (Throwable t) {
+      buffering = false;
+      failedCycle(t);
+      throw t;
     }
   }
 
   public void triggerCalculation() {
     buffering = false;
-    String typedEvent = "No event information - buffered dispatch";
-    afterEvent();
+    try {
+      String typedEvent = "No event information - buffered dispatch";
+      afterEvent();
+    } catch (Throwable t) {
+      failedCycle(t);
+      throw t;
+    }
   }
   //EVENT BUFFERING - END
 
@@ -699,11 +755,13 @@ public class GroupControlProcessor
   /**
    * DataFlow.runInEventCycle: run a host's action as an event cycle, with auditEvent as its audit
    * context. A buffered calculation runs first (it closes its own record), then the cycle opens
-   * with the caller's event and the action runs; a finally closes the cycle and dispatches what the
-   * action queued, and an inner finally clears processing, so a throw cannot wedge the processor.
-   * auditEvent is dispatched to no node and marks nothing dirty. An auditEvent that is an Event
-   * supplies its own event time, as on the event path; any other object takes the process time. Not
-   * re-entrant. To disable the path in a generated processor, make this throw.
+   * with the caller's event and the action runs; then the cycle is closed and what the action
+   * queued is dispatched. A failed action's cycle is still closed and its queued work is not
+   * dispatched; a throw while closing or draining fails the cycle (failedCycle). The action's own
+   * exception is the one the caller sees, and a finally clears processing. auditEvent is dispatched
+   * to no node and marks nothing dirty. An auditEvent that is an Event supplies its own event time,
+   * as on the event path; any other object takes the process time. Not re-entrant. To disable the
+   * path in a generated processor, make this throw.
    *
    * <p>No @Override, deliberately: generated source must also compile against a runtime that
    * predates DataFlow.runInEventCycle (1.0.16), where this is an ordinary public method a host
@@ -721,23 +779,42 @@ public class GroupControlProcessor
     }
     processing = true;
     try {
-      // an Event supplies its own event time, as on the event path: the static type selects the auditors'
-      // overload, eventReceived(Event) or eventReceived(Object)
-      if (auditEvent instanceof com.telamin.fluxtion.runtime.event.Event) {
-        auditEvent((com.telamin.fluxtion.runtime.event.Event) auditEvent);
-      } else {
-        auditEvent(auditEvent);
+      try {
+        // an Event supplies its own event time, as on the event path: the static type selects the auditors'
+        // overload, eventReceived(Event) or eventReceived(Object)
+        if (auditEvent instanceof com.telamin.fluxtion.runtime.event.Event) {
+          auditEvent((com.telamin.fluxtion.runtime.event.Event) auditEvent);
+        } else {
+          auditEvent(auditEvent);
+        }
+        action.run();
+      } catch (Throwable t) {
+        // the action failed: the cycle is still closed, as a host's own audit bracket closes its record, and
+        // what it queued is not dispatched. A throw from the close is kept as suppressed evidence.
+        callbackDispatcher.discardQueuedCallbacks();
+        try {
+          afterEvent();
+        } catch (Throwable closeFailure) {
+          if (closeFailure != t) {
+            t.addSuppressed(closeFailure);
+          }
+          failedCycle(t);
+        }
+        // the close runs @AfterEvent code, which can queue work: discarded too, never dispatched later
+        callbackDispatcher.discardQueuedCallbacks();
+        throw t;
       }
-      action.run();
-    } finally {
-      // closed even when the action throws, as a host's own audit bracket closes its record; processing is
-      // cleared innermost, so a throw from the close cannot wedge the processor either
+      // #105: closing the cycle and draining what the action queued are part of the cycle, so a throw there
+      // fails it and the failing queued item is not left at the head of the queue for the next event
       try {
         afterEvent();
         callbackDispatcher.dispatchQueuedCallbacks();
-      } finally {
-        processing = false;
+      } catch (Throwable t) {
+        failedCycle(t);
+        throw t;
       }
+    } finally {
+      processing = false;
     }
   }
 
@@ -749,24 +826,60 @@ public class GroupControlProcessor
     isDirty_effectOutcomes = false;
   }
 
+  /**
+   * The close of a cycle that failed (telaminai/fluxtion-compiler#105): framework state only, no
+   * user code. Dirty flags and fork tasks are reset so nothing of the failed cycle triggers a later
+   * one, the auditors close its record so the next cycle's record is its own, and, on a runtime
+   * that declares discardQueuedCallbacks (1.1.3+), what the cycle queued is discarded. An auditor's
+   * throw is added to the cycle's exception as suppressed.
+   */
+  private void failedCycle(Throwable cause) {
+    isDirty_captureRules = false;
+    isDirty_controlInputs = false;
+    isDirty_effectOutcomes = false;
+
+    try {
+      clock.processingComplete();
+      eventLogger.processingComplete();
+    } catch (Throwable t) {
+      if (t != cause) {
+        cause.addSuppressed(t);
+      }
+    }
+    // last, so nothing the close itself queued survives it
+    callbackDispatcher.discardQueuedCallbacks();
+  }
+
   @Override
   public void batchPause() {
-    auditEvent(Lifecycle.LifecycleEvent.BatchPause);
     processing = true;
+    try {
+      auditEvent(Lifecycle.LifecycleEvent.BatchPause);
 
-    afterEvent();
-    callbackDispatcher.dispatchQueuedCallbacks();
-    processing = false;
+      afterEvent();
+      callbackDispatcher.dispatchQueuedCallbacks();
+    } catch (Throwable t) {
+      failedCycle(t);
+      throw t;
+    } finally {
+      processing = false;
+    }
   }
 
   @Override
   public void batchEnd() {
-    auditEvent(Lifecycle.LifecycleEvent.BatchEnd);
     processing = true;
-    effectQueue.performRequestedEffects();
-    afterEvent();
-    callbackDispatcher.dispatchQueuedCallbacks();
-    processing = false;
+    try {
+      auditEvent(Lifecycle.LifecycleEvent.BatchEnd);
+      effectQueue.performRequestedEffects();
+      afterEvent();
+      callbackDispatcher.dispatchQueuedCallbacks();
+    } catch (Throwable t) {
+      failedCycle(t);
+      throw t;
+    } finally {
+      processing = false;
+    }
   }
 
   @Override

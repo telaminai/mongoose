@@ -24,7 +24,7 @@
     <graph edgedefault="directed">
         <data key="fluxtion.metaVersion">1.0</data>
         <data key="fluxtion.sourceFingerprint">b954fa5595eb09cdce40daf8f7572c566b4e95b28ca88bfd41753f06f2de5343</data>
-        <data key="fluxtion.toolchainVersion">1.0.79</data>
+        <data key="fluxtion.toolchainVersion">1.0.80</data>
         <data key="fluxtion.nodeCount">26</data>
         <data key="fluxtion.authoredNodeCount">7</data>
         <node id="AddIntent">

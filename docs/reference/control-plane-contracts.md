@@ -982,9 +982,10 @@ These are deliberate non-guarantees in this build:
 
 ## Generated processor failure containment
 
-A generated or interpreted Fluxtion processor implementing `InternalEventProcessor` can retain a processing flag,
-queued callbacks, or partial application state after a handler throws. A normal return from a subsequent call is
-not proof of recovery. Mongoose therefore does not retry that graph after a non-VM callback failure on its hosted
+A generated or interpreted Fluxtion processor implementing `InternalEventProcessor` can retain partial application
+state and external effects after a handler throws. Runtime 1.1.3 and newly generated processors clear the processing
+flag and discard failed-cycle work, but old generated code can still wedge until regenerated. A normal return from
+a subsequent call is not proof that application state is safe. Mongoose therefore does not retry that graph after a non-VM callback failure on its hosted
 dispatch, replay, service, timer, capture-listener or lifecycle paths.
 
 The group removes that processor from every input reader, cancels its timers, emits an ERROR and a
