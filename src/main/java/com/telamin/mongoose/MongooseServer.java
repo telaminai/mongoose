@@ -1285,8 +1285,7 @@ public class MongooseServer implements MongooseServerController {
      * waiting. A handle whose processor has gone is answered {@code APPLIED} ("alreadyStopped"); a handle from another
      * server, or for a group that does not exist, {@code REFUSED}.
      *
-     * @throws IllegalStateException when the group's mailbox is full: at once on an agent thread, otherwise after the
-     *                               group's full-mailbox timeout. Nothing is stopped
+     * A full mailbox is answered {@code REFUSED} immediately; the processor keeps running.
      */
     public java.util.concurrent.CompletionStage<com.telamin.mongoose.control.ControlReply> stopProcessor(ProcessorHandle handle) {
         if (!handle.belongsTo(processorHandleOwner)) {
@@ -1312,7 +1311,17 @@ public class MongooseServer implements MongooseServerController {
      */
     public com.telamin.mongoose.control.ControlReply stopProcessor(String groupName, String processorName, long waitMillis) {
         long deadline = controlDeadline(waitMillis);
-        return awaitWhereSafe(groupName, sendStop(groupName, processorName, deadline), deadline);
+        com.telamin.mongoose.control.ControlRequest request;
+        try {
+            request = sendStop(groupName, processorName, deadline);
+        } catch (IllegalStateException notQueued) {
+            // The group's full-mailbox timeout can expire before this call's deadline. This reply API answers a
+            // refused admission; the void overload retains its exception contract.
+            return new com.telamin.mongoose.control.ControlReply(-1,
+                    com.telamin.mongoose.control.event.ReplyOutcome.REFUSED,
+                    String.valueOf(notQueued.getMessage()), -1, processorName);
+        }
+        return awaitWhereSafe(groupName, request, deadline);
     }
 
     /** How long a void control method waits for its outcome before detaching (the request still applies). */
@@ -1615,8 +1624,7 @@ public class MongooseServer implements MongooseServerController {
      *
      * @param groupName     the processor group containing the processor
      * @param processorName the unique name of the processor to stop
-     * @throws IllegalStateException when the group's mailbox is full: at once on an agent thread, otherwise after the
-     *                               group's full-mailbox timeout. Nothing is stopped
+     * A full mailbox is answered {@code REFUSED} immediately; the processor keeps running.
      */
     @Override
     public void stopProcessor(String groupName, String processorName) {

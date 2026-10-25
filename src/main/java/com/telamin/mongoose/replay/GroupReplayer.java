@@ -229,8 +229,12 @@ public final class GroupReplayer {
         if (cursor == null || !(service.instance() instanceof com.telamin.fluxtion.runtime.output.MessageSink<?>)) return service;
         String name = cursor.name;
         return captured.computeIfAbsent(flow, f -> new java.util.IdentityHashMap<>()).computeIfAbsent(service,
+                // a synchronized list, not a CopyOnWriteArrayList: every output is an add, and copying the whole capture
+                // on each made a replay quadratic in its length (found by the stress campaign); readers copy it whole,
+                // under its lock, through outputs()
                 s -> new com.telamin.fluxtion.runtime.service.Service(new CapturingSink(outputs.computeIfAbsent(name,
-                        n -> new CopyOnWriteArrayList<>())), s.serviceClass(), s.serviceName()));
+                        n -> java.util.Collections.synchronizedList(new java.util.ArrayList<>()))), s.serviceClass(),
+                        s.serviceName()));
     }
 
     /**
