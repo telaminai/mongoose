@@ -134,6 +134,28 @@ public final class ControlDriver {
         return request;
     }
 
+    /**
+     * Send without ever waiting: for a sender holding a lock (the service lock). A full mailbox refuses the request at
+     * once and throws, as {@link #send} does when it gives up.
+     */
+    public ControlRequest trySend(ControlRequest request) {
+        if (request.requestId() < 0) request.assignId(requestIds.incrementAndGet());
+        outstanding.add(request);
+        if (ended()) {
+            refuseTerminal(request);
+            return request;
+        }
+        if (!mailbox.offer(request)) {
+            refuse(request, "mailbox full");
+            throw new IllegalStateException("group " + group + ": " + queueName(request.kind()) + " queue is full ("
+                    + mailbox.capacity() + ") and the sender cannot wait for it");
+        }
+        if (ended()) {
+            refuseTerminal(request);
+        }
+        return request;
+    }
+
     /** The name each kind of request had as a queue of its own before the single mailbox, kept in error messages. */
     private static String queueName(ControlRequest.Kind kind) {
         return switch (kind) {

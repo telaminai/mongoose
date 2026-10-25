@@ -14,6 +14,7 @@ import com.telamin.mongoose.dutycycle.ProcessorRegistration;
 import com.telamin.mongoose.service.scheduler.DeadWheelScheduler;
 import org.agrona.concurrent.AgentRunner;
 import org.agrona.concurrent.BusySpinIdleStrategy;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -31,6 +32,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @Timeout(30)
 class ControlTerminalAdmissionTest {
+
+    /** A group driven inline marks this thread as an agent; a failed test must not leak the mark into the next. */
+    @AfterEach
+    void clearAgentMark() {
+        com.telamin.mongoose.control.AgentThreads.exit();
+    }
 
     static final class Proc implements DataFlow, Lifecycle {
         final AtomicInteger starts = new AtomicInteger();

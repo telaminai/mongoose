@@ -257,10 +257,18 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
      * if it is newer than the last it applied for that service; version 0 is unversioned and always applies.
      */
     public ControlRequest broadcastService(Service<?> service, boolean register, long version) {
-        ControlRequest request = new ControlRequest(ControlRequest.Kind.BROADCAST,
+        return control.send(broadcastRequest(service, register, version));
+    }
+
+    /** As {@link #broadcastService}, never waiting on a full mailbox: refused at once (sent under the service lock). */
+    public ControlRequest tryBroadcastService(Service<?> service, boolean register, long version) {
+        return control.trySend(broadcastRequest(service, register, version));
+    }
+
+    private ControlRequest broadcastRequest(Service<?> service, boolean register, long version) {
+        return new ControlRequest(ControlRequest.Kind.BROADCAST,
                 (register ? "register " : "deregister ") + service.serviceName(),
                 id -> new BroadcastIntent(id, service.serviceName(), register, version), new BroadcastPayload(service, register));
-        return control.send(request);
     }
 
     /** What an add needs to perform its effects: never seen by the control processor. */

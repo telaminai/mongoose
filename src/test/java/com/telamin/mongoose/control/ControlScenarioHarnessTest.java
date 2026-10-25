@@ -14,6 +14,7 @@ import com.telamin.mongoose.control.event.RunIntent;
 import com.telamin.fluxtion.runtime.service.Service;
 import com.telamin.mongoose.service.error.ErrorReporting;
 import com.telamin.mongoose.service.scheduler.DeadWheelScheduler;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -50,6 +51,12 @@ import static org.junit.jupiter.api.Assertions.fail;
  * regression test.
  */
 class ControlScenarioHarnessTest {
+
+    /** A group driven inline marks this thread as an agent; a failed test must not leak the mark into the next. */
+    @AfterEach
+    void clearAgentMark() {
+        com.telamin.mongoose.control.AgentThreads.exit();
+    }
 
     /** A simulated processor that keeps its own ledger. */
     static final class LedgerProc implements DataFlow, Lifecycle {

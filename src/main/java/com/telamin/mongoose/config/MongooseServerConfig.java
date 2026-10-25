@@ -152,6 +152,16 @@ public class MongooseServerConfig {
      */
     private long shutdownTimeoutMillis = DEFAULT_SHUTDOWN_TIMEOUT_MILLIS;
 
+    /** Default bound on a void control method's wait, see {@link #controlWaitMillis}. */
+    public static final long DEFAULT_CONTROL_WAIT_MILLIS = 10_000;
+
+    /**
+     * Design "Agent threads and replies": how long a void control method ({@code addEventProcessor},
+     * {@code stopProcessor}, {@code registerService}, {@code removeService}) waits, off agent threads, for its outcome
+     * before returning; the request still applies after it returns.
+     */
+    private long controlWaitMillis = DEFAULT_CONTROL_WAIT_MILLIS;
+
     /** Default bound on the startup wait, see {@link #startupTimeoutMillis}. */
     public static final long DEFAULT_STARTUP_TIMEOUT_MILLIS = 60_000;
 

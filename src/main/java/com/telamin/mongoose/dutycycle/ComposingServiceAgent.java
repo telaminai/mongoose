@@ -84,8 +84,12 @@ public class ComposingServiceAgent extends DynamicCompositeAgent {
         }
     }
 
+    /** The thread that ran onStart: only it carries this group's agent mark. */
+    private volatile Thread agentThread;
+
     @Override
     public void onStart() {
+        agentThread = Thread.currentThread();
         com.telamin.mongoose.control.AgentThreads.enter(mongooseServer != null ? mongooseServer : this);
         // Best-effort core pinning if configured for this agent group (guard for null during unit tests)
         if (mongooseServer != null) {
@@ -146,7 +150,8 @@ public class ComposingServiceAgent extends DynamicCompositeAgent {
         try {
             super.onClose();
         } finally {
-            com.telamin.mongoose.control.AgentThreads.exit();
+            // a group that never started is closed on the closing thread, which may be another agent: keep its mark
+            if (Thread.currentThread() == agentThread) com.telamin.mongoose.control.AgentThreads.exit();
         }
     }
 

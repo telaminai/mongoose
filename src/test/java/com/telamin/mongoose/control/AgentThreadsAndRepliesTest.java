@@ -11,6 +11,7 @@ import com.telamin.mongoose.control.event.RunIntent;
 import com.telamin.mongoose.dispatch.EventFlowManager;
 import com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent;
 import com.telamin.mongoose.service.scheduler.DeadWheelScheduler;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -28,6 +29,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /** Design "Agent threads and replies" (PR 3): agent identity, never blocking an agent, isolated replies, handles. */
 @Timeout(60)
 class AgentThreadsAndRepliesTest {
+
+    /** A group driven inline marks this thread as an agent; a failed test must not leak the mark into the next. */
+    @AfterEach
+    void clearAgentMark() {
+        com.telamin.mongoose.control.AgentThreads.exit();
+    }
 
     static class Proc implements DataFlow, Lifecycle {
         final AtomicInteger starts = new AtomicInteger();
@@ -82,7 +89,7 @@ class AgentThreadsAndRepliesTest {
                     }
                 }
             };
-            s.addProcessor("p", "g", null, () -> p).thenAccept(reply -> {
+            s.addProcessor("p", "g", null, () -> p).reply().thenAccept(reply -> {
                 ranOn.set(Thread.currentThread());
                 done.countDown();
             });
@@ -90,7 +97,7 @@ class AgentThreadsAndRepliesTest {
             assertTrue(done.await(10, TimeUnit.SECONDS));
             assertNotNull(p.startThread);
             assertFalse(ranOn.get() == p.startThread, "a dependent ran on the group's agent thread");
-            assertEquals("mongoose-control-replies", ranOn.get().getName());
+            assertTrue(ranOn.get().getName().startsWith("mongoose-control-replies"), ranOn.get().getName());
         } finally {
             s.stop();
         }
@@ -121,7 +128,7 @@ class AgentThreadsAndRepliesTest {
         MongooseServer s = started();
         try {
             s.addEventProcessor("p", "g", null, Proc::new);
-            ControlReply dup = s.addProcessor("p", "g", null, Proc::new).toCompletableFuture().get(10, TimeUnit.SECONDS);
+            ControlReply dup = s.addProcessor("p", "g", null, Proc::new).reply().toCompletableFuture().get(10, TimeUnit.SECONDS);
             assertEquals(ReplyOutcome.REFUSED, dup.outcome());
         } finally {
             s.stop();

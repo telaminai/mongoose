@@ -10,6 +10,7 @@ import com.telamin.mongoose.dispatch.EventFlowManager;
 import com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent;
 import com.telamin.mongoose.dutycycle.NamedEventProcessor;
 import com.telamin.mongoose.service.scheduler.DeadWheelScheduler;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -27,6 +28,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /** Design "Service lifecycle" (PR 4): one order for registry changes and broadcasts, versions, unbind before stop. */
 @Timeout(60)
 class ServiceLifecycleTest {
+
+    /** A group driven inline marks this thread as an agent; a failed test must not leak the mark into the next. */
+    @AfterEach
+    void clearAgentMark() {
+        com.telamin.mongoose.control.AgentThreads.exit();
+    }
 
     /** A processor that records which named services it currently holds. */
     static class Holder implements DataFlow, Lifecycle {

@@ -48,7 +48,7 @@ public class ServiceRules extends EventLogNode {
         }
         if (!state.applyServiceVersion(intent.serviceName(), intent.version())) {
             ControlEffect reply = new ControlEffect.Reply(state.nextOp(req), req, -1, null, ReplyOutcome.APPLIED,
-                    "stale version " + intent.version());
+                    "ignored: stale version " + intent.version());
             decide(rule + "Stale", intent.serviceName(), reply);
             return true;
         }
