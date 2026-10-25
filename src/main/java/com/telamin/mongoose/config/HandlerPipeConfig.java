@@ -191,7 +191,20 @@ public class HandlerPipeConfig<T> {
      */
     @SuppressWarnings("deprecation")
     public com.telamin.mongoose.dispatch.FeedOverloadSettings resolveOverload() {
-        return OverloadPolicyConfig.resolve(name, overload, slowConsumerStrategy, slowConsumerStrategyExplicit);
+        var settings = OverloadPolicyConfig.resolve(name, overload, slowConsumerStrategy, slowConsumerStrategyExplicit);
+        boolean blocks = settings.feedDefault().blocks()
+                || settings.bySubscriberGroup().values().stream().anyMatch(s -> s.blocks());
+        if (blocks) {
+            java.util.logging.Logger log = java.util.logging.Logger.getLogger(OverloadPolicyConfig.class.getName());
+            log.warning("pipe '" + name + "': BLOCK_WITH_DEADLINE waits only for publishers on non-agent threads; "
+                    + "processors publishing into the pipe run on agent threads and fall back to drop-after-spin "
+                    + "(counted in downgradedCount) when a queue is full");
+            if (cacheEventLog) {
+                log.warning("pipe '" + name + "': cacheEventLog with BLOCK_WITH_DEADLINE: the cached event log is "
+                        + "replayed at start with drop-after-spin semantics, so a full queue drops cached items");
+            }
+        }
+        return settings;
     }
 
     /**

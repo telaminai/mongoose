@@ -183,6 +183,60 @@ class OverloadPolicyConfigTest {
     }
 
     @Test
+    void blockingPipeIsWarnedAtBootAndAlsoWithCacheEventLog() {
+        try (Captured log = new Captured()) {
+            HandlerPipeConfig.builder().name("fills")
+                    .overload(OverloadPolicyConfig.blockWithDeadline(Duration.ofMillis(100))).build().resolveOverload();
+            assertTrue(log.contains("pipe 'fills': BLOCK_WITH_DEADLINE waits only for publishers on non-agent threads"),
+                    log.messages());
+            assertFalse(log.contains("pipe 'fills': cacheEventLog"), log.messages());
+            HandlerPipeConfig.builder().name("cached").cacheEventLog(true)
+                    .overload(OverloadPolicyConfig.blockWithDeadline(Duration.ofMillis(100))).build().resolveOverload();
+            assertTrue(log.contains("pipe 'cached': cacheEventLog with BLOCK_WITH_DEADLINE"), log.messages());
+            HandlerPipeConfig.builder().name("plain")
+                    .overload(OverloadPolicyConfig.dropAfterSpin(Duration.ofMillis(1))).build().resolveOverload();
+            assertFalse(log.contains("pipe 'plain'"), log.messages());
+        }
+    }
+
+    @Test
+    void deadlineAboveSixtySecondsIsWarnedNotCapped() {
+        try (Captured log = new Captured()) {
+            var s = EventFeedConfig.builder().name("orders")
+                    .overload(OverloadPolicyConfig.blockWithDeadline(Duration.ofMillis(60_001))).build().resolveOverload();
+            assertEquals(TimeUnit.MILLISECONDS.toNanos(60_001), s.feedDefault().blockDeadlineNanos());
+            assertTrue(log.contains("blockDeadlineMillis 60001 exceeds 60000 ms"), log.messages());
+            EventFeedConfig.builder().name("ok")
+                    .overload(OverloadPolicyConfig.blockWithDeadline(Duration.ofMillis(60_000))).build().resolveOverload();
+            assertFalse(log.contains("blockDeadlineMillis 60000 exceeds"), log.messages());
+        }
+    }
+
+    @Test
+    void overrideForAnUnknownGroupIsWarnedAtBootAndAfterStart() throws Exception {
+        var source = new CapturingSource();
+        var config = MongooseServerConfig.builder()
+                .addEventFeed(EventFeedConfig.builder().instance(source).name("orders")
+                        .overload(OverloadPolicyConfig.blockWithDeadline(Duration.ofMillis(250))
+                                .subscriber("telemtry", OverloadPolicyConfig.dropAfterSpin(Duration.ZERO)))
+                        .build())
+                .build();
+        try (Captured boot = new Captured(com.telamin.mongoose.internal.ServerConfigurator.class);
+             Captured started = new Captured(MongooseServer.class)) {
+            MongooseServer server = MongooseServer.bootServer(config, rec -> { });
+            try {
+                assertTrue(boot.contains("feed 'orders': overload override for subscriber group 'telemtry', which is "
+                        + "not a configured processor group"), boot.messages());
+                assertEquals(1, started.messages.stream().filter(m -> m.contains(
+                        "feed 'orders': overload override for subscriber group 'telemtry' matches no processor group"))
+                        .count(), started.messages());
+            } finally {
+                server.stop();
+            }
+        }
+    }
+
+    @Test
     void preOverloadAllArgumentConstructorsAreKept() throws Exception {
         assertNotNull(EventFeedConfig.class.getConstructor(Object.class, String.class, boolean.class, boolean.class,
                 EventSource.EventWrapStrategy.class, EventSource.SlowConsumerStrategy.class, Function.class, String.class,
@@ -220,9 +274,14 @@ class OverloadPolicyConfigTest {
 
     static final class Captured extends Handler implements AutoCloseable {
         final List<String> messages = new CopyOnWriteArrayList<>();
-        final Logger logger = Logger.getLogger(OverloadPolicyConfig.class.getName());
+        final Logger logger;
 
         Captured() {
+            this(OverloadPolicyConfig.class);
+        }
+
+        Captured(Class<?> type) {
+            logger = Logger.getLogger(type.getName());
             logger.addHandler(this);
         }
 

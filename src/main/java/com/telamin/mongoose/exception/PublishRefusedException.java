@@ -14,9 +14,11 @@ package com.telamin.mongoose.exception;
  * journal entry was written, so a caller that retries does not duplicate it.
  * <p>
  * <b>Pooled items.</b> The publisher has released the reference that was handed over with the item, so a pooled item
- * has gone back to its pool when this is thrown. The caller must not publish the same instance again (its tracker
- * would report "already returned", or, if the pool has reissued it, the retry would corrupt the new holder's item): a
- * retry acquires a fresh instance and copies the payload. {@link #item()} is a description, never the instance.
+ * has gone back to its pool, and been reset by it, before this is thrown: the caller's instance no longer holds its
+ * payload. A caller that may retry must <b>copy the payload before publishing</b>, then on refusal acquire a fresh
+ * instance and fill it from that copy. It must never publish the refused instance again (its tracker would report
+ * "already returned", or, if the pool has reissued it, the retry would corrupt the new holder's item).
+ * {@link #item()} is a description taken before the release, never the instance.
  */
 public class PublishRefusedException extends FluxtionServerException {
 

@@ -1959,6 +1959,21 @@ public class MongooseServer implements MongooseServerController {
                 }
             }
         }
+        warnUnknownOverloadGroups();
+    }
+
+    /**
+     * #79 review finding 6: an overload override keyed by a group that has bound no queue and is not a processor group
+     * of this server is almost certainly a misspelt or renamed group; its queues would silently get the feed default.
+     * Warned once per (feed, group), after start.
+     */
+    private void warnUnknownOverloadGroups() {
+        flowManager.unboundOverloadOverrides().forEach((feed, groups) -> groups.forEach(group -> {
+            if (!composingEventProcessorAgents.containsKey(group)) {
+                log.warning("feed '" + feed + "': overload override for subscriber group '" + group + "' matches no "
+                        + "processor group of this server and has bound no queue; check the group name");
+            }
+        }));
     }
 
     /**

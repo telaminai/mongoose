@@ -270,18 +270,20 @@ class BlockWithDeadlineTest {
 
         Msg first = pool.acquire();
         first.payload = 42;
+        long copied = first.payload; // the documented rule: copy the payload BEFORE publishing if you may retry
         Outcome out = publishOnThread(publisher, first);
         assertTrue(out.await(5_000));
         PublishRefusedException refused = assertInstanceOf(PublishRefusedException.class, out.error.get());
         assertEquals("Msg{42}", refused.item(), "the exception describes the item, it does not hand it back");
         assertEquals(0, first.tracker.currentRefCount(), "the publisher released the reference it was handed");
         assertEquals(1, pool.availableCount(), "returned to the pool exactly once");
+        assertEquals(-1, first.payload, "the pool reset the refused instance before the caller saw the refusal");
 
-        // the documented rule: a retry acquires a fresh instance and copies the payload
+        // a retry acquires a fresh instance and fills it from the copy taken before publishing
         q.poll();
         q.poll();
         Msg retry = pool.acquire();
-        retry.payload = 42;
+        retry.payload = copied;
         Outcome again = publishOnThread(publisher, retry);
         assertTrue(again.await(5_000));
         assertNull(again.error.get(), "no 'already returned', no ABA");

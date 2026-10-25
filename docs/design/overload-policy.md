@@ -61,7 +61,7 @@ Verified against `dfbfdd9` (`feature/control-plane`). Paths are under `src/main/
 | Policy | On a full queue | Loss | Who may wait | Status |
 | --- | --- | --- | --- | --- |
 | `DROP_AFTER_SPIN` (default) | Spin for the spin bound (10 ms by default, configurable, may be 0) while holding the lock, then drop for that queue only, count it and carry on. | Yes, per queue, counted. | Nobody waits past the spin. | implemented |
-| `BLOCK_WITH_DEADLINE` | Wait up to the deadline, **without the lock**, until every blocking queue has room. Then deliver to all of them, or refuse the publish with `PublishRefusedException` and deliver to none. | None silent: a refusal is thrown to the caller and counted. | Non-agent threads only; see section 6. | implemented |
+| `BLOCK_WITH_DEADLINE` | Wait up to the deadline, **without the lock**, until every blocking queue has room. Then deliver to all of them, or refuse the publish with `PublishRefusedException` and deliver to none. | None silent for a live publish from a non-agent thread: a refusal is thrown to the caller and counted. **Counted drops** in three cases: a publish from an agent thread, or nested in a dispatch, when a queue is full (section 6); and the replay of a pre-start cached event log at `startComplete`, which never waits (warned at start, and at boot for a pipe with `cacheEventLog`). | Non-agent threads only; see section 6. | implemented |
 | `BLOCK` (unbounded) | As `BLOCK_WITH_DEADLINE`, with no deadline. | None. | Non-agent threads only. | proposed. Cancellation is already in place (section 7); what remains is the owner's decision. |
 | `DISCONNECT` / `EXIT_PROCESS` | Kill switch on the first overflow. | n/a | n/a | Boot fails if configured (D3). Proposed as the D5 hook. |
 | Conflation (latest wins per key) | Replace the queued item with the same key. | Superseded items only. | n/a | deferred |
@@ -110,11 +110,15 @@ partly delivered item. Publishes from one thread stay in order. Order between pu
 That reference is released exactly once: by the dispatch's existing `finally` on success, or by the refusal path,
 just before `PublishRefusedException` is thrown. On refusal no queue holds the item, so it goes back to its pool.
 
-**The caller must not publish the same instance again.** Its tracker would report "already returned", or, once the
-pool has reissued it, the retry would corrupt the new holder's item (ABA). A retry acquires a fresh instance and
-copies the payload. `PublishRefusedException.item()` is a `String.valueOf` taken before the release. It is never
-the instance. Handing ownership back to the caller was rejected: a caller that ignores the exception would leak a
-pool slot on every refusal, and the pool would run dry.
+**The pool has reset the instance before the caller sees the exception**, so its payload is gone. A caller that
+may retry must **copy the payload before publishing**. On refusal it acquires a fresh instance and fills it from
+that copy. It must never publish the refused instance again: its tracker would report "already returned", or, once
+the pool has reissued it, the retry would corrupt the new holder's item (ABA). `PublishRefusedException.item()` is a
+`String.valueOf` taken before the release. It is never the instance.
+
+Releasing to the pool is the owner's decision. It cannot leak: a caller that ignores the exception would otherwise
+leak a pool slot on every refusal, and the pool would run dry. An opt-in mode that hands ownership back to the
+caller is a **proposed** follow-up for order paths that want to retry the same instance.
 
 ## 6. Agent threads never wait
 
@@ -123,12 +127,20 @@ pool slot on every refusal, and the pool would run dry.
 warning once per publisher:
 
 - An agent thread of any processor group or service agent group (`AgentThreads.isAgentThread()`).
-- A publish nested inside another publish on the same publisher (`Thread.holdsLock(publishLock)`), which cannot
-  release the lock to wait.
+- A publish nested inside **any** publisher's dispatch, through user code that dispatch runs under its lock: a data
+  mapper, a journal codec, an item's `toString`, or an error listener. A static per-thread depth counter is raised
+  around every locked publish path that can run user code. A nested publish cannot release the outer lock to wait,
+  and waiting would hold it for the deadline. `Thread.holdsLock(publishLock)` only saw the same publisher (review of
+  35bdeb2, finding 1).
 
-The resulting drop is an ordinary counted drop. Its first-loss reason names the downgrade, for example
+The publish is counted as downgraded only when it would actually have waited, that is, when a blocking queue lacks
+room. Agent-thread publishes that find room are not counted. The resulting drop is an ordinary counted drop. Its first-loss reason names the downgrade, for example
 `queue full after 10 ms spin; BLOCK_WITH_DEADLINE not waited: agent thread <name>`. Cached event-log replays and
 `publishReplay` keep their existing drop behaviour.
+
+Lifecycle threads are not agent threads: the startup thread and the stop helpers may wait up to the deadline (a
+stop cancels the wait in phase 2, section 7). This is bounded by the deadline but not excluded, unlike
+`MongooseServer.controlCallerMayWait()`.
 
 Consequence: a processor publishing into a `HandlerPipe` runs on its group's agent thread, so `BLOCK_WITH_DEADLINE`
 on a pipe protects only its non-agent publishers. The defined reaction of a processor to a refusal is proposed in
@@ -144,7 +156,7 @@ on a pipe protects only its non-agent publishers. The defined reaction of a proc
 | Thread interrupt | Refused with reason `INTERRUPTED`; the interrupt status stays set. | implemented |
 | Deadline | One last check under the lock, then refused with reason `DEADLINE`. | implemented |
 
-On unsubscribe, the issue text asks for a refusal, and this implementation re-evaluates instead. A refusal there would protect nothing: the
+**Departure from the issue text (owner confirmed):** on unsubscribe, the issue text asks for a refusal, and this implementation re-evaluates instead. A refusal there would protect nothing: the
 subscriber has gone, so a retry would deliver to the same remaining subscribers. This is listed as an owner question.
 
 The shutdown drain is unchanged. Blocking feeds do not extend it, because queue contents die with their group in
@@ -169,7 +181,11 @@ On a feed with no blocking binding, `publish` runs the same statements in the sa
 additions:
 
 - one plain `int` compare (`blockingTargets == 0`) under the lock it already holds;
-- the body of `publishSerialised` moved into `publishMapped`, one extra call frame.
+- the body of `publishSerialised` moved into `publishMapped`, one extra call frame;
+- a `ThreadLocal` read, plus an increment and a decrement of the per-thread dispatch depth (section 6), so that a
+  publish nested in any dispatch is recognised. In the single-threaded micro-benchmark this costs about 0.6 ns per
+  publish, roughly 16.6 ns before and 17.2 ns after. It is the only measurable cost, and it buys the cross-publisher
+  nesting guard.
 
 `publishOrCache` gains the same compare. `writeToQueue` is identical on a successful offer. On a full queue it reads
 the binding's spin bound from the per-binding map once per full queue per publish (10 ms by default), and builds
@@ -221,6 +237,12 @@ Rules:
 - No setting at all gives the default, with the warning `feed 'X' has no explicit overload policy`.
 - Bad values fail boot naming the feed and the key: a missing policy, a missing or non-positive deadline, a deadline
   on `DROP_AFTER_SPIN`, a negative spin bound, or nested `subscribers`.
+- A deadline above 60 s (`MAX_RECOMMENDED_DEADLINE_MILLIS`) is warned at boot but not capped. It behaves like the
+  deferred unbounded `BLOCK`: unsubscribe only re-evaluates, so a wedged subscriber holds the publisher that long.
+- An override keyed by a group that no configured processor group matches is warned at boot. After start, an
+  override that has bound no queue and matches no processor group of the server is warned once.
+- A pipe with a blocking policy is warned at boot: processor publishes into it are downgraded. With `cacheEventLog`
+  too, it is warned that the start replay drops.
 - The pre-#79 all-arguments constructors of `EventFeedConfig` and `HandlerPipeConfig` are kept.
 - Programmatic sources registered without configuration get the default silently. Only configured feeds are warned.
 

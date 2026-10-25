@@ -209,6 +209,16 @@ public class EventFlowManager {
      * Refuse every publish waiting for room in a BLOCK_WITH_DEADLINE queue, now and from now on (telaminai/mongoose#79).
      * Idempotent; never waits for a dispatch.
      */
+    /** Per feed, the overload override groups that have never bound a subscriber queue (review finding 6). */
+    public java.util.Map<String, java.util.Set<String>> unboundOverloadOverrides() {
+        java.util.Map<String, java.util.Set<String>> unbound = new java.util.TreeMap<>();
+        eventSourceToQueueMap.forEach((key, p) -> {
+            java.util.Set<String> groups = p.queuePublisher().unboundOverrideGroups();
+            if (!groups.isEmpty()) unbound.put(key.sourceName(), groups);
+        });
+        return unbound;
+    }
+
     public void cancelBlockedPublishes() {
         eventSourceToQueueMap.values().forEach(p -> p.queuePublisher().cancelBlockedPublishes());
     }

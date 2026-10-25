@@ -141,8 +141,23 @@ public class EventToQueuePublisher<T> {
     private volatile long droppedCount;
 
     // ---- overload policy (telaminai/mongoose#79); see docs/design/overload-policy.md ----
-    /** Longest single park of a publish waiting for room; bounds how late it notices room a consumer freed. */
-    private static final long MAX_PARK_NANOS = java.util.concurrent.TimeUnit.MICROSECONDS.toNanos(100);
+    /**
+     * Longest single park of a publish waiting for room; bounds how late it notices room a consumer freed. Package
+     * private and mutable only so a test can lengthen it and prove that subscriber changes wake a waiter explicitly.
+     */
+    static volatile long maxParkNanos = java.util.concurrent.TimeUnit.MICROSECONDS.toNanos(100);
+    /**
+     * How many publishers' dispatches the current thread is inside (any publisher, not just this one). A dispatch runs
+     * user code under its publish lock (a data mapper, a journal codec, an item's toString, an error listener); a
+     * publish from there into a BLOCK_WITH_DEADLINE feed must not wait, or it would hold the outer publisher's lock for
+     * the deadline (review of 35bdeb2, finding 1). Raised around every locked publish path that can run user code.
+     */
+    private static final ThreadLocal<int[]> DISPATCH_DEPTH = ThreadLocal.withInitial(() -> new int[1]);
+    /** Override groups that have bound a queue at some time; guarded by the publish lock. */
+    @Getter(lombok.AccessLevel.NONE)
+    private final java.util.Set<String> boundGroups = new java.util.HashSet<>();
+    @Getter(lombok.AccessLevel.NONE)
+    private boolean cacheReplayWarned;
     /** The feed's policy and per-group overrides. Written under the publish lock. */
     @Getter(lombok.AccessLevel.NONE)
     private FeedOverloadSettings overload = FeedOverloadSettings.DEFAULT;
@@ -198,6 +213,9 @@ public class EventToQueuePublisher<T> {
                     binding.settings = overload.forGroup(group);
                     queueDrops.put(namedQueue, binding);
                     targetQueues.add(namedQueue);
+                    if (group != null) {
+                        boundGroups.add(group);
+                    }
                     if (binding.settings.blocks()) {
                         blockingTargets++;
                     }
@@ -253,6 +271,31 @@ public class EventToQueuePublisher<T> {
     }
 
     /** Wake every publish waiting for room, so it re-evaluates (a target, the policy or {@link #closing} changed). */
+    /** A downgraded publish that would have waited (M3 hook: counters and health). Under the publish lock. */
+    private void onDowngrade(String downgrade) {
+    }
+
+    /** A blocking publish waited {@code waitedNanos} and was then delivered (M3 hook). Under the publish lock. */
+    private void onWaited(NamedQueue blocker, long waitedNanos) {
+    }
+
+    /** True while the current thread is inside any publisher's dispatch (see {@link #DISPATCH_DEPTH}). */
+    static boolean insideDispatch() {
+        return DISPATCH_DEPTH.get()[0] > 0;
+    }
+
+    /**
+     * Override keys of this feed's policy that have never bound a subscriber queue: a misspelt or renamed group
+     * silently gets the feed default (review finding 6). Checked once the server has started.
+     */
+    public java.util.Set<String> unboundOverrideGroups() {
+        synchronized (publishLock) {
+            java.util.Set<String> unbound = new java.util.TreeSet<>(overload.bySubscriberGroup().keySet());
+            unbound.removeAll(boundGroups);
+            return unbound;
+        }
+    }
+
     private void wakeWaiters() {
         targetsEpoch.incrementAndGet();
         for (Thread waiter : waiters) {
@@ -277,11 +320,17 @@ public class EventToQueuePublisher<T> {
             return;
         }
         yieldToSubscriberChanges();
-        synchronized (publishLock) {
-            if (blockingTargets == 0) {
-                publishSerialised(itemToPublish);
-                return;
+        int[] depth = DISPATCH_DEPTH.get();
+        depth[0]++;
+        try {
+            synchronized (publishLock) {
+                if (blockingTargets == 0) {
+                    publishSerialised(itemToPublish);
+                    return;
+                }
             }
+        } finally {
+            depth[0]--;
         }
         publishWithOverload(itemToPublish);
     }
@@ -306,40 +355,53 @@ public class EventToQueuePublisher<T> {
     private void publishWithOverload(T itemToPublish) {
         // never wait on an agent thread (it would stall its group, and every service it hosts), nor inside a publish
         // that already holds the lock (it could not let go of it to wait)
-        String downgrade = Thread.holdsLock(publishLock) ? "publish nested inside another publish"
+        // (insideDispatch: this or ANY other publisher's lock is held up the stack, through user code it ran)
+        String downgrade = insideDispatch() ? "publish nested inside a publisher's dispatch"
                 : com.telamin.mongoose.control.AgentThreads.isAgentThread()
                 ? "agent thread " + Thread.currentThread().getName() : null;
         Object mappedItem;
         NamedQueue blocker;
-        synchronized (publishLock) {
-            if (blockingTargets == 0) {
-                publishSerialised(itemToPublish);
-                return;
+        int[] depth = DISPATCH_DEPTH.get();
+        depth[0]++;
+        try {
+            synchronized (publishLock) {
+                if (blockingTargets == 0) {
+                    publishSerialised(itemToPublish);
+                    return;
+                }
+                if (downgrade != null) {
+                    publishDowngraded(itemToPublish, downgrade);
+                    return;
+                }
+                mappedItem = mapItemSafely(itemToPublish, "publish");
+                if (mappedItem == null) {
+                    log.fine("mapped itemToPublish is null");
+                    return;
+                }
+                blocker = blockerWithoutRoom();
+                if (blocker == null) {
+                    publishMapped(itemToPublish, mappedItem);
+                    return;
+                }
+                if (closing) {
+                    throw refuse(mappedItem, blocker, PublishRefusedException.Reason.SHUTDOWN, 0);
+                }
             }
-            if (downgrade != null) {
-                publishDowngraded(itemToPublish, downgrade);
-                return;
-            }
-            mappedItem = mapItemSafely(itemToPublish, "publish");
-            if (mappedItem == null) {
-                log.fine("mapped itemToPublish is null");
-                return;
-            }
-            blocker = blockerWithoutRoom();
-            if (blocker == null) {
-                publishMapped(itemToPublish, mappedItem);
-                return;
-            }
-            if (closing) {
-                throw refuse(mappedItem, blocker, PublishRefusedException.Reason.SHUTDOWN, 0);
-            }
+        } finally {
+            depth[0]--;
         }
         awaitRoomThenPublish(itemToPublish, mappedItem, blocker);
     }
 
     /** Publish on a thread that may not wait: blocking queues use the drop policy for this publish, counted. */
     private void publishDowngraded(T itemToPublish, String downgrade) {
+        // counted only when the publish would have had to wait: a blocking queue lacks room (review finding 4)
+        if (blockerWithoutRoom() == null) {
+            publishSerialised(itemToPublish);
+            return;
+        }
         downgradedCount++;
+        onDowngrade(downgrade);
         if (!downgradeWarned && logWarning) {
             downgradeWarned = true;
             log.warning("feed " + name + ": BLOCK_WITH_DEADLINE downgraded to drop-after-spin for a publish on a "
@@ -381,13 +443,23 @@ public class EventToQueuePublisher<T> {
                         || blocker.targetQueue().remainingCapacity() > 0 || !targetQueues.contains(blocker)) {
                     epochSeen = targetsEpoch.get();
                     yieldToSubscriberChanges();
+                    int[] depth = DISPATCH_DEPTH.get();
+                    depth[0]++;
+                    try {
                     synchronized (publishLock) {
                         NamedQueue current = blockingTargets == 0 ? null : blockerWithoutRoom();
                         if (current == null) {
                             publishMapped(itemToPublish, mappedItem);
+                            onWaited(blocker, System.nanoTime() - start);
                             return;
                         }
                         blocker = current;
+                        // the blocker may now be another group's queue, or the policy may have changed: re-read its
+                        // deadline and spin bound (review finding 9)
+                        OverloadSettings settings = settingsOf(current);
+                        deadlineNanos = settings.blocks() ? settings.blockDeadlineNanos() : deadlineNanos;
+                        spinNanos = Math.min(settings.spinBoundNanos(), deadlineNanos);
+                        timedOut = waited >= deadlineNanos;
                         if (closing) {
                             throw refuse(mappedItem, current, PublishRefusedException.Reason.SHUTDOWN, waited);
                         }
@@ -399,11 +471,14 @@ public class EventToQueuePublisher<T> {
                             throw refuse(mappedItem, current, PublishRefusedException.Reason.INTERRUPTED, waited);
                         }
                     }
+                    } finally {
+                        depth[0]--;
+                    }
                 }
                 if (waited < spinNanos) {
                     Thread.onSpinWait();
                 } else {
-                    LockSupport.parkNanos(this, Math.max(1, Math.min(MAX_PARK_NANOS, deadlineNanos - waited)));
+                    LockSupport.parkNanos(this, Math.max(1, Math.min(maxParkNanos, deadlineNanos - waited)));
                 }
             }
         } finally {
@@ -462,12 +537,13 @@ public class EventToQueuePublisher<T> {
             description = mappedItem.getClass().getName() + " (toString failed: " + t + ")";
         }
         long refusalsForQueue;
+        long refusalsForFeed;
         synchronized (publishLock) {
-            refusedCount++;
+            refusalsForFeed = ++refusedCount;
             QueueDrops binding = queueDrops.get(queue);
             refusalsForQueue = binding == null ? 0 : ++binding.refusals;
         }
-        if (refusalsForQueue == 1 && logWarning) {
+        if ((refusalsForQueue == 1 || refusalsForFeed == 1) && logWarning) {
             log.warning("feed " + name + ": first refused publish for queue " + queue.name() + " (" + reason
                     + ", waited ~" + (waitedNanos / 1_000_000) + " ms); later refusals are counted in refusedCount()");
         }
@@ -528,15 +604,21 @@ public class EventToQueuePublisher<T> {
             return;
         }
         yieldToSubscriberChanges();
-        synchronized (publishLock) {
-            if (!startComplete) {
-                cacheSerialised(item);
-                return;
+        int[] depth = DISPATCH_DEPTH.get();
+        depth[0]++;
+        try {
+            synchronized (publishLock) {
+                if (!startComplete) {
+                    cacheSerialised(item);
+                    return;
+                }
+                if (blockingTargets == 0) {
+                    publishSerialised(item);
+                    return;
+                }
             }
-            if (blockingTargets == 0) {
-                publishSerialised(item);
-                return;
-            }
+        } finally {
+            depth[0]--;
         }
         publishWithOverload(item);
     }
@@ -547,8 +629,14 @@ public class EventToQueuePublisher<T> {
             return;
         }
         yieldToSubscriberChanges();
-        synchronized (publishLock) {
-            cacheSerialised(itemToCache);
+        int[] depth = DISPATCH_DEPTH.get();
+        depth[0]++;
+        try {
+            synchronized (publishLock) {
+                cacheSerialised(itemToCache);
+            }
+        } finally {
+            depth[0]--;
         }
     }
 
@@ -594,6 +682,9 @@ public class EventToQueuePublisher<T> {
         }
 
         yieldToSubscriberChanges();
+        int[] depth = DISPATCH_DEPTH.get();
+        depth[0]++;
+        try {
         synchronized (publishLock) {
             for (int i = 0, targetQueuesSize = targetQueues.size(); i < targetQueuesSize; i++) {
                 NamedQueue namedQueue = targetQueues.get(i);
@@ -604,6 +695,9 @@ public class EventToQueuePublisher<T> {
                 }
             }
         }
+        } finally {
+            depth[0]--;
+        }
     }
 
     /**
@@ -613,16 +707,42 @@ public class EventToQueuePublisher<T> {
      */
     public void startComplete() {
         yieldToSubscriberChanges();
-        synchronized (publishLock) {
-            dispatchCachedEventLogSerialised();
-            startComplete = true;
+        int[] depth = DISPATCH_DEPTH.get();
+        depth[0]++;
+        try {
+            synchronized (publishLock) {
+                warnCacheReplayOnBlockingFeed();
+                dispatchCachedEventLogSerialised();
+                startComplete = true;
+            }
+        } finally {
+            depth[0]--;
         }
     }
 
     public void dispatchCachedEventLog() {
         yieldToSubscriberChanges();
-        synchronized (publishLock) {
-            dispatchCachedEventLogSerialised();
+        int[] depth = DISPATCH_DEPTH.get();
+        depth[0]++;
+        try {
+            synchronized (publishLock) {
+                warnCacheReplayOnBlockingFeed();
+                dispatchCachedEventLogSerialised();
+            }
+        } finally {
+            depth[0]--;
+        }
+    }
+
+    /**
+     * The pre-start cache is replayed with drop semantics, also to BLOCK_WITH_DEADLINE queues (a replay never waits):
+     * warned once per feed when that can lose items (review finding 5). Under the publish lock.
+     */
+    private void warnCacheReplayOnBlockingFeed() {
+        if (!cacheReplayWarned && blockingTargets > 0 && cacheReadPointer < eventLog.size() && logWarning) {
+            cacheReplayWarned = true;
+            log.warning("feed " + name + ": the cached event log is replayed with drop-after-spin semantics, also to its "
+                    + "BLOCK_WITH_DEADLINE queues; a full queue drops cached items (counted)");
         }
     }
 

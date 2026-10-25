@@ -41,6 +41,8 @@ import java.util.logging.Logger;
 public class OverloadPolicyConfig {
 
     private static final Logger LOG = Logger.getLogger(OverloadPolicyConfig.class.getName());
+    /** Above this a block deadline is warned at boot (review finding 7): it behaves like the deferred unbounded BLOCK. */
+    public static final long MAX_RECOMMENDED_DEADLINE_MILLIS = 60_000;
 
     /** Required in an {@code overload} block. */
     private OverloadPolicy policy;
@@ -122,6 +124,11 @@ public class OverloadPolicyConfig {
                     throw new ConfigurationException("feed '" + feed + "': " + where
                             + ".blockDeadlineMillis is required for BLOCK_WITH_DEADLINE and must be > 0, was "
                             + blockDeadlineMillis);
+                }
+                if (blockDeadlineMillis > MAX_RECOMMENDED_DEADLINE_MILLIS) {
+                    LOG.warning("feed '" + feed + "': " + where + ".blockDeadlineMillis " + blockDeadlineMillis
+                            + " exceeds " + MAX_RECOMMENDED_DEADLINE_MILLIS + " ms: a wedged subscriber holds the "
+                            + "publisher that long (unsubscribe re-evaluates, only shutdown cancels)");
                 }
                 yield new OverloadSettings(OverloadPolicy.BLOCK_WITH_DEADLINE, spinNanos,
                         TimeUnit.MILLISECONDS.toNanos(blockDeadlineMillis));
