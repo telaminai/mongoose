@@ -1,5 +1,11 @@
 # RC qualification: 72b6fd4 / f1f9003
 
+**Superseded candidate — do not release 72b6fd4.** Its local checks below passed, but GitHub CI
+failed with one admission-test scheduling failure and an admin-construction error exposed by leaked
+test processor context. Candidate 49246452e5eb9879529880f264150c094547ad24 fixes the constructor,
+cleans test context and waits for prior mailbox replies deterministically. It requires fresh full
+qualification; the results below are historical evidence, not proof for that replacement.
+
 Core candidate: **72b6fd44cf20973924745a6d5a7aafce8a30a75a**, Mongoose **1.0.33-rc1**.
 Plugin candidate: **f1f90039909e3e6c1fd8b949bbf4f0712fffa4ab**, plugins **1.0.46-rc1**.
 Both use Fluxtion runtime **1.1.3**, compiler/BOM **1.0.80**. This evidence branch adds no runtime changes
