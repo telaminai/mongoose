@@ -140,6 +140,14 @@ mutations = [
         '                        for (String hosted : group.hostedServiceNames()) flipServiceUp(hosted, 0);\n', '', False)]),
     ("solo-retry-ignores-strategy-capability", [("src/main/java/com/telamin/mongoose/dutycycle/EventQueueToEventProcessorAgent.java",
         'if (!supportsSingleTargetDelivery()) {', 'if (false) {', False)]),
+    ("known-position-without-resume-capability", [("src/main/java/com/telamin/mongoose/dutycycle/EventQueueToEventProcessorAgent.java",
+        'if (at >= 0 && !supportsResumeDelivery()) {', 'if (false) {', False)]),
+    ("solo-retry-loses-known-identity", [("src/main/java/com/telamin/mongoose/dutycycle/EventQueueToEventProcessorAgent.java",
+        'DataFlow thrower = solo != null ? solo : captured == null ? null : captured.processor();',
+        'DataFlow thrower = captured == null ? null : captured.processor();', False)]),
+    ("uninstrumented-handwritten-redelivery", [("src/main/java/com/telamin/mongoose/dutycycle/EventQueueToEventProcessorAgent.java",
+        'if (identified == null) {\n                            // With no identity there is no safe retry target.',
+        'if (false) {\n                            // With no identity there is no safe retry target.', False)]),
     ("replay-identity-kind-dropped", [(replayer,
         'failed = "no stream was recorded for " + cursor.name;    // loud, never an instantly complete cursor\n'
         '                    failedKind = FailureKind.REPLAY_IDENTITY_MISMATCH;',
@@ -156,7 +164,7 @@ tests = ",".join(["ControlScenarioHarnessTest", "IndependentEvidenceMutationTest
                   "CaptureAcknowledgementTest", "FallbackKindInvariantTest", "FailedBootContainmentTest",
                   "IdentityOnlyRecoveryFollowupTest", "IdentityOnlyRecoveryFollowupOwnTest",
                   "ServiceHealthObservationFollowupTest", "ServiceHealthObservationFollowupOwnTest",
-                  "SoloRetryCompatibilityProbeTest", "SoloRetryCompatibilityOwnTest"])
+                  "SoloRetryCompatibilityProbeTest", "SoloRetryCompatibilityOwnTest", "RecoveryCapabilityMatrixTest"])
 cmd = ["mvn", "-o", "-Dtest=" + tests, "-Dmongoose.harness.seedStart=12001", "-Dmongoose.harness.seedCount=100", "test"]
 results = []
 

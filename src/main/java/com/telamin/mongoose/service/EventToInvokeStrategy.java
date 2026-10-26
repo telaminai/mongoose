@@ -59,7 +59,9 @@ public interface EventToInvokeStrategy {
      * {@code processEvent}, {@code processEventRecording} or {@code ...From} call on this strategy, or -1 when the
      * strategy cannot say. With a position the agent retries that processor alone and then resumes with the processors
      * after it ({@link #processEventFrom}), so a processor that already handled the event never sees it again. With -1
-     * (this default) the agent retries the whole call, as it did before #53, and every processor sees the event again.
+     * (this default) the host uses a captured identity for single-target retry or quarantine. Without an identity it
+     * skips handwritten dispatch with an ERROR, or contains the group when a generated target may have failed.
+     * It never repeats the whole fan-out.
      * Read only on the agent thread, straight after the call threw.
      */
     default int failedPosition() {

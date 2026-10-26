@@ -105,12 +105,10 @@ public class PooledEventReleasePathsTest {
     void aFailureThatEscapesTheRetryLoopStillReleasesTheQueuesReference() {
         ObjectPool<BadToStringMsg> pool = Pools.SHARED.getOrCreate(BadToStringMsg.class, BadToStringMsg::new, m -> { }, 2);
         OneToOneConcurrentArrayQueue<Object> q = new OneToOneConcurrentArrayQueue<>(8);
-        CapturingStrategy strategy = new CapturingStrategy(e -> {
-            throw new RuntimeException("handler failed");
-        });
+        EventToOnEventInvokeStrategy strategy = new EventToOnEventInvokeStrategy();
         EventQueueToEventProcessorAgent agent = new EventQueueToEventProcessorAgent(q, strategy, "failing")
                 .withRetryPolicy(new RetryPolicy(1, 0, 0, 1.0, Set.of()));
-        agent.registerProcessor(new NoopProcessor());
+        agent.registerProcessor(e -> { throw new RuntimeException("handler failed"); });
 
         BadToStringMsg msg = pool.acquire(); // the reference acquire hands over is the queue's
         q.offer(msg);

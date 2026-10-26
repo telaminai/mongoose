@@ -80,3 +80,10 @@ Other groups keep serving.
   [client migration checklist](client-migration-1.0.33.md#regenerating-through-the-public-builder).
 - Verify each control-audit export separately: concatenating an rc1 export with a newer one makes the result a
   taxonomy export, in which rc1 records without a kind fail I20.
+
+### Custom dispatch recovery compatibility
+
+An uninstrumented handwritten fan-out now skips a failed input and reports ERROR instead of retrying the whole
+fan-out. This prevents redelivery to peers that may already have produced external effects. A captured position
+requires the strategy's resume capability; otherwise identity-only handling applies. A single-target retry retains
+the thrower's identity even when the custom strategy does not record it again.

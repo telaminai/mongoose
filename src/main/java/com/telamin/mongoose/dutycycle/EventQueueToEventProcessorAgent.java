@@ -134,11 +134,11 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                 // (failedPosition() >= 0) is resumed at it: that processor is retried, then the processors after it are
                 // given the event; those before it handled it and never see it again. Each failing processor has its own
                 // attempts under the RetryPolicy, and one whose retries are exhausted is skipped, not the rest of the queue.
-                // A strategy that cannot name it (-1) is retried whole, as before #53. No allocation here: ints and flags.
+                // Without a resumable position, only an identified target can be retried; unknown dispatch is never repeated.
                 int from = 0;                   // the dispatch position the next attempt starts at
                 int failingAt = -1;             // the position of the processor being retried, -1 when none is
-                int attempt = 0;                // attempts of the processor being retried (of the whole dispatch: legacy)
-                boolean wholeFailed = false;    // a failure the strategy could not place: legacy, whole-dispatch semantics
+                int attempt = 0;                // attempts of the processor being retried
+                boolean wholeFailed = false;    // unknown progress: recording cannot attribute a successful dispatch
                 boolean done = false;
                 // a handwritten thrower known by identity only (no dispatch position): it alone is retried and the event
                 // skipped for the other subscribers, so no peer that handled it is given it again (re-verification A)
@@ -196,10 +196,10 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                         // the processor whose handler threw and its dispatch position, captured at throw time by the
                         // strategy (rc1 review N1)
                         var captured = com.telamin.mongoose.dispatch.ProcessorContext.takeFailure();
-                        DataFlow thrower = captured == null ? null : captured.processor();
+                        DataFlow thrower = solo != null ? solo : captured == null ? null : captured.processor();
                         int at = wholeFailed ? -1 : eventToInvokeStrategy.failedPosition();
                         DataFlow failed = at < 0 ? null : eventToInvokeStrategy.failedProcessor();
-                        if (at < 0 && !wholeFailed && thrower != null && captured.position() >= 0) {
+                        if (at < 0 && !wholeFailed && thrower != null && captured != null && captured.position() >= 0) {
                             boolean present;
                             synchronized (subscribed) { present = subscribed.contains(thrower); }
                             if (present) {
@@ -209,8 +209,15 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                                 failed = thrower;
                             }
                         }
+                        if (at >= 0 && !supportsResumeDelivery()) {
+                            // Capturing progress does not implement the optional resume SPI. Fall back to identity-only
+                            // handling, never invoke an unsupported default and misclassify it as a processor failure.
+                            if (failed != null) thrower = failed;
+                            at = -1;
+                            failed = null;
+                        }
                         if (at < 0) {
-                            // legacy: the whole dispatch is the unit of retry. D4: a retry is a failure; the recording is
+                            // Unknown progress: the recording cannot attribute successful input delivery and is
                             // marked for every target, not continued as if nothing happened (the recorder never throws)
                             if (recorder != null && !wholeFailed) recorder.failed(sourceName, delivered(event), t, targets);
                             if (!wholeFailed) {
@@ -231,7 +238,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                         // Generated graphs are not retry-safe after a throw: processing/callback state may be
                         // wedged and a retry can return normally without dispatching anything. This is failure-only.
                         // An opaque strategy (failedPosition() == -1) cannot name the target, but the processor captured at
-                        // throw time can (rc1 review N1): a handwritten thrower is retried under the legacy policy and
+                        // throw time can (rc1 review N1): an identified handwritten thrower is retried under its policy and
                         // never quarantines its generated peers; a generated thrower is quarantined alone.
                         DataFlow identified = failed;
                         if (identified == null && thrower != null) {
@@ -305,6 +312,18 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                             from = at;
                             failingAt = -1;
                             attempt = 0;
+                            continue;
+                        }
+                        if (identified == null) {
+                            // With no identity there is no safe retry target. Keep the handwritten reader alive, but
+                            // never redispatch peers that may already have produced external effects.
+                            String why = "event skipped after an unidentified handwritten dispatch failure; no safe retry target; agent="
+                                    + name + ", error=" + t;
+                            logger.severe(why);
+                            com.telamin.mongoose.service.error.ErrorReporting.report(
+                                    "EventQueueToEventProcessorAgent:" + name, why, t,
+                                    com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
+                            done = true;
                             continue;
                         }
                         attempt++;
@@ -396,6 +415,19 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
             singleTargetDelivery = supported;
         }
         return supported;
+    }
+
+    /** A reported position alone does not guarantee that a custom strategy implements resumption. */
+    private boolean supportsResumeDelivery() {
+        try {
+            var method = recorder == null
+                    ? eventToInvokeStrategy.getClass().getMethod("processEventFrom", Object.class, int.class)
+                    : eventToInvokeStrategy.getClass().getMethod("processEventRecordingFrom", Object.class,
+                            java.util.function.BiConsumer.class, int.class);
+            return method.getDeclaringClass() != EventToInvokeStrategy.class;
+        } catch (NoSuchMethodException unexpected) {
+            return false;
+        }
     }
 
     private static Object delivered(Object event) {

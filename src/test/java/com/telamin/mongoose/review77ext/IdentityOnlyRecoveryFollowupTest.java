@@ -28,8 +28,8 @@ class IdentityOnlyRecoveryFollowupTest {
     @Test void identityOnlyHandwrittenFailureMustNotRedeliverHealthyPeers() {
         run(true,1);
     }
-    @Test void uninstrumentedHandwrittenStrategyKeepsExplicitlyDocumentedLegacyRetry() {
-        run(false,2);
+    @Test void uninstrumentedHandwrittenStrategySkipsWithoutPeerRedelivery() {
+        run(false,1);
     }
     @Test void identityOnlyGeneratedFailureSkipsRemainingSubscribers() {
         var before=new AtomicInteger(); var after=new AtomicInteger();

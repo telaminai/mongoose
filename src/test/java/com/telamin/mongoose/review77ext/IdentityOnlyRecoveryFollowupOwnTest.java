@@ -18,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * External re-verification A (written from the reviewer's description): a custom strategy that records the thrower's
  * identity but not its position. Owner decision: never redeliver to a peer that already handled the event; a handwritten
  * thrower is retried alone and the event skipped for the rest, as for a generated thrower. A strategy that records
- * nothing keeps the documented legacy whole-dispatch retry (control).
+ * nothing skips the failed input rather than redispatching healthy peers.
  */
 public class IdentityOnlyRecoveryFollowupOwnTest {
 
@@ -79,12 +79,13 @@ public class IdentityOnlyRecoveryFollowupOwnTest {
         assertEquals(1, healthyCalls(true, OpaquePeerRedeliveryTest.BrokenGenerated::new, "broken", true));
     }
 
-    /** Control: a wholly uninstrumented strategy keeps the documented legacy whole-dispatch retry. */
+    /** An uninstrumented strategy skips the input: there is no safe retry target. */
     @Test
-    void anUninstrumentedHandwrittenFailureKeepsTheDocumentedLegacyRetry() throws Exception {
+    void anUninstrumentedHandwrittenFailureNeverRedelivers() throws Exception {
         var flaky = new OpaqueHandwrittenPeerTest.FlakyHandwritten();
         int calls = healthyCalls(false, () -> flaky, "flaky", false);
-        assertEquals(2, calls, "legacy whole-dispatch retry redelivers to the peer, as documented");
-        assertTrue(flaky.handled.get() == 1);
+        assertEquals(1, calls, "unknown dispatch progress must never redeliver to a peer");
+        assertEquals(0, flaky.handled.get());
+        assertEquals(1, flaky.attempts.get());
     }
 }

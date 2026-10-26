@@ -1033,6 +1033,9 @@ position the base dispatch loop captures at throw time (issue #77, rc1 review N1
   generated peer.
 - A generated thrower is quarantined alone, and dispatch resumes with the subscribers after it.
 - Subscribers before the thrower, which handled the input, never receive it again.
+- A recorded position is used only when the strategy implements the relevant `processEventFrom` or
+  `processEventRecordingFrom` capability; otherwise it follows identity-only handling.
+- During single-target retry the host retains the selected identity even if the custom strategy does not record it again.
 - If a strategy records the thrower but not its position, only the thrower is handled and the input is skipped for
   the remaining subscribers, so no peer is given it twice:
   - a generated thrower is quarantined;
@@ -1042,15 +1045,16 @@ position the base dispatch loop captures at throw time (issue #77, rc1 review N1
     at ERROR. The group is never ended for this recoverable failure, and the whole fan-out is never redispatched.
 - A strategy that records nothing (it bypasses the base dispatch loop) leaves the target unidentifiable. With a
   generated subscriber on the reader, the group ends with a `ProcessorDispatchException` saying so, and no peer is
-  quarantined. With handwritten subscribers only, it keeps the pre-#53 whole-dispatch retry, which can redeliver to
-  peers.
+  quarantined. With handwritten subscribers only, the input is skipped with an ERROR and the reader stays alive.
+  There is no safe retry target, so the whole fan-out is never repeated.
 
 An admin cycle refused before its command action remains a command refusal. The runtime's `runInEventCycle`
 already clears its processing flag in `finally`; a custom override that executes other graph calls before entering
 that bracket must define its own failure contract. A command that ran and then failed still propagates its dispatch
 failure to the host.
 
-Ordinary handwritten `DataFlow` retry/cleanup behaviour is unchanged. The containment marker is the runtime
+Handwritten `DataFlow` retries require an identified target and a supported single-target or resume capability.
+Uninstrumented fan-out no longer uses legacy whole-dispatch retry. The containment marker is the runtime
 interface, not reflection or a guessed flag name; handwritten wrappers hiding a generated graph need their own
 failure contract. A standalone scheduler without a group handler cancels its failed owner's remaining timers and
 reports ERROR, preserving its reporting-only API; it cannot isolate routes owned by another container.
