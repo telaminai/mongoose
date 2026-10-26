@@ -1033,9 +1033,13 @@ position the base dispatch loop captures at throw time (issue #77, rc1 review N1
   generated peer.
 - A generated thrower is quarantined alone, and dispatch resumes with the subscribers after it.
 - Subscribers before the thrower, which handled the input, never receive it again.
-- If a strategy records the thrower but not its position, only the thrower is handled: a generated one is
-  quarantined, a handwritten one is retried alone under the retry policy. The input is skipped for the remaining
-  subscribers rather than redispatched, so no peer is given it twice.
+- If a strategy records the thrower but not its position, only the thrower is handled and the input is skipped for
+  the remaining subscribers, so no peer is given it twice:
+  - a generated thrower is quarantined;
+  - a handwritten thrower is retried alone under the retry policy if the strategy implements the optional
+    single-processor delivery `EventToInvokeStrategy.processEventFor`;
+  - without that method, the handwritten thrower is not retried either. The input is skipped and the skip is reported
+    at ERROR. The group is never ended for this recoverable failure, and the whole fan-out is never redispatched.
 - A strategy that records nothing (it bypasses the base dispatch loop) leaves the target unidentifiable. With a
   generated subscriber on the reader, the group ends with a `ProcessorDispatchException` saying so, and no peer is
   quarantined. With handwritten subscribers only, it keeps the pre-#53 whole-dispatch retry, which can redeliver to

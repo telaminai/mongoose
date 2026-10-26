@@ -69,7 +69,8 @@ Other groups keep serving.
   - A generated thrower is quarantined alone and dispatch resumes after it.
   - A subscriber that already handled the event never receives it again.
   - A strategy that records the thrower but not its position: a generated thrower is quarantined, a handwritten one is
-    retried alone, and the event is skipped for the remaining subscribers.
+    retried alone when the strategy implements `processEventFor` (otherwise the event is skipped and reported, never
+    redispatched and never ending the group), and the event is skipped for the remaining subscribers.
   - A strategy that records no processor ends the group without quarantining any peer (handwritten-only readers keep
     the pre-#53 whole retry).
 - A worker or feed agent group's services drop their `up` gauges to 0 as soon as its loop ends abnormally, so a

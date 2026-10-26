@@ -138,6 +138,8 @@ mutations = [
         '                            solo = identified;\n', '', False)]),
     ("service-up-depends-on-group-check", [("src/main/java/com/telamin/mongoose/MongooseServer.java",
         '                        for (String hosted : group.hostedServiceNames()) flipServiceUp(hosted, 0);\n', '', False)]),
+    ("solo-retry-ignores-strategy-capability", [("src/main/java/com/telamin/mongoose/dutycycle/EventQueueToEventProcessorAgent.java",
+        'if (!supportsSingleTargetDelivery()) {', 'if (false) {', False)]),
     ("replay-identity-kind-dropped", [(replayer,
         'failed = "no stream was recorded for " + cursor.name;    // loud, never an instantly complete cursor\n'
         '                    failedKind = FailureKind.REPLAY_IDENTITY_MISMATCH;',
@@ -153,7 +155,8 @@ tests = ",".join(["ControlScenarioHarnessTest", "IndependentEvidenceMutationTest
                   "AdminStopCommandValidationTest", "OpaquePeerRedeliveryTest", "OpaqueHandwrittenPeerTest",
                   "CaptureAcknowledgementTest", "FallbackKindInvariantTest", "FailedBootContainmentTest",
                   "IdentityOnlyRecoveryFollowupTest", "IdentityOnlyRecoveryFollowupOwnTest",
-                  "ServiceHealthObservationFollowupTest", "ServiceHealthObservationFollowupOwnTest"])
+                  "ServiceHealthObservationFollowupTest", "ServiceHealthObservationFollowupOwnTest",
+                  "SoloRetryCompatibilityProbeTest", "SoloRetryCompatibilityOwnTest"])
 cmd = ["mvn", "-o", "-Dtest=" + tests, "-Dmongoose.harness.seedStart=12001", "-Dmongoose.harness.seedCount=100", "test"]
 results = []
 

@@ -239,6 +239,22 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                         }
                         if (at < 0 && solo == null && identified != null
                                 && !ProcessorDispatchException.requiresIsolation(identified)) {
+                            if (!supportsSingleTargetDelivery()) {
+                                // the strategy cannot deliver to one processor (processEventFor is optional): never retry
+                                // the whole fan-out and never end the group for this recoverable failure; the event is
+                                // skipped for the thrower and the remaining subscribers, and why is reported
+                                // (re-verification 2)
+                                String why = "event skipped after a handwritten failure of " + identified + ": the dispatch"
+                                        + " progress is unknown and strategy " + eventToInvokeStrategy.getClass().getName()
+                                        + " cannot deliver to a single processor, so neither the thrower alone nor the"
+                                        + " whole fan-out is retried; agent=" + name + ", event=" + event + ", error=" + t;
+                                logger.warning(why);
+                                com.telamin.mongoose.service.error.ErrorReporting.report(
+                                        "EventQueueToEventProcessorAgent:" + name, why, t,
+                                        com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
+                                done = true;
+                                continue;
+                            }
                             solo = identified;
                             logger.warning("retrying only " + identified + " and skipping the event for the other"
                                     + " subscribers: the dispatch progress is unknown; agent=" + name);
@@ -365,6 +381,23 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     }
 
     /** What the processor was given: the event a ReplayRecord or BroadcastEvent carries, else the event itself. */
+    private Boolean singleTargetDelivery;
+
+    /** Whether the strategy implements the optional single-processor delivery ({@code processEventFor}). */
+    private boolean supportsSingleTargetDelivery() {
+        Boolean supported = singleTargetDelivery;
+        if (supported == null) {
+            try {
+                supported = eventToInvokeStrategy.getClass().getMethod("processEventFor", DataFlow.class, Object.class)
+                        .getDeclaringClass() != com.telamin.mongoose.service.EventToInvokeStrategy.class;
+            } catch (NoSuchMethodException unexpected) {
+                supported = false;
+            }
+            singleTargetDelivery = supported;
+        }
+        return supported;
+    }
+
     private static Object delivered(Object event) {
         if (event instanceof ReplayRecord replayRecord) return replayRecord.getEvent();
         if (event instanceof BroadcastEvent broadcastEvent) return broadcastEvent.getEvent();
