@@ -66,6 +66,14 @@ public final class ProcessorContext {
         FAILED.set(new Failure(processor, position));
     }
 
+    /**
+     * Discard any failure from an earlier dispatch without reading the ThreadLocal. A get followed by remove
+     * would install and discard a null entry on every successful event when no failure has been recorded.
+     */
+    public static void clearFailure() {
+        FAILED.remove();
+    }
+
     /** The failure recorded on this thread, or null; clears it. */
     public static Failure takeFailure() {
         Failure failure = FAILED.get();
