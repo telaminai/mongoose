@@ -91,6 +91,13 @@
             <version>1.18.42</version>
             <scope>provided</scope>
         </dependency>
+        <!-- Disclosure regression exercises the public API; resolve it on clean CI instead of assuming ~/.m2. -->
+        <dependency>
+            <groupId>com.telamin.fluxtion</groupId>
+            <artifactId>fluxtion-builder-api</artifactId>
+            <version>${fluxtion.version}</version>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
