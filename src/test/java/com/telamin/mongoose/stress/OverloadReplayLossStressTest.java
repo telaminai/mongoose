@@ -141,6 +141,16 @@ class OverloadReplayLossStressTest {
             assertNull(replayer.stopped(PROCESSOR), "a loss does not stop the replay");
             assertFalse(replayer.lossless(), "but it is not lossless");
             assertEquals(droppedEntries, replayer.losses(PROCESSOR).size(), "every recorded loss reported");
+
+            // the loss history outlives the processor (external review of d9eec79, finding 2): after an actual stop
+            // of the processor, and after the server (and its group) shut down
+            var reply = replay.stopProcessor(AGENT, PROCESSOR, 5_000);
+            assertNotNull(reply, "the processor stopped");
+            assertFalse(replayer.lossless(), "still not lossless after the processor stopped");
+            assertEquals(droppedEntries, replayer.losses(PROCESSOR).size());
+            replay.stop();
+            assertFalse(replayer.lossless(), "still not lossless after the group shut down");
+            assertEquals(droppedEntries, replayer.losses(PROCESSOR).size());
         } finally {
             replay.stop();
         }

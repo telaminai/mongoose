@@ -31,10 +31,19 @@ public final class DropMarks {
     private final ConcurrentLinkedQueue<Mark> marks = new ConcurrentLinkedQueue<>();
     private final AtomicInteger size = new AtomicInteger();
     private final AtomicLong overflow = new AtomicLong();
+    /**
+     * Test hook: runs just before an overflowed drop is counted, so a test can drain the marks in that window and show
+     * the count is still exported (external review of d9eec79, finding 5). Null in production.
+     */
+    volatile Runnable beforeOverflowCount;
 
     void add(long position, long sequence, String reason) {
         if (size.incrementAndGet() > CAPACITY) {
             size.decrementAndGet();
+            Runnable hook = beforeOverflowCount;
+            if (hook != null) {
+                hook.run();
+            }
             overflow.incrementAndGet();
             return;
         }
@@ -55,7 +64,10 @@ public final class DropMarks {
         return m;
     }
 
-    /** Drops not marked individually because the marks were full; reset by the read. */
+    /**
+     * Drops not marked individually because the marks were full; reset by the read. The reader takes it on every pass,
+     * with or without a pending mark, so a count made after the last mark was taken is exported on the next pass.
+     */
     public long takeOverflow() {
         return overflow.getAndSet(0);
     }

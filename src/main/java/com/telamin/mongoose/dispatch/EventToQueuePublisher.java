@@ -188,6 +188,12 @@ public class EventToQueuePublisher<T> {
     private final java.util.Set<String> boundGroups = new java.util.HashSet<>();
     @Getter(lombok.AccessLevel.NONE)
     private boolean cacheReplayWarned;
+    /** True while a commit on a feed with a blocking queue is offering its item; guarded by the publish lock. */
+    @Getter(lombok.AccessLevel.NONE)
+    private boolean committing;
+    /** Publishes into this feed made during such a commit, published when it completes; guarded by the lock. */
+    @Getter(lombok.AccessLevel.NONE)
+    private final java.util.ArrayDeque<Object> deferredDuringCommit = new java.util.ArrayDeque<>();
     private static final MongooseCounter NO_COUNTER = NoOpCountersService.INSTANCE.counter("noop");
     @Getter(lombok.AccessLevel.NONE)
     private volatile MongooseCounter downgradeCounter = NO_COUNTER;
@@ -328,7 +334,8 @@ public class EventToQueuePublisher<T> {
     public void cancelBlockedPublishes() {
         closing = true;
         wakeWaiters();
-        // hooks already queued still run; no new ones are started while closing (finding 5), so the thread can end
+        // no new hook is started while closing: one queued but not yet started is skipped when its turn comes (external
+        // review of d9eec79, finding 4). A hook already running is not interrupted and may run to completion.
         shutdownHookExecutor();
     }
 
@@ -584,6 +591,11 @@ public class EventToQueuePublisher<T> {
         latch.fired = true; // told once: a later setKillSwitch does not repeat it (finding 7)
         hookExecutor().execute(() -> {
             synchronized (publishLock) {
+                if (closing) {
+                    log.info("feed " + name + ": kill switch not run for " + latch.loss.queue()
+                            + ": the server began to stop before the queued hook started");
+                    return;
+                }
                 if (latches.get(queueName) != latch) {
                     log.info("feed " + name + ": kill switch skipped for " + latch.loss.queue()
                             + ": its latch was cleared before the hook ran");
@@ -776,6 +788,11 @@ public class EventToQueuePublisher<T> {
         Object mappedItem;
         NamedQueue blocker;
         synchronized (publishLock) {
+            if (committing) {
+                // nested in this feed's own commit: published once that commit's offers are done (finding 1)
+                deferredDuringCommit.addLast(itemToPublish);
+                return;
+            }
             if (blockingTargets == 0) {
                 publishSerialised(itemToPublish);
                 return;
@@ -870,6 +887,17 @@ public class EventToQueuePublisher<T> {
                     yieldToSubscriberChanges();
                     synchronized (publishLock) {
                         NamedQueue current = blockingTargets == 0 ? null : blockerWithoutRoom();
+                        // terminal cancellation wins over room that appeared meanwhile: a waiting publish is refused
+                        // at shutdown or on interrupt, attributed to its last blocker even if that queue has gone
+                        // (external review of d9eec79, finding 3)
+                        NamedQueue attribution = current != null ? current : blocker;
+                        if (closing) {
+                            throw refuse(mappedItem, attribution, PublishRefusedException.Reason.SHUTDOWN, waited);
+                        }
+                        if (interrupted) {
+                            // the interrupt stays set for the caller
+                            throw refuse(mappedItem, attribution, PublishRefusedException.Reason.INTERRUPTED, waited);
+                        }
                         if (current == null) {
                             publishMapped(itemToPublish, mappedItem);
                             onWaited(blocker, System.nanoTime() - start);
@@ -882,15 +910,8 @@ public class EventToQueuePublisher<T> {
                         deadlineNanos = settings.blocks() ? settings.blockDeadlineNanos() : deadlineNanos;
                         spinNanos = Math.min(settings.spinBoundNanos(), deadlineNanos);
                         timedOut = waited >= deadlineNanos;
-                        if (closing) {
-                            throw refuse(mappedItem, current, PublishRefusedException.Reason.SHUTDOWN, waited);
-                        }
                         if (timedOut) {
                             throw refuse(mappedItem, current, PublishRefusedException.Reason.DEADLINE, waited);
-                        }
-                        if (interrupted) {
-                            // the interrupt stays set for the caller
-                            throw refuse(mappedItem, current, PublishRefusedException.Reason.INTERRUPTED, waited);
                         }
                     }
                 }
@@ -985,6 +1006,33 @@ public class EventToQueuePublisher<T> {
 
     /** Commit and dispatch an already mapped item: sequence number, journal, event log, offers. Under the lock. */
     private void publishMapped(Object itemToPublish, Object mappedItem) {
+        // On a feed with a blocking queue, the room checked for this item is reserved until its offers are done: a
+        // publish into this feed from code run during the commit (the journal codec or append, an error listener, an
+        // item's toString) is deferred until the commit completes (external review of d9eec79, finding 1)
+        boolean reserve = blockingTargets > 0 && !committing;
+        if (!reserve) {
+            commit(itemToPublish, mappedItem);
+            return;
+        }
+        committing = true;
+        try {
+            commit(itemToPublish, mappedItem);
+        } finally {
+            committing = false;
+            drainDeferred();
+        }
+    }
+
+    /** Publish what was deferred during a commit: each as a nested publish (never waits; downgraded if full). */
+    @SuppressWarnings("unchecked")
+    private void drainDeferred() {
+        Object next;
+        while ((next = deferredDuringCommit.pollFirst()) != null) {
+            publishDowngraded((T) next, "publish nested inside a publisher's dispatch");
+        }
+    }
+
+    private void commit(Object itemToPublish, Object mappedItem) {
         publishCounter.increment();
         sequenceNumber++;
         journalItem(mappedItem, sequenceNumber);

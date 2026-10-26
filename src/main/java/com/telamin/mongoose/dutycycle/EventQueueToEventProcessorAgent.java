@@ -359,6 +359,11 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
         return this;
     }
 
+    private java.util.Collection<DataFlow> dropTargets() {
+        java.util.Collection<DataFlow> targets = eventToInvokeStrategy.registeredProcessors();
+        return targets.isEmpty() ? java.util.List.copyOf(subscribed) : targets;
+    }
+
     private boolean markDropsThen() {
         markDrops(inputQueue.removedCount());
         return true;
@@ -371,11 +376,21 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
      */
     private void markDrops(long consumed) {
         com.telamin.mongoose.dispatch.DropMarks.Mark m = dropMarks.peek();
-        if (m == null || m.position() > consumed) {
+        if (m == null) {
+            // drops counted after the last mark was taken (the marks were full) are exported now, never stranded
+            // (external review of d9eec79, finding 5); their position is approximate
+            long unmarked = dropMarks.takeOverflow();
+            if (unmarked > 0) {
+                recorder.inputDropped(sourceName, dropTargets(), unmarked + " item(s) of " + sourceName
+                        + " dropped by the full queue " + name + " while the drop marks were full (position "
+                        + "approximate); the processor never received them");
+            }
             return;
         }
-        java.util.Collection<DataFlow> targets = eventToInvokeStrategy.registeredProcessors();
-        if (targets.isEmpty()) targets = java.util.List.copyOf(subscribed);
+        if (m.position() > consumed) {
+            return;
+        }
+        java.util.Collection<DataFlow> targets = dropTargets();
         while ((m = dropMarks.peek()) != null && m.position() <= consumed) {
             dropMarks.poll();
             long position = m.position();

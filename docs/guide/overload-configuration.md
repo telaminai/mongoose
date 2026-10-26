@@ -11,8 +11,8 @@ individual subscriber groups (processor group names).
 
 | Policy | What happens when a subscriber queue is full | Use for |
 | --- | --- | --- |
-| `DROP_AFTER_SPIN` (default) | Spin for the spin bound (10 ms by default), then drop the item for that queue only. Counted, and the queue's health turns DEGRADED. | Data where the next update supersedes the last: quotes, book updates, telemetry. |
-| `BLOCK_WITH_DEADLINE` | Wait up to the deadline for room, without holding any lock. Then deliver to every subscriber, or deliver to none and throw `PublishRefusedException` to the publisher. A loss latches the queue until an operator clears it. | Data that must not be lost silently: venue session and health events, fills, order acknowledgements, credit and limit updates, hedge instructions. |
+| `DROP_AFTER_SPIN` (default) | Spin for the spin bound (10 ms by default), then drop the item for that queue only. Counted, and the queue's health turns DEGRADED. | Replaceable data, where the next update fully supersedes the last: top-of-book and quote snapshots, telemetry. |
+| `BLOCK_WITH_DEADLINE` | Wait up to the deadline for room, without holding any lock. Then deliver to every **blocking** subscriber, or to none, and throw `PublishRefusedException` to the publisher. Subscribers given a drop-tolerant override may still drop their copy, by design. A loss latches the queue until an operator clears it. | Data that must not be lost silently: venue session and health events, fills, order acknowledgements, credit and limit updates, hedge instructions. |
 
 If you set nothing, a feed keeps the behaviour of earlier releases and logs at boot:
 `feed 'X' has no explicit overload policy`. Set a policy on every feed so the choice is explicit.
@@ -21,15 +21,19 @@ If you set nothing, a feed keeps the behaviour of earlier releases and logs at b
 
 | Feed | Policy | Deadline | Notes |
 | --- | --- | --- | --- |
-| Venue session and health (logon, logout, disconnect, kill switch) | `BLOCK_WITH_DEADLINE` | 250–1000 ms | Never drop. Publish from the venue connector's own thread, not an agent thread. |
-| Fills and execution reports | `BLOCK_WITH_DEADLINE` | 250 ms | Never drop. A refusal must reach the connector, which rejects or re-requests upstream. Turn on `killSwitch`. |
-| Order acknowledgements and cancels | `BLOCK_WITH_DEADLINE` | 100–250 ms | As fills. Cancel priority is not implemented yet. |
-| Credit and limit updates, hedge instructions | `BLOCK_WITH_DEADLINE` | 250 ms | Never drop. |
-| Market data (quotes, trades, books) | `DROP_AFTER_SPIN` | none (spin 0–10 ms) | Loss costs staleness. Conflation is not implemented yet. A stale queue keeps old ticks and drops the newest. |
+| Venue session and health (logon, logout, disconnect, kill switch) | `BLOCK_WITH_DEADLINE` | e.g. 250–1000 ms | Never drop. Publish from the venue connector's own thread, not an agent thread. |
+| Fills and execution reports | `BLOCK_WITH_DEADLINE` | e.g. 250 ms | Never drop. A refusal must reach the connector, which rejects or re-requests upstream. Turn on `killSwitch`. |
+| Order acknowledgements and cancels | `BLOCK_WITH_DEADLINE` | e.g. 100–250 ms | As fills. Cancel priority is not implemented yet. |
+| Credit and limit updates, hedge instructions | `BLOCK_WITH_DEADLINE` | e.g. 250 ms | Never drop. |
+| Replaceable market data (top-of-book, quote snapshots) | `DROP_AFTER_SPIN` | none (spin 0–10 ms) | A loss costs staleness: the next snapshot repairs it. Conflation is not implemented yet; a stale queue keeps old snapshots and drops the newest. |
+| Incremental market data (order-book deltas, trades) | `BLOCK_WITH_DEADLINE`, or `DROP_AFTER_SPIN` **only** with sequence-gap detection and resynchronisation | e.g. 50–250 ms | A missed delta or trade can permanently corrupt derived state; the next update does not repair it. Either refuse explicitly and handle the refusal, or detect the gap from the venue's sequence numbers and resynchronise (snapshot and replay). |
 | Telemetry and analytics subscribers on any feed | `DROP_AFTER_SPIN`, as a per-group override, with `spinBoundMillis: 0` | none | Stops a slow telemetry consumer from slowing, or refusing, the fills that a risk group needs. |
 
-Keep deadlines short. A deadline is how long a publisher may be held by one wedged subscriber. Deadlines above
-60 s are warned at boot.
+The deadlines above are illustrations, not recommendations: choose them per deployment from your queue sizes,
+consumer rates and how long a connector can safely be held. Keep them short. A deadline is how long a publisher
+may be held waiting for queue capacity by one wedged subscriber. It bounds **only that wait**: the time to run the
+data mapper or the journal codec, or to acquire the publish lock behind another publisher, is not included.
+Deadlines above 60 s are warned at boot.
 
 ## 3. Configuration
 
@@ -115,7 +119,8 @@ server.setOverloadKillSwitch(loss -> {
 ```
 
 - It fires once per latch, the first loss since the queue was last cleared.
-- It does not fire while the server is stopping.
+- Once the server begins to stop, no hook is started, including one already queued. A hook that is already
+  running is not interrupted: write hooks that return promptly.
 - It does fire for a queue that latched before the hook was set.
 - A hook that runs longer than 5 s is warned. Each feed has its own hook thread, so a slow hook never delays
   another feed's.

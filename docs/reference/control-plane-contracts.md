@@ -955,7 +955,9 @@ cumulative drop counter, with no recovery and no `overload.clear`.
   further loss. Every state change writes one `OverloadState` record to the publisher's state audit.
 - `overload.policy: BLOCK_WITH_DEADLINE` with `blockDeadlineMillis` makes a publish all-or-nothing:
   - A publish from a non-agent thread waits, without holding the publish lock, until every blocking queue has
-    room. It is then delivered to all of them.
+    room. It is then delivered to all of them. The deadline bounds only that wait for queue capacity, not the
+    data mapper, the journal codec, or acquiring the publish lock. A publish into the same feed from code run
+    during the commit is deferred until the commit completes.
   - If there is still no room at the deadline, or when the server begins to stop, the publish throws
     `PublishRefusedException`. No queue holds the item and no sequence number is used.
   - A refused pooled item is back in its pool, already reset: copy the payload before publishing if you may retry.
@@ -966,7 +968,8 @@ cumulative drop counter, with no recovery and no `overload.clear`.
   - The queue's health check reports the latch until the admin `overload.clear <feed>` clears it.
   - Each change also writes an `OverloadState` record to the group control audit.
   - With `killSwitch: true`, the hook set by `MongooseServer.setOverloadKillSwitch` runs once per latch, on the
-    feed's own daemon thread. It does not run while the server is stopping.
+    feed's own daemon thread. Once the server begins to stop, no hook is started, including one already queued. A
+    hook that is already running is not interrupted.
 - Overrides per subscriber group: `overload.subscribers.<group>`.
 - Counters: `queue.<path>.refused`, `.blocked`, `.blockedNanos`, `.blockedMaxNanos`, and `feed.<name>.downgraded`.
 
