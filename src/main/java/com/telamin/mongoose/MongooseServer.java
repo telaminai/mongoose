@@ -1175,6 +1175,10 @@ public class MongooseServer implements MongooseServerController {
                             errorCounter,
                             group);
                     registerServiceGroupHealth(agentGroup, group, groupRunner);
+                    // the services' up gauges drop when the loop ends, not when some health check happens to be read
+                    group.onTerminated(() -> {
+                        for (String hosted : group.hostedServiceNames()) flipServiceUp(hosted, 0);
+                    });
                     return new ComposingWorkerServiceAgentRunner(group, groupRunner, idleStrategy);
                 });
 

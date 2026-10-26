@@ -140,12 +140,17 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                 int attempt = 0;                // attempts of the processor being retried (of the whole dispatch: legacy)
                 boolean wholeFailed = false;    // a failure the strategy could not place: legacy, whole-dispatch semantics
                 boolean done = false;
+                // a handwritten thrower known by identity only (no dispatch position): it alone is retried and the event
+                // skipped for the other subscribers, so no peer that handled it is given it again (re-verification A)
+                DataFlow solo = null;
                 if (recorder != null) recorder.beforeDispatch(sourceName, seq, targets);
                 while (!done) {
                     com.telamin.mongoose.dispatch.ProcessorContext.takeFailedProcessor(); // never a previous dispatch's
                     try {
-                        if (recorder != null && wholeFailed) recorder.beforeDispatch(sourceName, seq, targets);
-                        if (event instanceof ReplayRecord replayRecord) {
+                        if (recorder != null && wholeFailed && solo == null) recorder.beforeDispatch(sourceName, seq, targets);
+                        if (solo != null) {
+                            eventToInvokeStrategy.processEventFor(solo, delivered(event));
+                        } else if (event instanceof ReplayRecord replayRecord) {
                             if (recorder == null) {
                                 if (from == 0) {
                                     eventToInvokeStrategy.processEvent(replayRecord.getEvent(), replayRecord.getWallClockTime());
@@ -231,6 +236,12 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                         DataFlow identified = failed;
                         if (identified == null && thrower != null) {
                             synchronized (subscribed) { if (subscribed.contains(thrower)) identified = thrower; }
+                        }
+                        if (at < 0 && solo == null && identified != null
+                                && !ProcessorDispatchException.requiresIsolation(identified)) {
+                            solo = identified;
+                            logger.warning("retrying only " + identified + " and skipping the event for the other"
+                                    + " subscribers: the dispatch progress is unknown; agent=" + name);
                         }
                         boolean unsafe = ProcessorDispatchException.requiresIsolation(identified);
                         if (identified == null) {
