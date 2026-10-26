@@ -74,4 +74,36 @@ class SoloRetryCompatibilityOwnTest {
         assertEquals(2, r[1]);
         assertEquals(1, r[2], "the thrower alone is retried and handles it");
     }
+    @Test
+    void unsupportedSoloReportsOnlyOriginalFailureWithoutSyntheticRetryEvidence() {
+        var queue = new OneToOneConcurrentArrayQueue<Object>(8);
+        var reader = new EventQueueToEventProcessorAgent(queue, new LiveOnlyStrategy(), "solo-evidence", "feed")
+                .withRetryPolicy(new com.telamin.mongoose.dispatch.RetryPolicy(3, 0, 0, 1,
+                        java.util.Set.of(RuntimeException.class)));
+        var peerCalls = new AtomicInteger();
+        var throwerCalls = new AtomicInteger();
+        var original = new IllegalStateException("original handwritten failure");
+        reader.registerProcessor(e -> peerCalls.incrementAndGet());
+        reader.registerProcessor(e -> { throwerCalls.incrementAndGet(); throw original; });
+        reader.registerProcessor(new SoloRetryCompatibilityProbeTest.HealthyGenerated());
+        var reports = new ArrayList<com.telamin.mongoose.service.error.ErrorEvent>();
+        com.telamin.mongoose.service.error.ErrorListener listener = event -> {
+            if (event.getSource().equals("EventQueueToEventProcessorAgent:solo-evidence")) reports.add(event);
+        };
+        var reporter = com.telamin.mongoose.service.error.ErrorReporting.getReporter();
+        reporter.addListener(listener);
+        try {
+            queue.offer("input");
+            assertDoesNotThrow(reader::doWork);
+            assertEquals(1, peerCalls.get());
+            assertEquals(1, throwerCalls.get());
+            assertEquals(1, reports.size(), "an unsupported retry must not fabricate repeated dispatch failures");
+            assertEquals(com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR, reports.getFirst().getSeverity());
+            org.junit.jupiter.api.Assertions.assertSame(original, reports.getFirst().getError(),
+                    "the operator must see the original handler failure, not an unsupported SPI exception");
+        } finally {
+            reporter.removeListener(listener);
+        }
+    }
+
 }
