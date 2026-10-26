@@ -161,7 +161,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                 DataFlow solo = null;
                 if (recorder != null) recorder.beforeDispatch(sourceName, seq, targets);
                 while (!done) {
-                    com.telamin.mongoose.dispatch.ProcessorContext.takeFailedProcessor(); // never a previous dispatch's
+                    com.telamin.mongoose.dispatch.ProcessorContext.clearFailure(); // never a previous dispatch's
                     try {
                         if (recorder != null && wholeFailed && solo == null) recorder.beforeDispatch(sourceName, seq, targets);
                         if (solo != null) {
