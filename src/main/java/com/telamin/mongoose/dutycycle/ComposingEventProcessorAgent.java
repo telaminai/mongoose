@@ -64,8 +64,17 @@ import java.util.function.Supplier;
  *   <li>Adds/removes queue reader agents dynamically as subscriptions change</li>
  * </ul>
  * <h2>Failure isolation (mongoose#57)</h2>
+ * <b>Generated processors</b> ({@code InternalEventProcessor}) are handled differently from the list below: after
+ * any non-VM callback failure they are quarantined (fenced from inputs and timers, never retried, never stopped or
+ * torn down, name retained, shutdown incomplete), see the contracts' "Generated processor failure containment". A
+ * {@code ProcessorDispatchException} can escape to the agent error handler only when the failed target cannot be
+ * identified at all (a strategy that neither reports a failed position nor lets the base dispatch loop record the
+ * thrower): the group then ends and no subscriber is quarantined. An opaque strategy that uses the base loop is
+ * resolved to the one thrower, and no peer that already handled the event is given it again.
+ * The list describes handwritten {@code DataFlow} processors.
+ * <p>
  * One processor's failure is kept from the group's agent error handler (under bootServer, {@code GlobalErrorHandler},
- * which exits the JVM), reported once through {@code ErrorReporting} at {@code ERROR}, and the rest of the group runs on:
+ * which logs it and exits the JVM only under the opt-in {@code FatalErrorPolicy.EXIT_PROCESS}), reported once through {@code ErrorReporting} at {@code ERROR}, and the rest of the group runs on:
  * <ul>
  *   <li>a failed {@code start()} of a processor added at runtime: the processor is dropped and everything the group
  *       holds for it released (its tearDown, subscriptions, timers, replay bindings, the server's bindings);</li>
@@ -207,6 +216,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         private volatile Object handle;
         private volatile String closeFailure;
         private volatile String detachFailure;
+        /** Occurrence ids of the current close and detach failures (external review 2): acknowledged by id, not resource. */
+        private volatile long closeFailureSeq;
+        private volatile long detachFailureSeq;
         void release() {
             if (held.compareAndSet(true, false)) {
                 handle = null;
@@ -217,6 +229,11 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     }
     /** Resources whose live detach failed: retry without the instance only after its release. */
     private final java.util.Set<Long> captureDetachFailures = ConcurrentHashMap.newKeySet();
+    /**
+     * Resources first reclaimed by the offline cleanup with no requested uninstall having failed for them: the control
+     * processor never released them. They stay leftovers on later attempts (issue #77, I19).
+     */
+    private final java.util.Set<Long> leftoverCaptures = ConcurrentHashMap.newKeySet();
     private final ConcurrentHashMap<String, com.telamin.mongoose.control.CaptureIo.Cancellable> openTimeouts = new ConcurrentHashMap<>();
     private final AtomicLong captureResourceIds = new AtomicLong();
     private final AtomicLong completionIds = new AtomicLong();
@@ -433,7 +450,10 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     private void captureDetachFailed(long id, Throwable failure) {
         captureDetachFailures.add(id);
         CaptureResourcePermit permit = captureResourcePermits.get(id);
-        if (permit != null) permit.detachFailure = String.valueOf(failure);
+        if (permit != null) {
+            permit.detachFailure = String.valueOf(failure);
+            permit.detachFailureSeq = captureFailureOccurrences.incrementAndGet();
+        }
         signalCaptureResourceCompletion();
     }
 
@@ -600,6 +620,13 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             if (terminalProcessorFailure != null) throw terminalProcessorFailure;
             int work = control.isEmpty() ? 0 : control.drain(DRAIN_MAX, drainBudgetNanos);
             if (terminalProcessorFailure != null) throw terminalProcessorFailure;
+            if (control.state() == ControlDriver.GroupState.DEAD) {
+                // review R5 (owner confirmed: isolate, no automatic restart, as for a quarantined processor): a dead
+                // control plane cannot stop or release these processors, so they receive nothing more
+                fenceDeadControlPlane();
+                idleCyclesCounter.increment();
+                return 0;
+            }
             checkQueueReaders();
             work += super.doWork();
             if (replayer != null) work += replayer.doWork();
@@ -621,6 +648,34 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             control.failClaimed("group died: " + fatal);    // on the agent thread, which owns what it claimed
             throw fatal;
         }
+    }
+
+    private boolean deadControlFenced;
+
+    /**
+     * The control plane died while this thread lives (a rule threw, review R5): fence every processor from its inputs
+     * and timers, once, as quarantine does for one processor. Instances and names stay owned; nothing restarts. The
+     * remedy is to close the group or stop the server, which release what the dead control plane could not.
+     */
+    private void fenceDeadControlPlane() {
+        if (deadControlFenced) return;
+        deadControlFenced = true;
+        List<String> fenced = new ArrayList<>();
+        for (NamedEventProcessor named : new ArrayList<>(registeredEventProcessors.values())) {
+            try {
+                removeAllSubscriptions(named.eventProcessor());
+                scheduler.cancelTimersOf(named.eventProcessor());
+                fenced.add(named.name());
+            } catch (VirtualMachineError fatal) {
+                throw fatal;
+            } catch (Throwable failed) {
+                log.log(java.util.logging.Level.WARNING, "could not fence processor '" + named.name()
+                        + "' of dead group " + roleName(), failed);
+            }
+        }
+        control.audit().fallback("DataPathFenced", "group", roleName(), "processors", String.join(",", fenced),
+                "reason", "control plane DEAD: no further delivery, no restart; close the group or stop the server",
+                "kind", com.telamin.mongoose.control.event.FailureKind.FAILED_DEAD);
     }
 
     /** Containment only: lifecycle release is still decided and audited by the control processor. */
@@ -647,7 +702,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             ProcessorRegistration registration = registrations.get(named);
             control.audit().fallback("ProcessorQuarantined", "group", roleName(), "name", named.name(),
                     "generation", registration == null ? -1 : registration.generation(),
-                    "reason", String.valueOf(failure), "automaticRestart", false);
+                    "reason", String.valueOf(failure), "automaticRestart", false, "kind", com.telamin.mongoose.control.event.FailureKind.QUARANTINED);
             reportProcessorFailure(named.name(), "quarantined after generated callback failure; no retry", failure);
         } catch (VirtualMachineError fatal) {
             throw fatal;
@@ -699,7 +754,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         ControlRequest request = control.send(new ControlRequest(ControlRequest.Kind.RUN, "run", RunIntent::new, work));
         ControlReply answer = request.reply().getNow(null);
         if (answer != null && answer.outcome() == ReplyOutcome.NOT_RUNNING) {
-            throw new IllegalStateException("group " + roleName() + " is not running: it has closed");
+            // a fenced group whose control plane died says so, not "closed" (review round 4)
+            throw new IllegalStateException("group " + roleName() + " is not running: " + (control.state()
+                    == ControlDriver.GroupState.DEAD ? "its control plane is DEAD" : "it has closed"));
         }
     }
 
@@ -738,7 +795,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         }
         closed = true;
         if (state == ControlDriver.GroupState.DEAD) control.markDead("cleanup after the agent thread ended");
-        control.failClaimed("group died");
+        control.failClaimed(control.state() == ControlDriver.GroupState.DEAD
+                ? com.telamin.mongoose.control.event.FailureKind.FAILED_DEAD
+                : com.telamin.mongoose.control.event.FailureKind.FAILED_SHUTDOWN, "group died");
         stopAndTearDownProcessors();
         // the dead group's processors are released: so are their names
         registrationsByGeneration.entrySet().removeIf(entry -> {
@@ -790,6 +849,23 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
      */
     @Override
     public EffectResult perform(ControlEffect effect) {
+        try {
+            return performEffect(effect);
+        } catch (VirtualMachineError fatal) {
+            throw fatal;
+        } catch (RuntimeException | Error failure) {
+            // an effect whose failure quarantined its processor (a routed capture install/restore on a generated graph)
+            // is classified QUARANTINED, so the rule's reply says so without reading text
+            NamedEventProcessor named = processorsByGeneration.get(effect.generation());
+            if (named != null && quarantined.containsKey(named)) {
+                return quarantinedResult(effect, failure.getMessage() == null
+                        ? failure.getClass().getSimpleName() : failure.getMessage());
+            }
+            throw failure;
+        }
+    }
+
+    private EffectResult performEffect(ControlEffect effect) {
         return switch (effect) {
             case ControlEffect.BuildAndStart e -> buildAndStart(e);
             case ControlEffect.Release e -> releaseGeneration(e);
@@ -811,11 +887,18 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             case ControlEffect.UninstallCapture e -> uninstallCapture(e);
             case ControlEffect.CloseCapture e -> closeCapture(e);
             case ControlEffect.Reply e -> {
-                boolean delivered = control.reply(e.requestId(), e.outcome(), e.reason(), e.generation(), e.name());
-                yield delivered ? result(e, ControlOutcome.SUCCEEDED, e.outcome().name())
+                boolean delivered = control.reply(e.requestId(), e.outcome(), e.reason(), e.generation(), e.name(), e.kind());
+                // a delivered reply's result carries the reply's own kind, so the Reply record classifies it
+                yield delivered ? new EffectResult(e.opId(), e.requestId(), e.effect(), ControlOutcome.SUCCEEDED,
+                        e.generation(), e.name(), e.outcome().name(), e.kind())
                         : result(e, ControlOutcome.FAILED, "not claimed: answered earlier");
             }
         };
+    }
+
+    private static EffectResult quarantinedResult(ControlEffect e, String reason) {
+        return new EffectResult(e.opId(), e.requestId(), e.effect(), ControlOutcome.FAILED, e.generation(), e.name(), reason,
+                com.telamin.mongoose.control.event.FailureKind.QUARANTINED);
     }
 
     private static EffectResult result(ControlEffect e, ControlOutcome outcome, String reason) {
@@ -892,7 +975,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             }
             String name = namedEventProcessor == null ? effect.name() : namedEventProcessor.name();
             lastStartFailure = t;   // whether it fails the boot or is reported is the control processor's decision
-            return result(effect, name, ControlOutcome.FAILED, String.valueOf(t));
+            boolean isolated = namedEventProcessor != null && quarantined.containsKey(namedEventProcessor);
+            return new EffectResult(effect.opId(), effect.requestId(), effect.effect(), ControlOutcome.FAILED,
+                    effect.generation(), name, String.valueOf(t), isolated ? com.telamin.mongoose.control.event.FailureKind.QUARANTINED : com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT);
         } finally {
             com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
         }
@@ -902,7 +987,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
     private EffectResult releaseGeneration(ControlEffect.Release effect) {
         NamedEventProcessor named = processorsByGeneration.get(effect.generation());
         if (named != null && quarantined.containsKey(named)) {
-            return result(effect, ControlOutcome.FAILED, "processor quarantined; lifecycle cleanup requires operator resolution");
+            return quarantinedResult(effect, "processor quarantined; lifecycle cleanup requires operator resolution");
         }
         if (named == null) {
             return result(effect, ControlOutcome.SUCCEEDED, "nothing built");
@@ -917,7 +1002,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             }
         }
         if (quarantined.containsKey(named)) {
-            return result(effect, ControlOutcome.FAILED, "processor quarantined; lifecycle cleanup requires operator resolution");
+            return quarantinedResult(effect, "processor quarantined; lifecycle cleanup requires operator resolution");
         }
         processorsByGeneration.remove(effect.generation());
         return result(effect, named.name(), ControlOutcome.SUCCEEDED, stepFailures == 0 ? null : stepFailures + " steps failed");
@@ -964,6 +1049,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             if (delivery.failure() != null) recorder.serviceFailed(flow, name, delivery.failure());
             else if (delivery.invoked()) recorder.serviceChanged(flow, name, payload.register(), payload.version());
             else recorder.discardControl(flow);
+        }
+        if (delivery.failure() != null && quarantined.containsKey(named)) {
+            return quarantinedResult(effect, delivery.failure());
         }
         return result(effect, delivery.failure() == null ? ControlOutcome.SUCCEEDED : ControlOutcome.FAILED, delivery.failure());
     }
@@ -1072,7 +1160,9 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         if (resources == null || handle == null || named == null) {
             return result(effect, ControlOutcome.FAILED, handle == null ? "unknown resource" : "processor gone");
         }
-        if (quarantined.containsKey(named)) return result(effect, ControlOutcome.FAILED, "processor quarantined");
+        if (quarantined.containsKey(named)) return quarantinedResult(effect, "processor quarantined");
+        // observed before install (review R1): the listener swap's own record is the recording's first write
+        observeCaptureWrites(resources, handle, effect.resourceId(), effect.generation(), named.name());
         // not framed: swapping the audit listener is already its own audited cycle in the processor (an
         // EventLogControlEvent), and a frame around it would flush to the listener being replaced (review of PR 6, 3)
         try {
@@ -1135,7 +1225,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                 control.audit().fallback("EffectOutcome", "group", roleName(), "requestId", effect.requestId(),
                         "opId", detachOp, "effect", "UninstallCapture", "resourceId", effect.resourceId(),
                         "generation", effect.generation(), "offline", true, "causeOp", effect.opId(),
-                        "outcome", "failed", "reason", String.valueOf(failed));
+                        "outcome", "failed", "reason", String.valueOf(failed), "kind", com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT);
                 throw failed;
             }
         }
@@ -1160,7 +1250,10 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             return new CaptureCompletion(root, op, completionIds.incrementAndGet(), CaptureCompletion.Kind.CLOSED, resourceId, null);
         } catch (Throwable t) {
             CaptureResourcePermit permit = captureResourcePermits.get(resourceId);
-            if (permit != null) permit.closeFailure = String.valueOf(t);
+            if (permit != null) {
+                permit.closeFailure = String.valueOf(t);
+                permit.closeFailureSeq = captureFailureOccurrences.incrementAndGet();
+            }
             signalCaptureResourceCompletion();
             return new CaptureCompletion(root, op, completionIds.incrementAndGet(), CaptureCompletion.Kind.CLOSE_FAILED,
                     resourceId, String.valueOf(t));
@@ -1197,16 +1290,18 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                 audit.fallback("EffectOutcome", "group", roleName(), "requestId", c.requestId(), "opId", closeOp,
                         "effect", "CloseCapture", "resourceId", c.resourceId(), "causeOp", c.opId(),
                         "outcome", closed.kind() == CaptureCompletion.Kind.CLOSED ? "succeeded" : "failed",
-                        "reason", closed.reason());
+                        "reason", closed.reason(), "kind", closed.kind() == CaptureCompletion.Kind.CLOSED ? null : com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT);
                 audit.fallback("CaptureCompensated", "group", roleName(), "requestId", c.requestId(),
                         "opId", closeOp, "resourceId", c.resourceId(), "causeOp", c.opId(),
                         "closed", closed.kind() == CaptureCompletion.Kind.CLOSED, "reason", closed.reason());
             }
             case CLOSED, CLOSE_FAILED -> audit.fallback("EffectOutcome", "group", roleName(), "requestId", c.requestId(),
                     "opId", c.opId(), "effect", "CloseCapture", "outcome", c.kind() == CaptureCompletion.Kind.CLOSED
-                            ? "succeeded" : "failed", "resourceId", c.resourceId(), "reason", c.reason());
+                            ? "succeeded" : "failed", "resourceId", c.resourceId(), "reason", c.reason(),
+                    "kind", c.kind() == CaptureCompletion.Kind.CLOSED ? null : com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT);
             case OPEN_FAILED -> audit.fallback("EffectOutcome", "group", roleName(), "requestId", c.requestId(),
                     "opId", c.opId(), "effect", "OpenCapture", "outcome", "failed", "stale", true, "reason", c.reason(),
+                    "kind", com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT,
                     "duplicate", control.processor().controlState.pendingOpen(c.opId()) == null ? Boolean.TRUE : null);
             default -> audit.fallback("CaptureOrphan", "group", roleName(), "opId", c.opId(), "fact", c.fact());
         }
@@ -1224,20 +1319,29 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             Object handle = captureHandles.get(id);
             if (handle == null) continue;
             String detachOp = "group-detach." + id + "." + physicalCleanupOps.incrementAndGet();
+            // A handle whose requested uninstall failed is being retried, not recovered: the control processor did ask
+            // for its release. Only a handle with no recorded detach failure is a leftover (review 77, F2).
+            boolean leftover = leftoverCaptures.contains(id) || !captureDetachFailures.contains(id);
+            if (leftover) leftoverCaptures.add(id);
+            Object leftoverMark = leftover ? Boolean.TRUE : null;
+            Object leftoverKind = leftover ? com.telamin.mongoose.control.event.FailureKind.LEFTOVER_RECOVERED : null;
+            Object retryMark = leftover ? null : Boolean.TRUE;
             control.audit().fallback("EffectRequested", "group", roleName(), "requestId", -1, "opId", detachOp,
                     "effect", "UninstallCapture", "resourceId", id, "generation", -1, "offline", true,
-                    "reason", "released without the control processor");
+                    "reason", leftover ? "released without the control processor" : "retrying a requested uninstall that failed",
+                    "leftover", leftoverMark, "retry", retryMark, "kind", leftoverKind);
             try {
                 resources.uninstallCapture(handle, null, null);
                 captureDetached(id);
                 control.audit().fallback("EffectOutcome", "group", roleName(), "requestId", -1, "opId", detachOp,
                         "effect", "UninstallCapture", "outcome", "succeeded", "resourceId", id,
-                        "generation", -1, "offline", true);
+                        "generation", -1, "offline", true, "leftover", leftoverMark, "retry", retryMark, "kind", leftoverKind);
             } catch (Throwable t) {
                 captureDetachFailed(id, t);
                 control.audit().fallback("EffectOutcome", "group", roleName(), "requestId", -1, "opId", detachOp,
                         "effect", "UninstallCapture", "outcome", "failed", "resourceId", id,
-                        "generation", -1, "offline", true, "reason", String.valueOf(t));
+                        "generation", -1, "offline", true, "reason", String.valueOf(t), "leftover", leftoverMark,
+                        "retry", retryMark, "kind", leftover ? leftoverKind : com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT);
                 if (t instanceof VirtualMachineError fatal) throw fatal;
                 reportCloseFailure("<capture " + id + ">", "could not be detached", t);
                 continue;
@@ -1246,13 +1350,104 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
             captureDetached(id);
             String closeOp = "group-close." + id;
             control.audit().fallback("EffectRequested", "group", roleName(), "requestId", -1, "opId", closeOp,
-                    "effect", "CloseCapture", "resourceId", id, "generation", -1, "offline", true, "causeOp", detachOp);
+                    "effect", "CloseCapture", "resourceId", id, "generation", -1, "offline", true, "causeOp", detachOp,
+                    "leftover", leftoverMark, "retry", retryMark, "kind", leftoverKind);
             CaptureCompletion closed = closeResource(-1, closeOp, id, handle);
             control.audit().fallback("EffectOutcome", "group", roleName(), "requestId", -1, "opId", closeOp,
                     "effect", "CloseCapture", "outcome", closed.kind() == CaptureCompletion.Kind.CLOSED ? "succeeded" : "failed",
                     "resourceId", id, "generation", -1, "offline", true, "causeOp", detachOp,
-                    "reason", closed.reason());
+                    "reason", closed.reason(), "leftover", leftoverMark, "retry", retryMark,
+                    "kind", leftover ? leftoverKind : closed.kind() == CaptureCompletion.Kind.CLOSED ? null : com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT);
+            leftoverCaptures.remove(id);
         }
+    }
+
+    private final java.util.concurrent.atomic.AtomicLong captureWriteFailures = new java.util.concurrent.atomic.AtomicLong();
+    /** Installs whose write failures cannot be observed because the observer registration threw (review R2). */
+    private final java.util.concurrent.atomic.AtomicLong captureUnobservable = new java.util.concurrent.atomic.AtomicLong();
+
+    /**
+     * Register the write-failure observer. Its failure never fails the install (review R2): it is logged, recorded and
+     * raises audit-capture health as unobservable. A resource that does not observe writes is recorded once per install.
+     */
+    private void observeCaptureWrites(com.telamin.mongoose.service.audit.AuditCaptureResources resources, Object handle,
+                                      long resourceId, long generation, String processorName) {
+        try {
+            resources.observeWriteFailures(handle, failure -> captureWriteFailed(resourceId, generation, processorName, failure));
+            if (!resources.observesWriteFailures()) {
+                control.audit().fallback("CaptureUnobservable", "group", roleName(), "resourceId", resourceId,
+                        "generation", generation, "name", processorName,
+                        "reason", "capture resources do not declare observesWriteFailures()");
+            }
+        } catch (VirtualMachineError fatal) {
+            throw fatal;
+        } catch (Throwable failed) {
+            captureUnobservable.incrementAndGet();
+            log.log(java.util.logging.Level.WARNING, "capture write failures of '" + processorName
+                    + "' cannot be observed; installing anyway", failed);
+            control.audit().fallback("CaptureUnobservable", "group", roleName(), "resourceId", resourceId,
+                    "generation", generation, "name", processorName, "reason", String.valueOf(failed),
+                    "kind", com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT);
+        }
+    }
+
+    private volatile long acknowledgedWriteFailures;
+    private volatile long acknowledgedUnobservable;
+    /** Every close or detach failure gets a new occurrence id; acknowledgement covers the ids issued so far. */
+    private final AtomicLong captureFailureOccurrences = new AtomicLong();
+    private volatile long acknowledgedFailureOccurrence;
+
+    /**
+     * Acknowledge the capture failures known now (review R10): the audit-capture alert clears until a new one occurs.
+     * The failures stay listed ({@link #captureCloseFailures()}, {@link #captureCleanupFailures()}, the counters) and
+     * resources stay owned: acknowledgement clears the alert, never the gap.
+     */
+    public void acknowledgeCaptureFailures() {
+        acknowledgedWriteFailures = captureWriteFailures.get();
+        acknowledgedUnobservable = captureUnobservable.get();
+        // occurrences, not resource ids (external review 2): a later failure of the same resource, in any phase, gets a
+        // new id and is unacknowledged; the bookkeeping lives on the permit, so it ends with the resource's ownership
+        acknowledgedFailureOccurrence = captureFailureOccurrences.get();
+        control.audit().fallback("CaptureFailuresAcknowledged", "group", roleName(),
+                "writeFailures", acknowledgedWriteFailures, "unobservable", acknowledgedUnobservable,
+                "failureOccurrences", acknowledgedFailureOccurrence);
+    }
+
+    /** Capture failures not yet acknowledged, described for health; null when there are none. */
+    public String unacknowledgedCaptureFailures() {
+        long writes = captureWriteFailures.get() - acknowledgedWriteFailures;
+        long unobservable = captureUnobservable.get() - acknowledgedUnobservable;
+        long acked = acknowledgedFailureOccurrence;
+        long closes = 0, cleanups = 0;
+        for (CaptureResourcePermit permit : captureResourcePermits.values()) {
+            if (permit.closeFailure != null && permit.closeFailureSeq > acked) closes++;
+            if (permit.detachFailure != null && permit.detachFailureSeq > acked) cleanups++;
+        }
+        if (writes + unobservable + closes + cleanups == 0) return null;
+        return "unacknowledged capture failures: writes=" + writes + " unobservable=" + unobservable + " closes=" + closes
+                + " detaches=" + cleanups + " (processors keep running)";
+    }
+
+    /** Installs whose write failures could not be observed because registering the observer threw. */
+    public long captureUnobservable() {
+        return captureUnobservable.get();
+    }
+
+    /**
+     * Fail open (issue #77, M3): a capture's record writes failed. The processor keeps running and nothing is retried;
+     * the failure is a control-audit record and raises the group's audit-capture health. Called once per recording, on
+     * the thread that wrote; never throws.
+     */
+    private void captureWriteFailed(long resourceId, long generation, String processorName, String failure) {
+        captureWriteFailures.incrementAndGet();
+        control.audit().fallback("CaptureWriteFailed", "group", roleName(), "resourceId", resourceId,
+                "generation", generation, "name", processorName, "reason", failure, "processorStopped", false,
+                "kind", com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT);
+    }
+
+    /** Recordings whose capture writes failed (fail open): the processor kept running. */
+    public long captureWriteFailures() {
+        return captureWriteFailures.get();
     }
 
     /** Capture resources the group still holds (opened and not handed to the closer): for tests and the stop result. */
@@ -1424,7 +1619,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                         // A retained historical Java object may already have been stopped. Only the currently live,
                         // versioned binding can be injected; reconstructing old incarnations needs an isolated registry.
                         if (published.version() != version || svc != published.service() || svc == null) {
-                            return "recorded service " + service + " at version " + version
+                            return com.telamin.mongoose.replay.ReplayRouting.MISMATCH + "recorded service " + service + " at version " + version
                                     + " is unavailable; current published version is " + published.version();
                         }
                     }
@@ -1432,7 +1627,7 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
                         for (Service<?> held : servicesDeliveredTo(flow)) {
                             if (held.serviceName().equals(service)) svc = held;
                         }
-                        if (svc == null) return "recorded withdrawal of service " + service
+                        if (svc == null) return com.telamin.mongoose.replay.ReplayRouting.MISMATCH + "recorded withdrawal of service " + service
                                 + " has no delivered incarnation";
                     }
                     if (svc == null) return "wait:service " + service + " is not registered";

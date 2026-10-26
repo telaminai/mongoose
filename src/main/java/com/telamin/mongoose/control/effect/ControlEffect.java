@@ -63,6 +63,19 @@ public sealed interface ControlEffect permits ControlEffect.BuildAndStart, Contr
     /** Hand a capture resource to the closer; answered pending, then by a {@code CaptureClosed} completion. */
     record CloseCapture(String opId, long requestId, long generation, String name, long resourceId) implements ControlEffect { }
 
+    /** @param kind the reply's structured classification; never null ({@code NONE} when applied) */
     record Reply(String opId, long requestId, long generation, String name,
-                 com.telamin.mongoose.control.event.ReplyOutcome outcome, String reason) implements ControlEffect { }
+                 com.telamin.mongoose.control.event.ReplyOutcome outcome, String reason,
+                 com.telamin.mongoose.control.event.FailureKind kind) implements ControlEffect {
+        public Reply {
+            if (kind == null) kind = com.telamin.mongoose.control.event.FailureKind.defaultFor(outcome);
+        }
+
+        /** A reply whose kind is its outcome's default. */
+        public Reply(String opId, long requestId, long generation, String name,
+                     com.telamin.mongoose.control.event.ReplyOutcome outcome, String reason) {
+            this(opId, requestId, generation, name, outcome, reason,
+                    com.telamin.mongoose.control.event.FailureKind.defaultFor(outcome));
+        }
+    }
 }

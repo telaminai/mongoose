@@ -41,7 +41,7 @@ public final class ServerConfigurator {
         Objects.requireNonNull(logRecordListener, "logRecordListener must be non-null");
 
         MongooseServer mongooseServer = new MongooseServer(mongooseServerConfig);
-        mongooseServer.setDefaultErrorHandler(new GlobalErrorHandler());
+        mongooseServer.setDefaultErrorHandler(new GlobalErrorHandler(mongooseServerConfig.getFatalErrorPolicy()));
 
         // Register any configured event-to-invocation strategies with the flow manager
         if (mongooseServerConfig.getEventInvokeStrategies() != null && !mongooseServerConfig.getEventInvokeStrategies().isEmpty()) {
@@ -140,9 +140,27 @@ public final class ServerConfigurator {
             });
         }
 
-        //start
-        mongooseServer.init();
-        mongooseServer.start();
+        //start: a failed boot stops what it started, then throws (issue #77 A1 / review round 4): under the default
+        // fatalErrorPolicy CONTAIN nothing else would stop the agent threads already running, and the caller never
+        // receives the server reference
+        try {
+            mongooseServer.init();
+            mongooseServer.start();
+        } catch (Throwable failed) {
+            com.telamin.mongoose.StopResult stopped = null;
+            try {
+                stopped = mongooseServer.shutdown();
+            } catch (Throwable stopFailure) {
+                if (stopFailure != failed) failed.addSuppressed(stopFailure);
+            }
+            if (stopped != null && stopped.complete()) {
+                failed.addSuppressed(new IllegalStateException("boot failed; the partly started server was stopped: "
+                        + stopped));
+                throw failed;
+            }
+            // cleanup incomplete: hand the caller the server, which still owns what is running (external review 3)
+            throw new com.telamin.mongoose.BootFailedException(failed, mongooseServer, stopped);
+        }
 
         return mongooseServer;
     }

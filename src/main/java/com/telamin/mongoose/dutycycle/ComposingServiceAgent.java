@@ -64,6 +64,11 @@ public class ComposingServiceAgent extends DynamicCompositeAgent {
         this.schedulerService = new Service<>(scheduler, SchedulerService.class);
     }
 
+    /** The names of the services this group hosts: their health follows the group's thread (issue #77 review round 4). */
+    public java.util.List<String> hostedServiceNames() {
+        return hostedAgents.stream().map(a -> a.exportedService().serviceName()).toList();
+    }
+
     public <T> void registerServer(ServiceAgent<T> server) {
         hostedAgents.add(server);
         offerBounded(toStartList, server, "service start");
@@ -77,7 +82,7 @@ public class ComposingServiceAgent extends DynamicCompositeAgent {
         long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
         while (!queue.offer(item)) {
             if (com.telamin.mongoose.control.AgentThreads.isAgentThread() || System.nanoTime() - deadline > 0) {
-                throw new IllegalStateException("service group " + roleName() + ": " + what + " queue is full ("
+                throw new IllegalStateException("service group " + roleName() + ": " + what + " request refused: mailbox full (capacity "
                         + queue.capacity() + ")");
             }
             java.util.concurrent.locks.LockSupport.parkNanos(50_000);
@@ -99,14 +104,46 @@ public class ComposingServiceAgent extends DynamicCompositeAgent {
             }
         }
         log.info("onStart toStartList size:" + toStartList.size());
-        checkForAdded();
-        super.onStart();
+        try {
+            checkForAdded();
+            super.onStart();
+        } catch (RuntimeException | Error failed) {
+            terminated();      // a failed onStart ends the loop before any work
+            throw failed;
+        }
+    }
+
+    private volatile Runnable onTerminated;
+
+    /**
+     * Run once when this group's loop ends abnormally (an Error or an agent termination escapes doWork or onStart):
+     * the server marks the hosted services down at once, so no health reading depends on evaluating another check
+     * first (issue #77 re-verification B).
+     */
+    public void onTerminated(Runnable action) {
+        this.onTerminated = action;
+    }
+
+    private void terminated() {
+        Runnable action = onTerminated;
+        onTerminated = null;
+        if (action == null) return;
+        try {
+            action.run();
+        } catch (RuntimeException failed) {
+            log.warning("service group termination callback failed: " + failed);
+        }
     }
 
     @Override
     public int doWork() throws Exception {
-        checkForAdded();
-        return super.doWork();
+        try {
+            checkForAdded();
+            return super.doWork();
+        } catch (Error | org.agrona.concurrent.AgentTerminationException ending) {
+            terminated();      // Agrona ends this loop for these: the thread will not do more work
+            throw ending;
+        }
     }
 
     public void startComplete() {

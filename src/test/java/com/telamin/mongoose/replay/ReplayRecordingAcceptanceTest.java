@@ -283,6 +283,7 @@ class ReplayRecordingAcceptanceTest {
             String stopped = r.replayer().stopped(PROCESSOR);
             assertNotNull(stopped);
             assertTrue(stopped.contains("DEMO failure on boom"), stopped);
+            assertEquals(com.telamin.mongoose.control.event.FailureKind.REPLAY_STOPPED, r.replayer().stopKind(PROCESSOR), "a recorded failure is a replay stop");
         }
     }
 

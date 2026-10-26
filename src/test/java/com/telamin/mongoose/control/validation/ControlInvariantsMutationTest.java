@@ -28,8 +28,11 @@ class ControlInvariantsMutationTest {
 
     static Stream<Arguments> forbiddenTraces() {
         return Stream.of(
+                // I1 keys on the Stop fact, not on a rule name (issue #77; second review T3): the decision's label is
+                // deliberately meaningless
                 Arguments.of("I1", audit(
-                        "record: Decision, requestId: 1, rule: stopStarted, generation: 7, effects: ''",
+                        "record: Input, requestId: 1, fact: Stop, generation: 7, name: p",
+                        "record: Decision, requestId: 1, rule: innocentLookingLabel, generation: 7, effects: ''",
                         "record: Decision, requestId: 2, rule: captureOpened, generation: 7, resourceId: 1, effects: '2.1 InstallCapture(7)'")),
                 Arguments.of("I2", audit(
                         "record: Input, requestId: 1, fact: Add, generation: 7")),

@@ -35,7 +35,7 @@ public class EffectOutcomes extends EventLogNode {
             // a timeout settles an open still pending: its final outcome, so a later completion is a duplicate
             if (state.pendingOpen(c.opId()) == null) return false;
             ControlAudit.record(auditLog, state, "EffectOutcome", "opId", c.opId(), "effect", "OpenCapture",
-                    "outcome", "failed", "reason", "open timed out",
+                    "outcome", "failed", "reason", "open timed out", "kind", "FAILED_EFFECT",
                     "cleanup", state.chain(c.requestId()) == null ? Boolean.TRUE : null);
             return true;
         }
@@ -47,6 +47,7 @@ public class EffectOutcomes extends EventLogNode {
         ControlAudit.record(auditLog, state, "EffectOutcome", "opId", c.opId(),
                 "effect", open ? "OpenCapture" : "CloseCapture", "outcome", ok ? "succeeded" : "failed",
                 "resourceId", c.resourceId() >= 0 ? c.resourceId() : null, "reason", c.reason(),
+                "kind", ok ? null : "FAILED_EFFECT",
                 "duplicate", duplicate ? Boolean.TRUE : null,
                 "cleanup", state.chain(c.requestId()) == null ? Boolean.TRUE : null);
         return true;
@@ -58,11 +59,13 @@ public class EffectOutcomes extends EventLogNode {
         if ("Reply".equals(result.effect())) {
             ControlAudit.record(auditLog, state, "Reply", "opId", result.opId(), "outcome", result.reason(),
                     "generation", result.generation(), "name", result.name(),
-                    "completed", result.succeeded());
+                    "completed", result.succeeded(), "kind", result.succeeded() ? result.kind().name() : null);
         } else {
             ControlAudit.record(auditLog, state, "EffectOutcome", "opId", result.opId(), "effect", result.effect(),
                     "outcome", result.outcome().name().toLowerCase(), "generation", result.generation(),
                     "name", result.name(), "reason", result.reason(),
+                    "kind", result.outcome() == com.telamin.mongoose.control.event.ControlOutcome.FAILED
+                            ? result.kind().name() : null,
                     "resourceId", state.effectResource(result.opId()) < 0 ? null : state.effectResource(result.opId()),
                     // an effect outcome after its request's reply is cleanup the reply never waited for
                     "cleanup", state.isCleanup(result.opId(), false) || state.chain(result.requestId()) == null

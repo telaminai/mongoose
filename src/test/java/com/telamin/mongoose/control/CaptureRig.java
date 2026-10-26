@@ -141,6 +141,15 @@ final class CaptureRig {
         boolean failUninstalls;
         boolean failLiveUninstalls;
         final java.util.Set<Long> failedUninstallResources = new java.util.HashSet<>();
+        /** Injected uninstall failures so far, per resource serial: a harness ties a failure to the window it saw. */
+        final Map<Long, Integer> uninstallFailureCounts = new java.util.HashMap<>();
+
+        /** Injected uninstall failures so far of resources installed (now or before) on {@code flow}. */
+        int uninstallFailuresOn(DataFlow flow) {
+            int n = 0;
+            for (Res r : opened) if (r.installedOn.contains(flow)) n += uninstallFailureCounts.getOrDefault((long) r.serial, 0);
+            return n;
+        }
 
         @Override
         public Object openCapture(String processorName) {
@@ -165,6 +174,7 @@ final class CaptureRig {
         public void uninstallCapture(Object resource, String processorName, DataFlow dataFlow) {
             if (failUninstalls || (failLiveUninstalls && dataFlow != null)) {
                 failedUninstallResources.add((long) ((Res) resource).serial);
+                uninstallFailureCounts.merge((long) ((Res) resource).serial, 1, Integer::sum);
                 throw new IllegalStateException("simulated uninstall failure");
             }
             Res r = (Res) resource;

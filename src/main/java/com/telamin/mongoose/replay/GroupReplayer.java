@@ -1,5 +1,6 @@
 package com.telamin.mongoose.replay;
 
+import com.telamin.mongoose.control.event.FailureKind;
 import com.telamin.mongoose.control.AgentThreads;
 
 import com.telamin.fluxtion.runtime.annotations.feature.Experimental;
@@ -46,6 +47,8 @@ public final class GroupReplayer {
         volatile List<ReplayEntry> entries = List.of();
         volatile int next;
         volatile String stopped;
+        /** {@link #stopped} with its kind, published together so a reader never pairs a reason with another kind. */
+        volatile StopReason stopReason;
         /** While the current entry cannot be delivered yet: since when (System.nanoTime) and why. */
         long waitingSince;
         String waitingFor;
@@ -112,6 +115,7 @@ public final class GroupReplayer {
         cursors.add(cursor);
         scheduler.replay(flow);                          // its timers are the replay's, whatever follows
         String failed = null;
+        FailureKind failedKind = FailureKind.REPLAY_STOPPED;
         try {
             flow.setClockStrategy(clock);
         } catch (VirtualMachineError e) {
@@ -123,7 +127,10 @@ public final class GroupReplayer {
             try {
                 Provenance recorded = config.store().provenance(cursor.name);
                 String differs = recorded == null ? null : recorded.differenceFrom(Provenance.of(flow, forIncarnation, 0));
-                if (differs != null) failed = "the replayed processor is not the recorded one: " + differs;
+                if (differs != null) {
+                    failed = "the replayed processor is not the recorded one: " + differs;
+                    failedKind = FailureKind.REPLAY_IDENTITY_MISMATCH;
+                }
             } catch (VirtualMachineError e) {
                 throw e;
             } catch (Throwable t) {
@@ -136,8 +143,10 @@ public final class GroupReplayer {
                 if (!cursor.name.equals(legacyKey) && !config.store().has(cursor.name) && config.store().has(legacyKey)) {
                     failed = "ambiguous legacy stream key " + legacyKey + ": migrate the processor name's '#' escapes to "
                             + cursor.name;
+                    failedKind = FailureKind.REPLAY_IDENTITY_MISMATCH;
                 } else if (forIncarnation > 1 && !config.store().has(cursor.name)) {
                     failed = "no stream was recorded for " + cursor.name;    // loud, never an instantly complete cursor
+                    failedKind = FailureKind.REPLAY_IDENTITY_MISMATCH;
                 } else {
                     cursor.entries = config.store().entries(cursor.name);
                     cursor.recordsServices = cursor.entries.stream().anyMatch(e -> e instanceof ReplayEntry.ServiceChanged);
@@ -160,7 +169,7 @@ public final class GroupReplayer {
                 failed = "the replay store could not be read: " + t;
             }
         }
-        if (failed != null) stop(cursor, failed);
+        if (failed != null) stop(cursor, failedKind, failed);
         cursor.attaching = false;
     }
 
@@ -170,23 +179,24 @@ public final class GroupReplayer {
             if (c.flow != flow) continue;
             // A control refusal can fail start() and immediately detach this processor, before replay drains any
             // entries. Removing the cursor must not erase the refusal and make the settled replay appear successful.
-            if (c.stopped != null) ended.putIfAbsent(c.name, c.stopped);
+            StopReason reason = c.stopReason;
+            if (reason != null) end(c.name, reason.kind(), reason.why(), false);
             if (!c.done()) {
-                ended.putIfAbsent(c.name, "left the group at entry " + c.next + " of " + c.entries.size()
-                        + " before its replay completed");
+                end(c.name, FailureKind.REPLAY_STOPPED, "left the group at entry " + c.next + " of " + c.entries.size()
+                        + " before its replay completed", false);
             }
             if (!c.expectedCalls.isEmpty()) {
-                ended.put(c.name, "the recorded run made control request " + describe(c.expectedCalls.peek())
-                        + " that the replay did not");
-                log.warning("replay of " + c.name + ": " + ended.get(c.name));
+                end(c.name, FailureKind.REPLAY_IDENTITY_MISMATCH, "the recorded run made control request " + describe(c.expectedCalls.peek())
+                        + " that the replay did not", true);
+                log.warning("replay of " + c.name + ": " + ended.get(c.name).why());
             }
             if (c.stopReads == null) continue;
             // the replayed stop has run: it must have read the clock as often as the recorded one did
             int taken = c.clock.taken();
             if (taken != c.stopReads.size()) {
-                ended.put(c.name, "clock divergence in the replayed stop: it read the clock " + taken
-                        + " time(s), the recorded one " + c.stopReads.size());
-                log.warning("replay of " + c.name + ": " + ended.get(c.name));
+                end(c.name, FailureKind.REPLAY_STOPPED, "clock divergence in the replayed stop: it read the clock " + taken
+                        + " time(s), the recorded one " + c.stopReads.size(), true);
+                log.warning("replay of " + c.name + ": " + ended.get(c.name).why());
             }
         }
         cursors.removeIf(c -> c.flow == flow);
@@ -194,7 +204,18 @@ public final class GroupReplayer {
     }
 
     /** Why a stream that has left the group diverged at its end, by stream name. */
-    private final java.util.Map<String, String> ended = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Map<String, StopReason> ended = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** A replay stop's kind and reason, as one value. */
+    private record StopReason(FailureKind kind, String why) { }
+
+    private void end(String name, FailureKind kind, String why, boolean replace) {
+        if (replace) {
+            ended.put(name, new StopReason(kind == null ? FailureKind.REPLAY_STOPPED : kind, why));
+        } else {
+            ended.putIfAbsent(name, new StopReason(kind == null ? FailureKind.REPLAY_STOPPED : kind, why));
+        }
+    }
 
     /** The services a stream registers before it withdraws them: the processor had them only from that point. */
     private static java.util.Set<String> firstRegistered(List<ReplayEntry> entries) {
@@ -256,23 +277,23 @@ public final class GroupReplayer {
             controlRequests.computeIfAbsent(cursor.name, n -> java.util.Collections.synchronizedList(new ArrayList<>())).add(method + args);
             if (!ownThread.getAsBoolean()) {
                 // off the processor's own thread: not part of its input order, so not reproducible (final review, 11)
-                stop(cursor, "control request " + method + args + " made off the processor's thread; not executed");
+                stop(cursor, FailureKind.REPLAY_STOPPED, "control request " + method + args + " made off the processor's thread; not executed");
                 return null;
             }
             if ("addEventProcessor".equals(method)) {
                 // A Supplier is executable construction logic, not a stable description of the generated processor.
                 // Until its build identity is recorded, refuse rather than invoke it against the live server.
                 String why = "addEventProcessor supplier cannot be verified from the recording; not executed";
-                stop(cursor, why);
+                stop(cursor, FailureKind.REPLAY_IDENTITY_MISMATCH, why);
                 throw new UnsupportedOperationException(why);
             }
             ReplayEntry.ControlCall expected = cursor.expectedCalls.poll();
             if (expected == null) {
-                stop(cursor, "control request " + method + args + " was not made by the recorded run here; not executed");
+                stop(cursor, FailureKind.REPLAY_IDENTITY_MISMATCH, "control request " + method + args + " was not made by the recorded run here; not executed");
                 return null;
             }
             if (!expected.method().equals(method) || !expected.args().equals(args)) {
-                stop(cursor, "control request differs: recorded " + describe(expected) + ", replayed " + method + args
+                stop(cursor, FailureKind.REPLAY_IDENTITY_MISMATCH, "control request differs: recorded " + describe(expected) + ", replayed " + method + args
                         + "; not executed");
                 return null;
             }
@@ -280,14 +301,14 @@ public final class GroupReplayer {
                 // Text does not preserve the original throwable's type or payload. A processor may branch on those,
                 // or catch this substitute exception; either way it must not turn an unverifiable replay into success.
                 String why = "recorded control exception cannot be reconstructed for " + method + ": " + expected.outcome();
-                stop(cursor, why);
+                stop(cursor, FailureKind.REPLAY_STOPPED, why);
                 throw new IllegalStateException(why);
             }
             if (ControlInterception.REGISTRY.contains(method)) {
                 // The server registry is shared with unreplayed processors. Matching text does not authorize real
                 // injection, withdrawal, stop callbacks or feed setup. These require an isolated replay registry.
                 String why = "registry mutation " + method + " requires an isolated replay registry; not executed";
-                stop(cursor, why);
+                stop(cursor, FailureKind.REPLAY_STOPPED, why);
                 throw new UnsupportedOperationException(why);
             }
             return null;
@@ -380,7 +401,7 @@ public final class GroupReplayer {
                 // an input has been handled: every control request the recorded run made before it must have been made
                 if (delivered && c.stopped == null && !c.expectedCalls.isEmpty()
                         && !(entry instanceof ReplayEntry.ControlCall) && !(entry instanceof ReplayEntry.Stopped)) {
-                    stop(c, "the recorded run made control request " + describe(c.expectedCalls.peek())
+                    stop(c, FailureKind.REPLAY_IDENTITY_MISMATCH, "the recorded run made control request " + describe(c.expectedCalls.peek())
                             + " here; the replay did not");
                 }
             } catch (VirtualMachineError e) {
@@ -389,7 +410,7 @@ public final class GroupReplayer {
                 // a replay that cannot deliver an entry stops that processor's replay and says why; it does not
                 // take the group (or the server) down with it. Any Throwable: a decoder's AssertionError reached the
                 // agent's error handler, which ended the process (review of 90f0d9b, finding 1)
-                delivered = stop(c, "entry " + c.next + " could not be replayed: " + e);
+                delivered = stop(c, FailureKind.REPLAY_STOPPED, "entry " + c.next + " could not be replayed: " + e);
             }
             if (delivered) {
                 c.next++;
@@ -401,7 +422,7 @@ public final class GroupReplayer {
             } else if (System.nanoTime() - c.waitingSince > config.deliveryTimeout().toNanos()) {
                 // an entry that never becomes deliverable (a route or admin command the replayed configuration never
                 // makes) stops the replay, saying why, rather than stalling it silently forever
-                stop(c, "entry " + c.next + " could not be delivered within " + config.deliveryTimeout().toMillis()
+                stop(c, FailureKind.REPLAY_STOPPED, "entry " + c.next + " could not be delivered within " + config.deliveryTimeout().toMillis()
                         + " ms: " + c.waitingFor);
             }
         }
@@ -416,12 +437,29 @@ public final class GroupReplayer {
         return snapshot(adminReplies);
     }
 
-    /** Why a processor's replay stopped early, or null. */
+    /** Why a processor's replay stopped early, or null. Human detail: classify with {@link #stopKind}. */
     public String stopped(String processor) {
         for (Cursor c : cursors) {
             if (c.name.equals(processor)) return c.stopped;
         }
-        return ended.get(processor);
+        StopReason reason = ended.get(processor);
+        return reason == null ? null : reason.why();
+    }
+
+    /**
+     * The structured kind of {@link #stopped}: {@code REPLAY_IDENTITY_MISMATCH} when the replay could not match an
+     * input, stream, service version or control request to the recording, {@code REPLAY_STOPPED} for any other stop,
+     * or null when the replay has not stopped.
+     */
+    public FailureKind stopKind(String processor) {
+        for (Cursor c : cursors) {
+            if (c.name.equals(processor)) {
+                StopReason reason = c.stopReason;
+                return reason == null ? null : reason.kind();
+            }
+        }
+        StopReason reason = ended.get(processor);
+        return reason == null ? null : reason.kind();
     }
 
     private boolean deliver(Cursor c, ReplayEntry entry) {
@@ -430,7 +468,7 @@ public final class GroupReplayer {
                 ReplayRoute route = routing.routeFor(i.source(), i.route(), c.flow);
                 if (route == null) return waiting(c, "no route " + routeName(i.route()) + "delivers " + i.source() + " to " + c.name);
                 byte[] bytes = config.journal().get(i.source(), i.seq());
-                if (bytes == null) return stop(c, "the journal holds no " + i.source() + "#" + i.seq());
+                if (bytes == null) return stop(c, FailureKind.REPLAY_IDENTITY_MISMATCH, "the journal holds no " + i.source() + "#" + i.seq());
                 Object item = config.journalledFeeds().get(i.source()).decode(bytes.clone());   // from a copy: G1's contract
                 EventSource.EventWrapStrategy wrap = routing.wrapOf(i.source());
                 Object event = wrap == EventSource.EventWrapStrategy.SUBSCRIPTION_NAMED_EVENT
@@ -473,7 +511,7 @@ public final class GroupReplayer {
                 return readsMatch(c, a.reads());
             }
             case ReplayEntry.Failed f -> {
-                return stop(c, "the recorded run failed here: " + f.description());
+                return stop(c, FailureKind.REPLAY_STOPPED, "the recorded run failed here: " + f.description());
             }
             case ReplayEntry.ControlCall cc -> {
                 // made while the recorded run handled the input that follows: the replayed request must match it
@@ -484,7 +522,7 @@ public final class GroupReplayer {
                 // the recorded run stopped the processor here: so does the replay, through its group's control processor;
                 // the clock holds the recorded stop's readings until the stop runs, and they are checked when it has
                 try {
-                    if (!routing.stopProcessor(c.flow)) return stop(c, "the recorded stop could not be replayed");
+                    if (!routing.stopProcessor(c.flow)) return stop(c, FailureKind.REPLAY_STOPPED, "the recorded stop could not be replayed");
                 } catch (IllegalStateException mailboxFull) {
                     return waiting(c, "the group's mailbox is full: " + mailboxFull.getMessage());
                 }
@@ -497,7 +535,12 @@ public final class GroupReplayer {
                 pin(c, sc.instant(), sc.reads());
                 String outcome = routing.deliverService(c.flow, sc.service(), sc.register(), sc.version());
                 if (outcome != null) {
-                    return outcome.startsWith("wait:") ? waiting(c, outcome.substring(5)) : stop(c, outcome);
+                    if (outcome.startsWith(ReplayRouting.WAIT)) return waiting(c, outcome.substring(ReplayRouting.WAIT.length()));
+                    // the routing's protocol prefix, written by the routing itself, says whether identity failed
+                    if (outcome.startsWith(ReplayRouting.MISMATCH)) {
+                        return stop(c, FailureKind.REPLAY_IDENTITY_MISMATCH, outcome.substring(ReplayRouting.MISMATCH.length()));
+                    }
+                    return stop(c, FailureKind.REPLAY_STOPPED, outcome);
                 }
                 return readsMatch(c, sc.reads());
             }
@@ -550,7 +593,7 @@ public final class GroupReplayer {
     private boolean readsMatch(Cursor c, List<Long> recorded) {
         int taken = c.clock.taken();
         if (taken == recorded.size()) return true;
-        return stop(c, "clock divergence: the replayed cycle read the clock " + taken + " time(s), the recorded one "
+        return stop(c, FailureKind.REPLAY_STOPPED, "clock divergence: the replayed cycle read the clock " + taken + " time(s), the recorded one "
                 + recorded.size());
     }
 
@@ -564,7 +607,8 @@ public final class GroupReplayer {
         return route.isEmpty() ? "" : "(" + route + ") ";
     }
 
-    private boolean stop(Cursor c, String why) {
+    private boolean stop(Cursor c, FailureKind kind, String why) {
+        c.stopReason = new StopReason(kind == null ? FailureKind.REPLAY_STOPPED : kind, why);
         c.stopped = why;
         log.warning("replay of " + c.name + " stopped at entry " + c.next + ": " + why);
         return true;

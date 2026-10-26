@@ -19,6 +19,19 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class ProcessorContext {
 
     private static final ThreadLocal<AtomicReference<DataFlow>> CURRENT = new ThreadLocal<>();
+    /**
+     * The processor whose handler threw most recently on this thread and its position in the dispatch, captured at
+     * throw time (rc1 review N1, external review 1).
+     */
+    private static final ThreadLocal<Failure> FAILED = new ThreadLocal<>();
+
+    /**
+     * A captured handler failure.
+     *
+     * @param position the thrower's index in the strategy's dispatch order, so the processors before it are known to
+     *                 have handled the event; -1 when the dispatch progress is unknown
+     */
+    public record Failure(DataFlow processor, int position) { }
 
     private ProcessorContext() {
     }
@@ -38,6 +51,32 @@ public final class ProcessorContext {
         if (ref != null) {
             ref.set(null);
         }
+    }
+
+    /**
+     * Record that {@code processor}'s handler threw. A dispatch strategy calls it as the exception passes, so the host can
+     * identify the failed processor even when the strategy's {@code failedPosition()} cannot (an opaque strategy).
+     */
+    public static void recordFailedProcessor(DataFlow processor) {
+        recordFailedProcessor(processor, -1);
+    }
+
+    /** As {@link #recordFailedProcessor(DataFlow)}, with the thrower's position in the dispatch order. */
+    public static void recordFailedProcessor(DataFlow processor, int position) {
+        FAILED.set(new Failure(processor, position));
+    }
+
+    /** The failure recorded on this thread, or null; clears it. */
+    public static Failure takeFailure() {
+        Failure failure = FAILED.get();
+        FAILED.remove();
+        return failure;
+    }
+
+    /** The processor recorded by {@link #recordFailedProcessor} on this thread, or null; clears it. */
+    public static DataFlow takeFailedProcessor() {
+        Failure failure = takeFailure();
+        return failure == null ? null : failure.processor();
     }
 
     public static DataFlow currentProcessor() {
