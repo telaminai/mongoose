@@ -161,6 +161,9 @@ mutations = [
         'group.unacknowledgedCaptureFailures(), Map.of());', False)]),
     ("waiting-admission-forgets-joined-targets", [("src/main/java/com/telamin/mongoose/dispatch/EventToQueuePublisher.java",
         '                        retainCurrentTargets(admissionTargets);\n', '', False)]),
+    ("admission-skips-post-registration-validation", [("src/main/java/com/telamin/mongoose/dispatch/EventToQueuePublisher.java",
+        'boolean firstValidation = true; // include targets that joined before waiter registration',
+        'boolean firstValidation = false; // mutant loses a pre-registration target change', False)]),
     ("group-diagnostics-take-publisher-lock", [("src/main/java/com/telamin/mongoose/dispatch/EventToQueuePublisher.java",
         'long now = System.nanoTime();\n        FeedOverloadSettings current = overload;',
         'synchronized (publishLock) { }\n        long now = System.nanoTime();\n        FeedOverloadSettings current = overload;', False)]),
@@ -180,7 +183,7 @@ tests = ",".join(["ControlScenarioHarnessTest", "IndependentEvidenceMutationTest
                   "CaptureAcknowledgementTest", "FallbackKindInvariantTest", "FailedBootContainmentTest",
                   "IdentityOnlyRecoveryFollowupTest", "IdentityOnlyRecoveryFollowupOwnTest",
                   "ServiceHealthObservationFollowupTest", "ServiceHealthObservationFollowupOwnTest",
-                  "SoloRetryCompatibilityProbeTest", "SoloRetryCompatibilityOwnTest", "RecoveryCapabilityMatrixTest", "FailureOverloadSeamTest", "IndependentFinalSeamTest"])
+                  "SoloRetryCompatibilityProbeTest", "SoloRetryCompatibilityOwnTest", "RecoveryCapabilityMatrixTest", "FailureOverloadSeamTest", "IndependentFinalSeamTest", "IndependentAdmissionRegistrationRaceTest"])
 cmd = ["mvn", "-o", "-Dtest=" + tests, "-Dmongoose.harness.seedStart=12001", "-Dmongoose.harness.seedCount=100", "test"]
 results = []
 

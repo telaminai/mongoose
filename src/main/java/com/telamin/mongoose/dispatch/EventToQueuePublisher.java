@@ -937,14 +937,16 @@ public class EventToQueuePublisher<T> {
         waiters.add(self);
         try {
             int epochSeen = targetsEpoch.get();
+            boolean firstValidation = true; // include targets that joined before waiter registration
             while (true) {
                 long now = System.nanoTime();
                 long waited = now - start;
                 boolean timedOut = waited >= deadlineNanos;
                 // re-evaluate under the lock when there may be room, the targets changed, closing, or at the deadline
                 boolean interrupted = self.isInterrupted();
-                if (cancelledTarget(admissionTargets) != null || closing || timedOut || interrupted || epochSeen != targetsEpoch.get()
+                if (firstValidation || cancelledTarget(admissionTargets) != null || closing || timedOut || interrupted || epochSeen != targetsEpoch.get()
                         || blocker.targetQueue().remainingCapacity() > 0 || !targetQueues.contains(blocker)) {
+                    firstValidation = false;
                     epochSeen = targetsEpoch.get();
                     yieldToSubscriberChanges();
                     synchronized (publishLock) {
