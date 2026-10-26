@@ -177,7 +177,10 @@ def run(name):
 print("Scratch and preserved logs: " + str(base), flush=True)
 baseline = run("baseline")
 assert baseline["exitCode"] == 0 and baseline["tests"] > 0, baseline
+only = set(sys.argv[3].split(",")) if len(sys.argv) > 3 else None   # optional: re-run the named mutants only
 for name, edits in mutations:
+    if only is not None and name not in only:
+        continue
     originals = {}
     try:
         for relative, before, after, replace_all in edits:
@@ -187,8 +190,14 @@ for name, edits in mutations:
             assert count >= 1 if replace_all else count == 1, (name, relative, "mutation anchor changed", count)
             path.write_text(text.replace(before, after))
         result = run(name)
-        assert "COMPILATION ERROR" not in (base / (name + ".log")).read_text(), (name, "mutant did not compile")
-        assert result["exitCode"] != 0 and result["failures"] + result["errors"] > 0, result
+        log_text = (base / (name + ".log")).read_text()
+        assert "COMPILATION ERROR" not in log_text, (name, "mutant did not compile")
+        # a mutant that exits the test JVM (System.exit) is caught by the forked-VM crash, which writes no report
+        crashed = "The forked VM terminated without properly saying goodbye" in log_text
+        if crashed:
+            result["crashedJvm"] = True
+            (base / "results.json").write_text(json.dumps(results, indent=2) + "\n")
+        assert result["exitCode"] != 0 and (result["failures"] + result["errors"] > 0 or crashed), result
     finally:
         for path, text in originals.items():
             path.write_text(text)
