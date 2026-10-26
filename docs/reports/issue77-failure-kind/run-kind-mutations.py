@@ -102,7 +102,7 @@ mutations = [
     ("contain-policy-exits", [("src/main/java/com/telamin/mongoose/dutycycle/GlobalErrorHandler.java",
         'if (policy == FatalErrorPolicy.EXIT_PROCESS) {', 'if (policy != null) {', False)]),
     ("opaque-thrower-not-captured", [("src/main/java/com/telamin/mongoose/dispatch/ProcessorContext.java",
-        'FAILED.set(processor);', '', False)]),
+        'FAILED.set(new Failure(processor, position));', '', False)]),
     # ---- round 4 (review of df11115): the three surviving extra mutants, plus the round-4 fixes
     ("report-on-attach-removed", [("src/main/java/com/telamin/mongoose/internal/ChronicleAuditCaptureService.java",
         'if (sessionCaptureFailures > 0 && !sessionFailureReported) reportFirstFailure();', '', False)]),
