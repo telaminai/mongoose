@@ -470,5 +470,32 @@
     "errors": 0,
     "skipped": 0,
     "run": "77-mut9.log"
+  },
+  {
+    "name": "identity-only-handwritten-redelivers",
+    "exitCode": 1,
+    "caughtBy": [
+      "IdentityOnlyRecoveryFollowupOwnTest",
+      "IdentityOnlyRecoveryFollowupTest"
+    ],
+    "tests": 254,
+    "failures": 2,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut10.log (b4dbd8d)"
+  },
+  {
+    "name": "service-up-depends-on-group-check",
+    "exitCode": 1,
+    "caughtBy": [
+      "Review77cProbesTest",
+      "ServiceHealthObservationFollowupOwnTest",
+      "ServiceHealthObservationFollowupTest"
+    ],
+    "tests": 254,
+    "failures": 3,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut10.log (b4dbd8d)"
   }
 ]
