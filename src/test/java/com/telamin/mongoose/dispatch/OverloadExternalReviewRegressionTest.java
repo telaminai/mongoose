@@ -164,9 +164,12 @@ class OverloadExternalReviewRegressionTest {
             Set<?> waiters = (Set<?>) field(p, "waiters");
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
             while (waiters.isEmpty() && System.nanoTime() < deadline) Thread.onSpinWait();
-            synchronized (field(p, "publishLock")) { p.cancelBlockedPublishes(); }
-            p.removeTargetQueueByName("gone");
-            p.removeTargetQueueByName("other");
+            synchronized (field(p, "publishLock")) {
+                // both blockers go while the waiter cannot re-evaluate: it then sees no blocker at all
+                p.cancelBlockedPublishes();
+                p.removeTargetQueueByName("gone");
+                p.removeTargetQueueByName("other");
+            }
             sender.join(2000);
             var refused = assertInstanceOf(PublishRefusedException.class, result.get());
             assertEquals(PublishRefusedException.Reason.SHUTDOWN, refused.reason());

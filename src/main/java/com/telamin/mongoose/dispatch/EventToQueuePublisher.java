@@ -191,9 +191,26 @@ public class EventToQueuePublisher<T> {
     /** True while a commit on a feed with a blocking queue is offering its item; guarded by the publish lock. */
     @Getter(lombok.AccessLevel.NONE)
     private boolean committing;
-    /** Publishes into this feed made during such a commit, published when it completes; guarded by the lock. */
+    /**
+     * Producer operations on this feed made during such a commit (publish, publishOrCache, cache, publishReplay,
+     * startComplete, dispatchCachedEventLog), run in order once it completes; guarded by the lock.
+     */
     @Getter(lombok.AccessLevel.NONE)
-    private final java.util.ArrayDeque<Object> deferredDuringCommit = new java.util.ArrayDeque<>();
+    private final java.util.ArrayDeque<Deferred> deferredDuringCommit = new java.util.ArrayDeque<>();
+    /** True while the outermost commit drains {@link #deferredDuringCommit}; nested commits only append. */
+    @Getter(lombok.AccessLevel.NONE)
+    private boolean drainingDeferred;
+
+    private enum DeferredKind { PUBLISH, PUBLISH_OR_CACHE, CACHE, REPLAY, START_COMPLETE, DISPATCH_CACHED }
+
+    /** A producer operation deferred until the commit in progress completes. */
+    private record Deferred(DeferredKind kind, Object item) {
+    }
+
+    /** Defer an operation made during a commit on this feed. Under the lock; only the committing thread gets here. */
+    private void defer(DeferredKind kind, Object item) {
+        deferredDuringCommit.addLast(new Deferred(kind, item));
+    }
     private static final MongooseCounter NO_COUNTER = NoOpCountersService.INSTANCE.counter("noop");
     @Getter(lombok.AccessLevel.NONE)
     private volatile MongooseCounter downgradeCounter = NO_COUNTER;
@@ -753,7 +770,7 @@ public class EventToQueuePublisher<T> {
         }
         yieldToSubscriberChanges();
         synchronized (publishLock) {
-            if (blockingTargets == 0) {
+            if (blockingTargets == 0 && !committing) {
                 publishSerialised(itemToPublish);
                 return;
             }
@@ -790,7 +807,7 @@ public class EventToQueuePublisher<T> {
         synchronized (publishLock) {
             if (committing) {
                 // nested in this feed's own commit: published once that commit's offers are done (finding 1)
-                deferredDuringCommit.addLast(itemToPublish);
+                defer(DeferredKind.PUBLISH, itemToPublish);
                 return;
             }
             if (blockingTargets == 0) {
@@ -891,6 +908,9 @@ public class EventToQueuePublisher<T> {
                         // at shutdown or on interrupt, attributed to its last blocker even if that queue has gone
                         // (external review of d9eec79, finding 3)
                         NamedQueue attribution = current != null ? current : blocker;
+                        // re-read inside the lock: an interrupt that arrived while this thread acquired the monitor
+                        // still cancels (review of a6f9c62, finding C)
+                        interrupted = interrupted || self.isInterrupted();
                         if (closing) {
                             throw refuse(mappedItem, attribution, PublishRefusedException.Reason.SHUTDOWN, waited);
                         }
@@ -1015,20 +1035,76 @@ public class EventToQueuePublisher<T> {
             return;
         }
         committing = true;
+        boolean committed = false;
         try {
             commit(itemToPublish, mappedItem);
+            committed = true;
         } finally {
             committing = false;
+            if (!committed && !drainingDeferred) {
+                // the commit failed: operations deferred during it are not run; their pooled references are released
+                discardDeferred();
+            }
+        }
+        if (!drainingDeferred) {
             drainDeferred();
         }
     }
 
-    /** Publish what was deferred during a commit: each as a nested publish (never waits; downgraded if full). */
+    /** Drop every queued deferred operation, releasing each pooled item's handed-over reference exactly once. */
+    private void discardDeferred() {
+        Deferred left;
+        while ((left = deferredDuringCommit.pollFirst()) != null) {
+            if (left.item() != null && left.kind() != DeferredKind.REPLAY) releaseUnpublished(left.item());
+        }
+    }
+
+    /**
+     * Run what was deferred during commits, in order, iteratively: only the outermost commit drains; a commit made
+     * while draining appends to the same queue (review of a6f9c62, finding B: the recursive drain overflowed the stack).
+     * If an operation throws, the pooled references held by the operations still queued are released, each once, and
+     * the exception propagates to the outermost caller.
+     */
     @SuppressWarnings("unchecked")
     private void drainDeferred() {
-        Object next;
-        while ((next = deferredDuringCommit.pollFirst()) != null) {
-            publishDowngraded((T) next, "publish nested inside a publisher's dispatch");
+        drainingDeferred = true;
+        try {
+            Deferred next;
+            while ((next = deferredDuringCommit.pollFirst()) != null) {
+                runDeferred(next);
+            }
+        } catch (Throwable failed) {
+            discardDeferred();
+            throw failed;
+        } finally {
+            drainingDeferred = false;
+        }
+    }
+
+    /** One deferred operation, with the semantics it had when called: a nested publish never waits. */
+    @SuppressWarnings("unchecked")
+    private void runDeferred(Deferred op) {
+        switch (op.kind()) {
+            case PUBLISH -> {
+                if (blockingTargets == 0) publishSerialised((T) op.item());
+                else publishDowngraded((T) op.item(), "publish nested inside a publisher's dispatch");
+            }
+            case PUBLISH_OR_CACHE -> {
+                if (!startComplete) cacheSerialised((T) op.item());
+                else if (blockingTargets == 0) publishSerialised((T) op.item());
+                else publishDowngraded((T) op.item(), "publish nested inside a publisher's dispatch");
+            }
+            case CACHE -> cacheSerialised((T) op.item());
+            case REPLAY -> replaySerialised((ReplayRecord) op.item());
+            case START_COMPLETE -> {
+                warnCacheReplayOnBlockingFeed();
+                dispatchCachedEventLogSerialised();
+                startComplete = true;
+            }
+            case DISPATCH_CACHED -> {
+                warnCacheReplayOnBlockingFeed();
+                dispatchCachedEventLogSerialised();
+            }
         }
     }
 
@@ -1082,6 +1158,12 @@ public class EventToQueuePublisher<T> {
         }
         yieldToSubscriberChanges();
         synchronized (publishLock) {
+            if (committing) {
+                // a cached item would be flushed by the commit in progress, ahead of the item it reserved room for
+                // (review of a6f9c62, finding A): deferred until that commit completes
+                defer(DeferredKind.PUBLISH_OR_CACHE, item);
+                return;
+            }
             if (!startComplete) {
                 cacheSerialised(item);
                 return;
@@ -1101,6 +1183,10 @@ public class EventToQueuePublisher<T> {
         }
         yieldToSubscriberChanges();
         synchronized (publishLock) {
+            if (committing) {
+                defer(DeferredKind.CACHE, itemToCache);
+                return;
+            }
             cacheSerialised(itemToCache);
         }
     }
@@ -1148,6 +1234,15 @@ public class EventToQueuePublisher<T> {
 
         yieldToSubscriberChanges();
         synchronized (publishLock) {
+            if (committing) {
+                defer(DeferredKind.REPLAY, record);
+                return;
+            }
+            replaySerialised(record);
+        }
+    }
+
+    private void replaySerialised(ReplayRecord record) {
         for (int i = 0, targetQueuesSize = targetQueues.size(); i < targetQueuesSize; i++) {
             NamedQueue namedQueue = targetQueues.get(i);
             OneToOneConcurrentArrayQueue<Object> targetQueue = namedQueue.targetQueue();
@@ -1155,7 +1250,6 @@ public class EventToQueuePublisher<T> {
             if (log.isLoggable(Level.FINE)) {
                 log.fine("queue:" + namedQueue.name() + " size:" + targetQueue.size());
             }
-        }
         }
     }
 
@@ -1167,6 +1261,10 @@ public class EventToQueuePublisher<T> {
     public void startComplete() {
         yieldToSubscriberChanges();
         synchronized (publishLock) {
+            if (committing) {
+                defer(DeferredKind.START_COMPLETE, null);
+                return;
+            }
             warnCacheReplayOnBlockingFeed();
             dispatchCachedEventLogSerialised();
             startComplete = true;
@@ -1176,6 +1274,10 @@ public class EventToQueuePublisher<T> {
     public void dispatchCachedEventLog() {
         yieldToSubscriberChanges();
         synchronized (publishLock) {
+            if (committing) {
+                defer(DeferredKind.DISPATCH_CACHED, null);
+                return;
+            }
             warnCacheReplayOnBlockingFeed();
             dispatchCachedEventLogSerialised();
         }
