@@ -295,6 +295,7 @@ public class EventToQueuePublisher<T> {
                                 "queue re-added while latched (" + latch.reason + ")", now, now, true);
                     }
                     queueDrops.put(namedQueue, binding);
+                    diagnosticBindings.put(name, new DiagnosticBinding(binding, false));
                     targetQueues.add(namedQueue);
                     if (group != null) {
                         boundGroups.add(group);
@@ -463,19 +464,29 @@ public class EventToQueuePublisher<T> {
                 : com.telamin.mongoose.control.event.EvidenceStatus.NOT_DEGRADED;
     }
 
-    /** Group-specific diagnostic states; a removed latch remains REMOVED until explicitly cleared. */
+    /** Membership is published only on bind/remove/clear; diagnostics never take a user-code publisher lock. */
+    @Getter(lombok.AccessLevel.NONE)
+    private final java.util.concurrent.ConcurrentHashMap<String, DiagnosticBinding> diagnosticBindings =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private record DiagnosticBinding(QueueDrops binding, boolean removed) { }
+
+    /**
+     * Weakly consistent, nonblocking diagnostic states. Quiet recovery is derived from the volatile last-loss time;
+     * the ordered transition audit is materialized by the next publisher state observation under publishLock.
+     */
     public java.util.Map<String, String> groupOverloadStates(String group) {
-        synchronized (publishLock) {
-            refreshStates();
-            java.util.Map<String, String> result = new java.util.TreeMap<>();
-            queueDrops.forEach((q, b) -> {
-                if (java.util.Objects.equals(group, b.group)) result.put(q.name(), b.state.name());
-            });
-            latches.forEach((q, l) -> {
-                if (l.removed && java.util.Objects.equals(group, l.loss.group())) result.put(q, "REMOVED");
-            });
-            return java.util.Map.copyOf(result);
-        }
+        java.util.Map<String, String> result = new java.util.TreeMap<>();
+        long now = System.nanoTime();
+        FeedOverloadSettings current = overload;
+        diagnosticBindings.forEach((name, view) -> {
+            QueueDrops binding = view.binding();
+            if (!java.util.Objects.equals(group, binding.group)) return;
+            OverloadState state = binding.state;
+            if (state == OverloadState.DEGRADED && current.explicit()
+                    && now - binding.lastLossNanos >= current.quietPeriodNanos()) state = OverloadState.UP;
+            result.put(name, view.removed() ? "REMOVED" : state.name());
+        });
+        return java.util.Map.copyOf(result);
     }
 
     /**
@@ -599,6 +610,7 @@ public class EventToQueuePublisher<T> {
                         true);
                 cleared++;
             }
+            diagnosticBindings.entrySet().removeIf(entry -> entry.getValue().removed());
             latches.clear();
             return cleared;
         }
@@ -873,10 +885,8 @@ public class EventToQueuePublisher<T> {
             }
             // Only waiting publishes allocate a snapshot. It survives unsubscribe so a terminal target cannot vanish
             // from admission evidence while this producer waits. Ordinary unsubscribe retains #79 semantics.
-            admissionTargets = targetQueues.stream().map(q -> {
-                QueueDrops binding = queueDrops.get(q);
-                return new AdmissionTarget(q, binding, binding == null ? 0 : binding.fenceVersion.getAsLong());
-            }).toList();
+            admissionTargets = new java.util.ArrayList<>();
+            retainCurrentTargets(admissionTargets);
         }
         awaitRoomThenPublish(itemToPublish, mappedItem, blocker, admissionTargets);
     }
@@ -938,6 +948,7 @@ public class EventToQueuePublisher<T> {
                     epochSeen = targetsEpoch.get();
                     yieldToSubscriberChanges();
                     synchronized (publishLock) {
+                        retainCurrentTargets(admissionTargets);
                         NamedQueue current = blockingTargets == 0 ? null : blockerWithoutRoom();
                         // terminal cancellation wins over room that appeared meanwhile: a waiting publish is refused
                         // at shutdown or on interrupt, attributed to its last blocker even if that queue has gone
@@ -987,6 +998,15 @@ public class EventToQueuePublisher<T> {
     }
 
     private record AdmissionTarget(NamedQueue queue, QueueDrops binding, long fenceVersion) { }
+
+    /** Include newly joined targets before evaluating their capacity, and retain them if later removed. Under lock. */
+    private void retainCurrentTargets(java.util.List<AdmissionTarget> targets) {
+        for (var q : targetQueues) {
+            QueueDrops b = queueDrops.get(q);
+            if (b != null && targets.stream().noneMatch(t -> t.binding() == b))
+                targets.add(new AdmissionTarget(q, b, b.fenceVersion.getAsLong()));
+        }
+    }
 
     private AdmissionTarget cancelledTarget(java.util.List<AdmissionTarget> targets) {
         for (AdmissionTarget target : targets) {
@@ -1645,8 +1665,8 @@ public class EventToQueuePublisher<T> {
         OverloadSettings settings = OverloadSettings.DEFAULT;
         long refusals;
         // ---- M3 (#79): loss state, counters, recording marks; written under the publish lock ----
-        OverloadState state = OverloadState.UP;
-        long lastLossNanos;
+        volatile OverloadState state = OverloadState.UP;
+        volatile long lastLossNanos;
         long lastLossEpochMillis;
         String stateReason = "";
         MongooseCounter refusalCounter = NO_COUNTER;
@@ -1688,6 +1708,7 @@ public class EventToQueuePublisher<T> {
                         blockingTargets--;
                     }
                     if (e.getValue().state == OverloadState.LATCHED) {
+                        diagnosticBindings.put(queueName, new DiagnosticBinding(e.getValue(), true));
                         // not a clear: the latch stays until an operator clears it (finding 1)
                         Latch latch = latches.get(queueName);
                         if (latch != null) latch.removed = true;
@@ -1695,6 +1716,8 @@ public class EventToQueuePublisher<T> {
                         writeStateRecord(queueName, e.getValue(), "LATCHED", "REMOVED",
                                 "queue removed while latched; the latch is kept until an operator clears it", now, now,
                                 true);
+                    } else {
+                        diagnosticBindings.remove(queueName);
                     }
                     return true;
                 });

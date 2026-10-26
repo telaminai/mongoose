@@ -124,7 +124,7 @@ mutations = [
         ("src/main/java/com/telamin/mongoose/dutycycle/EventQueueToEventProcessorAgent.java",
          'at = captured.position();\n                                failed = thrower;', '', False),
         ("src/main/java/com/telamin/mongoose/dutycycle/EventQueueToEventProcessorAgent.java",
-         'done = true;\n                                continue;', 'from = 0; failingAt = -1; attempt = 0;\n                                continue;', False)]),
+         'done = true;\n                                continue;\n                            }\n                            // Isolation removes this target', 'from = 0; failingAt = -1; attempt = 0;\n                                continue;\n                            }\n                            // Isolation removes this target', False)]),
     ("capture-ack-hides-later-close-failure", [(agent,
         'if (permit.closeFailure != null && permit.closeFailureSeq > acked) closes++;',
         'if (permit.closeFailure != null && false) closes++;', False)]),
@@ -159,6 +159,11 @@ mutations = [
     ("group-status-overload-omitted", [("src/main/java/com/telamin/mongoose/MongooseServer.java",
         'group.unacknowledgedCaptureFailures(), flowManager.groupOverloadStates(groupName));',
         'group.unacknowledgedCaptureFailures(), Map.of());', False)]),
+    ("waiting-admission-forgets-joined-targets", [("src/main/java/com/telamin/mongoose/dispatch/EventToQueuePublisher.java",
+        '                        retainCurrentTargets(admissionTargets);\n', '', False)]),
+    ("group-diagnostics-take-publisher-lock", [("src/main/java/com/telamin/mongoose/dispatch/EventToQueuePublisher.java",
+        'long now = System.nanoTime();\n        FeedOverloadSettings current = overload;',
+        'synchronized (publishLock) { }\n        long now = System.nanoTime();\n        FeedOverloadSettings current = overload;', False)]),
     ("replay-identity-kind-dropped", [(replayer,
         'failed = "no stream was recorded for " + cursor.name;    // loud, never an instantly complete cursor\n'
         '                    failedKind = FailureKind.REPLAY_IDENTITY_MISMATCH;',
@@ -175,7 +180,7 @@ tests = ",".join(["ControlScenarioHarnessTest", "IndependentEvidenceMutationTest
                   "CaptureAcknowledgementTest", "FallbackKindInvariantTest", "FailedBootContainmentTest",
                   "IdentityOnlyRecoveryFollowupTest", "IdentityOnlyRecoveryFollowupOwnTest",
                   "ServiceHealthObservationFollowupTest", "ServiceHealthObservationFollowupOwnTest",
-                  "SoloRetryCompatibilityProbeTest", "SoloRetryCompatibilityOwnTest", "RecoveryCapabilityMatrixTest", "FailureOverloadSeamTest"])
+                  "SoloRetryCompatibilityProbeTest", "SoloRetryCompatibilityOwnTest", "RecoveryCapabilityMatrixTest", "FailureOverloadSeamTest", "IndependentFinalSeamTest"])
 cmd = ["mvn", "-o", "-Dtest=" + tests, "-Dmongoose.harness.seedStart=12001", "-Dmongoose.harness.seedCount=100", "test"]
 results = []
 

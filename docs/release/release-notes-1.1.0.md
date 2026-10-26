@@ -24,7 +24,7 @@ thread and can race whatever the caller is doing. Embedders with their own error
 
 **Containment scope.** What reports a contained failure depends on the agent:
 
-- **Processor group:** a failing processor is quarantined. A dead control plane fences its group's processors, and
+- **Processor group:** a failing generated/interpreted processor is quarantined. A dead control plane fences its group's processors, and
   its `group:<name>/control` health is DOWN. An `Error` that ends the group's thread also leaves it DEAD and DOWN.
 - **Agent-hosted service group** (feeds, workers, pipes on their own agent): an `Error` ends its thread. Its
   `agent-group:<name>/agent` health is DOWN and the `up` gauges of its services drop to 0.
@@ -159,3 +159,7 @@ The integrated soak exercises lifecycle/service/capture churn with explicit drop
 (the latter exercise downgrade/latch, because agent threads never park). Parked-publisher death/quarantine seams
 are tested separately in regression/stress. Retained audit history and capture files intentionally grow during
 that soak; heap samples alone are not a leak proof.
+
+Group overload diagnostics are nonblocking, weakly consistent views. They derive a drop-tolerant queue's quiet
+recovery from its latest loss timestamp without taking the publisher lock. The ordered recovery audit is written
+when publisher state is next observed under that lock, retaining the true quiet-period end timestamp.
