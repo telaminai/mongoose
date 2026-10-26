@@ -536,6 +536,15 @@ public class MongooseServer implements MongooseServerController {
     }
 
     /**
+     * Set the overload policy of the feed named {@code feedName} (telaminai/mongoose#79): what its publisher does when a
+     * subscriber's queue is full, with overrides per subscriber group. Applied when the feed registers, or at once if it
+     * already has. Config-driven boot calls this for every configured feed and pipe.
+     */
+    public void setFeedOverload(String feedName, com.telamin.mongoose.dispatch.FeedOverloadSettings settings) {
+        flowManager.setFeedOverload(feedName, settings);
+    }
+
+    /**
      * Register a named event source (feed) with the server.
      * <p>
      * The source will be made available to the event flow manager for routing to
@@ -2126,6 +2135,48 @@ public class MongooseServer implements MongooseServerController {
                 }
             }
         }
+        warnUnknownOverloadGroups();
+    }
+
+    /**
+     * Set the hook called when a never-drop queue latches on a feed whose overload settings turn the kill switch on
+     * (telaminai/mongoose#79, D5). Off by default. Each feed runs its hooks on its own daemon thread, so a hook that
+     * blocks never holds up another feed's; a hook set after a queue latched is called for that latch. Null removes it.
+     */
+    public void setOverloadKillSwitch(com.telamin.mongoose.dispatch.OverloadKillSwitch killSwitch) {
+        flowManager.setOverloadKillSwitch(killSwitch);
+    }
+
+    /**
+     * Operator clear of feed {@code feedName}'s overload health (#79, D4): its DEGRADED and LATCHED queues return to UP.
+     * Returns how many queues were cleared, or -1 when there is no such feed. Admin command {@code overload.clear}.
+     */
+    public int clearOverloadState(String feedName) {
+        return flowManager.clearOverloadState(feedName);
+    }
+
+    /** Per feed and queue, the overload state (#79). Admin command {@code overload.status}. */
+    public java.util.Map<String, java.util.Map<String, com.telamin.mongoose.dispatch.OverloadState>> overloadStates() {
+        return flowManager.overloadStates();
+    }
+
+    /**
+     * #79 review finding 6: an overload override keyed by a group that has bound no queue and is not a processor group
+     * of this server is almost certainly a misspelt or renamed group; its queues would silently get the feed default.
+     * Warned once per (feed, group), after start. Also warns when a feed turns the kill switch on and no
+     * hook is set.
+     */
+    private void warnUnknownOverloadGroups() {
+        if (flowManager.overloadKillSwitch() == null && !flowManager.killSwitchFeeds().isEmpty()) {
+            log.warning("overload kill switch enabled for feeds " + flowManager.killSwitchFeeds()
+                    + " but no hook is set (MongooseServer.setOverloadKillSwitch): it will not fire");
+        }
+        flowManager.unboundOverloadOverrides().forEach((feed, groups) -> groups.forEach(group -> {
+            if (!composingEventProcessorAgents.containsKey(group)) {
+                log.warning("feed '" + feed + "': overload override for subscriber group '" + group + "' matches no "
+                        + "processor group of this server and has bound no queue; check the group name");
+            }
+        }));
     }
 
     /**

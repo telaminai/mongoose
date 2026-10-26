@@ -71,8 +71,8 @@ Other groups keep serving.
   - A strategy that records the thrower but not its position: a generated thrower is quarantined, a handwritten one is
     retried alone when the strategy implements `processEventFor` (otherwise the event is skipped and reported, never
     redispatched and never ending the group), and the event is skipped for the remaining subscribers.
-  - A strategy that records no processor ends the group without quarantining any peer (handwritten-only readers keep
-    the pre-#53 whole retry).
+  - A strategy that records no processor ends the group without quarantining any peer when a generated graph may
+    have failed; handwritten-only readers skip the input with an ERROR, without whole-dispatch retry.
 - A worker or feed agent group's services drop their `up` gauges to 0 as soon as its loop ends abnormally, so a
   service's own `up` check reads DOWN without any other check being evaluated first.
   - `ProcessorDispatchException` messages include their cause.
@@ -87,3 +87,27 @@ An uninstrumented handwritten fan-out now skips a failed input and reports ERROR
 fan-out. This prevents redelivery to peers that may already have produced external effects. A captured position
 requires the strategy's resume capability; otherwise identity-only handling applies. A single-target retry retains
 the thrower's identity even when the custom strategy does not record it again.
+
+## Overload and loss policy (telaminai/mongoose#79, unreleased)
+
+- **New:** an `overload` block on `eventFeeds` and `pipes`.
+  - Policy `DROP_AFTER_SPIN` (today's behaviour) or `BLOCK_WITH_DEADLINE`, with overrides per subscriber group.
+  - Settings `quietPeriodMillis` and `killSwitch`.
+  - Programmatic: `OverloadPolicyConfig`, `MongooseServer.setFeedOverload`.
+  - Guide: [Configuring overload and loss](../guide/overload-configuration.md).
+- **Default unchanged:** a feed without an `overload` block behaves as before, including health that stays DEGRADED
+  after a loss. Boot logs `feed 'X' has no explicit overload policy`.
+- **Behaviour change:** `slowConsumerStrategy: DISCONNECT` or `EXIT_PROCESS` now **fails boot**. `BACKOFF` maps to
+  `DROP_AFTER_SPIN`, with a warning.
+- **New API:**
+  - `PublishRefusedException`, thrown by a refused blocking publish.
+  - `OverloadState`, `OverloadKillSwitch` and `OverloadLoss`.
+  - `MongooseServer.setOverloadKillSwitch`, `clearOverloadState` and `overloadStates`.
+  - Admin commands `overload.status` and `overload.clear <feed>`.
+  - Publisher accessors `refusedCount()`, `downgradedCount()` and `getStateAudit()`.
+  - `GroupReplayer.losses()` and `lossless()`.
+- **New counters:** `queue.<path>.refused`, `.blocked`, `.blockedNanos`, `.blockedMaxNanos`, and
+  `feed.<name>.downgraded`.
+- **Recording:** a new replay entry `Dropped` (CSV `DROPPED`) marks where a queue dropped items. Readers older than
+  this change reject such a store rather than misread it.
+- **Compatibility:** the pre-#79 all-arguments constructors of `EventFeedConfig` and `HandlerPipeConfig` are kept.

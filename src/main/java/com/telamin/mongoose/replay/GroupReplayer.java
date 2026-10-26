@@ -49,6 +49,8 @@ public final class GroupReplayer {
         volatile String stopped;
         /** {@link #stopped} with its kind, published together so a reader never pairs a reason with another kind. */
         volatile StopReason stopReason;
+        /** Losses the recording names (#79): items dropped before reaching the processor in the recorded run. */
+        final List<String> losses = new java.util.concurrent.CopyOnWriteArrayList<>();
         /** While the current entry cannot be delivered yet: since when (System.nanoTime) and why. */
         long waitingSince;
         String waitingFor;
@@ -400,7 +402,8 @@ public final class GroupReplayer {
                 delivered = deliver(c, entry);
                 // an input has been handled: every control request the recorded run made before it must have been made
                 if (delivered && c.stopped == null && !c.expectedCalls.isEmpty()
-                        && !(entry instanceof ReplayEntry.ControlCall) && !(entry instanceof ReplayEntry.Stopped)) {
+                        && !(entry instanceof ReplayEntry.ControlCall) && !(entry instanceof ReplayEntry.Stopped)
+                        && !(entry instanceof ReplayEntry.Dropped)) {
                     stop(c, FailureKind.REPLAY_IDENTITY_MISMATCH, "the recorded run made control request " + describe(c.expectedCalls.peek())
                             + " here; the replay did not");
                 }
@@ -436,6 +439,30 @@ public final class GroupReplayer {
     public List<String> adminReplies() {
         return snapshot(adminReplies);
     }
+
+    /**
+     * True when no replayed processor's recording has named a loss so far (#79), including processors that have since
+     * detached, stopped or been shut down: once false, it stays false. Check it beside {@link #complete()}:
+     * a replay can complete and still have reached {@code Dropped} entries, as it can complete with a processor
+     * {@link #stopped(String) stopped}. {@link #losses(String)} says what was lost.
+     */
+    public boolean lossless() {
+        return retainedLosses.isEmpty();
+    }
+
+    /** Losses reached, by stream; kept after the processor detaches, so lossless() and losses() are monotonic. */
+    private final java.util.Map<String, List<String>> retainedLosses = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * The losses a processor's recording names, as the replay has reached them (#79): items dropped by a full queue in
+     * the recorded run, before the processor received them. Beside {@link #stopped(String)}: a stopped replay ended
+     * early; a replay with losses ran to the end of a stream that has gaps the live run also had.
+     */
+    public List<String> losses(String processor) {
+        List<String> losses = retainedLosses.get(processor);
+        return losses == null ? List.of() : List.copyOf(losses);
+    }
+
 
     /** Why a processor's replay stopped early, or null. Human detail: classify with {@link #stopKind}. */
     public String stopped(String processor) {
@@ -512,6 +539,18 @@ public final class GroupReplayer {
             }
             case ReplayEntry.Failed f -> {
                 return stop(c, FailureKind.REPLAY_STOPPED, "the recorded run failed here: " + f.description());
+            }
+            case ReplayEntry.Dropped d -> {
+                // the recorded run lost these items before the processor saw them: named, not reproduced, and the
+                // stream goes on (#79)
+                c.losses.add(d.description());
+                // retained by stream, independently of the cursor, so a detach, stop or shutdown cannot erase it
+                // (external review of d9eec79, finding 2)
+                retainedLosses.computeIfAbsent(c.name, k -> new java.util.concurrent.CopyOnWriteArrayList<>())
+                        .add(d.description());
+                log.warning("replay of " + c.name + " reached a recorded loss: " + d.description()
+                        + "; the replay carries on (the processor never received those items)");
+                return true;
             }
             case ReplayEntry.ControlCall cc -> {
                 // made while the recorded run handled the input that follows: the replayed request must match it

@@ -139,6 +139,9 @@ public class MongooseServerAdmin implements Lifecycle {
         registry.registerCommand("control.group.status", this::controlGroupStatus);
         registry.registerCommand("control.audit.acknowledge", this::acknowledgeControlAudit);
         registry.registerCommand("control.capture.acknowledge", this::acknowledgeCaptureFailures);
+        // #79: overload health per feed and queue, and the operator clear of a latched never-drop feed
+        registry.registerCommand("overload.status", this::overloadStatus);
+        registry.registerCommand("overload.clear", this::overloadClear);
     }
 
     private void acknowledgeCaptureFailures(List<String> args, Consumer<String> out, Consumer<String> err) {
@@ -427,6 +430,36 @@ public class MongooseServerAdmin implements Lifecycle {
                                     .collect(Collectors.joining("\n\t", "\n\t", "\n"));
                         })
                         .collect(Collectors.joining("\n", "\n", "\n")));
+    }
+
+    private void overloadStatus(List<String> args, Consumer<String> out, Consumer<String> err) {
+        if (!(serverController instanceof com.telamin.mongoose.MongooseServer server)) {
+            err.accept("overload.status needs a MongooseServer");
+            return;
+        }
+        StringBuilder sb = new StringBuilder("overload:");
+        server.overloadStates().forEach((feed, queues) -> {
+            sb.append("\n\t").append(feed);
+            queues.forEach((q, s) -> sb.append("\n\t\t").append(q).append(": ").append(s));
+        });
+        out.accept(sb.toString());
+    }
+
+    private void overloadClear(List<String> args, Consumer<String> out, Consumer<String> err) {
+        if (!(serverController instanceof com.telamin.mongoose.MongooseServer server)) {
+            err.accept("overload.clear needs a MongooseServer");
+            return;
+        }
+        if (args.size() < 2) {
+            err.accept("usage: overload.clear <feed>");
+            return;
+        }
+        int cleared = server.clearOverloadState(args.get(1));
+        if (cleared < 0) {
+            err.accept("no such feed: " + args.get(1));
+        } else {
+            out.accept("overload.clear " + args.get(1) + ": " + cleared + " queue(s) cleared");
+        }
     }
 
     private void stopProcessors(List<String> args, Consumer<String> out, Consumer<String> err) {

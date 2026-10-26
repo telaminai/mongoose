@@ -74,6 +74,14 @@ public sealed interface ReplayEntry {
     record Failed(String source, String description, long instant) implements ReplayEntry { }
 
     /**
+     * Items of {@code source} were dropped by a full queue here, before reaching the processor (telaminai/mongoose#79):
+     * they keep their journal entries and sequence numbers, and the recording names the loss at the point it happened.
+     * The processor never saw them, so the recorded stream stays reproducible: a replay reports the loss
+     * ({@code GroupReplayer.losses}) and carries on.
+     */
+    record Dropped(String source, String description, long instant) implements ReplayEntry { }
+
+    /**
      * The processor was stopped here (design "Deterministic replay"): the stream ends, and a replay stops the processor
      * at this point; the next incarnation under the name records, and replays, a stream of its own.
      */

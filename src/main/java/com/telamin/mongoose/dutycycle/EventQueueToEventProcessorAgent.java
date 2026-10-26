@@ -48,6 +48,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
             java.util.Collections.synchronizedSet(java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
     /** RECORD mode: set by the group when it subscribes this queue. */
     private GroupRecorder recorder;
+    private com.telamin.mongoose.dispatch.DropMarks dropMarks;
     /** RECORD mode: the recorder's per-processor copy of each input, taken just before the processor is given it. */
     private java.util.function.BiConsumer<DataFlow, Object> received;
 
@@ -94,7 +95,11 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
         // Batch up to a fixed number of events per tick to reduce per-event overhead
         final int batchLimit = 64;
         Object event;
-        while (processed < batchLimit && (event = inputQueue.poll()) != null) {
+        boolean marking = recorder != null && dropMarks != null;
+        while (processed < batchLimit && (!marking || markDropsThen()) && (event = inputQueue.poll()) != null) {
+            // a drop marked after the check above but before this item was offered precedes it: mark it first, so the
+            // Dropped entry lands exactly where the items were lost (review of 1d925ee, finding 7)
+            if (marking) markDrops(inputQueue.removedCount() - 1);
             // this queue's reference to a pooled event is held until every processor has been given it (released in
             // the finally below, so a failure that escapes the retry loop cannot leak it)
             PoolTracker<?> tracker = trackerOf(event);
@@ -439,6 +444,67 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     /** The source this queue drains. */
     public String sourceName() {
         return sourceName;
+    }
+
+    /**
+     * RECORD mode (#79): where the publisher dropped items for this queue. Each mark becomes a
+     * {@link com.telamin.mongoose.replay.ReplayEntry.Dropped} entry in the recordings of this queue's processors, placed
+     * where the items were lost; a replay reports the loss and carries on. Null when not recording.
+     */
+    public EventQueueToEventProcessorAgent withDropMarks(com.telamin.mongoose.dispatch.DropMarks dropMarks) {
+        this.dropMarks = dropMarks;
+        return this;
+    }
+
+    private java.util.Collection<DataFlow> dropTargets() {
+        java.util.Collection<DataFlow> targets = eventToInvokeStrategy.registeredProcessors();
+        return targets.isEmpty() ? java.util.List.copyOf(subscribed) : targets;
+    }
+
+    private boolean markDropsThen() {
+        markDrops(inputQueue.removedCount());
+        return true;
+    }
+
+    /**
+     * Turn the drop marks that precede the next item into Dropped entries: those whose producer position is at most
+     * {@code consumed}, the number of items offered before the drop that have been taken. Recording only, on the group's
+     * thread.
+     */
+    private void markDrops(long consumed) {
+        com.telamin.mongoose.dispatch.DropMarks.Mark m = dropMarks.peek();
+        if (m == null) {
+            // drops counted after the last mark was taken (the marks were full) are exported now, never stranded
+            // (external review of d9eec79, finding 5); their position is approximate
+            long unmarked = dropMarks.takeOverflow();
+            if (unmarked > 0) {
+                recorder.inputDropped(sourceName, dropTargets(), unmarked + " item(s) of " + sourceName
+                        + " dropped by the full queue " + name + " while the drop marks were full (position "
+                        + "approximate); the processor never received them");
+            }
+            return;
+        }
+        if (m.position() > consumed) {
+            return;
+        }
+        java.util.Collection<DataFlow> targets = dropTargets();
+        while ((m = dropMarks.peek()) != null && m.position() <= consumed) {
+            dropMarks.poll();
+            long position = m.position();
+            long first = m.sequence(), last = m.sequence(), count = 1;
+            String reason = m.reason();
+            com.telamin.mongoose.dispatch.DropMarks.Mark next;
+            while ((next = dropMarks.peek()) != null && next.position() == position) {
+                dropMarks.poll();
+                last = next.sequence();
+                count++;
+            }
+            long unmarked = dropMarks.takeOverflow();
+            recorder.inputDropped(sourceName, targets, (count + unmarked) + " item(s) of " + sourceName
+                    + " dropped by the full queue " + name + " (sequence " + first + (last != first ? ".." + last : "")
+                    + (unmarked > 0 ? ", plus " + unmarked + " dropped while the drop marks were full" : "") + "): "
+                    + reason + "; the processor never received them");
+        }
     }
 
     /** RECORD mode: record what this queue dispatches (spec-replay-recording R2). */
