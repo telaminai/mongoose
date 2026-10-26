@@ -85,10 +85,15 @@ feed:
 2. If every blocking binding has room, commit and dispatch as today: sequence number, journal, event log, offers.
    While the lock is held this publisher is the only producer of each queue. Free capacity can therefore only grow
    between the check and the offers, **provided nothing publishes into this feed during the commit**. The commit runs
-   user code: the journal codec and append, error listeners, and an item's `toString` in FINE logging. Any publish
-   into the same feed from that code is **deferred** until the commit's offers are done, and is then published as a
-   nested publish (never waits; downgraded if a blocking queue is full). So the reserved room is kept and every
-   blocking offer succeeds (external review of d9eec79, finding 1). A publish into *another* feed is unaffected:
+   user code: the journal codec and append, error listeners, and an item's `toString` in FINE logging. Every producer
+   operation on the same feed made from that code is **deferred** until the commit's offers are done:
+   `publish`, `publishOrCache`, `cache`, `publishReplay`, `startComplete` and `dispatchCachedEventLog`. These are all
+   the public paths that enqueue or flush. Each runs afterwards, in order, with its own semantics; a deferred publish
+   is a nested publish (never waits; downgraded if a blocking queue is full). Only the outermost commit drains, in a
+   loop, so a long nested batch does not grow the stack. If a deferred operation throws, the pooled items still queued
+   are released once each, and the exception reaches the outermost caller (re-verification of a6f9c62, findings A
+   and B). The reserved room is therefore kept and every blocking offer succeeds. This is shown by the regression
+   tests for these paths; it is not an exhaustive interleaving proof, and no soak or pinned benchmark backs it. A publish into *another* feed is unaffected:
    each queue has a single publisher. Drop-policy bindings of the same feed still spin and drop independently.
 3. If any blocking binding lacks room, **release the lock** and wait (spin for the spin bound, then park in steps of
    at most 100 µs). The wait ends early when the awaited queue gains room, when a subscriber or policy change wakes
@@ -167,7 +172,7 @@ on a pipe protects only its non-agent publishers. The defined reaction of a proc
 | Unsubscribe or queue removal (`removeTargetQueueByName`) | The remove never waits for it. It wakes the waiter, which re-evaluates against the remaining targets. If they have room the item is delivered to them, as if published just after the unsubscribe. Otherwise it keeps waiting until the deadline. | implemented |
 | Queue added, or policy changed | Wakes the waiter, which re-evaluates. | implemented |
 | Shutdown | `EventFlowManager.stop()` (phase 2, before any source's `stop`) calls `cancelBlockedPublishes()` on every publisher. A waiting publish is refused at once with reason `SHUTDOWN`, even if room appears before it re-checks: cancellation is checked before the commit, and the refusal is attributed to the last blocker even if that queue has been removed (external review, finding 3). Any later blocking publish that finds a full queue is refused too. A source whose `stop` joins its publishing thread therefore returns. `cancelBlockedPublishes()` never takes the lock. | implemented |
-| Thread interrupt | Refused with reason `INTERRUPTED`, even if room appears first; the interrupt status stays set. | implemented |
+| Thread interrupt | Refused with reason `INTERRUPTED`, even if room appears first. The interrupt status is re-read under the lock, so an interrupt that arrives while the publisher acquires the monitor still cancels (re-verification, finding C). The interrupt status stays set. | implemented |
 | Deadline | One last check under the lock, then refused with reason `DEADLINE`. | implemented |
 
 **Departure from the issue text (owner confirmed):** on unsubscribe, the issue text asks for a refusal, and this implementation re-evaluates instead. A refusal there would protect nothing: the
