@@ -100,6 +100,8 @@ final class ChaosWorkload implements AutoCloseable {
          * {@link #pruneReleased}, so heap samples measure the server, not the ledger.
          */
         boolean soak;
+        /** Optional integrated workload: agent-hosted blocking feeds exercise downgrade/latch; other feeds drop. */
+        boolean overload;
     }
 
     static final String GROUP_PREFIX = "chaos-g";
@@ -456,8 +458,12 @@ final class ChaosWorkload implements AutoCloseable {
             InMemoryEventSource<Object> feed = new InMemoryEventSource<>();
             feed.setName(feedName(f));
             feeds.add(feed);
-            builder.addEventFeed(EventFeedConfig.builder().instance(feed).name(feedName(f)).broadcast(true)
-                    .agent(FEED_PREFIX + "agent-" + f, new BusySpinIdleStrategy()).build());
+            var feedConfig = EventFeedConfig.builder().instance(feed).name(feedName(f)).broadcast(true)
+                    .agent(FEED_PREFIX + "agent-" + f, new BusySpinIdleStrategy()).build();
+            if (settings.overload) feedConfig.setOverload(f % 2 == 0
+                    ? com.telamin.mongoose.config.OverloadPolicyConfig.blockWithDeadline(Duration.ofMillis(50))
+                    : com.telamin.mongoose.config.OverloadPolicyConfig.dropAfterSpin(Duration.ZERO));
+            builder.addEventFeed(feedConfig);
         }
         builder.addEventSink(EventSinkConfig.<MessageSink<?>>builder().instance(sink).name("chaosSink").build());
         if (settings.replay != null) builder.replay(settings.replay);

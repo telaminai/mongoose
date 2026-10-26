@@ -29,7 +29,9 @@ public class PublishRefusedException extends FluxtionServerException {
         /** The server began to stop (the feed's publisher was closed) while the publish waited, or before it. */
         SHUTDOWN,
         /** The publishing thread was interrupted while it waited; its interrupt status is left set. */
-        INTERRUPTED
+        INTERRUPTED,
+        /** An intended subscriber was fenced by group death or processor quarantine while this publish waited. */
+        TARGET_UNAVAILABLE
     }
 
     private final String feed;
@@ -37,17 +39,35 @@ public class PublishRefusedException extends FluxtionServerException {
     private final Reason reason;
     private final long waitedNanos;
     private final String item;
+    private final com.telamin.mongoose.control.event.EvidenceStatus evidence;
 
     public PublishRefusedException(String feed, String queue, Reason reason, long waitedNanos, String item) {
+        this(feed, queue, reason, waitedNanos, item, com.telamin.mongoose.control.event.EvidenceStatus.NOT_DEGRADED);
+    }
+
+    public PublishRefusedException(String feed, String queue, Reason reason, long waitedNanos, String item,
+                                    com.telamin.mongoose.control.event.EvidenceStatus evidence) {
         super("publish refused on feed '" + feed + "': queue '" + queue + "' " + (reason == Reason.DEADLINE
                 ? "had no room after " + (waitedNanos / 1_000_000) + " ms"
-                : reason == Reason.SHUTDOWN ? "is closing (server stopping)" : "wait was interrupted") + "; the item was delivered to no queue: " + item);
+                : reason == Reason.SHUTDOWN ? "is closing (server stopping)"
+                : reason == Reason.TARGET_UNAVAILABLE ? "is fenced (subscriber unavailable)" : "wait was interrupted") + "; the item was delivered to no queue: " + item);
         this.feed = feed;
         this.queue = queue;
         this.reason = reason;
         this.waitedNanos = waitedNanos;
         this.item = item;
+        this.evidence = java.util.Objects.requireNonNull(evidence);
     }
+
+    public com.telamin.mongoose.control.event.FailureKind kind() {
+        return switch (reason) {
+            case DEADLINE -> com.telamin.mongoose.control.event.FailureKind.REFUSED_DEADLINE;
+            case SHUTDOWN, TARGET_UNAVAILABLE -> com.telamin.mongoose.control.event.FailureKind.REFUSED_STATE;
+            case INTERRUPTED -> com.telamin.mongoose.control.event.FailureKind.REFUSED_ADMISSION;
+        };
+    }
+
+    public com.telamin.mongoose.control.event.EvidenceStatus evidence() { return evidence; }
 
     public String feed() {
         return feed;

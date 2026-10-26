@@ -696,6 +696,10 @@ public class ComposingEventProcessorAgent extends DynamicCompositeAgent
         if (releasing != null && releasing.registration != null) registrations.putIfAbsent(named, releasing.registration);
         // Fence all reader routes and timers before another event can reach the partially executed graph.
         try {
+            for (var reader : queueProcessorMap.values()) {
+                if (reader instanceof EventQueueToEventProcessorAgent agent && agent.subscribers().contains(flow))
+                    agent.fenceFailedSubscriber();
+            }
             removeAllSubscriptions(flow);
             scheduler.cancelTimersOf(flow);
             if (replayer != null) replayer.detach(flow); // preserve the reason and settle the failed replay cursor

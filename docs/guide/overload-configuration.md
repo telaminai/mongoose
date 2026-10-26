@@ -164,3 +164,19 @@ marks are not placed individually; they are counted into the first entry after t
 - [ ] Never-drop feeds that should halt trading have `killSwitch: true`, and a hook is registered.
 - [ ] Alerting covers DEGRADED health for `queue-drops:*` and the `overload state` log lines.
 - [ ] The operator runbook includes `overload.status` and `overload.clear`.
+
+
+## Combined 1.1.0 failure and overload contract
+
+See the [1.1.0 release notes](../release/release-notes-1.1.0.md) and
+[client migration checklist](../release/client-migration-1.1.0.md) for the complete breaking-change and operator
+acceptance checklist. `PublishRefusedException` carries `FailureKind` and `EvidenceStatus`; overload transition
+records carry `OVERLOAD_LOSS` (or `NONE` on recovery/clear) and the evidence status at observation. Group status
+JSON includes overload states, including retained `REMOVED` latches; the group's `overload` health check reports loss.
+
+A blocked publish retains its intended bindings while waiting. Group death or quarantine cancels that admission
+before commit, even if its target queue has since been removed; ordinary unsubscribe re-evaluates remaining targets.
+The refusal is all-or-nothing and consumes the pooled reference as documented in the overload guide. Cancellation
+is `TARGET_UNAVAILABLE` / `REFUSED_STATE`. The six cases in `FailureOverloadSeamTest` check metadata, group health/JSON,
+removed latches, dead control, fatal CONTAIN, and quarantine of a generated processor. Direct calls from external
+threads are outside this fence. `NOT_DEGRADED` never proves an export complete.

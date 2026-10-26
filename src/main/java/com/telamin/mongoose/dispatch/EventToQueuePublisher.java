@@ -448,9 +448,34 @@ public class EventToQueuePublisher<T> {
         }
         Object[] fields = {"feed", name, "queue", queueName, "queuePath", binding.path, "group", binding.group,
                 "from", from, "to", to, "reason", why, "epochMillis", epochMillis,
-                "observedEpochMillis", observedEpochMillis};
+                "observedEpochMillis", observedEpochMillis,
+                "kind", "UP".equals(to) ? com.telamin.mongoose.control.event.FailureKind.NONE
+                        : com.telamin.mongoose.control.event.FailureKind.OVERLOAD_LOSS,
+                "evidence", evidenceOf(binding)};
         stateAudit.fallback("OverloadState", fields);
         if (toGroupAudit && binding.groupAudit != null) binding.groupAudit.fallback("OverloadState", fields);
+    }
+
+    private com.telamin.mongoose.control.event.EvidenceStatus evidenceOf(QueueDrops binding) {
+        return stateAudit.evidenceDegraded() || (binding != null && binding.groupAudit != null
+                && binding.groupAudit.evidenceDegraded())
+                ? com.telamin.mongoose.control.event.EvidenceStatus.UNVERIFIED
+                : com.telamin.mongoose.control.event.EvidenceStatus.NOT_DEGRADED;
+    }
+
+    /** Group-specific diagnostic states; a removed latch remains REMOVED until explicitly cleared. */
+    public java.util.Map<String, String> groupOverloadStates(String group) {
+        synchronized (publishLock) {
+            refreshStates();
+            java.util.Map<String, String> result = new java.util.TreeMap<>();
+            queueDrops.forEach((q, b) -> {
+                if (java.util.Objects.equals(group, b.group)) result.put(q.name(), b.state.name());
+            });
+            latches.forEach((q, l) -> {
+                if (l.removed && java.util.Objects.equals(group, l.loss.group())) result.put(q, "REMOVED");
+            });
+            return java.util.Map.copyOf(result);
+        }
     }
 
     /**
@@ -804,6 +829,7 @@ public class EventToQueuePublisher<T> {
                 ? "agent thread " + Thread.currentThread().getName() : null;
         Object mappedItem;
         NamedQueue blocker;
+        java.util.List<AdmissionTarget> admissionTargets;
         synchronized (publishLock) {
             if (committing) {
                 // nested in this feed's own commit: published once that commit's offers are done (finding 1)
@@ -823,6 +849,8 @@ public class EventToQueuePublisher<T> {
                 log.fine("mapped itemToPublish is null");
                 return;
             }
+            NamedQueue fenced = unavailableTarget();
+            if (fenced != null) throw refuse(mappedItem, fenced, PublishRefusedException.Reason.TARGET_UNAVAILABLE, 0);
             blocker = blockerWithoutRoom();
             if (blocker == null) {
                 publishMapped(itemToPublish, mappedItem);
@@ -843,8 +871,14 @@ public class EventToQueuePublisher<T> {
             if (closing) {
                 throw refuse(mappedItem, blocker, PublishRefusedException.Reason.SHUTDOWN, 0);
             }
+            // Only waiting publishes allocate a snapshot. It survives unsubscribe so a terminal target cannot vanish
+            // from admission evidence while this producer waits. Ordinary unsubscribe retains #79 semantics.
+            admissionTargets = targetQueues.stream().map(q -> {
+                QueueDrops binding = queueDrops.get(q);
+                return new AdmissionTarget(q, binding, binding == null ? 0 : binding.fenceVersion.getAsLong());
+            }).toList();
         }
-        awaitRoomThenPublish(itemToPublish, mappedItem, blocker);
+        awaitRoomThenPublish(itemToPublish, mappedItem, blocker, admissionTargets);
     }
 
     /** Count a downgraded publish (one that would have waited) and warn once per publisher. Under the lock. */
@@ -879,7 +913,8 @@ public class EventToQueuePublisher<T> {
      * at once when the publisher closes. Owns the publisher's reference to a pooled item throughout: publishMapped
      * releases it on success, refuse on refusal, so it is released exactly once.
      */
-    private void awaitRoomThenPublish(Object itemToPublish, Object mappedItem, NamedQueue blocker) {
+    private void awaitRoomThenPublish(Object itemToPublish, Object mappedItem, NamedQueue blocker,
+                                      java.util.List<AdmissionTarget> admissionTargets) {
         long start = System.nanoTime();
         long deadlineNanos;
         long spinNanos;
@@ -898,7 +933,7 @@ public class EventToQueuePublisher<T> {
                 boolean timedOut = waited >= deadlineNanos;
                 // re-evaluate under the lock when there may be room, the targets changed, closing, or at the deadline
                 boolean interrupted = self.isInterrupted();
-                if (closing || timedOut || interrupted || epochSeen != targetsEpoch.get()
+                if (cancelledTarget(admissionTargets) != null || closing || timedOut || interrupted || epochSeen != targetsEpoch.get()
                         || blocker.targetQueue().remainingCapacity() > 0 || !targetQueues.contains(blocker)) {
                     epochSeen = targetsEpoch.get();
                     yieldToSubscriberChanges();
@@ -917,6 +952,11 @@ public class EventToQueuePublisher<T> {
                         if (interrupted) {
                             // the interrupt stays set for the caller
                             throw refuse(mappedItem, attribution, PublishRefusedException.Reason.INTERRUPTED, waited);
+                        }
+                        AdmissionTarget cancelled = cancelledTarget(admissionTargets);
+                        if (cancelled != null) {
+                            throw refuse(mappedItem, cancelled.queue(), PublishRefusedException.Reason.TARGET_UNAVAILABLE,
+                                    waited, cancelled.binding());
                         }
                         if (current == null) {
                             publishMapped(itemToPublish, mappedItem);
@@ -943,6 +983,36 @@ public class EventToQueuePublisher<T> {
             }
         } finally {
             waiters.remove(self);
+        }
+    }
+
+    private record AdmissionTarget(NamedQueue queue, QueueDrops binding, long fenceVersion) { }
+
+    private AdmissionTarget cancelledTarget(java.util.List<AdmissionTarget> targets) {
+        for (AdmissionTarget target : targets) {
+            QueueDrops b = target.binding();
+            if (b != null && (b.unavailable.getAsBoolean() || b.fenceVersion.getAsLong() != target.fenceVersion()))
+                return target;
+        }
+        return null;
+    }
+
+    /** Called only on the blocking admission path, under publishLock. */
+    private NamedQueue unavailableTarget() {
+        for (var q : targetQueues) {
+            var b = queueDrops.get(q);
+            if (b != null && b.unavailable.getAsBoolean()) return q;
+        }
+        return null;
+    }
+
+    /** Bind group death and quarantine to blocking admission; predicates must be nonblocking volatile reads. */
+    public void bindContainment(String queueName, java.util.function.BooleanSupplier unavailable,
+                                java.util.function.LongSupplier fenceVersion) {
+        synchronized (publishLock) {
+            queueDrops.forEach((q, b) -> {
+                if (q.name().equals(queueName)) { b.unavailable = unavailable; b.fenceVersion = fenceVersion; }
+            });
         }
     }
 
@@ -990,6 +1060,11 @@ public class EventToQueuePublisher<T> {
      */
     private PublishRefusedException refuse(Object mappedItem, NamedQueue queue, PublishRefusedException.Reason reason,
                                            long waitedNanos) {
+        return refuse(mappedItem, queue, reason, waitedNanos, null);
+    }
+
+    private PublishRefusedException refuse(Object mappedItem, NamedQueue queue, PublishRefusedException.Reason reason,
+                                           long waitedNanos, QueueDrops originalBinding) {
         String description;
         try {
             description = String.valueOf(mappedItem);
@@ -998,9 +1073,11 @@ public class EventToQueuePublisher<T> {
         }
         long refusalsForQueue;
         long refusalsForFeed;
+        com.telamin.mongoose.control.event.EvidenceStatus evidence;
         synchronized (publishLock) {
             refusalsForFeed = ++refusedCount;
             QueueDrops binding = queueDrops.get(queue);
+            evidence = evidenceOf(binding == null ? originalBinding : binding);
             refusalsForQueue = binding == null ? 0 : ++binding.refusals;
             if (binding != null) {
                 increment(binding.refusalCounter);
@@ -1008,7 +1085,7 @@ public class EventToQueuePublisher<T> {
                     recordWait(binding, waitedNanos);
                 }
                 // a refusal at shutdown is reported to the caller and is not a health event: the server is stopping
-                if (reason != PublishRefusedException.Reason.SHUTDOWN) {
+                if (reason != PublishRefusedException.Reason.SHUTDOWN && reason != PublishRefusedException.Reason.TARGET_UNAVAILABLE) {
                     loss(queue, binding, "refused", -1, reason + " after ~" + (waitedNanos / 1_000_000) + " ms");
                 }
             }
@@ -1021,7 +1098,7 @@ public class EventToQueuePublisher<T> {
         if (publisherRef != null) {
             publisherRef.releaseReference();
         }
-        return new PublishRefusedException(name, queue.name(), reason, waitedNanos, description);
+        return new PublishRefusedException(name, queue.name(), reason, waitedNanos, description, evidence);
     }
 
     /** Commit and dispatch an already mapped item: sequence number, journal, event log, offers. Under the lock. */
@@ -1562,6 +1639,8 @@ public class EventToQueuePublisher<T> {
         final String group;
         final String path;
         long count;
+        volatile java.util.function.BooleanSupplier unavailable = () -> false;
+        volatile java.util.function.LongSupplier fenceVersion = () -> 0;
         /** This binding's resolved overload policy; written under the publish lock. */
         OverloadSettings settings = OverloadSettings.DEFAULT;
         long refusals;

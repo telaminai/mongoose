@@ -35,6 +35,17 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     private ProcessorDispatchException terminalFailure;
     /** Last receiver removed: leave queued commands/resources for onClose, never drain into an empty strategy. */
     private boolean drainDisabled;
+    private volatile long failureFenceVersion;
+    private volatile boolean failureFenced;
+
+    /** Cancellation token for a blocking publisher whose intended subscriber was quarantined. */
+    public long failureFenceVersion() { return failureFenceVersion; }
+    public boolean failureFenced() { return failureFenced; }
+    /** Invalidate pending admissions before removing a quarantined subscriber, including timer/service failures. */
+    public void fenceFailedSubscriber() {
+        failureFenced = true;
+        failureFenceVersion++;
+    }
     private java.util.function.BiConsumer<DataFlow, Throwable> processorFailureHandler;
     /** The source this queue drains (spec-replay-recording R2: an entry names its source). */
     private final String sourceName;
@@ -287,6 +298,8 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                                 throw unknown;
                             }
                             var failure = new ProcessorDispatchException(identified, "event dispatch", t);
+                            failureFenced = true;
+                            failureFenceVersion++;
                             try {
                                 if (processorFailureHandler != null) processorFailureHandler.accept(identified, failure);
                                 else {
@@ -303,6 +316,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                                 terminalFailure = failure;
                                 throw failure;
                             }
+                            if (!drainDisabled) failureFenced = false;
                             if (drainDisabled) return processed + 1; // finally releases this input; close owns backlog
                             if (at < 0) {
                                 // the thrower is known but not the dispatch progress: never redispatch to peers that may
@@ -534,8 +548,11 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
             throw fatal;
         } catch (RuntimeException | Error failure) {
             if (owned && ProcessorDispatchException.requiresIsolation(target)) {
+                failureFenced = true;
+                failureFenceVersion++;
                 if (processorFailureHandler != null) processorFailureHandler.accept(target, failure);
                 else deregisterProcessor(target);
+                if (!drainDisabled) failureFenced = false;
             }
             throw failure; // the replay must also report its divergence
         }
@@ -619,6 +636,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
         subscribed.remove(eventProcessor);
         int listeners = listenerCount();
         if (listeners < 1) drainDisabled = true;
+        else failureFenced = false;
         if (listeners < 1 && unsubscribeAction != null) {
             try {
                 unsubscribeAction.run();

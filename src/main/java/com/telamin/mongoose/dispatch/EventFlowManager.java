@@ -266,6 +266,16 @@ public class EventFlowManager {
         return states;
     }
 
+    /** Diagnostic overload state by feed/binding for one processor group, including removed latches. */
+    public java.util.Map<String, java.util.Map<String, String>> groupOverloadStates(String group) {
+        java.util.Map<String, java.util.Map<String, String>> result = new java.util.TreeMap<>();
+        eventSourceToQueueMap.forEach((key, publisher) -> {
+            var states = publisher.queuePublisher().groupOverloadStates(group);
+            if (!states.isEmpty()) result.put(key.sourceName(), states);
+        });
+        return java.util.Map.copyOf(result);
+    }
+
     /** Per feed, the overload override groups that have never bound a subscriber queue (review finding 6). */
     public java.util.Map<String, java.util.Set<String>> unboundOverloadOverrides() {
         java.util.Map<String, java.util.Set<String>> unbound = new java.util.TreeMap<>();
@@ -479,10 +489,13 @@ public class EventFlowManager {
             count.readers++;
         }
 
-        return new EventQueueToEventProcessorAgent(eventQueue, eventMapperSupplier.get(), name, eventSourceKey.sourceName(),
-                type.name())
-                .withUnsubscribeAction(unsubscribe)
-                .withDropMarks(dropMarks);
+        var reader = new EventQueueToEventProcessorAgent(eventQueue, eventMapperSupplier.get(), name, eventSourceKey.sourceName(),
+                type.name()).withUnsubscribeAction(unsubscribe).withDropMarks(dropMarks);
+        queuePublisher.bindContainment(name, () -> reader.failureFenced()
+                || (subscriber instanceof com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent group
+                    && group.control().state() == com.telamin.mongoose.control.ControlDriver.GroupState.DEAD),
+                reader::failureFenceVersion);
+        return reader;
     }
 
     public <T> EventQueueToEventProcessor getMappingAgent(EventSubscriptionKey<T> subscriptionKey, Agent subscriber) {

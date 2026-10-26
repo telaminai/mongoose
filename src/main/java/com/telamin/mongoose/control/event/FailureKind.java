@@ -64,6 +64,8 @@ public enum FailureKind {
      * a recovery, never as a normal close.
      */
     LEFTOVER_RECOVERED,
+    /** A subscriber lost or refused data under its overload policy; inspect the queue state and loss detail. */
+    OVERLOAD_LOSS,
     /** A replay could not match an input, stream, service version or control request to the recording. */
     REPLAY_IDENTITY_MISMATCH,
     /** A replay stopped for any other reason (a recorded failure, a delivery timeout, a clock divergence, ...). */

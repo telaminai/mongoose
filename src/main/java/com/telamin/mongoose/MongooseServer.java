@@ -1476,7 +1476,18 @@ public class MongooseServer implements MongooseServerController {
                                      Map<Long, String> captureCloseFailures, Map<Long, String> captureCleanupFailures,
                                      Map<String, String> quarantinedProcessors, boolean controlAuditDegraded,
                                      long captureWriteFailures, long captureUnobservable,
-                                     String unacknowledgedCaptureFailures) {
+                                     String unacknowledgedCaptureFailures,
+                                     Map<String, Map<String, String>> overloadStates) {
+        /** The pre-integration failure-model shape, without overload diagnostics. */
+        public ControlGroupStatus(String group, com.telamin.mongoose.control.ControlDriver.GroupState state,
+                                  int outstandingRequests, int captureResourcesHeld, int captureResourceSlotsInUse,
+                                  Map<Long, String> captureCloseFailures, Map<Long, String> captureCleanupFailures,
+                                  Map<String, String> quarantinedProcessors, boolean controlAuditDegraded,
+                                  long captureWriteFailures, long captureUnobservable, String unacknowledgedCaptureFailures) {
+            this(group, state, outstandingRequests, captureResourcesHeld, captureResourceSlotsInUse, captureCloseFailures,
+                    captureCleanupFailures, quarantinedProcessors, controlAuditDegraded, captureWriteFailures,
+                    captureUnobservable, unacknowledgedCaptureFailures, Map.of());
+        }
         /** Without the capture-observability fields (round-2 shape of this branch). */
         public ControlGroupStatus(String group, com.telamin.mongoose.control.ControlDriver.GroupState state,
                                   int outstandingRequests, int captureResourcesHeld, int captureResourceSlotsInUse,
@@ -1510,8 +1521,15 @@ public class MongooseServer implements MongooseServerController {
             b.append("\"controlAuditDegraded\":").append(controlAuditDegraded).append(',');
             b.append("\"captureWriteFailures\":").append(captureWriteFailures).append(',');
             b.append("\"captureUnobservable\":").append(captureUnobservable).append(',');
-            json(b, "unacknowledgedCaptureFailures", unacknowledgedCaptureFailures);
-            return b.append('}').toString();
+            json(b, "unacknowledgedCaptureFailures", unacknowledgedCaptureFailures).append(',');
+            b.append("\"overloadStates\":{");
+            boolean first = true;
+            for (var entry : new java.util.TreeMap<>(overloadStates).entrySet()) {
+                if (!first) b.append(',');
+                first = false;
+                jsonMap(b, entry.getKey(), entry.getValue());
+            }
+            return b.append("}}").toString();
         }
 
         private static StringBuilder json(StringBuilder b, String key, String value) {
@@ -1552,6 +1570,8 @@ public class MongooseServer implements MongooseServerController {
             captureCloseFailures = Map.copyOf(captureCloseFailures);
             captureCleanupFailures = Map.copyOf(captureCleanupFailures);
             quarantinedProcessors = Map.copyOf(quarantinedProcessors);
+            overloadStates = overloadStates.entrySet().stream().collect(java.util.stream.Collectors.toUnmodifiableMap(
+                    Map.Entry::getKey, entry -> Map.copyOf(entry.getValue())));
         }
     }
 
@@ -1572,6 +1592,12 @@ public class MongooseServer implements MongooseServerController {
             String unacknowledged = group.unacknowledgedCaptureFailures();
             return unacknowledged == null ? com.telamin.mongoose.service.health.HealthStatus.up()
                     : com.telamin.mongoose.service.health.HealthStatus.degraded(unacknowledged);
+        });
+        health.registerCheck("group:" + groupName, "overload", ctx -> {
+            var states = flowManager.groupOverloadStates(groupName);
+            boolean loss = states.values().stream().flatMap(m -> m.values().stream()).anyMatch(s -> !"UP".equals(s));
+            return loss ? com.telamin.mongoose.service.health.HealthStatus.degraded(states.toString())
+                    : com.telamin.mongoose.service.health.HealthStatus.up();
         });
         // review R5: a DEAD control plane is DOWN, even while the group's thread lives
         health.registerCheck("group:" + groupName, "control", ctx -> group.control().state()
@@ -1630,7 +1656,7 @@ public class MongooseServer implements MongooseServerController {
                 group.captureResourcesHeld(), group.captureResourceSlotsInUse(),
                 group.captureCloseFailures(), group.captureCleanupFailures(), group.quarantinedProcessors(),
                 group.control().audit().evidenceDegraded(), group.captureWriteFailures(), group.captureUnobservable(),
-                group.unacknowledgedCaptureFailures());
+                group.unacknowledgedCaptureFailures(), flowManager.groupOverloadStates(groupName));
     }
 
     /** Waiting is safe only off agent/lifecycle threads, on a group whose thread is running. */

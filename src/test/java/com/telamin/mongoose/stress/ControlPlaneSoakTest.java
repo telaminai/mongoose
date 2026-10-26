@@ -31,18 +31,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @EnabledIfSystemProperty(named = "mongoose.soak", matches = "true")
 class ControlPlaneSoakTest {
     @Test
-    @Timeout(value = 25, unit = TimeUnit.MINUTES, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    @Timeout(value = 150, unit = TimeUnit.MINUTES, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
     void sustainedLifecycleFaultsAndCaptureChurn(@TempDir Path directory) throws Exception {
         StressSupport.quietLogging();
         String capacityProperty = ComposingEventProcessorAgent.CONTROL_AUDIT_CAPACITY_PROPERTY;
         String previousCapacity = System.getProperty(capacityProperty);
-        if (previousCapacity == null) System.setProperty(capacityProperty, "400000");
         long seconds = Long.getLong("mongoose.soak.seconds", 600);
-        assertTrue(seconds > 0 && seconds <= 900, "soak duration must be 1..900 seconds");
+        assertTrue(seconds > 0 && seconds <= 7200, "soak duration must be 1..7200 seconds");
+        // Keep a complete bounded audit for the whole run; never erase evidence between short segments.
+        if (previousCapacity == null) System.setProperty(capacityProperty, Long.toString(Math.max(400_000, seconds * 120)));
         ChaosWorkload.Settings settings = new ChaosWorkload.Settings();
         settings.soak = true;
         settings.seed = Long.getLong("mongoose.soak.seed", 20261025L);
-        settings.adminPauseMillis = 200;
+        settings.adminPauseMillis = seconds > 900 ? 1000 : 200;
+        settings.overload = Boolean.getBoolean("mongoose.soak.overload");
         settings.floodIntervalMillis = 60_000;
         settings.captureDir = directory.resolve("captures");
         List<String> failures = new ArrayList<>();
@@ -129,7 +131,9 @@ class ControlPlaneSoakTest {
                 leaked.addAll(StressSupport.serverThreads(List.of("chaos-g", "chaos-feed-agent")));
             } while (!leaked.isEmpty() && System.nanoTime() < threadDeadline);
             if (!leaked.isEmpty()) failures.add("threads remaining after shutdown: " + leaked);
-            System.out.println("SOAK workloadSeconds=" + seconds + " seed=" + settings.seed);
+            System.out.println("SOAK workloadSeconds=" + seconds + " seed=" + settings.seed
+                    + " adminPauseMillis=" + settings.adminPauseMillis + " overload=" + settings.overload);
+            System.out.println("SOAK overloadStates=" + workload.server.overloadStates());
             System.out.print(workload.summary());
             audits.forEach((group, result) -> System.out.println("SOAK audit " + group + " " + result));
             System.out.println("SOAK failures=" + failures);
