@@ -133,6 +133,11 @@ mutations = [
         '} else if (false) {', False)]),
     ("incomplete-boot-cleanup-untyped", [("src/main/java/com/telamin/mongoose/internal/ServerConfigurator.java",
         'if (stopped != null && stopped.complete()) {', 'if (true) {', False)]),
+    # ---- external re-verification of 9c95864
+    ("identity-only-handwritten-redelivers", [("src/main/java/com/telamin/mongoose/dutycycle/EventQueueToEventProcessorAgent.java",
+        '                            solo = identified;\n', '', False)]),
+    ("service-up-depends-on-group-check", [("src/main/java/com/telamin/mongoose/MongooseServer.java",
+        '                        for (String hosted : group.hostedServiceNames()) flipServiceUp(hosted, 0);\n', '', False)]),
     ("replay-identity-kind-dropped", [(replayer,
         'failed = "no stream was recorded for " + cursor.name;    // loud, never an instantly complete cursor\n'
         '                    failedKind = FailureKind.REPLAY_IDENTITY_MISMATCH;',
@@ -146,7 +151,9 @@ tests = ",".join(["ControlScenarioHarnessTest", "IndependentEvidenceMutationTest
                   "Review77bProbesTest", "GroupContainmentTest", "AuditFailurePolicyTest",
                   "OpaqueDispatchHandwrittenFailureTest", "Review77cProbesTest", "CaptureMigrationAcceptanceTest",
                   "AdminStopCommandValidationTest", "OpaquePeerRedeliveryTest", "OpaqueHandwrittenPeerTest",
-                  "CaptureAcknowledgementTest", "FallbackKindInvariantTest", "FailedBootContainmentTest"])
+                  "CaptureAcknowledgementTest", "FallbackKindInvariantTest", "FailedBootContainmentTest",
+                  "IdentityOnlyRecoveryFollowupTest", "IdentityOnlyRecoveryFollowupOwnTest",
+                  "ServiceHealthObservationFollowupTest", "ServiceHealthObservationFollowupOwnTest"])
 cmd = ["mvn", "-o", "-Dtest=" + tests, "-Dmongoose.harness.seedStart=12001", "-Dmongoose.harness.seedCount=100", "test"]
 results = []
 

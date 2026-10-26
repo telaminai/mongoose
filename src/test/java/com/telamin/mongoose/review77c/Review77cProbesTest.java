@@ -454,21 +454,22 @@ class Review77cProbesTest {
             await(() -> !agentThread.get().isAlive(), "service agent thread ended");
             MongooseHealthService health = (MongooseHealthService) server.registeredServices()
                     .get(MongooseHealthService.SERVICE_NAME).instance();
-            System.out.println("REVIEW77C service agent died: handled=" + handled + " exits=" + exits.get()
-                    + " started=" + server.isStarted() + " svc/up=" + health.statusOfCheck("svc", "up")
-                    + " svc aggregated=" + health.aggregatedVerdict("svc"));
-            StringBuilder downs = new StringBuilder();
-            health.forEachStatus((svc, check, st) -> { if (st.verdict() != HealthStatus.Verdict.UP) downs.append(svc).append('/').append(check).append('=').append(st).append("; "); });
-            System.out.println("REVIEW77C non-UP checks after service agent death: " + downs);
-            // inverted to the fixed behaviour (review round 4): the dead agent group is DOWN and its service is down
+            // re-verification B: the service's own up check is read FIRST, before any group check is evaluated, so the
+            // result cannot depend on the group check's side effect
             long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-            while ((health.statusOfCheck("agent-group:svc-agent", "agent").verdict() != HealthStatus.Verdict.DOWN
-                    || health.statusOfCheck("svc", "up").verdict() == HealthStatus.Verdict.UP) && System.nanoTime() < until) {
+            while (health.statusOfCheck("svc", "up").verdict() == HealthStatus.Verdict.UP && System.nanoTime() < until) {
+                Thread.sleep(50);
+            }
+            assertTrue(health.statusOfCheck("svc", "up").verdict() != HealthStatus.Verdict.UP,
+                    "svc/up read alone: " + health.statusOfCheck("svc", "up"));
+            until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (health.statusOfCheck("agent-group:svc-agent", "agent").verdict() != HealthStatus.Verdict.DOWN
+                    && System.nanoTime() < until) {
                 Thread.sleep(50);
             }
             assertEquals(HealthStatus.Verdict.DOWN, health.statusOfCheck("agent-group:svc-agent", "agent").verdict());
-            assertTrue(health.statusOfCheck("svc", "up").verdict() != HealthStatus.Verdict.UP,
-                    health.statusOfCheck("svc", "up").toString());
+            System.out.println("REVIEW77C service agent died: handled=" + handled + " exits=" + exits.get()
+                    + " started=" + server.isStarted());
             assertEquals(0, exits.get(), "CONTAIN never exits");
         } finally {
             server.stop();
