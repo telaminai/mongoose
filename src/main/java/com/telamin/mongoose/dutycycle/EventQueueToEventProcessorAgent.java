@@ -35,6 +35,17 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     private ProcessorDispatchException terminalFailure;
     /** Last receiver removed: leave queued commands/resources for onClose, never drain into an empty strategy. */
     private boolean drainDisabled;
+    private volatile long failureFenceVersion;
+    private volatile boolean failureFenced;
+
+    /** Cancellation token for a blocking publisher whose intended subscriber was quarantined. */
+    public long failureFenceVersion() { return failureFenceVersion; }
+    public boolean failureFenced() { return failureFenced; }
+    /** Invalidate pending admissions before removing a quarantined subscriber, including timer/service failures. */
+    public void fenceFailedSubscriber() {
+        failureFenced = true;
+        failureFenceVersion++;
+    }
     private java.util.function.BiConsumer<DataFlow, Throwable> processorFailureHandler;
     /** The source this queue drains (spec-replay-recording R2: an entry names its source). */
     private final String sourceName;
@@ -48,6 +59,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
             java.util.Collections.synchronizedSet(java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
     /** RECORD mode: set by the group when it subscribes this queue. */
     private GroupRecorder recorder;
+    private com.telamin.mongoose.dispatch.DropMarks dropMarks;
     /** RECORD mode: the recorder's per-processor copy of each input, taken just before the processor is given it. */
     private java.util.function.BiConsumer<DataFlow, Object> received;
 
@@ -94,7 +106,11 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
         // Batch up to a fixed number of events per tick to reduce per-event overhead
         final int batchLimit = 64;
         Object event;
-        while (processed < batchLimit && (event = inputQueue.poll()) != null) {
+        boolean marking = recorder != null && dropMarks != null;
+        while (processed < batchLimit && (!marking || markDropsThen()) && (event = inputQueue.poll()) != null) {
+            // a drop marked after the check above but before this item was offered precedes it: mark it first, so the
+            // Dropped entry lands exactly where the items were lost (review of 1d925ee, finding 7)
+            if (marking) markDrops(inputQueue.removedCount() - 1);
             // this queue's reference to a pooled event is held until every processor has been given it (released in
             // the finally below, so a failure that escapes the retry loop cannot leak it)
             PoolTracker<?> tracker = trackerOf(event);
@@ -134,17 +150,23 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                 // (failedPosition() >= 0) is resumed at it: that processor is retried, then the processors after it are
                 // given the event; those before it handled it and never see it again. Each failing processor has its own
                 // attempts under the RetryPolicy, and one whose retries are exhausted is skipped, not the rest of the queue.
-                // A strategy that cannot name it (-1) is retried whole, as before #53. No allocation here: ints and flags.
+                // Without a resumable position, only an identified target can be retried; unknown dispatch is never repeated.
                 int from = 0;                   // the dispatch position the next attempt starts at
                 int failingAt = -1;             // the position of the processor being retried, -1 when none is
-                int attempt = 0;                // attempts of the processor being retried (of the whole dispatch: legacy)
-                boolean wholeFailed = false;    // a failure the strategy could not place: legacy, whole-dispatch semantics
+                int attempt = 0;                // attempts of the processor being retried
+                boolean wholeFailed = false;    // unknown progress: recording cannot attribute a successful dispatch
                 boolean done = false;
+                // a handwritten thrower known by identity only (no dispatch position): it alone is retried and the event
+                // skipped for the other subscribers, so no peer that handled it is given it again (re-verification A)
+                DataFlow solo = null;
                 if (recorder != null) recorder.beforeDispatch(sourceName, seq, targets);
                 while (!done) {
+                    com.telamin.mongoose.dispatch.ProcessorContext.takeFailedProcessor(); // never a previous dispatch's
                     try {
-                        if (recorder != null && wholeFailed) recorder.beforeDispatch(sourceName, seq, targets);
-                        if (event instanceof ReplayRecord replayRecord) {
+                        if (recorder != null && wholeFailed && solo == null) recorder.beforeDispatch(sourceName, seq, targets);
+                        if (solo != null) {
+                            eventToInvokeStrategy.processEventFor(solo, delivered(event));
+                        } else if (event instanceof ReplayRecord replayRecord) {
                             if (recorder == null) {
                                 if (from == 0) {
                                     eventToInvokeStrategy.processEvent(replayRecord.getEvent(), replayRecord.getWallClockTime());
@@ -187,10 +209,31 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                     } catch (VirtualMachineError fatal) {
                         throw fatal;        // OutOfMemoryError, StackOverflowError, ...: never retried or swallowed (as #57)
                     } catch (Throwable t) {
+                        // the processor whose handler threw and its dispatch position, captured at throw time by the
+                        // strategy (rc1 review N1)
+                        var captured = com.telamin.mongoose.dispatch.ProcessorContext.takeFailure();
+                        DataFlow thrower = solo != null ? solo : captured == null ? null : captured.processor();
                         int at = wholeFailed ? -1 : eventToInvokeStrategy.failedPosition();
                         DataFlow failed = at < 0 ? null : eventToInvokeStrategy.failedProcessor();
+                        if (at < 0 && !wholeFailed && thrower != null && captured != null && captured.position() >= 0) {
+                            boolean present;
+                            synchronized (subscribed) { present = subscribed.contains(thrower); }
+                            if (present) {
+                                // an opaque strategy's progress is known from the capture: resume at the thrower, so a
+                                // processor that already handled the event is never given it again (external review 1)
+                                at = captured.position();
+                                failed = thrower;
+                            }
+                        }
+                        if (at >= 0 && !supportsResumeDelivery()) {
+                            // Capturing progress does not implement the optional resume SPI. Fall back to identity-only
+                            // handling, never invoke an unsupported default and misclassify it as a processor failure.
+                            if (failed != null) thrower = failed;
+                            at = -1;
+                            failed = null;
+                        }
                         if (at < 0) {
-                            // legacy: the whole dispatch is the unit of retry. D4: a retry is a failure; the recording is
+                            // Unknown progress: the recording cannot attribute successful input delivery and is
                             // marked for every target, not continued as if nothing happened (the recorder never throws)
                             if (recorder != null && !wholeFailed) recorder.failed(sourceName, delivered(event), t, targets);
                             if (!wholeFailed) {
@@ -210,35 +253,57 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                         }
                         // Generated graphs are not retry-safe after a throw: processing/callback state may be
                         // wedged and a retry can return normally without dispatching anything. This is failure-only.
-                        boolean unsafe = ProcessorDispatchException.requiresIsolation(failed);
-                        if (failed == null) {
+                        // An opaque strategy (failedPosition() == -1) cannot name the target, but the processor captured at
+                        // throw time can (rc1 review N1): an identified handwritten thrower is retried under its policy and
+                        // never quarantines its generated peers; a generated thrower is quarantined alone.
+                        DataFlow identified = failed;
+                        if (identified == null && thrower != null) {
+                            synchronized (subscribed) { if (subscribed.contains(thrower)) identified = thrower; }
+                        }
+                        if (at < 0 && solo == null && identified != null
+                                && !ProcessorDispatchException.requiresIsolation(identified)) {
+                            if (!supportsSingleTargetDelivery()) {
+                                // the strategy cannot deliver to one processor (processEventFor is optional): never retry
+                                // the whole fan-out and never end the group for this recoverable failure; the event is
+                                // skipped for the thrower and the remaining subscribers, and why is reported
+                                // (re-verification 2)
+                                String why = "event skipped after a handwritten failure of " + identified + ": the dispatch"
+                                        + " progress is unknown and strategy " + eventToInvokeStrategy.getClass().getName()
+                                        + " cannot deliver to a single processor, so neither the thrower alone nor the"
+                                        + " whole fan-out is retried; agent=" + name + ", event=" + event + ", error=" + t;
+                                logger.warning(why);
+                                com.telamin.mongoose.service.error.ErrorReporting.report(
+                                        "EventQueueToEventProcessorAgent:" + name, why, t,
+                                        com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
+                                done = true;
+                                continue;
+                            }
+                            solo = identified;
+                            logger.warning("retrying only " + identified + " and skipping the event for the other"
+                                    + " subscribers: the dispatch progress is unknown; agent=" + name);
+                        }
+                        boolean unsafe = ProcessorDispatchException.requiresIsolation(identified);
+                        if (identified == null) {
                             synchronized (subscribed) {
                                 unsafe = subscribed.stream().anyMatch(ProcessorDispatchException::requiresIsolation);
                             }
                         }
                         if (unsafe) {
-                            var failure = new ProcessorDispatchException(failed, "event dispatch", t);
-                            if (failed == null || at < 0) {
-                                terminalFailure = failure; // opaque strategy: cannot safely identify one target
-                                java.util.List<DataFlow> candidates;
-                                synchronized (subscribed) { candidates = java.util.List.copyOf(subscribed); }
-                                for (DataFlow candidate : candidates) {
-                                    if (!ProcessorDispatchException.requiresIsolation(candidate)) continue;
-                                    try {
-                                        if (processorFailureHandler != null) processorFailureHandler.accept(candidate, failure);
-                                        else deregisterProcessor(candidate);
-                                    } catch (VirtualMachineError fatal) {
-                                        throw fatal;
-                                    } catch (Throwable isolationFailure) {
-                                        if (isolationFailure != failure) failure.addSuppressed(isolationFailure);
-                                    }
-                                }
-                                throw failure;
+                            if (identified == null) {
+                                // truly unidentifiable (a strategy that records no processor), with a generated graph on the
+                                // reader that may be the one left half-processed: contain by ending the group, blame no peer
+                                var unknown = new ProcessorDispatchException(null, "opaque event dispatch (no failed position and"
+                                        + " no processor captured at throw time; no subscriber is quarantined, the group ends)", t);
+                                terminalFailure = unknown;
+                                throw unknown;
                             }
+                            var failure = new ProcessorDispatchException(identified, "event dispatch", t);
+                            failureFenced = true;
+                            failureFenceVersion++;
                             try {
-                                if (processorFailureHandler != null) processorFailureHandler.accept(failed, failure);
+                                if (processorFailureHandler != null) processorFailureHandler.accept(identified, failure);
                                 else {
-                                    deregisterProcessor(failed);
+                                    deregisterProcessor(identified);
                                     com.telamin.mongoose.service.error.ErrorReporting.report(
                                             "EventQueueToEventProcessorAgent:" + name,
                                             "generated processor quarantined; no retry: " + failure.getMessage(), failure,
@@ -251,12 +316,33 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                                 terminalFailure = failure;
                                 throw failure;
                             }
+                            if (!drainDisabled) failureFenced = false;
                             if (drainDisabled) return processed + 1; // finally releases this input; close owns backlog
+                            if (at < 0) {
+                                // the thrower is known but not the dispatch progress: never redispatch to peers that may
+                                // already have handled the event; the event is skipped for the rest (external review 1)
+                                logger.warning("event skipped for the remaining subscribers after quarantining " + identified
+                                        + ": the dispatch progress is unknown, so no peer is given it again; agent=" + name);
+                                done = true;
+                                continue;
+                            }
                             // Isolation removes this target from the strategy. Its successor shifts into this index.
                             // Earlier processors already received the event and must not see it again.
                             from = at;
                             failingAt = -1;
                             attempt = 0;
+                            continue;
+                        }
+                        if (identified == null) {
+                            // With no identity there is no safe retry target. Keep the handwritten reader alive, but
+                            // never redispatch peers that may already have produced external effects.
+                            String why = "event skipped after an unidentified handwritten dispatch failure; no safe retry target; agent="
+                                    + name + ", error=" + t;
+                            logger.severe(why);
+                            com.telamin.mongoose.service.error.ErrorReporting.report(
+                                    "EventQueueToEventProcessorAgent:" + name, why, t,
+                                    com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
+                            done = true;
                             continue;
                         }
                         attempt++;
@@ -333,6 +419,36 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     }
 
     /** What the processor was given: the event a ReplayRecord or BroadcastEvent carries, else the event itself. */
+    private Boolean singleTargetDelivery;
+
+    /** Whether the strategy implements the optional single-processor delivery ({@code processEventFor}). */
+    private boolean supportsSingleTargetDelivery() {
+        Boolean supported = singleTargetDelivery;
+        if (supported == null) {
+            try {
+                supported = eventToInvokeStrategy.getClass().getMethod("processEventFor", DataFlow.class, Object.class)
+                        .getDeclaringClass() != com.telamin.mongoose.service.EventToInvokeStrategy.class;
+            } catch (NoSuchMethodException unexpected) {
+                supported = false;
+            }
+            singleTargetDelivery = supported;
+        }
+        return supported;
+    }
+
+    /** A reported position alone does not guarantee that a custom strategy implements resumption. */
+    private boolean supportsResumeDelivery() {
+        try {
+            var method = recorder == null
+                    ? eventToInvokeStrategy.getClass().getMethod("processEventFrom", Object.class, int.class)
+                    : eventToInvokeStrategy.getClass().getMethod("processEventRecordingFrom", Object.class,
+                            java.util.function.BiConsumer.class, int.class);
+            return method.getDeclaringClass() != EventToInvokeStrategy.class;
+        } catch (NoSuchMethodException unexpected) {
+            return false;
+        }
+    }
+
     private static Object delivered(Object event) {
         if (event instanceof ReplayRecord replayRecord) return replayRecord.getEvent();
         if (event instanceof BroadcastEvent broadcastEvent) return broadcastEvent.getEvent();
@@ -342,6 +458,67 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     /** The source this queue drains. */
     public String sourceName() {
         return sourceName;
+    }
+
+    /**
+     * RECORD mode (#79): where the publisher dropped items for this queue. Each mark becomes a
+     * {@link com.telamin.mongoose.replay.ReplayEntry.Dropped} entry in the recordings of this queue's processors, placed
+     * where the items were lost; a replay reports the loss and carries on. Null when not recording.
+     */
+    public EventQueueToEventProcessorAgent withDropMarks(com.telamin.mongoose.dispatch.DropMarks dropMarks) {
+        this.dropMarks = dropMarks;
+        return this;
+    }
+
+    private java.util.Collection<DataFlow> dropTargets() {
+        java.util.Collection<DataFlow> targets = eventToInvokeStrategy.registeredProcessors();
+        return targets.isEmpty() ? java.util.List.copyOf(subscribed) : targets;
+    }
+
+    private boolean markDropsThen() {
+        markDrops(inputQueue.removedCount());
+        return true;
+    }
+
+    /**
+     * Turn the drop marks that precede the next item into Dropped entries: those whose producer position is at most
+     * {@code consumed}, the number of items offered before the drop that have been taken. Recording only, on the group's
+     * thread.
+     */
+    private void markDrops(long consumed) {
+        com.telamin.mongoose.dispatch.DropMarks.Mark m = dropMarks.peek();
+        if (m == null) {
+            // drops counted after the last mark was taken (the marks were full) are exported now, never stranded
+            // (external review of d9eec79, finding 5); their position is approximate
+            long unmarked = dropMarks.takeOverflow();
+            if (unmarked > 0) {
+                recorder.inputDropped(sourceName, dropTargets(), unmarked + " item(s) of " + sourceName
+                        + " dropped by the full queue " + name + " while the drop marks were full (position "
+                        + "approximate); the processor never received them");
+            }
+            return;
+        }
+        if (m.position() > consumed) {
+            return;
+        }
+        java.util.Collection<DataFlow> targets = dropTargets();
+        while ((m = dropMarks.peek()) != null && m.position() <= consumed) {
+            dropMarks.poll();
+            long position = m.position();
+            long first = m.sequence(), last = m.sequence(), count = 1;
+            String reason = m.reason();
+            com.telamin.mongoose.dispatch.DropMarks.Mark next;
+            while ((next = dropMarks.peek()) != null && next.position() == position) {
+                dropMarks.poll();
+                last = next.sequence();
+                count++;
+            }
+            long unmarked = dropMarks.takeOverflow();
+            recorder.inputDropped(sourceName, targets, (count + unmarked) + " item(s) of " + sourceName
+                    + " dropped by the full queue " + name + " (sequence " + first + (last != first ? ".." + last : "")
+                    + (unmarked > 0 ? ", plus " + unmarked + " dropped while the drop marks were full" : "") + "): "
+                    + reason + "; the processor never received them");
+        }
     }
 
     /** RECORD mode: record what this queue dispatches (spec-replay-recording R2). */
@@ -371,8 +548,11 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
             throw fatal;
         } catch (RuntimeException | Error failure) {
             if (owned && ProcessorDispatchException.requiresIsolation(target)) {
+                failureFenced = true;
+                failureFenceVersion++;
                 if (processorFailureHandler != null) processorFailureHandler.accept(target, failure);
                 else deregisterProcessor(target);
+                if (!drainDisabled) failureFenced = false;
             }
             throw failure; // the replay must also report its divergence
         }
@@ -456,6 +636,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
         subscribed.remove(eventProcessor);
         int listeners = listenerCount();
         if (listeners < 1) drainDisabled = true;
+        else failureFenced = false;
         if (listeners < 1 && unsubscribeAction != null) {
             try {
                 unsubscribeAction.run();

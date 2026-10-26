@@ -1,6 +1,4 @@
-# Control-plane release notes
+# Unreleased changes
 
-The control-plane changes are assigned to **Mongoose 1.0.33**. See the
-[versioned release notes](release-notes-1.0.33.md) for behaviour changes, compatibility and known limits.
-Publication and qualification status is recorded in the [RC release procedure](rc-release-procedure.md).
-Client migration requires its own [checklist](client-migration-1.0.33.md).
+The combined #77/#79 changes are assigned to [Mongoose 1.1.0](release-notes-1.1.0.md).
+Qualification and publication status must be read from its release evidence; this pointer does not claim it has shipped.

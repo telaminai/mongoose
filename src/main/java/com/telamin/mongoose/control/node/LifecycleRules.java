@@ -10,6 +10,7 @@ import com.telamin.mongoose.control.effect.ControlEffect;
 import com.telamin.mongoose.control.event.AddIntent;
 import com.telamin.mongoose.control.event.CloseIntent;
 import com.telamin.mongoose.control.event.EffectResult;
+import com.telamin.mongoose.control.event.FailureKind;
 import com.telamin.mongoose.control.event.ReplyOutcome;
 import com.telamin.mongoose.control.event.StopIntent;
 import com.telamin.mongoose.control.node.ControlState.Chain;
@@ -51,7 +52,8 @@ public class LifecycleRules extends EventLogNode {
     public boolean onAdd(AddIntent intent) {
         long req = intent.requestId();
         if (intent.cancelled()) {
-            ControlEffect reply = reply(req, intent.generation(), intent.name(), ReplyOutcome.REFUSED, "cancelled");
+            ControlEffect reply = reply(req, intent.generation(), intent.name(), ReplyOutcome.REFUSED, FailureKind.REFUSED_STATE,
+                    "cancelled");
             decide("addCancelled", intent.generation(), intent.name(), "Admitted", "Cancelled", reply);
             return true;
         }
@@ -83,7 +85,7 @@ public class LifecycleRules extends EventLogNode {
         if (reg == null) {
             if (!intent.bound()) {
                 ControlEffect reply = reply(req, intent.generation(), intent.name(), ReplyOutcome.REFUSED,
-                        "no such processor");
+                        FailureKind.REFUSED_STATE, "no such processor");
                 decide("stopUnknown", intent.generation(), intent.name(), "Absent", "Absent", reply);
             } else if (!intent.addTaken()) {
                 // the stop overtook its add: cancel the registration, so the add is skipped when it arrives, and free
@@ -111,7 +113,7 @@ public class LifecycleRules extends EventLogNode {
             }
             case QUARANTINED -> {
                 decide("stopQuarantined", reg.generation, reg.name, "Quarantined", "Quarantined",
-                        reply(req, reg.generation, reg.name, ReplyOutcome.FAILED,
+                        reply(req, reg.generation, reg.name, ReplyOutcome.FAILED, FailureKind.QUARANTINED,
                                 "processor quarantined; lifecycle cleanup requires operator resolution"));
             }
             case RELEASING -> {
@@ -210,6 +212,7 @@ public class LifecycleRules extends EventLogNode {
         // the processor is dropped: released without a stop(), then its name freed, then the add is answered Failed
         if (reg != null) reg.lifecycle = Lifecycle.FAILED;
         chain.failure = result.reason();
+        chain.failureKind = result.kind();
         ControlEffect release = new ControlEffect.Release(state.nextOp(req), req, result.generation(), result.name(),
                 false, false);
         // at boot under the fail-fast policy the group's start fails; otherwise the failure is reported and the group
@@ -229,11 +232,13 @@ public class LifecycleRules extends EventLogNode {
         if (!result.succeeded()) {
             if (reg != null) reg.lifecycle = Lifecycle.QUARANTINED;
             chain.failure = result.reason();
+            chain.failureKind = result.kind();
             if (chain.kind == ChainKind.CLOSE && --chain.outstanding > 0) {
                 decide("releaseQuarantined", result.generation(), result.name(), from, "Quarantined");
             } else {
                 decide("releaseQuarantined", result.generation(), result.name(), from, "Quarantined",
-                        reply(req, result.generation(), result.name(), ReplyOutcome.FAILED, result.reason()));
+                        reply(req, result.generation(), result.name(), ReplyOutcome.FAILED, result.kind(),
+                                result.reason()));
             }
             return;
         }
@@ -256,12 +261,13 @@ public class LifecycleRules extends EventLogNode {
                     return;
                 }
                 ControlEffect reply = reply(req, -1, null, chain.failure == null ? ReplyOutcome.APPLIED : ReplyOutcome.FAILED,
-                        chain.failure == null ? "closed" : chain.failure);
+                        failureKindOf(chain), chain.failure == null ? "closed" : chain.failure);
                 decide("groupClosed", result.generation(), result.name(), "Closing", "Closed", reply);
             }
             case ADD -> {
                 // an add whose start failed: answered Failed now that everything it held is released
                 ControlEffect reply = reply(req, result.generation(), result.name(), ReplyOutcome.FAILED,
+                        chain.failureKind == null ? FailureKind.FAILED_EFFECT : chain.failureKind,
                         chain.failure == null ? "start failed" : chain.failure);
                 decide("dropped", result.generation(), result.name(), "Failed", "Failed", reply);
             }
@@ -270,12 +276,13 @@ public class LifecycleRules extends EventLogNode {
                 decide("cancelComplete", result.generation(), result.name(), "Cancelled", "Cancelled", reply);
             }
             case REFUSED_ADD -> {
-                ControlEffect reply = reply(req, result.generation(), result.name(), ReplyOutcome.NOT_RUNNING, "group closed");
+                ControlEffect reply = reply(req, result.generation(), result.name(), ReplyOutcome.NOT_RUNNING,
+                        FailureKind.REFUSED_STATE, "group closed");
                 decide("addRefused", result.generation(), result.name(), "Refused", "Refused", reply);
             }
             default -> {
                 ControlEffect reply = reply(req, result.generation(), result.name(),
-                        chain.failure == null ? ReplyOutcome.APPLIED : ReplyOutcome.FAILED,
+                        chain.failure == null ? ReplyOutcome.APPLIED : ReplyOutcome.FAILED, failureKindOf(chain),
                         chain.failure == null ? "stopped" : chain.failure);
                 decide("stopComplete", result.generation(), result.name(), "Released", "Released", reply);
             }
@@ -284,8 +291,24 @@ public class LifecycleRules extends EventLogNode {
 
     // ------------------------------------------------------------------ helpers
 
+    /**
+     * For APPLIED replies only (kind {@code NONE}); every other reply here names its kind. Never throws: a throw from a
+     * rule would wedge the control processor, so a misuse falls back to the outcome's default kind.
+     */
     private ControlEffect reply(long req, long generation, String name, ReplyOutcome outcome, String reason) {
-        return new ControlEffect.Reply(state.nextOp(req), req, generation, name, outcome, reason);
+        return reply(req, generation, name, outcome, FailureKind.defaultFor(outcome), reason);
+    }
+
+    private ControlEffect reply(long req, long generation, String name, ReplyOutcome outcome, FailureKind kind,
+                                String reason) {
+        return new ControlEffect.Reply(state.nextOp(req), req, generation, name, outcome, reason,
+                outcome == ReplyOutcome.APPLIED ? FailureKind.NONE : kind);
+    }
+
+    /** The kind of a chain's recorded failure: the failed effect's own kind, or NONE when nothing failed. */
+    private static FailureKind failureKindOf(Chain chain) {
+        if (chain.failure == null) return FailureKind.NONE;
+        return chain.failureKind == null ? FailureKind.FAILED_EFFECT : chain.failureKind;
     }
 
     private void decide(String rule, long generation, String name, String from, String to, ControlEffect... requested) {

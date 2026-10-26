@@ -214,7 +214,7 @@ public abstract class AbstractEventSourceService<T>
         }
     }
 
-    /** @deprecated Ignored compatibility setting; all values use bounded spin then drop. */
+    /** @deprecated Ignored compatibility setting; the overload policy is set per feed (telaminai/mongoose#79). */
     @Deprecated
     @Override
     public void setSlowConsumerStrategy(SlowConsumerStrategy slowConsumerStrategy) {

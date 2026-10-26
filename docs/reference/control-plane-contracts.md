@@ -42,13 +42,26 @@ with one `ControlReply`.
 
 ```java
 package com.telamin.mongoose.control;
-public record ControlReply(long requestId, ReplyOutcome outcome, String reason, long generation, String name) {
+public record ControlReply(long requestId, ReplyOutcome outcome, String reason, long generation, String name,
+                           FailureKind kind, EvidenceStatus evidence) {
     public boolean applied();   // outcome == APPLIED
 }
 
 package com.telamin.mongoose.control.event;
 public enum ReplyOutcome { APPLIED, REFUSED, FAILED, NOT_RUNNING }
+public enum FailureKind { NONE, REFUSED_ADMISSION, REFUSED_STATE, REFUSED_DEADLINE, REFUSED_INVALID, FAILED_RULE, FAILED_EFFECT,
+    FAILED_DRIVER_FALLBACK, FAILED_DEAD, FAILED_SHUTDOWN, QUARANTINED, DETACHED, UNVERIFIED, LEFTOVER_RECOVERED,
+    REPLAY_IDENTITY_MISMATCH, REPLAY_STOPPED }
+public enum EvidenceStatus { NOT_DEGRADED, UNVERIFIED }
 ```
+
+`kind` is never null: `NONE` exactly when the outcome is `APPLIED`. Classify a reply by `outcome` and `kind`; the
+`reason` text is human detail and may change. `evidence` is `UNVERIFIED` when the reply was made while the group's
+control audit had an unacknowledged write failure (the group is then DEGRADED but still applies every request,
+stops and closes included), otherwise `NOT_DEGRADED`, which does not prove that every record of the request was
+written. A full mailbox is always refused with reason `mailbox full`; exceptions
+thrown for it say `request refused: mailbox full (capacity N)`. The meaning of each kind is in the
+[failure-handling design](../design/failure-handling.md#failure-taxonomy). (Issue #77, after 1.0.33-rc1.)
 
 | Outcome | Meaning | Typical `reason` values (from the code) |
 | --- | --- | --- |
@@ -322,15 +335,19 @@ admission into the mailbox and waiting for the reply.
 | --- | --- |
 | A `ControlReply` | The stop was answered in time, or refused at admission |
 | `REFUSED`, reason `not admitted within its deadline: mailbox full` | The mailbox stayed full past the deadline |
-| `null` | No such group, nothing admitted under the name, the caller may not wait (agent thread, group not started), or no reply by the deadline. In the last two cases the stop still applies |
+| `REFUSED`, kind `REFUSED_STATE`, reason `no such group` / `no such processor` | Nothing was admitted under that group or name (issue #77; it returned `null` in 1.0.33-rc1) |
+| `null` | The caller may not wait (agent thread, group not started), or no reply by the deadline. The stop still applies |
 
 On an agent thread with a full mailbox this reply-returning form returns `REFUSED`; the void form throws.
 
 ### The admin stop command
 
-`server.processors.stop <group>/<name>` calls `stopProcessor(group, name, 1000)`. It prints `stop <OUTCOME>:
-<reason>`, or `stop pending (still applies): <group>/<name>` when no reply came within one second. On a
-`MongooseServerController` that is not a `MongooseServer`, it calls the void form.
+`server.processors.stop <group>/<name>` calls `stopProcessor(group, name, 1000)`. It prints `stop <OUTCOME> (<KIND>):
+<reason>`, or `stop pending (still applies): <group>/<name>` when no reply came within one second. An unknown group or
+name prints `stop REFUSED (REFUSED_STATE): no such ...`, never `pending`. A missing or malformed argument (not exactly
+one `<group>/<name>` with both parts non-blank) is refused on the error stream with
+`stop REFUSED (REFUSED_INVALID): usage: ...` and stops nothing. On a `MongooseServerController` that is not a
+`MongooseServer`, it calls the void form.
 
 ## Services
 
@@ -915,7 +932,11 @@ addFailurePolicy: THROW        # void addEventProcessor throws when the add does
 
 ## Overload and loss
 
-Ordinary publication retries a full target queue by spinning for approximately **10 ms**, then drops that item's
+Since telaminai/mongoose#79, each feed has an explicit overload policy. The default is described first, then the
+policies a feed can configure. See [Configuring overload and loss](../guide/overload-configuration.md) and
+[the design](../design/overload-policy.md).
+
+**Default (`DROP_AFTER_SPIN`, and any feed without an `overload` block).** Ordinary publication retries a full target queue by spinning for approximately **10 ms**, then drops that item's
 copy for that queue. Other target queues are still attempted. The dropped queue's pooled reference is released;
 this does not release another queue's reference. The publisher's aggregate `droppedCount()` increases.
 
@@ -941,18 +962,50 @@ These records consume the same bounded group control-audit capacity; repeated su
 that capacity and make the export incomplete. It is a correlation point, not one audit record per lost item
 or a shared business-event ordering guarantee.
 
-`EventSource.SlowConsumerStrategy` (`DISCONNECT`, `EXIT_PROCESS`, `BACKOFF`) and its feed/pipe configuration are
-deprecated because they do not change this publish policy. They do not enable lossless blocking.
+On a feed without an `overload` block this health behaviour is that of PR #76: `DEGRADED` after loss, from the path's
+cumulative drop counter, with no recovery and no `overload.clear`.
 
-This release retains existing bounded-spin/drop behaviour and exposes loss explicitly. A blocking-until-space
-policy is **not implemented**; [issue #77](https://github.com/telaminai/mongoose/issues/77) tracks the failure/overload
-design. Blocking propagates latency and can deadlock cyclic dependencies unless shutdown, cancellation and
-producer/consumer ownership are designed together.
+**Configured policies (#79).**
+
+- `overload.policy: DROP_AFTER_SPIN` with a `spinBoundMillis` (default 10) behaves as the default, with two
+  additions. A queue's health returns to `UP` after `quietPeriodMillis` (default 60 s, minimum 1 s) without
+  further loss. Every state change writes one `OverloadState` record to the publisher's state audit.
+- `overload.policy: BLOCK_WITH_DEADLINE` with `blockDeadlineMillis` makes a publish all-or-nothing:
+  - A publish from a non-agent thread waits, without holding the publish lock, until every blocking queue has
+    room. It is then delivered to all of them. The deadline bounds only that wait for queue capacity, not the
+    data mapper, the journal codec, or acquiring the publish lock. A publish into the same feed from code run
+    during the commit is deferred until the commit completes.
+  - If there is still no room at the deadline, or when the server begins to stop, the publish throws
+    `PublishRefusedException`. No queue holds the item and no sequence number is used.
+  - A refused pooled item is back in its pool, already reset: copy the payload before publishing if you may retry.
+  - On an agent thread, or nested in a dispatch, the publish falls back to drop-after-spin, counted in
+    `downgradedCount()`.
+- Any loss on a blocking queue **latches** it.
+  - The latch outlasts an unsubscribe: `LATCHED→REMOVED`, then `REMOVED→LATCHED` if the queue is re-added.
+  - The queue's health check reports the latch until the admin `overload.clear <feed>` clears it.
+  - Each change also writes an `OverloadState` record to the group control audit.
+  - With `killSwitch: true`, the hook set by `MongooseServer.setOverloadKillSwitch` runs once per latch, on the
+    feed's own daemon thread. Once the server begins to stop, no hook is started, including one already queued. A
+    hook that is already running is not interrupted.
+- Overrides per subscriber group: `overload.subscribers.<group>`.
+- Counters: `queue.<path>.refused`, `.blocked`, `.blockedNanos`, `.blockedMaxNanos`, and `feed.<name>.downgraded`.
+
+`EventSource.SlowConsumerStrategy` is deprecated. In feed and pipe configuration without an `overload` block,
+`BACKOFF` means `DROP_AFTER_SPIN` (warned), and `DISCONNECT` and `EXIT_PROCESS` **fail boot**, naming the feed. Set
+on a source directly, the strategy is still ignored.
+
+In RECORD mode, a dropped item keeps its journal entry and sequence number. The processor's recording gets a
+`Dropped` entry where the items were lost. A replay carries on and reports the loss through
+`GroupReplayer.losses()` and `lossless()`, which completeness checks must read beside `complete()`.
+
+Unbounded blocking, conflation, priority lanes and spill to disk are not implemented. Blocking propagates latency
+to the publisher, which is why the deadline is bounded and agent threads never wait.
 
 Decide per feed whether loss is acceptable. Replaceable market-data snapshots may permit loss with explicit
 freshness/recovery logic; incremental updates can also require gap detection and replay. Orders, fills, credit
-changes and hedge instructions must not depend on this queue path for guaranteed delivery. Until a suitable
-lossless transport/policy and recovery contract are in place, this candidate is not qualified for that guarantee.
+changes and hedge instructions need `BLOCK_WITH_DEADLINE`, published from non-agent threads whose callers handle a
+refusal. The policy ends at the feed's publish call: it does not provide end-to-end delivery from the venue, and
+the client must still reconcile with the venue after a latch.
 No setting in the current enum changes that fact.
 
 Shutdown drains queued events for `shutdownDrainTimeoutMillis`, capped by the remaining overall deadline. On
@@ -982,6 +1035,11 @@ These are deliberate non-guarantees in this build:
 
 ## Generated processor failure containment
 
+A group whose **control plane** dies while its thread lives (a rule threw) fences every processor the same way: inputs
+and timers stop, instances and names stay owned, nothing restarts, and `group:<name>/control` reports DOWN (issue
+#77). The fence covers what the group delivers. It cannot stop other threads calling a processor's exported services
+directly, and fenced readers keep their queued backlog until the group closes.
+
 A generated or interpreted Fluxtion processor implementing `InternalEventProcessor` can retain partial application
 state and external effects after a handler throws. Runtime 1.1.3 and newly generated processors clear the processing
 flag and discard failed-cycle work, but old generated code can still wedge until regenerated. A normal return from
@@ -1001,21 +1059,65 @@ close receive a refusal instead of waiting for a processor that can no longer di
 
 There is no automatic restart, flag reset, callback replay, or operator acknowledgement that converts unknown
 cleanup into success. Preserve the audit and application state and use the deployment's incident procedure.
-The failed input may already have produced partial external effects. Healthy subscribers can still receive that
-input once; this is not transactional rollback. An opaque custom dispatcher that cannot identify the failed target
-quarantines all possible generated targets on its reader and terminates the group.
+The failed input may already have produced partial external effects. Healthy subscribers receive that input at most
+once: a subscriber that already handled it is never given it again. This is not transactional rollback.
+
+A custom dispatcher that reports no failed position (an opaque strategy) is resolved through the processor and dispatch
+position the base dispatch loop captures at throw time (issue #77, rc1 review N1 and external review 1):
+
+- A handwritten thrower is retried alone under the retry policy, resumed at its position. It never quarantines a
+  generated peer.
+- A generated thrower is quarantined alone, and dispatch resumes with the subscribers after it.
+- Subscribers before the thrower, which handled the input, never receive it again.
+- A recorded position is used only when the strategy implements the relevant `processEventFrom` or
+  `processEventRecordingFrom` capability; otherwise it follows identity-only handling.
+- During single-target retry the host retains the selected identity even if the custom strategy does not record it again.
+- If a strategy records the thrower but not its position, only the thrower is handled and the input is skipped for
+  the remaining subscribers, so no peer is given it twice:
+  - a generated thrower is quarantined;
+  - a handwritten thrower is retried alone under the retry policy if the strategy implements the optional
+    single-processor delivery `EventToInvokeStrategy.processEventFor`;
+  - without that method, the handwritten thrower is not retried either. The input is skipped and the skip is reported
+    at ERROR. The group is never ended for this recoverable failure, and the whole fan-out is never redispatched.
+- A strategy that records nothing (it bypasses the base dispatch loop) leaves the target unidentifiable. With a
+  generated subscriber on the reader, the group ends with a `ProcessorDispatchException` saying so, and no peer is
+  quarantined. With handwritten subscribers only, the input is skipped with an ERROR and the reader stays alive.
+  There is no safe retry target, so the whole fan-out is never repeated.
 
 An admin cycle refused before its command action remains a command refusal. The runtime's `runInEventCycle`
 already clears its processing flag in `finally`; a custom override that executes other graph calls before entering
 that bracket must define its own failure contract. A command that ran and then failed still propagates its dispatch
 failure to the host.
 
-Ordinary handwritten `DataFlow` retry/cleanup behaviour is unchanged. The containment marker is the runtime
+Handwritten `DataFlow` retries require an identified target and a supported single-target or resume capability.
+Uninstrumented fan-out no longer uses legacy whole-dispatch retry. The containment marker is the runtime
 interface, not reflection or a guessed flag name; handwritten wrappers hiding a generated graph need their own
 failure contract. A standalone scheduler without a group handler cancels its failed owner's remaining timers and
 reports ERROR, preserving its reporting-only API; it cannot isolate routes owned by another container.
 This host policy does not repair the compiler's processing flag or make arbitrary direct graph calls retry-safe.
 
-Driver-authored safety-net FAILED replies carry `replyAuthor: DRIVER` and
-`failureKind: FAILED_DRIVER_FALLBACK`. The validator rejects that marker regardless of reason wording and also
-rejects `ProcessorQuarantined` as evidence of a healthy run. Legacy exports still use reason-text classification.
+Driver-authored FAILED replies carry `replyAuthor: DRIVER` (the author) and a `kind` (the cause): `FAILED_RULE` (the
+control processor threw or did not settle), `FAILED_DRIVER_FALLBACK` (it settled without replying) or `FAILED_DEAD`
+(a fatal error while performing effects). `failureKind` keeps its 1.0.33-rc1 meaning, "a driver-authored reply", and
+is always `FAILED_DRIVER_FALLBACK`. The kind alone does not identify the author: a rule's reply can carry
+`FAILED_DRIVER_FALLBACK` after the driver abandoned one of its effects. The validator rejects driver-authored records,
+the kinds `FAILED_RULE`, `FAILED_DRIVER_FALLBACK`, `FAILED_DEAD` and `QUARANTINED`, and `ProcessorQuarantined`
+records, regardless of reason wording. An export in which any record carries a `kind` is judged by kinds only, and a
+reply or failed outcome missing its kind is a violation; only exports with no kinds at all (written before issue #77)
+use reason-text classification.
+
+
+## Combined 1.1.0 failure and overload contract
+
+See the [1.1.0 release notes](../release/release-notes-1.1.0.md) and
+[client migration checklist](../release/client-migration-1.1.0.md) for the complete breaking-change and operator
+acceptance checklist. `PublishRefusedException` carries `FailureKind` and `EvidenceStatus`; overload transition
+records carry `OVERLOAD_LOSS` (or `NONE` on recovery/clear) and the evidence status at observation. Group status
+JSON includes overload states, including retained `REMOVED` latches; the group's `overload` health check reports loss.
+
+A blocked publish retains its intended bindings while waiting. Group death or quarantine cancels that admission
+before commit, even if its target queue has since been removed; ordinary unsubscribe re-evaluates remaining targets.
+The refusal is all-or-nothing and consumes the pooled reference as documented in the overload guide. Cancellation
+is `TARGET_UNAVAILABLE` / `REFUSED_STATE`. The six cases in `FailureOverloadSeamTest` check metadata, group health/JSON,
+removed latches, dead control, fatal CONTAIN, and quarantine of a generated processor. Direct calls from external
+threads are outside this fence. `NOT_DEGRADED` never proves an export complete.

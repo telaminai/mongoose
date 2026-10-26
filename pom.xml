@@ -4,7 +4,7 @@
 
     <groupId>com.telamin</groupId>
     <artifactId>mongoose</artifactId>
-    <version>1.0.33</version>
+    <version>1.1.0</version>
     <name>telamin :: mongoose</name>
 
     <properties>
@@ -90,6 +90,20 @@
             <artifactId>lombok</artifactId>
             <version>1.18.42</version>
             <scope>provided</scope>
+        </dependency>
+        <!-- Disclosure regression exercises the public API; resolve it on clean CI instead of assuming ~/.m2. -->
+        <dependency>
+            <groupId>com.telamin.fluxtion</groupId>
+            <artifactId>fluxtion-builder-api</artifactId>
+            <version>${fluxtion.version}</version>
+            <scope>test</scope>
+            <!-- The fixture needs only this API jar; its tooling dependencies must not mediate host dependencies. -->
+            <exclusions>
+                <exclusion>
+                    <groupId>*</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>

@@ -42,12 +42,41 @@ Operational guidance for running Mongoose Server in production. Tailor values to
 that queue's copy and increments its drop count. This is a delivery loss, not reliable blocking back-pressure.
 One queued copy can feed several processors, so missed processor deliveries can exceed the queue-copy drop count.
 The wait holds the feed's publication lock; one stalled subscriber can therefore delay other subscribers.
-Monitor drops and pace sources within consumer capacity when loss is unacceptable. The explicit overflow-policy
-design is tracked in [#77](https://github.com/telaminai/mongoose/issues/77); the control-plane changes do not change
-this existing policy. A successful bounded-load delivery test does not establish losslessness under overload.
+Monitor drops and pace sources within consumer capacity when loss is unacceptable. A successful bounded-load
+delivery test does not establish losslessness under overload.
+
+**Overload policies (#79).** That is the default policy. Feeds that must not lose data use
+`BLOCK_WITH_DEADLINE`; see [Configuring overload and loss](../guide/overload-configuration.md). For operators:
+
+- `overload.status` lists every feed, queue and state: `UP`, `DEGRADED` or `LATCHED`. A queue removed while latched
+  is listed as `<group/feed/callback> [removed]: LATCHED`. A latch follows the group name, so a restarted group is
+  latched again.
+- A `LATCHED` never-drop queue stays DEGRADED in health until `overload.clear <feed>`, even after it is unsubscribed
+  (`LATCHED→REMOVED`). Reconcile what was lost with the venue before clearing. Use the `OverloadState` and
+  `QueueDrop` audit records and the `queue.<path>.refused`/`.dropped` counters.
+- A drop-tolerant queue on a configured feed returns to UP after its quiet period. On a feed with no `overload`
+  block it stays DEGRADED, as before.
+- The log line `overload state: … to=LATCHED` and a kill-switch hook, if configured, mark the moment of loss.
 
 ## Failure handling
-- Startup failures: fail fast if critical services or feeds do not initialize.
+- **Fatal-error policy** (`fatalErrorPolicy`, YAML top level):
+  - `CONTAIN` (the default after issue #77): an agent error never exits the JVM.
+  - `EXIT_PROCESS`: restores exit-and-restart.
+  - Under `CONTAIN`, alert on health instead of on process exit.
+- **Health checks to alert on** (by service name and check):
+  - `group:<name>/control`: DOWN when a processor group's control plane is DEAD. Its processors are fenced from
+    inputs and timers (`DataPathFenced` in the group's control audit); nothing restarts. Remedy: close the group or
+    stop the server, then restart the process.
+  - `agent-group:<name>/agent`: DOWN when an agent-hosted service group's thread ended; its services' `up` gauges are
+    0. Restart the process.
+  - `group:<name>/control-audit`: DEGRADED when the control audit failed to write. Replies are marked `UNVERIFIED`
+    until you export the evidence (`control.audit.export`) or acknowledge the gap (`control.audit.acknowledge`).
+    Neither makes the evidence complete.
+  - `group:<name>/audit-capture`: DEGRADED on capture write, close or detach failures, or an unobservable capture.
+    Processors keep running. `control.capture.acknowledge <group>` clears the alert; the failures stay listed in
+    `control.group.status <group> [--json]`.
+- **Startup failures:** fail fast if critical services or feeds do not initialize. A failed `bootServer` stops what
+  it started, then throws.
 - Runtime errors in handlers: log with context; consider circuit breakers for flaky integrations.
 - Poison events: capture and route to quarantine sink with metadata.
 

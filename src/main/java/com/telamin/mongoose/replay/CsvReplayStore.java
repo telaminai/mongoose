@@ -152,6 +152,7 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
             case ReplayEntry.AdminInvoked a -> "ADMIN," + Csv.field(a.command()) + ",,," + a.instant() + ","
                     + encode(new ArrayList<>(a.args())) + "," + reads(a.reads());
             case ReplayEntry.Failed f -> "FAILED," + Csv.field(f.source()) + ",,," + f.instant() + "," + encode(f.description()) + ",";
+            case ReplayEntry.Dropped d -> "DROPPED," + Csv.field(d.source()) + ",,," + d.instant() + "," + encode(d.description()) + ",";
             case ReplayEntry.Stopped s -> "STOPPED,,,," + s.instant() + ",," + reads(s.reads());
             case ReplayEntry.ServiceChanged c -> "SERVICE," + Csv.field(c.service()) + "," + (c.register() ? "register" : "deregister")
                     + "," + c.version() + "," + c.instant() + ",," + reads(c.reads());
@@ -180,6 +181,7 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
             case "TIMER" -> new ReplayEntry.TimerFired(Long.parseLong(seq), instant, reads);
             case "ADMIN" -> new ReplayEntry.AdminInvoked(source, List.copyOf((List<String>) decode(payload)), instant, reads);
             case "FAILED" -> new ReplayEntry.Failed(source, (String) decode(payload), instant);
+            case "DROPPED" -> new ReplayEntry.Dropped(source, (String) decode(payload), instant);
             case "STOPPED" -> new ReplayEntry.Stopped(instant, reads);
             case "SERVICE" -> new ReplayEntry.ServiceChanged(source, "register".equals(route), Long.parseLong(seq), instant, reads);
             case "CONTROL" -> new ReplayEntry.ControlCall(source, List.copyOf((List<String>) decode(payload)), route, instant);

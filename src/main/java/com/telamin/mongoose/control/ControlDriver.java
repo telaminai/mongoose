@@ -12,6 +12,7 @@ import com.telamin.mongoose.control.event.CloseIntent;
 import com.telamin.mongoose.control.event.ControlInput;
 import com.telamin.mongoose.control.event.ControlOutcome;
 import com.telamin.mongoose.control.event.EffectResult;
+import com.telamin.mongoose.control.event.FailureKind;
 import com.telamin.mongoose.control.event.ReplyOutcome;
 import com.telamin.mongoose.control.generated.GroupControlProcessor;
 import org.agrona.concurrent.ManyToOneConcurrentArrayQueue;
@@ -97,6 +98,11 @@ public final class ControlDriver {
     private final AtomicLong requestIds = new AtomicLong();
     private volatile Thread agentThread;
     private volatile long fullTimeoutNanos = TimeUnit.SECONDS.toNanos(10);
+    /**
+     * Set once a rule has thrown. Under Fluxtion 1.1.3 the generated processor itself recovers its execution boundary,
+     * but the rules' state is not rolled back (a decision may be half applied), so the driver never dispatches to it
+     * again: the group is marked dead and later requests are answered {@code FAILED_RULE}.
+     */
     private boolean controlWedged;
 
     public ControlDriver(String group, int capacity, EffectAdapter adapter, ControlAuditSink audit) {
@@ -146,6 +152,7 @@ public final class ControlDriver {
 
     public ControlRequest send(ControlRequest request, long admitByNanos) {
         if (request.requestId() < 0) request.assignId(requestIds.incrementAndGet());
+        request.markRepliesWith(this::marked);
         outstanding.add(request);
         if (ended()) {
             refuseTerminal(request);
@@ -155,14 +162,16 @@ public final class ControlDriver {
             long deadline = System.nanoTime() + fullTimeoutNanos;
             while (!mailbox.offer(request)) {
                 if (admitByNanos != Long.MAX_VALUE && System.nanoTime() - admitByNanos > 0) {
-                    refuse(request, "not admitted within its deadline: mailbox full");
+                    refuse(request, FailureKind.REFUSED_DEADLINE, "not admitted within its deadline: mailbox full");
                     return request;
                 }
                 if (abandonWhen.getAsBoolean()) {
-                    if (request.completeUnclaimed(ControlReply.notRunning(request.requestId(), "server is stopping"))) {
+                    if (request.completeUnclaimed(marked(ControlReply.notRunning(request.requestId(), FailureKind.REFUSED_STATE,
+                            "server is stopping")))) {
                         request.runUnapplied();
                         audit.fallback("NotRunning", "group", group, "requestId", request.requestId(),
-                                "request", request.description(), "reason", "server is stopping");
+                                "request", request.description(), "reason", "server is stopping",
+                                "kind", FailureKind.REFUSED_STATE);
                     }
                     outstanding.remove(request);
                     return request;
@@ -173,19 +182,19 @@ public final class ControlDriver {
                 }
                 if (Thread.currentThread() != agentThread && AgentThreads.isAgentThread()) {
                     // another group's agent thread never backs off: blocking it would stall that group's events
-                    refuse(request, "mailbox full");
+                    refuse(request, FailureKind.REFUSED_ADMISSION, "mailbox full");
                     throw new IllegalStateException("group " + group + ": " + queueName(request.kind())
-                            + " queue is full (" + mailbox.capacity() + ") and an agent thread never waits for it");
+                            + " request refused: mailbox full (capacity " + mailbox.capacity() + "); an agent thread never waits for it");
                 }
                 if (Thread.currentThread() == agentThread) {
-                    refuse(request, "mailbox full");
+                    refuse(request, FailureKind.REFUSED_ADMISSION, "mailbox full");
                     throw new IllegalStateException("group " + group + ": " + queueName(request.kind())
-                            + " queue is full (" + mailbox.capacity() + ") and cannot drain while its own thread waits on it");
+                            + " request refused: mailbox full (capacity " + mailbox.capacity() + "); it cannot drain while its own thread waits on it");
                 }
                 if (System.nanoTime() - deadline > 0) {
-                    refuse(request, "mailbox full");
+                    refuse(request, FailureKind.REFUSED_ADMISSION, "mailbox full");
                     throw new IllegalStateException("group " + group + ": " + queueName(request.kind())
-                            + " queue stayed full (" + mailbox.capacity() + ") for "
+                            + " request refused: mailbox full (capacity " + mailbox.capacity() + ") for "
                             + TimeUnit.NANOSECONDS.toMillis(fullTimeoutNanos) + " ms; is the group's thread running?");
                 }
                 LockSupport.parkNanos(50_000);
@@ -203,15 +212,16 @@ public final class ControlDriver {
      */
     public ControlRequest trySend(ControlRequest request) {
         if (request.requestId() < 0) request.assignId(requestIds.incrementAndGet());
+        request.markRepliesWith(this::marked);
         outstanding.add(request);
         if (ended()) {
             refuseTerminal(request);
             return request;
         }
         if (!mailbox.offer(request)) {
-            refuse(request, "mailbox full");
-            throw new IllegalStateException("group " + group + ": " + queueName(request.kind()) + " queue is full ("
-                    + mailbox.capacity() + ") and the sender cannot wait for it");
+            refuse(request, FailureKind.REFUSED_ADMISSION, "mailbox full");
+            throw new IllegalStateException("group " + group + ": " + queueName(request.kind())
+                    + " request refused: mailbox full (capacity " + mailbox.capacity() + "); the sender cannot wait for it");
         }
         if (ended()) {
             refuseTerminal(request);
@@ -288,17 +298,25 @@ public final class ControlDriver {
     }
 
     private void refuseTerminal(ControlRequest request) {
-        if (request.completeUnclaimed(ControlReply.notRunning(request.requestId(), "group " + group + " is " + state.get()))) {
+        GroupState now = state.get();
+        FailureKind kind = terminalKind(now);
+        if (request.completeUnclaimed(marked(ControlReply.notRunning(request.requestId(), kind, "group " + group + " is " + now)))) {
             request.runUnapplied();
-            audit.fallback("NotRunning", "group", group, "requestId", request.requestId(), "request", request.description());
+            audit.fallback("NotRunning", "group", group, "requestId", request.requestId(), "request", request.description(),
+                    "kind", kind);
         }
         outstanding.remove(request);
     }
 
-    private void refuse(ControlRequest request, String why) {
-        if (request.completeUnclaimed(new ControlReply(request.requestId(), ReplyOutcome.REFUSED, why, -1, null))) {
+    /** A request never applied because its group has ended: a dead group's is a death outcome, otherwise a refusal. */
+    private static FailureKind terminalKind(GroupState state) {
+        return state == GroupState.DEAD ? FailureKind.FAILED_DEAD : FailureKind.REFUSED_STATE;
+    }
+
+    private void refuse(ControlRequest request, FailureKind kind, String why) {
+        if (request.completeUnclaimed(marked(new ControlReply(request.requestId(), ReplyOutcome.REFUSED, why, -1, null, kind)))) {
             request.runUnapplied();
-            audit.fallback("Refused", "group", group, "requestId", request.requestId(), "reason", why);
+            audit.fallback("Refused", "group", group, "requestId", request.requestId(), "reason", why, "kind", kind);
         }
         outstanding.remove(request);
     }
@@ -368,7 +386,7 @@ public final class ControlDriver {
             return;
         }
         if (controlWedged) {
-            complete(request, ReplyOutcome.FAILED, "control processor is wedged");
+            complete(request, FailureKind.FAILED_RULE, "control processor is wedged");
             return;
         }
         claimed.put(request.requestId(), request);
@@ -379,11 +397,12 @@ public final class ControlDriver {
         try {
             processor.onEvent(input);
         } catch (Throwable t) {
-            // a throw from a rule leaves the generated processor's processing flag set: it cannot dispatch again
+            // a rule threw: the runtime (1.1.3) clears the processing flag, but the rules' state may be half updated,
+            // so this control graph is never dispatched to again
             controlWedged = true;
             audit.fallback("Anomaly", "group", group, "requestId", input.requestId(),
-                    "description", "control processor threw during dispatch: " + t);
-            if (request != null) complete(request, ReplyOutcome.FAILED, "control processor threw: " + t);
+                    "description", "control processor threw during dispatch: " + t, "kind", FailureKind.FAILED_RULE);
+            if (request != null) complete(request, FailureKind.FAILED_RULE, "control processor threw: " + t);
             markDead("control processor threw during dispatch");
             if (t instanceof VirtualMachineError e) {
                 failClaimed("group died: " + e);   // the agent owns what it claimed: answered before the thread ends
@@ -402,18 +421,18 @@ public final class ControlDriver {
                 audit.fallback("Anomaly", "group", group, "requestId", input.requestId(),
                         "description", "effects did not settle after " + MAX_EFFECT_ROUNDS + " batchEnd rounds; still asking for "
                                 + (left.isEmpty() ? "nothing" : left.get(0).effect()));
-                if (request != null) complete(request, ReplyOutcome.FAILED, "effects did not settle");
+                if (request != null) complete(request, FailureKind.FAILED_RULE, "effects did not settle");
                 return;
             }
             try {
                 processor.batchEnd();
             } catch (Throwable t) {
-                // a rule threw while an outcome was dispatched inside batchEnd: the generated method has no finally,
-                // so the processor's processing flag stays set and it cannot dispatch again
+                // a rule threw while an outcome was dispatched inside batchEnd: as for dispatch, its state may be half
+                // updated, so the graph is never dispatched to again
                 controlWedged = true;
                 audit.fallback("Anomaly", "group", group, "requestId", input.requestId(),
-                        "description", "control processor threw during batchEnd: " + t);
-                if (request != null) complete(request, ReplyOutcome.FAILED, "control processor threw: " + t);
+                        "description", "control processor threw during batchEnd: " + t, "kind", FailureKind.FAILED_RULE);
+                if (request != null) complete(request, FailureKind.FAILED_RULE, "control processor threw: " + t);
                 markDead("control processor threw during batchEnd");
                 if (t instanceof VirtualMachineError e) {
                     failClaimed("group died: " + e);
@@ -427,10 +446,10 @@ public final class ControlDriver {
                 if (fatal instanceof VirtualMachineError e) {
                     for (ControlEffect a : abandoned) {
                         audit.fallback("EffectOutcome", "group", group, "opId", a.opId(), "effect", a.effect(),
-                                "outcome", "failed", "reason", "abandoned");
+                                "outcome", "failed", "reason", "abandoned", "kind", FailureKind.FAILED_DRIVER_FALLBACK);
                     }
                     audit.fallback("Anomaly", "group", group, "requestId", input.requestId(), "description", "fatal: " + e);
-                    if (request != null) complete(request, ReplyOutcome.FAILED, "fatal error: " + e);
+                    if (request != null) complete(request, FailureKind.FAILED_DEAD, "fatal error: " + e);
                     markDead("fatal error while performing effects");
                     // earlier requests it claimed and still owes (an audit start waiting on its open) are answered by the
                     // agent itself now, before its thread ends: no later call is needed (follow-up review, finding 1)
@@ -442,7 +461,7 @@ public final class ControlDriver {
                 // the processor is usable again: give every abandoned request a recorded final outcome
                 for (ControlEffect a : abandoned) {
                     dispatch(new EffectResult(a.opId(), a.requestId(), a.effect(), ControlOutcome.FAILED, a.generation(),
-                            a.name(), "abandoned"), null);
+                            a.name(), "abandoned", FailureKind.FAILED_DRIVER_FALLBACK), null);
                     if (controlWedged) return;
                 }
             }
@@ -451,26 +470,56 @@ public final class ControlDriver {
         // asynchronous effect (an audit start waiting on its open): answer it here rather than leave it pending
         if (request != null && claimed.containsKey(request.requestId())
                 && !processor.controlState.awaitsCompletion(request.requestId())) {
-            complete(request, ReplyOutcome.FAILED, "no reply after its effects settled");
+            complete(request, FailureKind.FAILED_DRIVER_FALLBACK, "no reply after its effects settled");
         }
     }
 
     /** The control processor's Reply effect lands here: complete the claimed request once. */
     public boolean reply(long requestId, ReplyOutcome outcome, String reason, long generation, String name) {
+        return reply(requestId, outcome, reason, generation, name, FailureKind.defaultFor(outcome));
+    }
+
+    /** As {@link #reply(long, ReplyOutcome, String, long, String)}, with the rule's structured classification. */
+    public boolean reply(long requestId, ReplyOutcome outcome, String reason, long generation, String name,
+                         FailureKind kind) {
         ControlRequest request = claimed.remove(requestId);
         if (request == null) return false;
-        boolean delivered = request.completeClaimed(new ControlReply(requestId, outcome, reason, generation, name));
+        boolean delivered = request.completeClaimed(marked(new ControlReply(requestId, outcome, reason, generation, name, kind)));
         outstanding.remove(request);
         return delivered;
     }
 
-    private void complete(ControlRequest request, ReplyOutcome outcome, String reason) {
+    /**
+     * The driver answers a claimed request FAILED because the control processor could not (principle 1: the reply has
+     * an identified author). {@code replyAuthor: DRIVER} names the author and {@code kind} the cause
+     * ({@code FAILED_RULE}, {@code FAILED_DRIVER_FALLBACK}, or {@code FAILED_DEAD} on a fatal error). {@code failureKind}
+     * keeps its 1.0.33-rc1 meaning, "a driver-authored reply", and is always {@code FAILED_DRIVER_FALLBACK}, so an rc1
+     * validator still rejects every driver reply.
+     */
+    private void complete(ControlRequest request, FailureKind kind, String reason) {
         claimed.remove(request.requestId());
-        if (request.completeClaimed(new ControlReply(request.requestId(), outcome, reason, -1, null))) {
-            audit.fallback(outcome.name(), "group", group, "requestId", request.requestId(), "reason", reason,
-                    "replyAuthor", "DRIVER", "failureKind", "FAILED_DRIVER_FALLBACK");
+        if (request.completeClaimed(marked(new ControlReply(request.requestId(), ReplyOutcome.FAILED, reason, -1, null, kind)))) {
+            audit.fallback(ReplyOutcome.FAILED.name(), "group", group, "requestId", request.requestId(), "reason", reason,
+                    "replyAuthor", "DRIVER", "kind", kind, "failureKind", FailureKind.FAILED_DRIVER_FALLBACK);
         }
         outstanding.remove(request);
+    }
+
+    /**
+     * Mark {@code request}'s replies as this group marks its own (issue #77, review R3): for a request answered without
+     * being sent, such as a broadcast the group could not accept.
+     */
+    public ControlRequest markReplies(ControlRequest request) {
+        request.markRepliesWith(this::marked);
+        return request;
+    }
+
+    /**
+     * Fail closed on evidence (issue #77, M3): while the group's control audit has an unacknowledged write failure,
+     * every reply is marked {@code evidence = UNVERIFIED}. Nothing is refused because of it.
+     */
+    private ControlReply marked(ControlReply reply) {
+        return audit.evidenceDegraded() ? reply.unverified() : reply;
     }
 
     /** The request being applied with this id, for the group's effects to find their payload. */
@@ -489,7 +538,8 @@ public final class ControlDriver {
     public void close() {
         GroupState before = state.get();
         if (before == GroupState.CLOSED) return;
-        if (before != GroupState.DEAD) state.set(GroupState.CLOSING);
+        // never overwrite DEAD (or CLOSED) set concurrently by the death path: kinds are derived from this state
+        state.updateAndGet(s -> s == GroupState.DEAD || s == GroupState.CLOSED ? s : GroupState.CLOSING);
         List<ControlRequest> held = new ArrayList<>();
         for (ControlRequest r; (r = mailbox.poll()) != null; ) held.add(r);
         if (!controlWedged && before != GroupState.DEAD) {
@@ -512,8 +562,8 @@ public final class ControlDriver {
             // recorded by the control processor
             for (ControlInput c; !controlWedged && (c = completions.poll()) != null; ) dispatch(c, null);
         }
-        failClaimed("group ended");
-        if (state.get() != GroupState.DEAD) state.set(GroupState.CLOSED);
+        failClaimed(state.get() == GroupState.DEAD ? FailureKind.FAILED_DEAD : FailureKind.FAILED_SHUTDOWN, "group ended");
+        state.updateAndGet(s -> s == GroupState.DEAD ? s : GroupState.CLOSED);
         LIVE.remove(this);
         sweep();
         orphanLeftovers();
@@ -544,7 +594,7 @@ public final class ControlDriver {
             if (s == GroupState.DEAD || s == GroupState.CLOSED) break;
         } while (!state.compareAndSet(s, GroupState.DEAD));
         if (s != GroupState.DEAD && s != GroupState.CLOSED) {
-            audit.fallback("Dead", "group", group, "reason", why);
+            audit.fallback("Dead", "group", group, "reason", why, "kind", FailureKind.FAILED_DEAD);
         }
         // A wedged control graph may mark itself dead without terminating the data agent. Its owner can answer
         // older claimed requests now; an external detector must wait for thread termination before touching them.
@@ -557,9 +607,12 @@ public final class ControlDriver {
     public void sweep() {
         for (ControlRequest r : outstanding.toArray(new ControlRequest[0])) {
             if (r.isClaimed()) continue;
-            if (r.completeUnclaimed(ControlReply.notRunning(r.requestId(), "group " + group + " is " + state.get()))) {
+            GroupState now = state.get();
+            FailureKind kind = terminalKind(now);
+            if (r.completeUnclaimed(marked(ControlReply.notRunning(r.requestId(), kind, "group " + group + " is " + now)))) {
                 r.runUnapplied();
-                audit.fallback("NotRunning", "group", group, "requestId", r.requestId(), "request", r.description());
+                audit.fallback("NotRunning", "group", group, "requestId", r.requestId(), "request", r.description(),
+                        "kind", kind);
             }
             if (r.isReplied()) outstanding.remove(r);
         }
@@ -570,6 +623,11 @@ public final class ControlDriver {
      * joined (which gives the caller a happens-before edge with everything the agent wrote).
      */
     public void failClaimed(String why) {
+        failClaimed(FailureKind.FAILED_DEAD, why);
+    }
+
+    /** As {@link #failClaimed(String)}: {@code FAILED_DEAD} after death, {@code FAILED_SHUTDOWN} at an orderly close. */
+    public void failClaimed(FailureKind kind, String why) {
         List<ControlRequest> pending;
         synchronized (this) {
             pending = new ArrayList<>(claimed.values());
@@ -580,13 +638,13 @@ public final class ControlDriver {
         VirtualMachineError fatal = null;
         for (ControlRequest r : pending) {
             try {
-                if (r.completeClaimed(new ControlReply(r.requestId(), ReplyOutcome.FAILED, why, -1, null))) {
-                    audit.fallback("Failed", "group", group, "requestId", r.requestId(), "reason", why);
+                if (r.completeClaimed(marked(new ControlReply(r.requestId(), ReplyOutcome.FAILED, why, -1, null, kind)))) {
+                    audit.fallback("Failed", "group", group, "requestId", r.requestId(), "reason", why, "kind", kind);
                 }
             } catch (Throwable callbackFailure) {
                 // ControlRequest completes its future in finally even if its legacy callback throws. Finish the
                 // other detached claims as well, then propagate a fatal callback failure after all replies exist.
-                audit.fallback("Failed", "group", group, "requestId", r.requestId(), "reason", why);
+                audit.fallback("Failed", "group", group, "requestId", r.requestId(), "reason", why, "kind", kind);
                 audit.fallback("Anomaly", "group", group, "requestId", r.requestId(),
                         "description", "terminal reply callback failed: " + callbackFailure);
                 if (callbackFailure instanceof VirtualMachineError e && fatal == null) fatal = e;
@@ -603,6 +661,7 @@ public final class ControlDriver {
      */
     void registerUnpublished(ControlRequest request) {
         if (request.requestId() < 0) request.assignId(requestIds.incrementAndGet());
+        request.markRepliesWith(this::marked);
         outstanding.add(request);
     }
 

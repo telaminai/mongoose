@@ -176,6 +176,7 @@ class ReplayIdentityTest {
             awaitTrue(() -> s.replayer().outputs(PROCESSOR).size() >= 2, "stop() replayed");
             assertEquals(live.subList(0, 2), s.replayer().outputs(PROCESSOR).stream().map(String::valueOf).toList());
             assertNull(s.replayer().stopped(PROCESSOR), "no divergence in the replayed stop");
+            assertNull(s.replayer().stopKind(PROCESSOR), "an unstopped replay has no stop kind");
 
             // registered BEFORE the re-add here: the replay still delivers it where the recorded run had it
             s.server().registerService(new Service<>(new Extra() { }, Extra.class, "extra"));
@@ -200,6 +201,8 @@ class ReplayIdentityTest {
             String secondKey = ReplayStreams.key(PROCESSOR, 2);
             awaitTrue(() -> s.replayer().stopped(secondKey) != null, "stopped with a reason");
             assertTrue(s.replayer().stopped(secondKey).contains("no stream was recorded"), s.replayer().stopped(secondKey));
+            assertEquals(com.telamin.mongoose.control.event.FailureKind.REPLAY_IDENTITY_MISMATCH, s.replayer().stopKind(secondKey),
+                    "a stream that cannot be identified is an identity mismatch");
         }
     }
 

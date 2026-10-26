@@ -171,7 +171,9 @@ Implications:
 ### When one processor fails
 
 A processor group keeps one processor's failure away from the other processors in the group and from the group's
-agent error handler (under `bootServer`, `GlobalErrorHandler`, which exits the process). Each failure is reported once
+agent error handler (under `bootServer`, `GlobalErrorHandler`, which logs it and exits the process only under the opt-in
+`fatalErrorPolicy: EXIT_PROCESS`). Fluxtion-generated processors are quarantined instead of dropped or retried (see
+the [contract](../reference/control-plane-contracts.md#generated-processor-failure-containment)). Each failure is reported once
 through `ErrorReporting` at `ERROR`:
 
 | Failure | What happens |
@@ -183,7 +185,8 @@ through `ErrorReporting` at `ERROR`:
 | A timer callback throws | Reported, naming the processor. The other timers fire. |
 
 Every `Throwable` is caught on these paths except `VirtualMachineError` (`OutOfMemoryError`, `StackOverflowError`, ...),
-which still reaches the agent error handler and, under `bootServer`, exits the process.
+which still reaches the agent error handler. Under `bootServer` the default `fatalErrorPolicy: CONTAIN` keeps the process
+up: the group's thread ends, the group is DEAD and `group:<name>/control` reports DOWN. `EXIT_PROCESS` exits instead.
 
 ## 7) FAQ
 

@@ -65,6 +65,34 @@ public interface MongooseCountersService {
         return counter("queue." + path + ".dropped");
     }
 
+    /** Refused BLOCK_WITH_DEADLINE publishes attributed to the queue (telaminai/mongoose#79). Label {@code queue.{path}.refused}. */
+    default MongooseCounter queueRefusalCounter(String path) {
+        return counter("queue." + path + ".refused");
+    }
+
+    /** Publishes that waited for room in the queue, delivered or refused (#79). Label {@code queue.{path}.blocked}. */
+    default MongooseCounter queueBlockCounter(String path) {
+        return counter("queue." + path + ".blocked");
+    }
+
+    /** Total time publishes waited for the queue, ns, written with setOrdered (#79). Label {@code queue.{path}.blockedNanos}. */
+    default MongooseCounter queueBlockedNanosGauge(String path) {
+        return counter("queue." + path + ".blockedNanos");
+    }
+
+    /** Longest single wait for the queue, ns, written with setOrdered (#79). Label {@code queue.{path}.blockedMaxNanos}. */
+    default MongooseCounter queueBlockedMaxNanosGauge(String path) {
+        return counter("queue." + path + ".blockedMaxNanos");
+    }
+
+    /**
+     * Publishes on a feed that would have waited for a BLOCK_WITH_DEADLINE queue but ran on a thread that may not wait,
+     * and used the drop policy instead (#79). Label {@code feed.{name}.downgraded}.
+     */
+    default MongooseCounter feedDowngradeCounter(String feed) {
+        return counter("feed." + feed + ".downgraded");
+    }
+
 
     /**
      * Counter tracking events dispatched to the given processor.

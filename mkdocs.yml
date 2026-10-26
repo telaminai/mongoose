@@ -72,7 +72,7 @@ extra:
   # Define variables here
   source_root: https://github.com/telaminai/mongoose/tree/feature/control-plane/src
   example_root: https://github.com/telaminai/mongoose-examples/tree/main
-  mongoose_version: 1.0.33
+  mongoose_version: 1.1.0
   release_date: "RC pending publication"
 
 nav:
@@ -114,6 +114,7 @@ nav:
           - Investigate control audit: example/how-to/how-to-investigate-control-audit.md
           - Write a custom EventToInvokeStrategy: example/how-to/how-to-writing-a-custom-event-to-invoke-strategy.md
           - Event source read strategy: guide/read-strategy.md
+          - Configuring overload and loss: guide/overload-configuration.md
           - Zero‑GC object pooling: example/how-to/how-to-object-pool.md
           - Core pin agent threads: example/how-to/how-to-core-pin.md
           - Performance monitoring: example/how-to/how-to-performance-monitoring.md
@@ -137,9 +138,13 @@ nav:
           - Agent Execution: architecture/agent-execution.md
           - Threading model: architecture/threading-model.md
           - Object pooling: architecture/object_pooling.md
+          - Overload and loss policy (design): design/overload-policy.md
           - Server control: architecture/server-control.md
+          - Failure handling (design, issue 77): design/failure-handling.md
       - Reference:
           - Control plane contracts: reference/control-plane-contracts.md
+          - Release notes (1.1.0): release/release-notes-1.1.0.md
+          - Migration to 1.1.0: release/client-migration-1.1.0.md
           - Release notes (1.0.33): release/release-notes-1.0.33.md
           - Client migration checklist: release/client-migration-1.0.33.md
           - RC release procedure: release/rc-release-procedure.md

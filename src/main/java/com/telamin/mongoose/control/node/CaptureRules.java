@@ -187,13 +187,18 @@ public class CaptureRules extends EventLogNode {
         if (open != null) open.settled = true;
         reg.capture = Capture.OFF;
         reg.captureOp = null;
-        return answerWaiters(reg, ReplyOutcome.REFUSED, why);
+        return answerWaiters(reg, ReplyOutcome.REFUSED, com.telamin.mongoose.control.event.FailureKind.REFUSED_STATE, why);
     }
 
     /** The replies to every audit start waiting on {@code reg}'s open; each op id names the request it answers. */
     private List<ControlEffect> answerWaiters(Reg reg, ReplyOutcome outcome, String why) {
+        return answerWaiters(reg, outcome, com.telamin.mongoose.control.event.FailureKind.defaultFor(outcome), why);
+    }
+
+    /** As above, classified as {@code kind}: an effect result's own kind when the waiters' failure came from one. */
+    private List<ControlEffect> answerWaiters(Reg reg, ReplyOutcome outcome, com.telamin.mongoose.control.event.FailureKind kind, String why) {
         List<ControlEffect> replies = new ArrayList<>();
-        for (long waiter : reg.captureWaiters) replies.add(reply(waiter, reg.generation, reg.name, outcome, why));
+        for (long waiter : reg.captureWaiters) replies.add(reply(waiter, reg.generation, reg.name, outcome, kind, why));
         reg.captureWaiters.clear();
         return replies;
     }
@@ -249,7 +254,7 @@ public class CaptureRules extends EventLogNode {
                 reg.capture = Capture.OFF;
                 reg.captureOp = null;
                 decideCompletion("captureOpenFailed", open.generation, name, -1, null,
-                        answerWaiters(reg, ReplyOutcome.FAILED, "open failed: " + c.reason()).toArray(new ControlEffect[0]));
+                        answerWaiters(reg, ReplyOutcome.FAILED, com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT, "open failed: " + c.reason()).toArray(new ControlEffect[0]));
             } else {
                 decideCompletion("captureOpenFailedStale", open.generation, name, -1,
                         note("stale", true, "cleared", c.opId()));
@@ -322,7 +327,7 @@ public class CaptureRules extends EventLogNode {
             reg.capture = Capture.OFF;
             reg.captureOp = null;
             decideCompletion("captureOpenTimedOut", reg.generation, reg.name, -1, null,
-                    answerWaiters(reg, ReplyOutcome.FAILED, "open timed out").toArray(new ControlEffect[0]));
+                    answerWaiters(reg, ReplyOutcome.FAILED, com.telamin.mongoose.control.event.FailureKind.FAILED_EFFECT, "open timed out").toArray(new ControlEffect[0]));
         } finally {
             state.release(open.rootId);
         }
@@ -347,7 +352,7 @@ public class CaptureRules extends EventLogNode {
                     reg.capture = Capture.OFF;
                     reg.captureOp = null;
                     decide("captureOpenNotStarted", reg.generation, reg.name, "Opening", "Off", null,
-                            answerWaiters(reg, ReplyOutcome.FAILED, "open failed: " + result.reason())
+                            answerWaiters(reg, ReplyOutcome.FAILED, result.kind(), "open failed: " + result.reason())
                                     .toArray(new ControlEffect[0]));
                 }
                 return true;
@@ -374,7 +379,7 @@ public class CaptureRules extends EventLogNode {
                     reg.capture = Capture.OFF;
                     reg.captureOp = null;
                     reg.captureResource = -1;
-                    requested.addAll(answerWaiters(reg, ReplyOutcome.FAILED, "install failed: " + result.reason()));
+                    requested.addAll(answerWaiters(reg, ReplyOutcome.FAILED, result.kind(), "install failed: " + result.reason()));
                 }
                 decide("captureInstallFailed", result.generation(), result.name(), "Opening", "Off", null,
                         requested.toArray(new ControlEffect[0]));
@@ -385,6 +390,7 @@ public class CaptureRules extends EventLogNode {
                 if (chain == null || chain.kind != ChainKind.AUDIT_STOP) {
                     if (chain != null && !result.succeeded()) {
                         chain.failure = "processor released, but capture uninstall failed: " + result.reason();
+                        chain.failureKind = result.kind();
                     }
                     return false;   // part of a release: its close follows the release
                 }
@@ -395,7 +401,7 @@ public class CaptureRules extends EventLogNode {
                     if (reg != null && reg.captureResource == res) reg.capture = Capture.RECORDING;
                     if (r != null) r.state = ResourceState.INSTALLED;
                     decide("captureUninstallFailed", result.generation(), result.name(), "Closing", "Recording", null,
-                            reply(req, result.generation(), result.name(), ReplyOutcome.FAILED,
+                            reply(req, result.generation(), result.name(), ReplyOutcome.FAILED, result.kind(),
                                     "uninstall failed: " + result.reason()));
                     return true;
                 }
@@ -460,7 +466,13 @@ public class CaptureRules extends EventLogNode {
     }
 
     private ControlEffect reply(long req, long generation, String name, ReplyOutcome outcome, String reason) {
-        return new ControlEffect.Reply(state.nextOp(req), req, generation, name, outcome, reason);
+        return reply(req, generation, name, outcome, com.telamin.mongoose.control.event.FailureKind.defaultFor(outcome), reason);
+    }
+
+    /** A capture reply classified as {@code kind}; an applied reply is always {@code NONE}. */
+    private ControlEffect reply(long req, long generation, String name, ReplyOutcome outcome, com.telamin.mongoose.control.event.FailureKind kind, String reason) {
+        return new ControlEffect.Reply(state.nextOp(req), req, generation, name, outcome, reason,
+                outcome == ReplyOutcome.APPLIED ? com.telamin.mongoose.control.event.FailureKind.NONE : kind);
     }
 
     /** Extra fields for a decision, as alternating key, value pairs. */

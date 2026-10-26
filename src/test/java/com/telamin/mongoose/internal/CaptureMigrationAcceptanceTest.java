@@ -169,18 +169,36 @@ public class CaptureMigrationAcceptanceTest {
         }
     }
 
+    /** Under the opt-in fatalErrorPolicy EXIT_PROCESS, bootServer's handler exits the process on the failed boot. */
     @Test void failedBootNeverOpensItsAutoStartCapture(@TempDir Path dir) throws Exception {
-        // bootServer deliberately installs the process-exiting error handler: isolate that real contract.
+        assertFailedBootExits(dir, "exit");
+    }
+
+    /**
+     * Issue #77 A1: under the default CONTAIN the process is not exited by Mongoose; the failed boot surfaces to the
+     * caller (here, the main method exits with 3 having caught it), and no capture is opened either way.
+     */
+    @Test void failedBootUnderTheDefaultPolicySurfacesToTheCallerAndOpensNoCapture(@TempDir Path dir) throws Exception {
+        assertFailedBootExits(dir, "contain");
+    }
+
+    private void assertFailedBootExits(Path dir, String policy) throws Exception {
         List<String> command = new ArrayList<>();
         command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
         command.addAll(java.lang.management.ManagementFactory.getRuntimeMXBean().getInputArguments().stream()
                 .filter(a -> a.startsWith("--add-opens")).toList());
-        command.addAll(List.of("-cp", System.getProperty("java.class.path"), FailedBootMain.class.getName(), dir.toString()));
+        command.addAll(List.of("-cp", System.getProperty("java.class.path"), FailedBootMain.class.getName(), dir.toString(), policy));
         Path log = dir.resolve("failed-boot.log");
         Process child = new ProcessBuilder(command).redirectErrorStream(true).redirectOutput(log.toFile()).start();
         try {
-            assertTrue(child.waitFor(20, java.util.concurrent.TimeUnit.SECONDS), "failed boot must exit");
-            assertNotEquals(0, child.exitValue());
+            assertTrue(child.waitFor(20, java.util.concurrent.TimeUnit.SECONDS), "failed boot must end the process");
+            if (policy.equals("contain")) {
+                assertEquals(3, child.exitValue(), "the caller caught the boot failure: " + Files.readString(log));
+                assertTrue(Files.readString(log).contains("caller caught boot failure"), Files.readString(log));
+            } else {
+                assertNotEquals(0, child.exitValue());
+                assertNotEquals(3, child.exitValue(), "EXIT_PROCESS exits before the caller sees the failure");
+            }
             assertTrue(Files.readString(log).contains("migration injected boot failure"), Files.readString(log));
         } finally { if (child.isAlive()) child.destroyForcibly(); }
         try (var files = Files.list(dir)) {
@@ -190,7 +208,15 @@ public class CaptureMigrationAcceptanceTest {
 
     public static class FailedBootMain {
         public static void main(String[] args) {
-            MongooseServer.bootServer(new StringReader(yaml(Path.of(args[0]), true)), r -> { });
+            boolean exit = args.length > 1 && args[1].equals("exit");
+            String config = (exit ? "fatalErrorPolicy: EXIT_PROCESS\n" : "") + yaml(Path.of(args[0]), true);
+            try {
+                MongooseServer.bootServer(new StringReader(config), r -> { });
+            } catch (Throwable failed) {
+                System.out.println("caller caught boot failure: " + failed);
+                failed.printStackTrace(System.out);
+                System.exit(3);
+            }
             throw new AssertionError("failed processor must not produce a successful boot");
         }
     }

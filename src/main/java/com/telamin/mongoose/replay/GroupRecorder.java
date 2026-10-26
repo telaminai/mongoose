@@ -345,6 +345,21 @@ public final class GroupRecorder {
         }
     }
 
+    /**
+     * Items of {@code source} were dropped by a full queue before reaching {@code targets} (telaminai/mongoose#79): each
+     * recorded one's recording gets a {@link ReplayEntry.Dropped} entry naming the loss, at the point in its input
+     * sequence where the items would have arrived. A replay reports it and carries on: the processor never saw them.
+     * Called on the group's own thread.
+     */
+    public void inputDropped(String source, Collection<DataFlow> targets, String why) {
+        for (DataFlow t : targets) {
+            Recorded r = byFlow.get(t);
+            if (r == null || r.broken != null) continue;
+            log.warning("replay recording of " + r.name + ": " + why);
+            append(r, new ReplayEntry.Dropped(source, why, live.getAsLong()));
+        }
+    }
+
     /** A dispatch threw: marked, not reproduced (D4). */
     public void failed(String source, Object event, Throwable error, Collection<DataFlow> targets) {
         for (DataFlow t : targets) {

@@ -102,6 +102,8 @@ public class ControlState {
         public final ChainKind kind;
         public int outstanding;
         public String failure;
+        /** The structured kind of {@link #failure}, from the effect result that caused it. */
+        public com.telamin.mongoose.control.event.FailureKind failureKind;
         public boolean failBoot;
 
         Chain(long requestId, ChainKind kind) {

@@ -144,6 +144,9 @@ class IndependentReviewReplayProbesTest {
             assertTrue(stopped != null || live.trace.equals(replayed.trace),
                     "a withdrawal of a service the processor never held was reported as reproduced:"
                             + " recorded=" + live.trace + ", replayed=" + replayed.trace + ", stopped=" + stopped);
+            // issue #77: the routing marks this as an identity failure (mismatch: prefix), never a generic stop
+            assertEquals(com.telamin.mongoose.control.event.FailureKind.REPLAY_IDENTITY_MISMATCH,
+                    rig.group.replayer().stopKind("p"), "stopped=" + stopped);
         }
     }
 

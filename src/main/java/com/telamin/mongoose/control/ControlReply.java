@@ -4,21 +4,64 @@
  */
 package com.telamin.mongoose.control;
 
+import com.telamin.mongoose.control.event.EvidenceStatus;
+import com.telamin.mongoose.control.event.FailureKind;
 import com.telamin.mongoose.control.event.ReplyOutcome;
 
 /**
  * The one final answer to a control request. {@code APPLIED} means the change is complete, not just accepted.
  *
  * @param requestId  the request it answers
+ * @param reason     human-readable detail; never parse it, classify by {@code kind}
  * @param generation the registration it concerns, or -1
+ * @param kind       the structured failure classification ({@link FailureKind#NONE} when applied); never null
  */
-public record ControlReply(long requestId, ReplyOutcome outcome, String reason, long generation, String name) {
+public record ControlReply(long requestId, ReplyOutcome outcome, String reason, long generation, String name,
+                           FailureKind kind, EvidenceStatus evidence) {
+
+    /**
+     * Normalised so that {@code kind == NONE} exactly when {@code outcome == APPLIED}; a null {@code evidence} is
+     * {@code NOT_DEGRADED}. See {@link EvidenceStatus}: {@code NOT_DEGRADED} means the audit was not degraded when the
+     * reply was made, not that every record of the request landed.
+     */
+    public ControlReply {
+        if (outcome == ReplyOutcome.APPLIED) kind = FailureKind.NONE;
+        else if (kind == null || kind == FailureKind.NONE) kind = FailureKind.defaultFor(outcome);
+        if (evidence == null) evidence = EvidenceStatus.NOT_DEGRADED;
+    }
+
+    /** A reply made while the audit was not degraded ({@code evidence = NOT_DEGRADED}). */
+    public ControlReply(long requestId, ReplyOutcome outcome, String reason, long generation, String name,
+                        FailureKind kind) {
+        this(requestId, outcome, reason, generation, name, kind, EvidenceStatus.NOT_DEGRADED);
+    }
+
+    /**
+     * The pre-taxonomy constructor: the kind is the outcome's broadest class ({@link FailureKind#defaultFor}). Engine
+     * code always names the kind.
+     */
+    public ControlReply(long requestId, ReplyOutcome outcome, String reason, long generation, String name) {
+        this(requestId, outcome, reason, generation, name, FailureKind.defaultFor(outcome));
+    }
 
     public boolean applied() {
         return outcome == ReplyOutcome.APPLIED;
     }
 
-    static ControlReply notRunning(long requestId, String why) {
-        return new ControlReply(requestId, ReplyOutcome.NOT_RUNNING, why, -1, null);
+    /**
+     * True when the reply was made while the group's control audit was degraded: its evidence may be missing. False
+     * does not prove the request's records all landed (see {@link EvidenceStatus}).
+     */
+    public boolean madeWhileAuditDegraded() {
+        return evidence == EvidenceStatus.UNVERIFIED;
+    }
+
+    /** This reply marked as made without verifiable evidence. */
+    public ControlReply unverified() {
+        return new ControlReply(requestId, outcome, reason, generation, name, kind, EvidenceStatus.UNVERIFIED);
+    }
+
+    static ControlReply notRunning(long requestId, FailureKind kind, String why) {
+        return new ControlReply(requestId, ReplyOutcome.NOT_RUNNING, why, -1, null, kind);
     }
 }
