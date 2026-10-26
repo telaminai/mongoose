@@ -27,12 +27,24 @@ class AdminStopCommandValidationTest {
     }
 
     @Test
-    void malformedAndUnknownStopsAreRefusedNeverPending() {
+    void malformedAndUnknownStopsAreRefusedNeverPending() throws Exception {
         MongooseServer server = new MongooseServer(new MongooseServerConfig());
         server.init();
         server.start();
         try {
             server.addEventProcessor("quotes", "trading", null, AdminStopCommandValidationTest::processor);
+            // Admission/start replies do not promise that the group's asynchronous bootstrap has settled.
+            // Test the RUNNING JSON contract only after observing that state, not a scheduler-dependent instant.
+            long readyBy = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            while (System.nanoTime() < readyBy) {
+                var status = server.controlGroupStatus("trading");
+                if (status.state() == com.telamin.mongoose.control.ControlDriver.GroupState.RUNNING
+                        && status.outstandingRequests() == 0) break;
+                Thread.sleep(1);
+            }
+            assertEquals(com.telamin.mongoose.control.ControlDriver.GroupState.RUNNING,
+                    server.controlGroupStatus("trading").state(), "group did not finish bootstrap");
+            assertEquals(0, server.controlGroupStatus("trading").outstandingRequests());
             var commands = new ControlAuditAdminExportTest.Commands();
             MongooseServerAdmin admin = new MongooseServerAdmin();
             admin.admin(commands);
