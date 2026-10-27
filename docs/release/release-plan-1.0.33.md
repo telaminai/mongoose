@@ -35,8 +35,7 @@ Integration commits (on `integration/next-release`; to land as one follow-up PR 
 - **#65 × #74**: at server stop `stopAll` forgets each instance before ending its capture, since #74's stop refuses a
   closed group.
 
-All open issues found by the reviews are fixed. Not covered: the HandlerPipe-based rate-solver `EventPipe` replacement
-(maker-fxoc side, §6).
+All open issues found by the reviews are fixed. Not covered: downstream client code that has not yet moved to Mongoose.
 
 ### mongoose-plugins (telaminai/mongoose-plugins)
 
@@ -170,12 +169,3 @@ The control-plane changes of PR #76 are not part of 1.0.33. Several of them supe
 | Plugins' fluxtion 1.0.15 vs Mongoose's 1.1.x | The adoption PR bumps fluxtion-bom; run the reactor with tests. |
 | A plugin implements `MongooseAuditCaptureService` | `detach` has a default no-op; nothing to change. |
 | Stacked PRs merged out of order | Merge strictly in the stack order above; each PR's body names its base. |
-
-## 6. Our own code (nonco)
-
-maker-fxoc and fluxtion-server-plugins run on the older `com.fluxtion.server` 0.2.x, not on Mongoose, so this
-release does not change production. It matters when maker-fxoc moves to Mongoose: at that point the UI's admin
-client sees 404 for unknown commands (svc-admin-rest), and the trading plugin and venue fixes made on 0.2.x move with
-it. The same HandlerPipe publish path exists in 0.2.16; nothing in our code uses HandlerPipe today. The rate
-solver's `EventPipe` (fluxtion-server-plugins) is lock-serialised and was converged with HandlerPipe's use and
-config, so it can be replaced by HandlerPipe once maker-fxoc is on Mongoose 1.0.33+.
