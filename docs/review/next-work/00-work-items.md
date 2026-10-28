@@ -9,7 +9,7 @@ mongoose-plugins). "Not tracked" means no open issue and no tracker line found.
 
 | # | Item | Priority | Tracked today | Spec |
 | --- | --- | --- | --- | --- |
-| 1 | Evidence-set key: runtime header record, Mongoose host context and sidecar, analyser pairs log and graph by fingerprint | 1 | **Issue raised** (see README) | `01-evidence-set-key.md` |
+| 1 | Evidence-set key: runtime header record, Mongoose host context and sidecar, analyser pairs log and graph by fingerprint | 1 | **fluxtionauditlog-analyser#211** | `01-evidence-set-key.md` |
 | 2 | Analyser reads Mongoose 1.1 evidence (completeness, fallback, FailureKind, degraded spans, overload/loss, capture identity) | 1 | Partly: analyser `docs/specs/tracker.md` item 5 "Mongoose 1.1 follow-through" (no issue, no PR) | `03-...` section 3.5 |
 | 3 | Analyser evidence-bundle bugs that break support handoffs | 1 | analyser #178, #179, #109 (open) | `03-...` section 3.6 |
 | 4 | Analyser pins: runtime 1.1.3, builder 1.0.83, Mongoose 1.1.1 fixtures (today 1.1.0 / 1.0.76 / Mongoose 1.0.32) | 1 | Partly: tracker item 5 | `03-...` section 6 |
