@@ -1,6 +1,6 @@
 # Spec 02: order-path visibility for processors that publish orders
 
-Status: owner decisions recorded 2026-10-28 (D1 open); ready for design review. Baseline Mongoose 1.1.1. Builds on `docs/design/overload-policy.md`
+Status: **not ready**: independent review 2026-10-28 found the design gaps in section 8; revise before implementation. Baseline Mongoose 1.1.1. Builds on `docs/design/overload-policy.md`
 (#79), section 11 "Proposed: a processor's defined reaction to a downgraded or refused outbound publish".
 
 ## 1. Problem
@@ -115,3 +115,39 @@ Mongoose: publish result 2 days, outbound state event 3 days, sizing guard 1 day
   change to `publish`'s return type. Infrastructure either way (section 1a).
 - D2 **Decided:** outbound state is delivered to every publisher of the queue.
 - D3 **Decided:** the capacity check warns; it never fails boot.
+
+## 8. Independent review, 2026-10-28: must change before implementation
+
+Verified in code by the owner's session; R-x.y are the reviewer's finding numbers.
+
+1. **First deliverable: agent-thread fail-fast (R-4.2).** A downgraded publish still spins up to the spin bound
+   (10 ms) per full queue **under the publisher lock**, even when the queue is LATCHED
+   (`EventToQueuePublisher.java:1551-1576`). A strategy re-quoting 50 instruments into a full order queue stalls
+   about 500 ms and throttles every other publisher of the feed. Change: when the target is LATCHED, or the publish
+   is downgraded on an agent thread, drop at once with no spin.
+2. **The result object must be thread-confined (R-5.1).** One `PipeSink` is shared by every processor that injects
+   the pipe (`HandlerPipe.java:42,58,72`). A per-sink preallocated result races across agent threads. Change: return
+   an outcome enum, with optional caller-owned detail.
+3. **Outcomes (R-5.2):** add `DEFERRED` (a publish nested in the feed's own commit is deferred), call the success
+   case `ENQUEUED` not `DELIVERED`, and state which cases still throw (refusal, write failure).
+4. **Delivery of `OutboundOverloadState` (R-5.3):** needs a publisher registry built at sink injection; a
+   per-processor latest-value slot, coalesced, delivered on the processor's agent thread at the next cycle boundary,
+   never through the processor's own droppable input queue; ordering "after the cycle that caused it"; a flapping
+   rate limit; no cycle for processors without a handler.
+5. **Evidence join (R-3.2, R-5.4):** `QueueDrop` is written only for the first drop per binding
+   (`EventToQueuePublisher.java:1649`) and uses wall-clock time. Record every drop on never-drop feeds (or sequence
+   ranges), with the publishing processor's `group/name/run` and cycle reference.
+6. **Late versus lost (R-6.1):** stamp the publish time on the item and offer an optional maximum age consumers can
+   enforce. State that venue acknowledgement and reconciliation after restart are application work, with a
+   documented pattern in the synthetic trading system.
+7. **Confirm the client's order path (R-6.2):** if orders go straight to a venue connector or an exported service,
+   not through `HandlerPipe`/the publisher, this spec does not cover them.
+8. **Coupling (R-5.5):** "every publisher" plus operator-only LATCHED clear means one strategy's burst on a shared
+   order queue halts every strategy. Client topology: one order queue per strategy, or state the coupling in the
+   runbook.
+9. **Sizing margin (R-5.6):** base it on `capacity / peak rate` against the consumer's measured drain time.
+10. **D1 recommendation (R-3):** new method. `MessageSink` extends `Consumer<T>` and `AbstractMessageSink.accept` is
+    `final void`; mongoose-plugins has 9 sink implementations and 14 publish call sites. Add
+    `default PublishOutcome acceptChecked(T)` to the runtime's `MessageSink`, default `UNSUPPORTED`; Mongoose sinks
+    override it. Puts a Fluxtion runtime release on the critical path.
+

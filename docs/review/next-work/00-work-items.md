@@ -27,4 +27,14 @@ mongoose-plugins). "Not tracked" means no open issue and no tracker line found.
 | 16 | Shared canvas independent review | 3 | analyser tracker M48.17 | — |
 | 17 | Harden prerelease workflow | — | mongoose#84 (open) | — |
 
+| 18 | Agent-thread fail-fast: no spin when the queue is LATCHED or the publish is downgraded (first slice of item 5) | 1 | **Not tracked** | `02-...` section 8.1 |
+| 19 | Restart and recovery: run identity, runbook to rebuild strategy state from the venue, what a restart does to working orders | 1 | **Not tracked** | `01-...` section 2.3 (run id) |
+| 20 | Capture disk-full and retention: core never prunes; a write failure fails open and stops that recording's evidence; disk alarms, resume after failure, analyser shows the gap | 1 | **Not tracked** | — |
+| 21 | Audit volume at peak rate: measure capture cost on the agent thread in the soak (part of item 6) | 1 | with item 6 | — |
+| 22 | Compiler: stable fingerprint for filter ids of custom types (prerequisite of item 1) | 1 | **Not tracked** | `01-...` section 2.2 |
+| 23 | Clocks: drop and state records use wall clock, processor audit uses the processor clock; millisecond resolution; analyser refuses nanosecond binary logs | 2 | **Not tracked** | — |
+| 24 | Connector reconnect: core has none; confirm venue and market-data connector behaviour and evidence | 2 | **Not tracked** | — |
+
+Item 11 moves to priority 1 if the client generates through the hosted compiler with a builder below 1.0.81.
+
 Only items 3, 9, 15 and 17 have an open issue of their own.
