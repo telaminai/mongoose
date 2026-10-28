@@ -1,6 +1,6 @@
 # Spec 01: one key joins audit log, graphml and generated code; analyser reads Mongoose 1.1 evidence
 
-Status: proposed for design review, 2026-10-28. Baseline: Mongoose 1.1.1 (main 776bedc), Fluxtion runtime 1.1.3,
+Status: owner decisions recorded 2026-10-28; ready for design review. Baseline: Mongoose 1.1.1 (main 776bedc), Fluxtion runtime 1.1.3,
 builder 1.0.83, analyser 1.40.0. Repos: fluxtion (runtime), fluxtion-compiler (builder), mongoose,
 fluxtionauditlog-analyser.
 
@@ -73,10 +73,11 @@ API: `EventLogManager.setHeaderContext(Map<String,String>)` lets a host add fiel
 - **Index by key.** On import, read the header (or sidecar) of every log, and the `fluxtion.sourceFingerprint` of
   every graphml and descriptor. Group files by fingerprint.
 - **Load rule.** Opening a log selects the graphml and source with the same fingerprint. If none matches, open the
-  log with a visible "graph unknown" banner and refuse graph-dependent verbs (graph, walk, coverage) unless the
-  user picks a graph explicitly; record that choice in the evidence bundle.
-- **Mismatch.** A log whose header fingerprint differs from the loaded graph is a hard warning in the UI and an
-  error result for MCP verbs (`EVIDENCE_SET_MISMATCH`), never a silent load.
+  log with a visible "graph unknown" banner; graph-dependent verbs (graph, walk, coverage) still run, carrying the
+  warning. A graph the user picks explicitly is recorded in the evidence bundle.
+- **Mismatch (owner decision D2: warn).** A log whose header fingerprint differs from the loaded graph opens with a
+  persistent warning in the UI. Every MCP result over that pair carries `evidenceSet: MISMATCH` with both
+  fingerprints, so the LLM states it in its answer. Never a silent load, never a refusal.
 - **Generations.** A file containing more than one header splits into segments; each segment is labelled
   `group/name#generation` and never merged with another.
 - **Evidence bundles** store the key of every file they reference.
@@ -114,7 +115,8 @@ read-only). #179 should be keyed on the evidence key, which fixes it by construc
 
 1. A generated processor's audit stream starts with a header whose fingerprint equals its graphml's.
 2. Restart into a new generation: the capture shows two segments, labelled by generation, never merged.
-3. Analyser opens a log with the wrong graphml in the same folder: refuses the pair and picks the matching one.
+3. Analyser opens a log with the wrong graphml in the same folder: picks the matching one; forced onto the wrong one,
+   it warns in the UI and every MCP result carries `evidenceSet: MISMATCH`.
 4. A truncated control-audit export is shown incomplete everywhere it is used, including LLM answers.
 5. Injected overload on an order feed: the loss appears on the timeline beside the order records.
 6. All of the above exercised by the synthetic trading system (spec 03, to come) and in the analyser's tests against
@@ -129,9 +131,8 @@ read-only). #179 should be keyed on the evidence key, which fixes it by construc
 | analyser | reader tolerance (first), index and load rule, segments, 1.1 evidence table, bundle bugs, fixtures from 1.1.1 | 8-10 |
 | analyser | bump pins to runtime 1.1.3 / builder 1.0.83 and Mongoose 1.1.1 | 1 |
 
-## 7. Decisions for the owner
+## 7. Owner decisions (2026-10-28)
 
-- D1: header emitted by the runtime for every processor (recommended), or only when a host asks for it.
-- D2: mismatch refuses graph verbs (recommended) or only warns.
-- D3: whether the analyser's Mongoose 1.1 work moves ahead of the current onboarding and account items on its
-  tracker.
+- D1 **Decided:** the runtime writes the header for every processor. It is one record per stream, not per event.
+- D2 **Decided:** warn on mismatch; do not refuse.
+- D3 **Decided:** the analyser tracker order stays as is; this work runs in parallel with onboarding and account work.

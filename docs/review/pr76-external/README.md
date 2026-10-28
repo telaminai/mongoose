@@ -11,7 +11,7 @@ documents so it can be reviewed, assigned and verified independently.
 | `maintainability-plan.md` | Post-release, tracking issue | Eight refactors ordered and sized |
 | `77-reviewer-response.md` | Reviewer input requested by issue #77; owner decisions marked OWNER | Matrix additions, the four defaults, terminal-state table, failure taxonomy, proposed split of work |
 
-Next work (after 1.1.1), in `docs/review/next-work/`: `01-evidence-set-key-and-analyser-1.1.md` (common key across audit log, graphml and generated code; analyser reads Mongoose 1.1 evidence) and `02-order-path-visibility.md` (publish result and outbound overload state for order-producing processors).
+Next work (after 1.1.1), in `docs/review/next-work/`: `00-work-items.md` (all items, priority and where each is tracked), `01-evidence-set-key-and-analyser-1.1.md` (common key across audit log, graphml and generated code; analyser reads Mongoose 1.1 evidence) and `02-order-path-visibility.md` (publish result and outbound overload state for order-producing processors).
 
 Source material: `author-prompt-combined-requirements.md` (the combined requirements file) and the review
 report at the session scratchpad `pr76-review-report.md`. Reproduction tests referenced by name live under
