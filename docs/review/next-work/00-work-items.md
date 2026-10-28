@@ -1,14 +1,18 @@
 # Next work after Mongoose 1.1.1: item list and where each is tracked
 
+Focus (owner, 2026-10-28): first-use simplicity and a trustworthy main flow in the analyser. Item 1 is raised as an
+issue and specced for review. All other items are tracker items: kept in this list and the repos' trackers, raised as
+issues when they are scheduled.
+
 Checked against open GitHub issues on 2026-10-28 (mongoose, fluxtion, fluxtion-compiler, fluxtionauditlog-analyser,
 mongoose-plugins). "Not tracked" means no open issue and no tracker line found.
 
 | # | Item | Priority | Tracked today | Spec |
 | --- | --- | --- | --- | --- |
-| 1 | Evidence-set key: runtime header record, Mongoose host context and sidecar, analyser loads a consistent set | 1 | **Not tracked** (fluxtion#12 covers other graphml facts) | `01-evidence-set-key-and-analyser-1.1.md` |
-| 2 | Analyser reads Mongoose 1.1 evidence (completeness, fallback, FailureKind, degraded spans, overload/loss, capture identity) | 1 | Partly: analyser `docs/specs/tracker.md` item 5 "Mongoose 1.1 follow-through" (no issue, no PR) | `01-...` section 3.5 |
-| 3 | Analyser evidence-bundle bugs that break support handoffs | 1 | analyser #178, #179, #109 (open) | `01-...` section 3.6 |
-| 4 | Analyser pins: runtime 1.1.3, builder 1.0.83, Mongoose 1.1.1 fixtures (today 1.1.0 / 1.0.76 / Mongoose 1.0.32) | 1 | Partly: tracker item 5 | `01-...` section 6 |
+| 1 | Evidence-set key: runtime header record, Mongoose host context and sidecar, analyser pairs log and graph by fingerprint | 1 | **Issue raised** (see README) | `01-evidence-set-key.md` |
+| 2 | Analyser reads Mongoose 1.1 evidence (completeness, fallback, FailureKind, degraded spans, overload/loss, capture identity) | 1 | Partly: analyser `docs/specs/tracker.md` item 5 "Mongoose 1.1 follow-through" (no issue, no PR) | `03-...` section 3.5 |
+| 3 | Analyser evidence-bundle bugs that break support handoffs | 1 | analyser #178, #179, #109 (open) | `03-...` section 3.6 |
+| 4 | Analyser pins: runtime 1.1.3, builder 1.0.83, Mongoose 1.1.1 fixtures (today 1.1.0 / 1.0.76 / Mongoose 1.0.32) | 1 | Partly: tracker item 5 | `03-...` section 6 |
 | 5 | Order-path visibility: checked publish, outbound overload state event, sizing warning, per-processor labels | 1 | Partly: mongoose#79 design section 11 lists it as "proposed" | `02-order-path-visibility.md` |
 | 6 | Synthetic trading system as soak and acceptance test (client topology, overload and failure injection, shutdown runbook, capture to analyser loop) | 1 | **Not tracked** | to write (spec 03) |
 | 7 | Fluxtion failed cycle evidence: audit the discarded queued count, name the failing node, handler and exception in the closed record | 2 | **Not tracked** (fluxtion#47 shipped the fix without these) | `fluxtion-issue-generated-processor-wedge.md` items 2-3 |

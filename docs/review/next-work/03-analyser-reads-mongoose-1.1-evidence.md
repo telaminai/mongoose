@@ -1,4 +1,7 @@
-# Spec 01: one key joins audit log, graphml and generated code; analyser reads Mongoose 1.1 evidence
+# Tracker item: the analyser reads Mongoose 1.1 evidence
+
+The evidence-set key (sections 3.1-3.4 below) moved to its own spec, `01-evidence-set-key.md`, which supersedes
+those sections. This file is kept as the design notes for the tracker item: sections 3.5 and 3.6.
 
 Status: owner decisions recorded 2026-10-28; ready for design review. Baseline: Mongoose 1.1.1 (main 776bedc), Fluxtion runtime 1.1.3,
 builder 1.0.83, analyser 1.40.0. Repos: fluxtion (runtime), fluxtion-compiler (builder), mongoose,
