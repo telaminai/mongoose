@@ -7,6 +7,7 @@ package com.telamin.mongoose.internal;
 import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.fluxtion.runtime.audit.LogRecord;
 import com.telamin.fluxtion.runtime.audit.LogRecordListener;
+import com.telamin.fluxtion.runtime.audit.StreamHeaderRecord;
 import com.telamin.mongoose.config.AuditCaptureConfig;
 import com.telamin.mongoose.service.audit.AuditSinkHandle;
 import com.telamin.mongoose.service.audit.AuditCaptureIdentity;
@@ -766,6 +767,13 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
         private Path lastCapturePath;
         private volatile int startCycle;
         private final java.util.concurrent.atomic.AtomicLong recordCount = new java.util.concurrent.atomic.AtomicLong();
+        /**
+         * The latest stream header this recording received, and the roll cycle it was last written into. A capture
+         * rolls daily and nothing prunes it, so each cycle file must be attributable on its own: the first record
+         * written into a new cycle is preceded by the header again. Touched only by the writing thread.
+         */
+        private String lastHeader;
+        private int headerCycle = Integer.MIN_VALUE;
 
         ProcessorSink(DataFlow dataFlow, String processorName) {
             this(dataFlow, processorName, null, false);
@@ -850,6 +858,35 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             return t;
         }
 
+        /**
+         * {@code sourceFingerprint}, {@code serverId} and {@code runId} for the sidecar, each only when known: from the
+         * processor's compiled descriptor and the host context its server handed its audit manager. Never throws: a
+         * processor that cannot answer leaves the keys out, and a reader shows the capture as not verified.
+         */
+        java.util.Map<String, String> evidenceKey() {
+            java.util.Map<String, String> key = new java.util.LinkedHashMap<>();
+            DataFlow flow = dataFlow;
+            if (flow == null) return key;
+            try {
+                var descriptor = flow.getDescriptor();
+                if (descriptor != null && descriptor.sourceFingerprint() != null) {
+                    key.put("sourceFingerprint", descriptor.sourceFingerprint());
+                }
+            } catch (RuntimeException noDescriptor) {
+                // stays absent
+            }
+            try {
+                com.telamin.fluxtion.runtime.audit.EventLogManager manager =
+                        flow.getAuditorById(com.telamin.fluxtion.runtime.audit.EventLogManager.NODE_NAME);
+                java.util.Map<String, String> host = manager == null ? java.util.Map.of() : manager.getHeaderContext();
+                if (host.get("serverId") != null) key.put("serverId", host.get("serverId"));
+                if (host.get("runId") != null) key.put("runId", host.get("runId"));
+            } catch (NoSuchFieldException | IllegalAccessException | RuntimeException noAuditLog) {
+                // stays absent
+            }
+            return key;
+        }
+
         /** Opened on the caller's thread: the file I/O stays off the processor's thread. */
         ChronicleQueue openQueue(AuditCaptureConfig cfg, java.util.function.Function<Path, ChronicleQueue> builder) {
             Path procDir = null;
@@ -883,6 +920,9 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
                         metadata.setProperty("name", identity.name());
                         metadata.setProperty("generation", Long.toString(identity.generation()));
                     }
+                    // the evidence-set key, additive within schema 1: the graph this processor ran and the run it
+                    // belongs to, as its audit stream header states them
+                    evidenceKey().forEach(metadata::setProperty);
                     try (var writer = Files.newBufferedWriter(procDir.resolve(".mongoose-capture.properties"))) {
                         metadata.store(writer, "Mongoose capture owner");
                     }
@@ -936,6 +976,8 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             this.sessionFailureReported = false;
             this.firstSessionFailure = null;
             this.startCycle = a.cycle();
+            this.lastHeader = null;
+            this.headerCycle = Integer.MIN_VALUE;
             this.recordCounter = counters.counter("audit." + selector() + ".records");
             this.startedAt = Instant.now();
             Path openedPath = Path.of(opened.fileAbsolutePath());
@@ -1054,7 +1096,9 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             LogRecordListener delegate = previousListener;
             if (delegate != null) {
                 try {
-                    delegate.processLogRecord(record);
+                    // a header goes to the configured listener as a header, so it applies its own rule for one
+                    if (record instanceof StreamHeaderRecord header) delegate.processStreamHeader(header);
+                    else delegate.processLogRecord(record);
                 } catch (Throwable t) {
                     delegateFailures++;
                     log.log(Level.WARNING, "configured audit listener failed for '" + processorName
@@ -1065,18 +1109,38 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
 
         void onRecord(LogRecord record) {
             ExcerptAppender a = appender;
-            if (a == null) {
+            ChronicleQueue q = queue;
+            if (a == null || q == null) {
                 return; // raced with stop()
             }
-            CharSequence yaml = record.asCharSequence();
-            try (DocumentContext ctx = a.writingDocument()) {
-                ctx.wire().getValueOut().text(yaml);
+            if (record instanceof StreamHeaderRecord) {
+                // metadata, not an event cycle: written, never counted as a record
+                lastHeader = record.asCharSequence().toString();
+                write(a, lastHeader);
+                headerCycle = currentCycle(q);
+                return;
             }
+            if (lastHeader != null && currentCycle(q) != headerCycle) {
+                write(a, lastHeader);                   // a new cycle file starts with the header, as a new stream does
+                headerCycle = currentCycle(q);
+            }
+            write(a, record.asCharSequence());
             recordCount.incrementAndGet();
             lastWriteAt = Instant.now();
             if (recordCounter != null) {
                 recordCounter.increment();
             }
+        }
+    }
+
+    /** The cycle the next write lands in, by the queue's own clock; constant for a queue that is not a single queue. */
+    private static int currentCycle(ChronicleQueue q) {
+        return q instanceof net.openhft.chronicle.queue.impl.single.SingleChronicleQueue single ? single.cycle() : 0;
+    }
+
+    private static void write(ExcerptAppender a, CharSequence yaml) {
+        try (DocumentContext ctx = a.writingDocument()) {
+            ctx.wire().getValueOut().text(yaml);
         }
     }
 

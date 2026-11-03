@@ -1,5 +1,7 @@
 package com.telamin.mongoose.review77b;
 
+import com.telamin.fluxtion.runtime.audit.StreamHeaderRecord;
+
 import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.fluxtion.runtime.audit.LogRecord;
 import com.telamin.fluxtion.runtime.audit.LogRecordListener;
@@ -351,7 +353,7 @@ class Review77bProbesTest {
         f.setAccessible(true);
         Object processor = f.get(g.control());
         List<String> got = new ArrayList<>();
-        LogRecordListener counting = rec -> got.add(rec.asCharSequence().toString());
+        LogRecordListener counting = rec -> { if (!(rec instanceof StreamHeaderRecord)) got.add(rec.asCharSequence().toString()); };
         processor.getClass().getMethod("setAuditLogProcessor", LogRecordListener.class).invoke(processor, counting);
         System.out.println("SWAP records to new listener during the swap: " + got.size() + " " + got);
         assertEquals(1, got.size());

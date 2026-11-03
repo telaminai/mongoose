@@ -1,5 +1,7 @@
 package com.telamin.mongoose.replay.generated;
 
+import com.telamin.fluxtion.runtime.audit.StreamHeaderRecord;
+
 import com.telamin.fluxtion.runtime.audit.EventLogControlEvent;
 import com.telamin.mongoose.MongooseServer;
 import com.telamin.mongoose.config.EventFeedConfig;
@@ -63,7 +65,7 @@ class GeneratedAdminAuditTest {
                         .agent("readings-agent", new BusySpinIdleStrategy()).build())
                 .addService(new ServiceConfig<>(admin, AdminCommandRegistry.class, "adminService"))
                 .build();
-        MongooseServer server = MongooseServer.bootServer(config, r -> records.add(String.valueOf(r.asCharSequence())));
+        MongooseServer server = MongooseServer.bootServer(config, r -> { if (!(r instanceof StreamHeaderRecord)) records.add(String.valueOf(r.asCharSequence())); });
         List<Object> signalReply, lambdaReply;
         try {
             Thread.sleep(300);

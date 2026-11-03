@@ -125,6 +125,14 @@ public class MongooseServerConfig {
     private boolean isolateProcessorStartFailuresAtBoot;
 
     /**
+     * Names this server in every audit stream header ({@code host.serverId}), so a log can be traced to the
+     * deployment that wrote it. Optional: absent or blank, the host name is used. Together with the per-process
+     * run id the server creates at start, it tells one run of a static deployment from the next.
+     * YAML: {@code serverId: pricing-1}.
+     */
+    private String serverId;
+
+    /**
      * Optional performance-monitoring configuration. When absent or
      * {@code enabled = false} (the default), the no-op counters service
      * is installed and call-site overhead is zero after JIT compilation.
@@ -558,6 +566,7 @@ public class MongooseServerConfig {
         private long shutdownTimeoutMillis = DEFAULT_SHUTDOWN_TIMEOUT_MILLIS;
         private long startupTimeoutMillis = DEFAULT_STARTUP_TIMEOUT_MILLIS;
         private boolean isolateProcessorStartFailuresAtBoot;
+        private String serverId;
 
         private Builder() {
         }
@@ -568,6 +577,12 @@ public class MongooseServerConfig {
          */
         public Builder isolateProcessorStartFailuresAtBoot(boolean isolate) {
             this.isolateProcessorStartFailuresAtBoot = isolate;
+            return this;
+        }
+
+        /** Names this server in audit stream headers; see {@link MongooseServerConfig#getServerId()}. */
+        public Builder serverId(String serverId) {
+            this.serverId = serverId;
             return this;
         }
 
@@ -769,6 +784,7 @@ public class MongooseServerConfig {
             if (!agentThreads.isEmpty()) cfg.setAgentThreads(new ArrayList<>(agentThreads));
             if (idleStrategy != null) cfg.setIdleStrategy(idleStrategy);
             cfg.setIsolateProcessorStartFailuresAtBoot(isolateProcessorStartFailuresAtBoot);
+            cfg.setServerId(serverId);
             if (!eventInvokeStrategies.isEmpty()) cfg.setEventInvokeStrategies(new HashMap<>(eventInvokeStrategies));
             if (replay != null) cfg.setReplay(replay);
             cfg.setShutdownDrainTimeoutMillis(shutdownDrainTimeoutMillis);

@@ -11,7 +11,7 @@
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <fluxtion.version>1.1.3</fluxtion.version>
+        <fluxtion.version>1.1.4-SNAPSHOT</fluxtion.version>
         <!-- Compiler 1.0.80 and runtime 1.1.3 supply failed-cycle cleanup. Builder is used only by regen. -->
         <fluxtion.builder.version>1.0.80</fluxtion.builder.version>
     </properties>
@@ -163,6 +163,24 @@
     </dependencies>
 
     <build>
+        <resources>
+            <!-- com/telamin/mongoose/build.properties carries the project version (the audit stream header's
+                 mongooseVersion); it is the only filtered resource, everything else is copied byte for byte -->
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>com/telamin/mongoose/build.properties</include>
+                </includes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>com/telamin/mongoose/build.properties</exclude>
+                </excludes>
+            </resource>
+        </resources>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

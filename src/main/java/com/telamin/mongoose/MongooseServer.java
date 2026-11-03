@@ -211,10 +211,25 @@ public class MongooseServer implements MongooseServerController {
      *
      * @param mongooseServerConfig application configuration used for thread, service, and event-flow setup
      */
+    /** This server's run: server id and per-process run id, written into every audit stream header. */
+    private final com.telamin.mongoose.internal.RunIdentity runIdentity;
+
+    /** The server id written into audit stream headers: the configured {@code serverId}, else the host name. */
+    public String serverId() {
+        return runIdentity.serverId();
+    }
+
+    /** A random id created when this server was constructed; it separates one run of a deployment from the next. */
+    public String runId() {
+        return runIdentity.runId();
+    }
+
     public MongooseServer(MongooseServerConfig mongooseServerConfig) {
         refuseRecordingOverARecording(mongooseServerConfig == null ? null : mongooseServerConfig.getReplay());
         flowManager.setReplayConfig(mongooseServerConfig == null ? null : mongooseServerConfig.getReplay());
         this.mongooseServerConfig = mongooseServerConfig;
+        this.runIdentity = com.telamin.mongoose.internal.RunIdentity.create(
+                mongooseServerConfig == null ? null : mongooseServerConfig.getServerId());
 
         // Counters service — register FIRST, before any other service or
         // hot-path component construction. Per design-doc/mongoose-counters-
@@ -1837,7 +1852,15 @@ public class MongooseServer implements MongooseServerController {
     /** Build a processor from its supplier and wire it into the server (audit, perf monitor, capture). */
     private NamedEventProcessor buildNamedEventProcessor(String processorName, Supplier<DataFlow> feedConsumer,
                                                          ComposingEventProcessorAgentRunner composingEventProcessorAgentRunner, ProcessorRegistration registration) {
-        DataFlow eventProcessor = feedConsumer.get();
+        var captureIdentity = new com.telamin.mongoose.service.audit.AuditCaptureIdentity(
+                composingEventProcessorAgentRunner.group().roleName(), processorName, registration.generation());
+        // The header each audit stream begins with names this run and processor, so a reader can tell a restart of a
+        // static deployment (every generation #1) from the run before it. Stated while the supplier runs, so a
+        // configured processor has it before its supplier installs a listener; applied again after, for a supplier
+        // that does not apply it (an equal context does not re-head the stream).
+        var headerContext = runIdentity.headerContext(captureIdentity);
+        DataFlow eventProcessor = com.telamin.mongoose.internal.StreamHeaderContext.building(headerContext, feedConsumer);
+        com.telamin.mongoose.internal.StreamHeaderContext.apply(eventProcessor, headerContext);
         eventProcessor.setAuditLogProcessor(logRecordListener);
         // Auto-bind the PerformanceMonitorAudit (if present) to the YAML
         // processor name. Without this the audit's counter labels use
@@ -1854,8 +1877,6 @@ public class MongooseServer implements MongooseServerController {
         // and restore it on stop. Taken here, at attach: logRecordListener is a static that each
         // bootServer call overwrites, so reading it later would restore another server's listener.
         // mongoose#46: the capture service changes this processor's audit sink on the group's own thread
-        var captureIdentity = new com.telamin.mongoose.service.audit.AuditCaptureIdentity(
-                composingEventProcessorAgentRunner.group().roleName(), processorName, registration.generation());
         try {
             auditCaptureService.attachScoped(eventProcessor, captureIdentity, logRecordListener,
                     composingEventProcessorAgentRunner.group()::runOnAgentThread);

@@ -142,6 +142,9 @@ public final class ServerConfigurator {
                                     @SuppressWarnings("unckecked")
                                     var configMap = eventProcessorConfig.getConfig();
 
+                                    // the run context first: the listener and level changes below are audited cycles,
+                                    // and the header written with them must already name the run
+                                    StreamHeaderContext.applyTo(eventProcessor);
                                     eventProcessor.setAuditLogProcessor(logRecordListener);
                                     eventProcessor.setAuditLogLevel(logLevel);
                                     eventProcessor.init();

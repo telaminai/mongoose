@@ -1,5 +1,7 @@
 package com.telamin.mongoose.recovery;
 
+import com.telamin.fluxtion.runtime.audit.StreamHeaderRecord;
+
 import com.telamin.fluxtion.runtime.DataFlow;
 import com.telamin.fluxtion.runtime.audit.EventLogControlEvent;
 import com.telamin.mongoose.dispatch.EventToOnEventInvokeStrategy;
@@ -36,7 +38,8 @@ class CompiledClientRecoveryTest {
     @Test void failingNodeClosesOneRecordAndNextEventHasItsOwnRecord() throws Exception {
         var graph = started();
         List<String> records = new ArrayList<>();
-        graph.setAuditLogProcessor(record -> records.add(record.asCharSequence().toString()));
+        // event records only: the stream header that opens the new sink's stream is metadata
+        graph.setAuditLogProcessor(record -> { if (!(record instanceof StreamHeaderRecord)) records.add(record.asCharSequence().toString()); });
         assertEquals(1, records.size(), "installing the listener is itself an audited configuration event");
         assertTrue(records.getFirst().contains("event: EventLogControlEvent"));
         records.clear();

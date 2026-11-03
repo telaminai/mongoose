@@ -82,6 +82,13 @@ public final class ControlEvidence {
             } catch (RuntimeException e) {
                 throw new IllegalStateException("exported audit document is not valid YAML: " + e.getMessage() + "\n" + text, e);
             }
+            if (root != null && root.get("auditStreamHeader") instanceof Map<?, ?> header) {
+                // stream metadata, not evidence: it must still be the documented shape, never a stray document
+                if (!Integer.valueOf(1).equals(header.get("schema"))) {
+                    throw new IllegalStateException("exported audit stream header has no schema 1:\n" + text);
+                }
+                continue;
+            }
             @SuppressWarnings("unchecked")
             Map<String, Object> record = root == null ? null : (Map<String, Object>) root.get("eventLogRecord");
             if (record == null) {
