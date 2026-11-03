@@ -1,6 +1,6 @@
 # Spec 01: evidence-set key — the analyser opens a log with the graph and source that produced it
 
-Status: revision 2, 2026-10-28, after independent review (findings referenced as R-x.y). Owner decisions in section 9.
+Status: revision 2, 2026-10-28, after independent review (findings referenced as R-x.y). All owner decisions (D1-D5, section 9) decided 2026-11-03; ready for implementation once fluxtion-compiler#130 is fixed.
 Repos: fluxtion (runtime), fluxtion-compiler (generator, one small change), mongoose, fluxtionauditlog-analyser.
 
 ## 1. Why this first
@@ -34,7 +34,7 @@ Mongoose test fixtures `AlarmProcessor` and `CycleAlarmProcessor`). So a match m
 
 A filter id held in a field whose type is neither Number nor String is hashed through `toString()`
 (`TopologicallySortedDependencyGraphDtoBuilder.java:648`, `:681-683`). A type without its own `toString()` changes
-the fingerprint on every build. Prerequisite compiler fix: canonical value, or refuse at build with a named error.
+the fingerprint on every build. Prerequisite compiler fix: canonical value, or refuse at build with a named error. Tracked as [fluxtion-compiler#130](https://github.com/telaminai/fluxtion-compiler/issues/130).
 Until fixed, such a processor shows "shape not verified".
 
 ### 2.3 Generation is not a run (R-2.5)
@@ -167,5 +167,5 @@ About 11.5 days, up from 6.5: the review found the binary format, the init timin
 - D1 **Decided:** the header is written for every processor, once per stream.
 - D2 **Decided:** warn on mismatch; never refuse.
 - D3 **Decided:** the analyser tracker order stays as is; this runs in parallel.
-- D4 **Proposed:** a match is worded "graph shape matches", never "same build" (R-1.5).
-- D5 **Proposed:** add `runId` and `serverId` to the key, so restarts of a static deployment are distinguishable (R-2.5).
+- D4 **Decided 2026-11-03:** a match is worded "graph shape matches", never "same build" (R-1.5).
+- D5 **Decided 2026-11-03:** add `runId` and `serverId` to the key, so restarts of a static deployment are distinguishable (R-2.5).

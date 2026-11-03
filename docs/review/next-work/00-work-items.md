@@ -31,7 +31,7 @@ mongoose-plugins). "Not tracked" means no open issue and no tracker line found.
 | 19 | Restart and recovery: run identity, runbook to rebuild strategy state from the venue, what a restart does to working orders | 1 | **Not tracked** | `01-...` section 2.3 (run id) |
 | 20 | Capture disk-full and retention: core never prunes; a write failure fails open and stops that recording's evidence; disk alarms, resume after failure, analyser shows the gap | 1 | **Not tracked** | — |
 | 21 | Audit volume at peak rate: measure capture cost on the agent thread in the soak (part of item 6) | 1 | with item 6 | — |
-| 22 | Compiler: stable fingerprint for filter ids of custom types (prerequisite of item 1) | 1 | **Not tracked** | `01-...` section 2.2 |
+| 22 | Compiler: stable fingerprint for filter ids of custom types (prerequisite of item 1) | 1 | [fluxtion-compiler#130](https://github.com/telaminai/fluxtion-compiler/issues/130) | `01-...` section 2.2 |
 | 23 | Clocks: drop and state records use wall clock, processor audit uses the processor clock; millisecond resolution; analyser refuses nanosecond binary logs | 2 | **Not tracked** | — |
 | 24 | Connector reconnect: core has none; confirm venue and market-data connector behaviour and evidence | 2 | **Not tracked** | — |
 
