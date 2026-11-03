@@ -81,6 +81,23 @@ public final class RunIdentity {
     }
 
     /** Resolved once per JVM, and only when no server id is configured: a host-name lookup can be slow. */
+    /**
+     * The header context for a group's control processor: the run, the group, the name {@code control} and generation
+     * {@code 0}, which no user processor has (user generations start at 1), so its stream is never taken for one.
+     */
+    public Map<String, String> controlContext(String group) {
+        Map<String, String> host = new LinkedHashMap<>();
+        host.put("serverId", serverId);
+        host.put("runId", runId);
+        host.put("group", group);
+        host.put("name", "control");
+        host.put("generation", "0");
+        if (MONGOOSE_VERSION != null) {
+            host.put("mongooseVersion", MONGOOSE_VERSION);
+        }
+        return host;
+    }
+
     private static String hostName() {
         return HostName.VALUE;
     }

@@ -63,7 +63,11 @@ public final class ControlAuditExport {
             long failures = number(m, "sinkFailures");
             if (retained > total || total - retained != dropped) return unknown("inconsistent record counts");
             long documents = 0;
-            for (Object doc : parser.loadAll(new String(yaml, StandardCharsets.UTF_8))) if (doc != null) documents++;
+            for (Object doc : parser.loadAll(new String(yaml, StandardCharsets.UTF_8))) {
+                // the stream header opens the export and is not a record: the manifest counts records only
+                if (doc == null || (doc instanceof java.util.Map<?, ?> document && document.containsKey("auditStreamHeader"))) continue;
+                documents++;
+            }
             if (documents != retained) return unknown("retained count does not match audit documents");
             boolean complete = dropped == 0 && failures == 0;
             if (!Boolean.valueOf(complete).equals(m.get("complete"))) return unknown("inconsistent completeness flag");

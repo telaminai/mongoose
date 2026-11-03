@@ -1122,14 +1122,31 @@ public final class ChronicleAuditCaptureService implements MongooseAuditCaptureS
             }
             if (lastHeader != null && currentCycle(q) != headerCycle) {
                 write(a, lastHeader);                   // a new cycle file starts with the header, as a new stream does
-                headerCycle = currentCycle(q);
+                headerCycle = currentCycle(q);          // only after the write succeeded: a failed one is retried
             }
             write(a, record.asCharSequence());
             recordCount.incrementAndGet();
+            // the cycle can roll between the check above and the write: the record then opened a new file with no header
+            // before it. Re-state the header straight after it, so the file is still attributable; the record before it
+            // reads as unverified, which is the truth about it
+            int landed = writtenCycle(q, a);
+            if (lastHeader != null && landed != headerCycle) {
+                write(a, lastHeader);
+                headerCycle = landed;
+            }
             lastWriteAt = Instant.now();
             if (recordCounter != null) {
                 recordCounter.increment();
             }
+        }
+    }
+
+    /** The cycle the last write landed in, from its index; the check-time cycle when the queue cannot say. */
+    private static int writtenCycle(ChronicleQueue q, ExcerptAppender a) {
+        try {
+            return q.rollCycle().toCycle(a.lastIndexAppended());
+        } catch (RuntimeException unknown) {
+            return currentCycle(q);
         }
     }
 

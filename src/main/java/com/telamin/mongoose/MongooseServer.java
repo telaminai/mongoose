@@ -1723,20 +1723,21 @@ public class MongooseServer implements MongooseServerController {
                     //build a subscriber group
                     // replay (spec-replay-recording R4): the group's scheduler follows the replay mode
                     ReplayConfig replayCfg = flowManager.getReplayConfig();
-                    ComposingEventProcessorAgent group;
-                    switch (replayCfg.mode()) {
+                    // the group's control processor audits from its constructor: state this run for it while it is built
+                    ComposingEventProcessorAgent group = com.telamin.mongoose.internal.StreamHeaderContext.building(
+                            runIdentity.controlContext(groupName), () -> switch (replayCfg.mode()) {
                         case RECORD -> {
                             var recorder = new GroupRecorder(replayCfg, replayCfg.clock());
-                            group = new ComposingEventProcessorAgent(groupName, flowManager, this,
+                            yield new ComposingEventProcessorAgent(groupName, flowManager, this,
                                     new RecordingScheduler(recorder), registeredServices, recorder, null);
                         }
                         case REPLAY -> {
                             var scheduler = new ReplayScheduler();
-                            group = new ComposingEventProcessorAgent(groupName, flowManager, this, scheduler, registeredServices,
+                            yield new ComposingEventProcessorAgent(groupName, flowManager, this, scheduler, registeredServices,
                                     null, routing -> new GroupReplayer(replayCfg, routing, scheduler));
                         }
-                        default -> group = new ComposingEventProcessorAgent(groupName, flowManager, this, new DeadWheelScheduler(), registeredServices);
-                    }
+                        default -> new ComposingEventProcessorAgent(groupName, flowManager, this, new DeadWheelScheduler(), registeredServices);
+                    });
                     //threading to be configured by file
                     AtomicCounter errorCounter = new AtomicCounter(new UnsafeBuffer(new byte[4096]), 0);
                     //run subscriber group

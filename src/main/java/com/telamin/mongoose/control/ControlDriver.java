@@ -111,6 +111,9 @@ public final class ControlDriver {
         this.mailbox = new ManyToOneConcurrentArrayQueue<>(capacity);
         // the sink and the level BEFORE init(): init audits a lifecycle event, and the generated EventLogManager's
         // default sink is System.out (measured in the analyser's SessionDriver)
+        // the run context first, when the server stated one while building this group: init below is audited, and the
+        // header written with it must already name the run
+        com.telamin.mongoose.internal.StreamHeaderContext.applyTo(processor);
         processor.setAuditLogProcessor(audit);
         processor.eventLogger.logLevel(EventLogControlEvent.LogLevel.INFO);
         // the runtime prints each event's toString unquoted: a name with a colon, or the multi-line text of an exported

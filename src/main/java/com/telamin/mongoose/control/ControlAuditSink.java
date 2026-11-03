@@ -49,8 +49,28 @@ public final class ControlAuditSink implements LogRecordListener {
         this.capacity = capacity;
     }
 
+    /**
+     * The control processor's latest stream header, kept OUTSIDE the ring: it is not a record, so it is neither counted
+     * nor evicted, and every export begins with it however many records the ring has since dropped.
+     */
+    private String streamHeader;
+
+    @Override
+    public synchronized void processStreamHeader(com.telamin.fluxtion.runtime.audit.StreamHeaderRecord header) {
+        streamHeader = header.asCharSequence().toString();
+    }
+
+    /** The control stream's latest header, or null before the first record. */
+    public synchronized String streamHeader() {
+        return streamHeader;
+    }
+
     @Override
     public synchronized void processLogRecord(LogRecord logRecord) {
+        if (logRecord instanceof com.telamin.fluxtion.runtime.audit.StreamHeaderRecord header) {
+            processStreamHeader(header);
+            return;
+        }
         try {
             add(withoutRawEventText(logRecord.asCharSequence().toString()));
         } catch (VirtualMachineError fatal) {
@@ -175,6 +195,10 @@ public final class ControlAuditSink implements LogRecordListener {
     /** The records as analyser-readable YAML: a {@code ---} line before every record, as the analyser frames them. */
     public synchronized String exportText() {
         StringBuilder out = new StringBuilder();
+        if (streamHeader != null) {
+            // first, as a stream begins: it names the run and the control graph for the records that follow
+            out.append("---\n").append(streamHeader).append('\n');
+        }
         for (String record : records) {
             out.append("---\n").append(record);
             if (record.isEmpty() || record.charAt(record.length() - 1) != '\n') out.append('\n');
