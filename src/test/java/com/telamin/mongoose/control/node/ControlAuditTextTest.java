@@ -30,11 +30,15 @@ class ControlAuditTextTest {
         LogRecord record = new LogRecord(Clock.DEFAULT_CLOCK);
         EventLogger log = new EventLogger(record, "controlNode").setLevel(EventLogControlEvent.LogLevel.INFO);
         ControlState state = new ControlState();
-        state.beginOutcome(7, "op \"1.1\"");
+        state.beginOutcome(472, "472.1");
         ControlAudit.record(log, state, "AuditStart",
                 "reason", "membership not active, balance due 30.0",
                 "effects", "stop g(3)",
-                "opId", "1.1",
+                "opId", "472.10",
+                "quotedOp", "op \"1.1\"",
+                "flag", "true",
+                "nothing", "null",
+                "limit", "5000",
                 "name", "AuditStart",
                 "note", "line one\nline two \\ end",
                 "count", 2L);
@@ -46,25 +50,28 @@ class ControlAuditTextTest {
         String flowMap = text.substring(text.indexOf('{')) + "}";
         Map<?, ?> fields = new Yaml(new SafeConstructor(new LoaderOptions())).load(flowMap);
         assertEquals("AuditStart", fields.get("record"), text);
-        assertEquals("op \"1.1\"", fields.get("causeOp"), text);
+        assertEquals("472.1", fields.get("causeOp"), text);
+        assertEquals("472.10", fields.get("opId"), "op ids stay distinct Strings, 472.1 != 472.10: " + text);
+        assertEquals("op \"1.1\"", fields.get("quotedOp"), text);
+        assertEquals("true", fields.get("flag"), text);
+        assertEquals("null", fields.get("nothing"), text);
+        assertEquals("5000", fields.get("limit"), text);
         assertEquals("membership not active, balance due 30.0", fields.get("reason"), text);
         assertEquals("stop g(3)", fields.get("effects"), text);
-        assertEquals("1.1", fields.get("opId"), text);
         assertEquals("AuditStart", fields.get("name"), text);
         assertEquals("line one\nline two \\ end", fields.get("note"), text);
         assertEquals(2, fields.get("count"), text);
     }
 
     @Test
-    void theProbeMatchesTheRuntime() {
-        boolean quotingRuntime;
+    void theTextApiDetectionMatchesTheRuntime() {
+        boolean textApi;
         try {
-            Class.forName("com.telamin.fluxtion.runtime.audit.YamlScalar");
-            quotingRuntime = true;
-        } catch (ClassNotFoundException absent) {
-            quotingRuntime = false;
+            EventLogger.class.getMethod("infoText", String.class, CharSequence.class);
+            textApi = true;
+        } catch (NoSuchMethodException absent) {
+            textApi = false;
         }
-        assertEquals(quotingRuntime, ControlAudit.RUNTIME_QUOTES_TEXT);
-        assertEquals(quotingRuntime ? "a, b" : "\"a, b\"", ControlAudit.text("a, b"));
+        assertEquals(textApi, ControlAudit.RUNTIME_TEXT_API);
     }
 }

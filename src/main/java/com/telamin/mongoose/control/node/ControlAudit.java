@@ -5,26 +5,35 @@
 package com.telamin.mongoose.control.node;
 
 import com.telamin.fluxtion.runtime.audit.EventLogger;
-import com.telamin.fluxtion.runtime.audit.LogRecord;
-import com.telamin.fluxtion.runtime.time.Clock;
+
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 
 /**
  * Writes one control-audit record through a node's Fluxtion {@link EventLogger}. Every record carries its type,
  * {@code seq}, {@code requestId}, {@code rootId} and causal links, then its own fields. A node's entry is rendered as
- * a YAML flow mapping, so a plain text value containing a comma or colon would break the record for the analyser.
+ * a YAML flow mapping, so a plain text value containing a comma or colon would break the record for the analyser, and
+ * every control text field must read back as a String: op ids such as {@code 472.1} and {@code 472.10} are distinct
+ * identifiers, equal as numbers.
  * <p>
- * Who quotes text values depends on the Fluxtion runtime on the classpath. A runtime that writes awkward text values
- * as YAML double-quoted scalars itself (and marks the record {@code textEncoding: QUOTED_SCALARS}) is handed the raw
- * text: quoting it here as well would leave literal quote marks in every value ({@code "\x221.1\x22"}). An older
- * runtime appends text verbatim, so the value is quoted here. {@link #RUNTIME_QUOTES_TEXT} decides, once, by asking
- * the runtime's own {@link LogRecord} to write a value that needs quoting.
+ * How a text field is written depends on the Fluxtion runtime on the classpath, detected once at class load:
+ * <ul>
+ * <li>A runtime with the text API ({@code EventLogger.infoText(String, CharSequence)}) is handed the raw text through
+ * it. It writes the value as a String in every reader: double-quoted for any structural reason and when it looks
+ * like a number, boolean or null, and it marks the record {@code textEncoding: QUOTED_SCALARS}. Quoting here as well
+ * would be escaped and leave literal quote marks ({@code "\x22472.1\x22"}).</li>
+ * <li>An older runtime (1.1.3) appends text verbatim, so the value is {@link #quote quoted} here, as before.</li>
+ * </ul>
+ * The handle is a {@code static final} {@link MethodHandle}, so the call costs no reflection per record.
  */
 public final class ControlAudit {
 
-    /**
-     * True when the runtime's {@link LogRecord} quotes a text value that YAML would misread; text is then passed raw.
-     */
-    public static final boolean RUNTIME_QUOTES_TEXT = runtimeQuotesText();
+    /** {@code EventLogger.infoText(String, CharSequence)}, or {@code null} on a runtime without the text API. */
+    private static final MethodHandle INFO_TEXT = findInfoText();
+
+    /** True when the runtime has the text API and control text is logged raw through it. */
+    public static final boolean RUNTIME_TEXT_API = INFO_TEXT != null;
 
     private ControlAudit() {
     }
@@ -43,7 +52,7 @@ public final class ControlAudit {
             log.info("causeSeq", state.inputSeq());
         }
         if (state.causeOp() != null) {
-            log.info("causeOp", text(state.causeOp()));
+            text(log, "causeOp", state.causeOp());
         }
         for (int i = 0; i + 1 < fields.length; i += 2) {
             Object v = fields[i + 1];
@@ -56,7 +65,7 @@ public final class ControlAudit {
             } else if (v instanceof Boolean b) {
                 log.info(key, (boolean) b);
             } else {
-                log.info(key, text(String.valueOf(v)));
+                text(log, key, String.valueOf(v));
             }
         }
         if (state.inputSeq() < 0) {
@@ -65,28 +74,28 @@ public final class ControlAudit {
         return seq;
     }
 
-    /** A text value as this runtime needs it: raw when the runtime quotes it, else {@link #quote quoted} here. */
-    static String text(String raw) {
-        return RUNTIME_QUOTES_TEXT ? raw : quote(raw);
+    /** Logs {@code raw} at INFO so every reader reads it back as this String. */
+    static void text(EventLogger log, String key, String raw) {
+        if (INFO_TEXT == null) {
+            log.info(key, quote(raw));
+            return;
+        }
+        try {
+            EventLogger ignored = (EventLogger) INFO_TEXT.invokeExact(log, key, (CharSequence) raw);
+        } catch (RuntimeException | Error e) {
+            throw e;
+        } catch (Throwable impossible) {
+            // infoText declares no checked exception
+            throw new IllegalStateException(impossible);
+        }
     }
 
-    /**
-     * Probes the runtime: a released runtime appends {@code a, b} bare inside the flow map; one that quotes text
-     * values writes it double-quoted. Anything other than the bare value means the runtime has rewritten it. If the
-     * probe itself fails, falls back to the presence of the runtime's scalar writer, {@code YamlScalar}.
-     */
-    static boolean runtimeQuotesText() {
+    private static MethodHandle findInfoText() {
         try {
-            LogRecord probe = new LogRecord(Clock.DEFAULT_CLOCK);
-            probe.addRecord("probe", "v", "a, b");
-            return !probe.asCharSequence().toString().contains("v: a, b");
-        } catch (RuntimeException | LinkageError e) {
-            try {
-                Class.forName("com.telamin.fluxtion.runtime.audit.YamlScalar", false, LogRecord.class.getClassLoader());
-                return true;
-            } catch (ClassNotFoundException | LinkageError absent) {
-                return false;
-            }
+            return MethodHandles.publicLookup().findVirtual(EventLogger.class, "infoText",
+                    MethodType.methodType(EventLogger.class, String.class, CharSequence.class));
+        } catch (NoSuchMethodException | IllegalAccessException absent) {
+            return null;
         }
     }
 
