@@ -5,14 +5,26 @@
 package com.telamin.mongoose.control.node;
 
 import com.telamin.fluxtion.runtime.audit.EventLogger;
+import com.telamin.fluxtion.runtime.audit.LogRecord;
+import com.telamin.fluxtion.runtime.time.Clock;
 
 /**
  * Writes one control-audit record through a node's Fluxtion {@link EventLogger}. Every record carries its type,
- * {@code seq}, {@code requestId}, {@code rootId} and causal links, then its own fields. Values are always quoted,
- * because a node's entry is rendered as a YAML flow mapping and a plain value containing a comma or colon would break
- * the record for the analyser.
+ * {@code seq}, {@code requestId}, {@code rootId} and causal links, then its own fields. A node's entry is rendered as
+ * a YAML flow mapping, so a plain text value containing a comma or colon would break the record for the analyser.
+ * <p>
+ * Who quotes text values depends on the Fluxtion runtime on the classpath. A runtime that writes awkward text values
+ * as YAML double-quoted scalars itself (and marks the record {@code textEncoding: QUOTED_SCALARS}) is handed the raw
+ * text: quoting it here as well would leave literal quote marks in every value ({@code "\x221.1\x22"}). An older
+ * runtime appends text verbatim, so the value is quoted here. {@link #RUNTIME_QUOTES_TEXT} decides, once, by asking
+ * the runtime's own {@link LogRecord} to write a value that needs quoting.
  */
 public final class ControlAudit {
+
+    /**
+     * True when the runtime's {@link LogRecord} quotes a text value that YAML would misread; text is then passed raw.
+     */
+    public static final boolean RUNTIME_QUOTES_TEXT = runtimeQuotesText();
 
     private ControlAudit() {
     }
@@ -31,7 +43,7 @@ public final class ControlAudit {
             log.info("causeSeq", state.inputSeq());
         }
         if (state.causeOp() != null) {
-            log.info("causeOp", quote(state.causeOp()));
+            log.info("causeOp", text(state.causeOp()));
         }
         for (int i = 0; i + 1 < fields.length; i += 2) {
             Object v = fields[i + 1];
@@ -44,7 +56,7 @@ public final class ControlAudit {
             } else if (v instanceof Boolean b) {
                 log.info(key, (boolean) b);
             } else {
-                log.info(key, quote(String.valueOf(v)));
+                log.info(key, text(String.valueOf(v)));
             }
         }
         if (state.inputSeq() < 0) {
@@ -53,7 +65,32 @@ public final class ControlAudit {
         return seq;
     }
 
-    /** A double-quoted YAML scalar. */
+    /** A text value as this runtime needs it: raw when the runtime quotes it, else {@link #quote quoted} here. */
+    static String text(String raw) {
+        return RUNTIME_QUOTES_TEXT ? raw : quote(raw);
+    }
+
+    /**
+     * Probes the runtime: a released runtime appends {@code a, b} bare inside the flow map; one that quotes text
+     * values writes it double-quoted. Anything other than the bare value means the runtime has rewritten it. If the
+     * probe itself fails, falls back to the presence of the runtime's scalar writer, {@code YamlScalar}.
+     */
+    static boolean runtimeQuotesText() {
+        try {
+            LogRecord probe = new LogRecord(Clock.DEFAULT_CLOCK);
+            probe.addRecord("probe", "v", "a, b");
+            return !probe.asCharSequence().toString().contains("v: a, b");
+        } catch (RuntimeException | LinkageError e) {
+            try {
+                Class.forName("com.telamin.fluxtion.runtime.audit.YamlScalar", false, LogRecord.class.getClassLoader());
+                return true;
+            } catch (ClassNotFoundException | LinkageError absent) {
+                return false;
+            }
+        }
+    }
+
+    /** A double-quoted YAML scalar, for a runtime that does not quote text values itself. */
     public static String quote(String raw) {
         StringBuilder b = new StringBuilder(raw.length() + 2).append('"');
         for (int i = 0; i < raw.length(); i++) {

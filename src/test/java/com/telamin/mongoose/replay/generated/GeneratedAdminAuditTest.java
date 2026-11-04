@@ -88,8 +88,11 @@ class GeneratedAdminAuditTest {
         assertEquals(List.of("alarm cleared"), signalReply);
         String command = records.get(1);
         assertTrue(command.startsWith("eventLogRecord:"), all);
-        assertTrue(command.contains("event: Signal") && command.contains("eventFilter: admin:alarm.reset"), command);
-        assertTrue(command.contains("- alarmMonitor: { reset: true, resetBy: [DEMO-operator]}"), "the node's audit lines: " + command);
+        // a text value is plain, or YAML double-quoted by a runtime that quotes values YAML would misread (that runtime
+        // marks the record textEncoding: QUOTED_SCALARS); both read back as the same string
+        assertTrue(command.contains("event: Signal") && containsScalar(command, "eventFilter: ", "admin:alarm.reset", ""), command);
+        assertTrue(containsScalar(command, "- alarmMonitor: { reset: true, resetBy: ", "[DEMO-operator]", "}"),
+                "the node's audit lines: " + command);
         assertTrue(command.contains("- alarmPublisher: { published: false, changes: 2}"), "propagated downstream: " + command);
         assertEquals(1, records.stream().filter(r -> r.contains("admin:alarm.reset")).count(), "exactly one record names it");
         for (String r : records) assertTrue(r.startsWith("eventLogRecord:"), "every record well formed: " + r);
@@ -100,7 +103,7 @@ class GeneratedAdminAuditTest {
         assertEquals(List.of("lambda cleared"), lambdaReply, "a lambda command still works");
         String lambda = records.get(3);
         assertTrue(lambda.contains("event: AdminCommandEvent")
-                && lambda.contains("eventToString: AdminCommandEvent[command=alarm.lambda, args=[DEMO-operator]]"), lambda);
+                && containsScalar(lambda, "eventToString: ", "AdminCommandEvent[command=alarm.lambda, args=[DEMO-operator]]", ""), lambda);
         assertTrue(lambda.contains("- alarmMonitor: { lambdaReset: true, at: "), "its audit line, in its own record: " + lambda);
         // and the command's own instant: the processTime the lambda read is the record's, not the previous event's
         String logTime = lambda.substring(lambda.indexOf("logTime: ") + 9, lambda.indexOf('\n', lambda.indexOf("logTime: ")));
@@ -111,6 +114,11 @@ class GeneratedAdminAuditTest {
         assertFalse(lambda.contains("alarmPublisher"), "no propagation from a lambda: " + lambda);
         String next = records.get(4);
         assertTrue(next.contains("event: Reading") && !next.contains("lambdaReset"), "the next record is its own: " + next);
+    }
+
+    /** {@code prefix + value + suffix} with the value written plain or as a YAML double-quoted scalar. */
+    private static boolean containsScalar(String record, String prefix, String value, String suffix) {
+        return record.contains(prefix + value + suffix) || record.contains(prefix + '"' + value + '"' + suffix);
     }
 
     @Test
