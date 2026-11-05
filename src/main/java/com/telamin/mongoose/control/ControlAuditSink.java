@@ -113,9 +113,11 @@ public final class ControlAuditSink implements LogRecordListener {
     }
 
     /**
-     * Drop the runtime's {@code eventToString} line, and any continuation lines, from a record. It is printed unquoted
-     * (some records ignore {@code printEventToString(false)}, such as an exported function's multi-line signature), so
-     * it can make a record unreadable as YAML; every control field is already recorded, quoted, by the nodes.
+     * Drop the runtime's {@code eventToString} line, and any continuation lines, from a record. An older runtime prints
+     * it unquoted (some records ignore {@code printEventToString(false)}, such as an exported function's multi-line
+     * signature), so it can make a record unreadable as YAML; every control field is already recorded by the nodes. A
+     * runtime that quotes header text writes it as one double-quoted line, removed the same way; its record's
+     * {@code textEncoding: QUOTED_SCALARS} line comes first and is kept, harmless if no quoted value remains.
      */
     static String withoutRawEventText(String record) {
         if (!record.contains("\n    eventToString:")) return record;
