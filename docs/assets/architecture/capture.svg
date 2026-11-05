@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="mg-architecture" viewBox="0 0 1080 758" role="img" aria-labelledby="captureTitle captureDesc">
+<title id="captureTitle">Cancel adoption, then clean up the late resource</title><desc id="captureDesc">AuditStop overtakes an open. The physical I/O may still finish.</desc>
+<style>
+.mg-architecture { --bg:#f5f8fc; --panel:#ffffff; --text:#17283d; --muted:#526379; --line:#64748b; --border:#ced8e5; --accent:#165cba; --soft:#e8f0fc; font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); border:1px solid var(--border); border-radius:16px; width:100%; height:auto; }
+@media(prefers-color-scheme:dark){.mg-architecture {--bg:#152032;--panel:#1c2c42;--text:#edf4ff;--muted:#b6c7dc;--line:#91aac8;--border:#3c516e;--accent:#8abaff;--soft:#253d5d}}
+[data-md-color-scheme="default"] .mg-architecture {--bg:#f5f8fc;--panel:#fff;--text:#17283d;--muted:#526379;--line:#64748b;--border:#ced8e5;--accent:#165cba;--soft:#e8f0fc}
+[data-md-color-scheme="slate"] .mg-architecture {--bg:#152032;--panel:#1c2c42;--text:#edf4ff;--muted:#b6c7dc;--line:#91aac8;--border:#3c516e;--accent:#8abaff;--soft:#253d5d}
+.mg-architecture text{fill:var(--text);font-size:16px}.mg-architecture .heading{font-size:25px;font-weight:650}.mg-architecture .label{font-size:17px;font-weight:650}.mg-architecture .small{font-size:14px;fill:var(--muted)}.mg-architecture .eyebrow{font-size:12px;letter-spacing:2px;font-weight:700;fill:var(--accent)}.mg-architecture .card{fill:var(--panel);stroke:var(--border);stroke-width:1.5}.mg-architecture .band{fill:var(--soft);stroke:var(--border)}.mg-architecture .wire{fill:none;stroke:var(--line);stroke-width:1.7}.mg-architecture .life{stroke:var(--border);stroke-width:1.4;stroke-dasharray:5 6}
+</style>
+<defs><marker id="captureArrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8" fill="var(--line)"/></marker></defs>
+<text x="32" y="35" class="eyebrow" text-anchor="start">MONGOOSE / RUNTIME ARCHITECTURE</text>
+<text x="32" y="72" class="heading" text-anchor="start">Cancel adoption, then clean up the late resource</text>
+<text x="32" y="101" class="small" text-anchor="start">AuditStop overtakes an open. The physical I/O may still finish.</text>
+<rect class="band" x="15.0" y="130" width="200" height="56" rx="10"/>
+<text x="115.0" y="164" class="label" text-anchor="middle">Caller</text>
+<path class="life" d="M115.0,186 V693"/>
+<rect class="band" x="298.3333333333333" y="130" width="200" height="56" rx="10"/>
+<text x="398.3333333333333" y="164" class="label" text-anchor="middle">Group rules</text>
+<path class="life" d="M398.3333333333333,186 V693"/>
+<rect class="band" x="581.6666666666666" y="130" width="200" height="56" rx="10"/>
+<text x="681.6666666666666" y="164" class="label" text-anchor="middle">Open helper</text>
+<path class="life" d="M681.6666666666666,186 V693"/>
+<rect class="band" x="865.0" y="130" width="200" height="56" rx="10"/>
+<text x="965.0" y="164" class="label" text-anchor="middle">Close helper</text>
+<path class="life" d="M965.0,186 V693"/>
+<path class="wire" d="M115.0,225 L398.3333333333333,225" marker-end="url(#captureArrow)"/>
+<text x="256.66666666666663" y="215" class="small" text-anchor="middle">1. AuditStart bound to generation</text>
+<path class="wire" d="M398.3333333333333,291 L681.6666666666666,291" marker-end="url(#captureArrow)"/>
+<text x="540.0" y="281" class="small" text-anchor="middle">2. OpenCapture; outcome pending</text>
+<path class="wire" d="M115.0,357 L398.3333333333333,357" marker-end="url(#captureArrow)"/>
+<text x="256.66666666666663" y="347" class="small" text-anchor="middle">3. AuditStop while Opening</text>
+<path class="wire" d="M398.3333333333333,423 L115.0,423" marker-end="url(#captureArrow)"/>
+<text x="256.66666666666663" y="413" class="small" text-anchor="middle">4. Cancel start; acknowledge stop</text>
+<path class="wire" d="M681.6666666666666,489 L398.3333333333333,489" marker-end="url(#captureArrow)"/>
+<text x="540.0" y="479" class="small" text-anchor="middle">5. Late CaptureOpened with resource id</text>
+<rect class="card" x="303.3333333333333" y="533" width="190" height="38" rx="8"/>
+<text x="398.3333333333333" y="557" class="small" text-anchor="middle">Decide stale</text>
+<path class="wire" d="M398.3333333333333,621 L965.0,621" marker-end="url(#captureArrow)"/>
+<text x="681.6666666666666" y="611" class="small" text-anchor="middle">7. Close that exact resource</text>
+<path class="wire" d="M965.0,687 L398.3333333333333,687" marker-end="url(#captureArrow)"/>
+<text x="681.6666666666666" y="677" class="small" text-anchor="middle">8. CaptureClosed outcome</text>
+<text x="32" y="734" class="small" text-anchor="start">A logical stop reply is not proof of physical closure. Failed closure retains unresolved ownership.</text>
+</svg>

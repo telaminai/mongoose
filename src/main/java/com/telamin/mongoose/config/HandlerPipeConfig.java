@@ -11,9 +11,13 @@ import com.telamin.fluxtion.runtime.service.Service;
 import com.telamin.mongoose.connector.memory.HandlerPipe;
 import com.telamin.mongoose.dutycycle.ServiceAgent;
 import com.telamin.mongoose.service.EventSource;
-import lombok.AllArgsConstructor;
+import lombok.AccessLevel;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
+import lombok.Getter;
 import lombok.NoArgsConstructor;
+import lombok.Setter;
+import lombok.ToString;
 import lombok.SneakyThrows;
 import org.agrona.concurrent.IdleStrategy;
 
@@ -29,10 +33,12 @@ import java.util.function.Function;
  * {@link com.telamin.mongoose.connector.memory.InMemoryEventSource} so values
  * sent into the sink are dispatched out of the feed.
  *
- * <p>Cross-thread safe by construction — {@code InMemoryEventSource} extends
- * {@code AbstractAgentHostedEventSourceService}, so publishers enqueue and a
- * dedicated agent thread drains into subscribers' read queues. Producers and
- * consumers on different agent groups simply work.
+ * <p>Cross-thread safe: the sink publishes on the caller's thread straight into
+ * each subscriber's read queue, and the source's publisher serialises those
+ * writes, so any number of processors on different agent groups can publish to
+ * one pipe without losing events (telaminai/mongoose#51). Subscribers receive on
+ * their own agent threads. Items dropped on a full subscriber queue are counted
+ * ({@code EventToQueuePublisher.droppedCount()}).
  *
  * <p>Typical YAML:
  * <pre>{@code
@@ -51,7 +57,6 @@ import java.util.function.Function;
  */
 @Experimental
 @Data
-@AllArgsConstructor
 @NoArgsConstructor
 public class HandlerPipeConfig<T> {
 
@@ -91,9 +96,28 @@ public class HandlerPipeConfig<T> {
     private boolean cacheEventLog = false;
 
     /**
-     * Strategy for slow-consumer back-pressure on the feed side.
+     * Superseded by {@link #overload} (telaminai/mongoose#79). When set explicitly and there is no {@code overload}
+     * block, {@code BACKOFF} means {@code DROP_AFTER_SPIN} (with a boot warning), and {@code DISCONNECT} or
+     * {@code EXIT_PROCESS} fail boot until they are implemented.
+     * @deprecated Use {@link #overload}.
      */
+    @Deprecated
     private EventSource.SlowConsumerStrategy slowConsumerStrategy = EventSource.SlowConsumerStrategy.BACKOFF;
+
+    /** Whether {@link #slowConsumerStrategy} was set, rather than left at its default. */
+    @Getter(AccessLevel.NONE)
+    @Setter(AccessLevel.NONE)
+    @EqualsAndHashCode.Exclude
+    @ToString.Exclude
+    private boolean slowConsumerStrategyExplicit;
+
+    /**
+     * What the pipe's publisher does when a subscriber's queue is full, with overrides per subscriber group
+     * (telaminai/mongoose#79). Null: {@code DROP_AFTER_SPIN} with a one-time boot warning. YAML key {@code overload}.
+     * A processor publishing into the pipe runs on an agent thread, so a blocking policy is downgraded to a drop for
+     * its publishes; it blocks only for publishers on non-agent threads.
+     */
+    private OverloadPolicyConfig overload;
 
     /**
      * Optional transformation applied to values as they flow into subscribers.
@@ -103,8 +127,8 @@ public class HandlerPipeConfig<T> {
 
     /**
      * If set, the feed side runs on a dedicated agent thread under this name.
-     * Required when the pipe needs its own duty-cycle independent of the
-     * publishing processor's agent group.
+     * The agent drains items handed to {@code InMemoryEventSource.offer}; values
+     * sent into the sink are still published in-line on the sender's thread.
      */
     private String agentName;
 
@@ -112,6 +136,76 @@ public class HandlerPipeConfig<T> {
      * Idle strategy for the agent thread when {@link #agentName} is set.
      */
     private IdleStrategy idleStrategy;
+
+    /**
+     * With {@link #cacheEventLog}, keep logging values after {@code startComplete}. Off by default: the event log then
+     * holds only what was cached before start and stops growing (telaminai/mongoose#59). On, it grows with every value
+     * for the life of the pipe, without bound. YAML: {@code retainEventLogAfterStart: true}.
+     */
+    private boolean retainEventLogAfterStart = false;
+
+    /**
+     * The all-arguments constructor as it was before {@link #retainEventLogAfterStart} was added, kept for source and
+     * binary compatibility; the new field defaults to false.
+     */
+    public HandlerPipeConfig(String name, String sinkName, boolean broadcast, boolean wrapWithNamedEvent,
+                             boolean cacheEventLog, EventSource.SlowConsumerStrategy slowConsumerStrategy,
+                             Function<T, ?> valueMapper, String agentName, IdleStrategy idleStrategy) {
+        this(name, sinkName, broadcast, wrapWithNamedEvent, cacheEventLog, slowConsumerStrategy, valueMapper,
+                agentName, idleStrategy, false);
+    }
+
+    /**
+     * The all-arguments constructor as it was before {@link #overload} was added (telaminai/mongoose#79), kept for
+     * source and binary compatibility; the overload policy is then unset.
+     */
+    @SuppressWarnings("deprecation")
+    public HandlerPipeConfig(String name, String sinkName, boolean broadcast, boolean wrapWithNamedEvent,
+                             boolean cacheEventLog, EventSource.SlowConsumerStrategy slowConsumerStrategy,
+                             Function<T, ?> valueMapper, String agentName, IdleStrategy idleStrategy,
+                             boolean retainEventLogAfterStart) {
+        this.name = name;
+        this.sinkName = sinkName;
+        this.broadcast = broadcast;
+        this.wrapWithNamedEvent = wrapWithNamedEvent;
+        this.cacheEventLog = cacheEventLog;
+        setSlowConsumerStrategy(slowConsumerStrategy);
+        this.valueMapper = valueMapper;
+        this.agentName = agentName;
+        this.idleStrategy = idleStrategy;
+        this.retainEventLogAfterStart = retainEventLogAfterStart;
+    }
+
+    /**
+     * @deprecated Use {@link #setOverload(OverloadPolicyConfig)}; see {@link #slowConsumerStrategy}.
+     */
+    @Deprecated
+    public void setSlowConsumerStrategy(EventSource.SlowConsumerStrategy slowConsumerStrategy) {
+        this.slowConsumerStrategy = slowConsumerStrategy;
+        this.slowConsumerStrategyExplicit = slowConsumerStrategy != null;
+    }
+
+    /**
+     * This pipe's overload policy, resolved and validated for boot (telaminai/mongoose#79); see
+     * {@link OverloadPolicyConfig#resolve}.
+     */
+    @SuppressWarnings("deprecation")
+    public com.telamin.mongoose.dispatch.FeedOverloadSettings resolveOverload() {
+        var settings = OverloadPolicyConfig.resolve(name, overload, slowConsumerStrategy, slowConsumerStrategyExplicit);
+        boolean blocks = settings.feedDefault().blocks()
+                || settings.bySubscriberGroup().values().stream().anyMatch(s -> s.blocks());
+        if (blocks) {
+            java.util.logging.Logger log = java.util.logging.Logger.getLogger(OverloadPolicyConfig.class.getName());
+            log.warning("pipe '" + name + "': BLOCK_WITH_DEADLINE waits only for publishers on non-agent threads; "
+                    + "processors publishing into the pipe run on agent threads and fall back to drop-after-spin "
+                    + "(counted in downgradedCount) when a queue is full");
+            if (cacheEventLog) {
+                log.warning("pipe '" + name + "': cacheEventLog with BLOCK_WITH_DEADLINE: the cached event log is "
+                        + "replayed at start with drop-after-spin semantics, so a full queue drops cached items");
+            }
+        }
+        return settings;
+    }
 
     /**
      * Whether the feed half should be registered as an agent-hosted worker.
@@ -134,6 +228,7 @@ public class HandlerPipeConfig<T> {
         }
         HandlerPipe<T> pipe = HandlerPipe.of(name);
         pipe.cacheEventLog(cacheEventLog);
+        pipe.retainEventLogAfterStart(retainEventLogAfterStart);
         if (valueMapper != null) {
             pipe.dataMapper(valueMapper);
         }
@@ -212,15 +307,23 @@ public class HandlerPipeConfig<T> {
         private Function<T, ?> valueMapper;
         private String agentName;
         private IdleStrategy idleStrategy;
+        private boolean retainEventLogAfterStart;
+        private OverloadPolicyConfig overload;
 
         public Builder<T> name(String n)                                   { this.name = n; return this; }
         public Builder<T> sinkName(String n)                               { this.sinkName = n; return this; }
         public Builder<T> broadcast(boolean b)                             { this.broadcast = b; return this; }
         public Builder<T> wrapWithNamedEvent(boolean w)                    { this.wrapWithNamedEvent = w; return this; }
         public Builder<T> cacheEventLog(boolean c)                         { this.cacheEventLog = c; return this; }
+        /** @deprecated Use {@link #overload(OverloadPolicyConfig)}. */
+        @Deprecated
         public Builder<T> slowConsumerStrategy(EventSource.SlowConsumerStrategy s) { this.slowConsumerStrategy = s; return this; }
         public Builder<T> valueMapper(Function<T, ?> m)                    { this.valueMapper = m; return this; }
         public Builder<T> agent(String agentName, IdleStrategy idle)       { this.agentName = agentName; this.idleStrategy = idle; return this; }
+        /** Opt in to an unbounded event log after start; see {@link HandlerPipeConfig#retainEventLogAfterStart}. */
+        public Builder<T> retainEventLogAfterStart(boolean r)              { this.retainEventLogAfterStart = r; return this; }
+        /** Sets the overload policy (telaminai/mongoose#79). */
+        public Builder<T> overload(OverloadPolicyConfig o)                  { this.overload = o; return this; }
 
         public HandlerPipeConfig<T> build() {
             HandlerPipeConfig<T> cfg = new HandlerPipeConfig<>();
@@ -233,6 +336,8 @@ public class HandlerPipeConfig<T> {
             if (valueMapper != null) cfg.setValueMapper(valueMapper);
             cfg.setAgentName(agentName);
             cfg.setIdleStrategy(idleStrategy);
+            cfg.setRetainEventLogAfterStart(retainEventLogAfterStart);
+            cfg.setOverload(overload);
             return cfg;
         }
     }

@@ -24,7 +24,7 @@ import java.util.List;
  *                              # JSONL/YAML are produced via the /export endpoint,
  *                              # not as a separate capture backend
  *     rollSize: 64m            # Chronicle roll size — files stay scannable
- *     retainHours: 24          # janitor prunes files older than this
+ *     retainHours: 24          # retention hint for external tooling; core does not prune
  *     directory: ./audit       # relative to working dir; matches Chronicle conventions
  *                              # elsewhere in the stack
  *     autoStart: []            # processor names to start capturing at boot; [] = none
@@ -66,10 +66,9 @@ public class AuditCaptureConfig {
     private String rollSize = "64m";
 
     /**
-     * Janitor retention window. Files older than this are pruned by
-     * the janitor coroutine. Default 24h matches "find me yesterday's
-     * incident"; bump to 48–720h for pharma / audit-evidence retention
-     * requirements.
+     * Retention hint for external tooling, default 24 hours. The core runtime does not run a janitor and does not
+     * delete captures when this age is reached. Deployment tooling must explicitly enforce retention and exclude
+     * live or unresolved capture directories.
      */
     private int retainHours = 24;
 

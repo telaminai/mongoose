@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -314,8 +315,9 @@ class ReplayReviewRegressionTest {
     // ---- 9: a timer that throws --------------------------------------------------------------------------------
 
     /**
-     * A timer that throws, on the recording scheduler itself. Through a server the throw ends the process (the default
-     * error handler exits on any agent error, with or without replay), so the recording is checked here, directly.
+     * A timer that throws, on the recording scheduler itself. Since mongoose#57 the scheduler reports a callback's
+     * failure through ErrorReporting rather than let it reach the agent's error handler (which exits the process), so
+     * the throw no longer escapes doWork; the recording still marks it a failure, not a firing.
      */
     @Test
     void f9_aTimerThatThrows_isRecordedAsAFailure() {
@@ -333,10 +335,11 @@ class ReplayReviewRegressionTest {
         } finally {
             com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
         }
-        assertThrows(IllegalStateException.class, () -> {
+        assertDoesNotThrow(() -> {
             long deadline = System.nanoTime() + 1_000_000_000L;
-            while (System.nanoTime() < deadline) scheduler.doWork();
-        }, "the timer's exception propagates, as it does without recording");
+            while (System.nanoTime() < deadline && store.entries(PROCESSOR).stream()
+                    .noneMatch(e -> e instanceof ReplayEntry.Failed)) scheduler.doWork();
+        }, "the timer's exception is reported, not propagated to the agent (mongoose#57), as it is without recording");
         List<ReplayEntry> entries = store.entries(PROCESSOR);
         assertTrue(entries.stream().noneMatch(e -> e instanceof ReplayEntry.TimerFired), "not recorded as fired: " + entries);
         assertTrue(entries.stream().anyMatch(e -> e instanceof ReplayEntry.Failed), "recorded as a failure: " + entries);

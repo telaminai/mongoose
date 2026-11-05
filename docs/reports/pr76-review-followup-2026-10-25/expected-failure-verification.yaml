@@ -1,0 +1,6 @@
+- path: docs/reports/pr76-review-followup-2026-10-25/incomplete-shutdown-control.yaml
+  completeness: COMPLETE
+  records: 28
+  verified: false
+  violations: []
+  unverifiable: [I4/I11 resource 1 close failed; physical closure is not established]

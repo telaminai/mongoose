@@ -76,46 +76,18 @@ public class EventQueueToEventProcessorAgentRetryTest {
         public void onEvent(Object event) { /* no-op */ }
     }
 
-    private static class FailingThenSucceedStrategy implements EventToInvokeStrategy {
-        private final int failuresBeforeSuccess;
-        private int failures;
-        private final List<DataFlow> procs = new ArrayList<>();
+    /** Real per-processor dispatch: retry policy must still retry an identified handwritten target. */
+    private static class FailingThenSucceedStrategy extends com.telamin.mongoose.dispatch.EventToOnEventInvokeStrategy {
+        final int failuresBeforeSuccess;
         int attempts;
         Object lastEvent;
-
-        FailingThenSucceedStrategy(int failuresBeforeSuccess) {
-            this.failuresBeforeSuccess = failuresBeforeSuccess;
-        }
-
-        @Override
-        public void processEvent(Object event) {
-            attempts++;
-            if (failures < failuresBeforeSuccess) {
-                failures++;
-                throw new RuntimeException("boom" + failures);
-            }
-            lastEvent = event;
-            for (DataFlow p : procs) p.onEvent(event);
-        }
-
-        @Override
-        public void processEvent(Object event, long time) {
-            processEvent(event);
-        }
-
-        @Override
-        public void registerProcessor(DataFlow eventProcessor) {
-            procs.add(eventProcessor);
-        }
-
-        @Override
-        public void deregisterProcessor(DataFlow eventProcessor) {
-            procs.remove(eventProcessor);
-        }
-
-        @Override
-        public int listenerCount() {
-            return procs.size();
+        FailingThenSucceedStrategy(int failuresBeforeSuccess) { this.failuresBeforeSuccess = failuresBeforeSuccess; }
+        @Override public void registerProcessor(DataFlow processor) {
+            super.registerProcessor(event -> {
+                if (++attempts <= failuresBeforeSuccess) throw new RuntimeException("boom" + attempts);
+                lastEvent = event;
+                processor.onEvent(event);
+            });
         }
     }
 }

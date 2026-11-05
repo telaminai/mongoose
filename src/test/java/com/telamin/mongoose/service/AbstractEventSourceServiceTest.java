@@ -12,6 +12,7 @@ import com.telamin.mongoose.dispatch.*;
 import com.telamin.mongoose.service.extension.AbstractEventSourceService;
 import com.telamin.mongoose.service.scheduler.SchedulerService;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -22,6 +23,11 @@ import java.util.function.Supplier;
 import static org.junit.jupiter.api.Assertions.*;
 
 public class AbstractEventSourceServiceTest {
+
+    @AfterEach
+    void clearOwnedProcessorContext() {
+        ProcessorContext.removeCurrentProcessor();
+    }
 
     private TestEventSourceService testService;
     private TestEventFlowManager testEventFlowManager;

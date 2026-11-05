@@ -33,26 +33,15 @@ public class AdminCommandInvoker extends AbstractEventToInvocationStrategy {
 
     /**
      * A live command for a processor muted for a replay is refused, by name, now: the base strategy skips a muted target
-     * silently, which left the caller waiting for a command nothing would ever run (#48 review, finding 3).
+     * silently, which left the caller waiting for a command nothing would ever run (#48 review, finding 3). The base
+     * strategy's loop does the rest, so a command dispatch resumes at the processor that failed as any other (#53).
      */
     @Override
-    public void processEvent(Object event) {
+    protected void skippedForReplay(Object event, DataFlow target) {
         AdminCommand adminCommand = (AdminCommand) event;
-        for (int i = 0, n = eventProcessorSinks.size(); i < n; i++) {
-            DataFlow target = eventProcessorSinks.get(i);
-            if (mutedForReplay(target)) {
-                if (adminCommand.claim()) {
-                    adminCommand.refuse("admin command '" + name(adminCommand) + "' was refused: its processor is replaying,"
-                            + " and a replayed processor receives no live input");
-                }
-                continue;
-            }
-            com.telamin.mongoose.dispatch.ProcessorContext.setCurrentProcessor(target);
-            try {
-                dispatchEvent(event, target);
-            } finally {
-                com.telamin.mongoose.dispatch.ProcessorContext.removeCurrentProcessor();
-            }
+        if (adminCommand.claim()) {
+            adminCommand.refuse("admin command '" + name(adminCommand) + "' was refused: its processor is replaying,"
+                    + " and a replayed processor receives no live input");
         }
     }
 
@@ -130,18 +119,9 @@ public class AdminCommandInvoker extends AbstractEventToInvocationStrategy {
         }
     }
 
-    /**
-     * Whether {@code type} implements runInEventCycle, rather than inheriting the interface default that refuses (a
-     * processor generated before fluxtion runtime 1.1.0): decided once per class, from the method itself.
-     */
+    /** Decided once per class ({@link com.telamin.mongoose.dispatch.ControlFraming#implementsTheCycle}). */
     private static boolean implementsTheCycle(Class<?> type) {
-        return IMPLEMENTS_THE_CYCLE.computeIfAbsent(type, c -> {
-            try {
-                return !c.getMethod("runInEventCycle", Object.class, Runnable.class).isDefault();
-            } catch (NoSuchMethodException predatesTheRuntime) {
-                return false;
-            }
-        });
+        return com.telamin.mongoose.dispatch.ControlFraming.implementsTheCycle(type);
     }
 
     private static String name(AdminCommand adminCommand) {
@@ -155,8 +135,6 @@ public class AdminCommandInvoker extends AbstractEventToInvocationStrategy {
                 + " in an event cycle: " + why;
     }
 
-    /** Per processor class: whether it implements runInEventCycle (see {@link #implementsTheCycle}). */
-    private static final java.util.Map<Class<?>, Boolean> IMPLEMENTS_THE_CYCLE = new java.util.concurrent.ConcurrentHashMap<>();
 
     @SuppressWarnings("unchecked")
     private static <A> A auditor(DataFlow processor, String name) {

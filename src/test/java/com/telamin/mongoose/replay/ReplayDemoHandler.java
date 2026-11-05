@@ -21,6 +21,7 @@ public class ReplayDemoHandler extends ObjectEventHandlerNode {
     private SchedulerService scheduler;
     private int live;
     private boolean suspended;
+    final java.util.concurrent.atomic.AtomicInteger failedAttempts = new java.util.concurrent.atomic.AtomicInteger();
 
     public ReplayDemoHandler(String orders, String controls) {
         this.orders = orders;
@@ -56,6 +57,7 @@ public class ReplayDemoHandler extends ObjectEventHandlerNode {
     protected boolean handleEvent(Object event) {
         long time = getContext().getClock().getProcessTime();
         if (event instanceof String s && s.equals("boom")) {
+            failedAttempts.incrementAndGet();
             throw new IllegalStateException("DEMO failure on " + s);
         } else if (event instanceof String s && s.startsWith("ord-")) {
             live++;

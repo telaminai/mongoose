@@ -55,6 +55,14 @@ public class ReplayScheduler extends DeadWheelScheduler {
         return seq;
     }
 
+    /** A replayed processor that left its group: its replay timers go with it, and so do its live ones. */
+    @Override
+    public int cancelTimersOf(DataFlow flow) {
+        Map<Long, Runnable> byFlow = actions.remove(flow);
+        replayed.remove(flow);
+        return (byFlow == null ? 0 : byFlow.size()) + super.cancelTimersOf(flow);
+    }
+
     /** Fire the timer {@code flow} scheduled as {@code seq}; refused if the replayed run never scheduled it. */
     public void fire(DataFlow flow, long seq) {
         Map<Long, Runnable> byFlow = actions.get(flow);

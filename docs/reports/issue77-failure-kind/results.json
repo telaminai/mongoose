@@ -1,0 +1,514 @@
+[
+  {
+    "name": "baseline",
+    "exitCode": 0,
+    "caughtBy": [],
+    "tests": 246,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut9.log"
+  },
+  {
+    "name": "name-only-stop-without-release",
+    "exitCode": 1,
+    "caughtBy": [
+      "ControlScenarioHarnessTest",
+      "GeneratedProcessorFailureIsolationTest"
+    ],
+    "tests": 246,
+    "failures": 31,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut6.log"
+  },
+  {
+    "name": "missing-stop-reply",
+    "exitCode": 1,
+    "caughtBy": [
+      "AdminStopCommandValidationTest",
+      "AuditFailurePolicyTest",
+      "CaptureAsEffectsTest",
+      "ControlScenarioHarnessTest"
+    ],
+    "tests": 246,
+    "failures": 89,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut6.log"
+  },
+  {
+    "name": "applied-without-release-renamed-rule",
+    "exitCode": 1,
+    "caughtBy": [
+      "CaptureAsEffectsTest",
+      "ControlScenarioHarnessTest",
+      "FailureKindQuarantineTest",
+      "GeneratedProcessorFailureIsolationTest",
+      "ReplayIdentityTest",
+      "Review77ProbesTest"
+    ],
+    "tests": 246,
+    "failures": 93,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut6.log"
+  },
+  {
+    "name": "missing-stale-open-close",
+    "exitCode": 1,
+    "caughtBy": [
+      "CaptureAsEffectsTest",
+      "ControlScenarioHarnessTest"
+    ],
+    "tests": 246,
+    "failures": 10,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut6.log"
+  },
+  {
+    "name": "skip-terminal-sweep",
+    "exitCode": 1,
+    "caughtBy": [
+      "ControlScenarioHarnessTest"
+    ],
+    "tests": 246,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut6.log"
+  },
+  {
+    "name": "drop-claimed-stop",
+    "exitCode": 1,
+    "caughtBy": [
+      "ControlScenarioHarnessTest"
+    ],
+    "tests": 246,
+    "failures": 42,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut6.log"
+  },
+  {
+    "name": "missing-stop-reply-relabelled-as-effect-failure",
+    "exitCode": 1,
+    "caughtBy": [
+      "AdminStopCommandValidationTest",
+      "AuditFailurePolicyTest",
+      "CaptureAsEffectsTest",
+      "ControlScenarioHarnessTest",
+      "FailureKindFlowTest"
+    ],
+    "tests": 246,
+    "failures": 90,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut6.log"
+  },
+  {
+    "name": "applied-reply-classified-as-failure",
+    "exitCode": 1,
+    "caughtBy": [
+      "AuditFailurePolicyTest",
+      "CaptureAsEffectsTest",
+      "ControlScenarioHarnessTest",
+      "FailureKindFlowTest"
+    ],
+    "tests": 246,
+    "failures": 123,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut6.log"
+  },
+  {
+    "name": "quarantine-kind-dropped",
+    "exitCode": 1,
+    "caughtBy": [
+      "GeneratedProcessorFailureIsolationTest"
+    ],
+    "tests": 246,
+    "failures": 2,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut6.log"
+  },
+  {
+    "name": "deadline-kind-dropped",
+    "exitCode": 1,
+    "caughtBy": [
+      "ControlTerminationAndAdmissionTest",
+      "FailureKindFlowTest"
+    ],
+    "tests": 246,
+    "failures": 1,
+    "errors": 1,
+    "skipped": 0,
+    "run": "77-mut6.log"
+  },
+  {
+    "name": "leftover-marker-dropped",
+    "exitCode": 1,
+    "caughtBy": [
+      "CaptureAsEffectsTest"
+    ],
+    "tests": 246,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut6.log"
+  },
+  {
+    "name": "capture-rule-drops-effect-kind",
+    "exitCode": 1,
+    "caughtBy": [
+      "FailureKindQuarantineTest",
+      "Review77ProbesTest"
+    ],
+    "tests": 246,
+    "failures": 2,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut6.log"
+  },
+  {
+    "name": "service-rule-drops-effect-kind",
+    "exitCode": 1,
+    "caughtBy": [
+      "FailureKindQuarantineTest"
+    ],
+    "tests": 246,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut6.log"
+  },
+  {
+    "name": "detach-retry-marked-leftover",
+    "exitCode": 1,
+    "caughtBy": [
+      "Review77ProbesTest"
+    ],
+    "tests": 246,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut6.log"
+  },
+  {
+    "name": "replay-mismatch-prefix-dropped",
+    "exitCode": 1,
+    "caughtBy": [
+      "IndependentReviewReplayProbesTest"
+    ],
+    "tests": 246,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut6.log"
+  },
+  {
+    "name": "driver-rule-failure-relabelled",
+    "exitCode": 1,
+    "caughtBy": [
+      "FailureKindFlowTest",
+      "Review77bProbesTest"
+    ],
+    "tests": 246,
+    "failures": 2,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut6.log"
+  },
+  {
+    "name": "driver-fallback-relabelled",
+    "exitCode": 1,
+    "caughtBy": [
+      "FailureKindFlowTest"
+    ],
+    "tests": 246,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut6.log"
+  },
+  {
+    "name": "stop-result-kinds-swapped",
+    "exitCode": 1,
+    "caughtBy": [
+      "BoundedShutdownTest",
+      "FailureKindFlowTest"
+    ],
+    "tests": 246,
+    "failures": 3,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut6.log"
+  },
+  {
+    "name": "observer-not-reported-when-attached-late",
+    "exitCode": 1,
+    "caughtBy": [
+      "Review77bProbesTest"
+    ],
+    "tests": 246,
+    "failures": 2,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut6.log"
+  },
+  {
+    "name": "observer-failure-fails-install",
+    "exitCode": 1,
+    "caughtBy": [
+      "Review77bProbesTest"
+    ],
+    "tests": 246,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut6.log"
+  },
+  {
+    "name": "cancel-replies-unmarked",
+    "exitCode": 1,
+    "caughtBy": [
+      "Review77bProbesTest"
+    ],
+    "tests": 246,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut6.log"
+  },
+  {
+    "name": "server-replies-unmarked",
+    "exitCode": 1,
+    "caughtBy": [
+      "Review77bProbesTest"
+    ],
+    "tests": 246,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut6.log"
+  },
+  {
+    "name": "dead-control-plane-not-fenced",
+    "exitCode": 1,
+    "caughtBy": [
+      "GroupContainmentTest",
+      "Review77bProbesTest",
+      "Review77cProbesTest"
+    ],
+    "tests": 246,
+    "failures": 5,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut6.log"
+  },
+  {
+    "name": "contain-policy-exits",
+    "exitCode": 1,
+    "caughtBy": [],
+    "tests": 0,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut7.log",
+    "crashedJvm": true
+  },
+  {
+    "name": "opaque-thrower-not-captured",
+    "exitCode": 1,
+    "caughtBy": [
+      "GeneratedProcessorFailureIsolationTest",
+      "OpaqueDispatchHandwrittenFailureTest",
+      "OpaqueHandwrittenPeerTest",
+      "OpaquePeerRedeliveryTest",
+      "Review77cProbesTest"
+    ],
+    "tests": 246,
+    "failures": 6,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut8.log"
+  },
+  {
+    "name": "report-on-attach-removed",
+    "exitCode": 1,
+    "caughtBy": [
+      "Review77bProbesTest"
+    ],
+    "tests": 246,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut8.log"
+  },
+  {
+    "name": "sink-catches-runtime-only",
+    "exitCode": 1,
+    "caughtBy": [
+      "AuditFailurePolicyTest"
+    ],
+    "tests": 246,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut8.log"
+  },
+  {
+    "name": "heldnames-dead-branch-removed",
+    "exitCode": 1,
+    "caughtBy": [
+      "Review77cProbesTest"
+    ],
+    "tests": 246,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut8.log"
+  },
+  {
+    "name": "failed-boot-not-stopped",
+    "exitCode": 1,
+    "caughtBy": [
+      "FailedBootContainmentTest",
+      "GroupContainmentTest",
+      "Review77cProbesTest"
+    ],
+    "tests": 246,
+    "failures": 3,
+    "errors": 1,
+    "skipped": 0,
+    "run": "77-mut9.log"
+  },
+  {
+    "name": "service-group-health-always-up",
+    "exitCode": 1,
+    "caughtBy": [
+      "Review77cProbesTest"
+    ],
+    "tests": 246,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut9.log"
+  },
+  {
+    "name": "contain-log-not-rate-limited",
+    "exitCode": 1,
+    "caughtBy": [
+      "GroupContainmentTest"
+    ],
+    "tests": 246,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut9.log"
+  },
+  {
+    "name": "opaque-progress-ignored-and-redispatched",
+    "exitCode": 1,
+    "caughtBy": [
+      "OpaqueHandwrittenPeerTest",
+      "OpaquePeerRedeliveryTest"
+    ],
+    "tests": 246,
+    "failures": 2,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut9.log"
+  },
+  {
+    "name": "capture-ack-hides-later-close-failure",
+    "exitCode": 1,
+    "caughtBy": [
+      "CaptureAcknowledgementTest"
+    ],
+    "tests": 246,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut9.log"
+  },
+  {
+    "name": "i20-applied-fallback-unchecked",
+    "exitCode": 1,
+    "caughtBy": [
+      "FailureKindEvidenceMutationTest",
+      "FallbackKindInvariantTest"
+    ],
+    "tests": 246,
+    "failures": 2,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut9.log"
+  },
+  {
+    "name": "incomplete-boot-cleanup-untyped",
+    "exitCode": 1,
+    "caughtBy": [
+      "GroupContainmentTest"
+    ],
+    "tests": 246,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut9.log"
+  },
+  {
+    "name": "replay-identity-kind-dropped",
+    "exitCode": 1,
+    "caughtBy": [
+      "ReplayIdentityTest"
+    ],
+    "tests": 246,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut9.log"
+  },
+  {
+    "name": "identity-only-handwritten-redelivers",
+    "exitCode": 1,
+    "caughtBy": [
+      "IdentityOnlyRecoveryFollowupOwnTest",
+      "IdentityOnlyRecoveryFollowupTest"
+    ],
+    "tests": 254,
+    "failures": 2,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut10.log (b4dbd8d)"
+  },
+  {
+    "name": "service-up-depends-on-group-check",
+    "exitCode": 1,
+    "caughtBy": [
+      "Review77cProbesTest",
+      "ServiceHealthObservationFollowupOwnTest",
+      "ServiceHealthObservationFollowupTest"
+    ],
+    "tests": 254,
+    "failures": 3,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut10.log (b4dbd8d)"
+  },
+  {
+    "name": "solo-retry-ignores-strategy-capability",
+    "exitCode": 1,
+    "caughtBy": [
+      "SoloRetryCompatibilityOwnTest",
+      "SoloRetryCompatibilityProbeTest"
+    ],
+    "tests": 257,
+    "failures": 2,
+    "errors": 0,
+    "skipped": 0,
+    "run": "77-mut11.log (272d215)"
+  }
+]

@@ -58,7 +58,8 @@ class AdminIntegrationRegressionTest {
         assertEquals(1, invocations, "only the command that ran is an invocation: " + entries);
         assertEquals(1, entries.size(), "and nothing else is recorded for the refused one: " + entries);
 
-        try (Server r = boot(ReplayConfig.replay(Set.of("probe"), Map.of(), null, store), false, one())) {
+        // replayed into another probe class on purpose: the provenance check, which would refuse that, is not under test
+        try (Server r = boot(ReplayConfig.replay(Set.of("probe"), Map.of(), null, store).withProvenance(false), false, one())) {
             r.awaitReplayDone();
             assertNull(r.replayer().stopped("probe"), "the replay completes");
             assertEquals(List.of("probe: noop"), r.replayer().adminReplies(), "the replay runs the one command that ran");

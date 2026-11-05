@@ -72,4 +72,31 @@ public sealed interface ReplayEntry {
 
     /** A dispatch threw: the stream is not reproducible past this point (a retry is a failure, D4). */
     record Failed(String source, String description, long instant) implements ReplayEntry { }
+
+    /**
+     * Items of {@code source} were dropped by a full queue here, before reaching the processor (telaminai/mongoose#79):
+     * they keep their journal entries and sequence numbers, and the recording names the loss at the point it happened.
+     * The processor never saw them, so the recorded stream stays reproducible: a replay reports the loss
+     * ({@code GroupReplayer.losses}) and carries on.
+     */
+    record Dropped(String source, String description, long instant) implements ReplayEntry { }
+
+    /**
+     * The processor was stopped here (design "Deterministic replay"): the stream ends, and a replay stops the processor
+     * at this point; the next incarnation under the name records, and replays, a stream of its own.
+     */
+    record Stopped(long instant, List<Long> reads) implements Timed { }
+
+    /**
+     * A service was delivered to, or withdrawn from, the running processor here, with its registry version. A replay
+     * delivers it at this point, and live deliveries to the replayed processor are suppressed.
+     */
+    record ServiceChanged(String service, boolean register, long version, long instant, List<Long> reads) implements Timed { }
+
+    /**
+     * The processor asked the server to change something (stop a processor, remove a service, ...) here, and how that
+     * request ended: {@code outcome} is {@code ok} or {@code failed: <reason>}. A replay never executes it: the replayed
+     * request is matched against this one and answered with this outcome.
+     */
+    record ControlCall(String method, List<String> args, String outcome, long instant) implements ReplayEntry { }
 }

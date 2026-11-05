@@ -112,6 +112,19 @@ public class MongooseServerConfig {
     private Map<CallBackType, Supplier<EventToInvokeStrategy>> eventInvokeStrategies;
 
     /**
+     * What happens when a processor's {@code start()} throws while the server boots (review of mongoose#57). False, the
+     * default: the boot fails. The processor is dropped and the group's start fails with a
+     * {@link com.telamin.mongoose.dutycycle.ProcessorStartException} naming the group and the processor, which reaches
+     * the agent error handler (under {@code bootServer}, {@code GlobalErrorHandler}, which logs it and, under the opt-in
+     * {@link FatalErrorPolicy#EXIT_PROCESS}, exits the process); the server's start fails either way. True: the
+     * failure is isolated, reported through {@code ErrorReporting} and the processor dropped, and the server boots
+     * without it. A Fluxtion-generated processor whose start failed is quarantined instead of dropped: its name stays
+     * reserved and shutdown stays incomplete (no tearDown is called). A processor added after the server has started is always isolated, whatever this says.
+     * YAML: {@code isolateProcessorStartFailuresAtBoot: true}.
+     */
+    private boolean isolateProcessorStartFailuresAtBoot;
+
+    /**
      * Optional performance-monitoring configuration. When absent or
      * {@code enabled = false} (the default), the no-op counters service
      * is installed and call-site overhead is zero after JIT compilation.
@@ -120,6 +133,73 @@ public class MongooseServerConfig {
 
     /** Record or replay processors' inputs (spec-replay-recording R1); off by default. */
     private ReplayConfig replay;
+
+    /** Default bound on the shutdown drain, see {@link #shutdownDrainTimeoutMillis}. */
+    public static final long DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS = 2_000;
+
+    /**
+     * mongoose#56: how long {@code MongooseServer.stop()} waits, after the feeds stop, for events already queued to
+     * processors to be delivered before the processors stop. Events still queued when it runs out are dropped (and
+     * logged). Zero or less does not wait.
+     */
+    private long shutdownDrainTimeoutMillis = DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS;
+
+    /** Default end-to-end bound on {@code MongooseServer.stop()}, see {@link #shutdownTimeoutMillis}. */
+    public static final long DEFAULT_SHUTDOWN_TIMEOUT_MILLIS = 30_000;
+
+    /**
+     * Design "Bounded shutdown": the end-to-end deadline across every phase of {@code MongooseServer.stop()}. A stop
+     * that runs out reports what is still running instead of claiming success, leaves the services a running processor
+     * group may use running, stays STOPPING, and resumes when stop is called again.
+     */
+    private long shutdownTimeoutMillis = DEFAULT_SHUTDOWN_TIMEOUT_MILLIS;
+
+    /** Default bound on a void control method's wait, see {@link #controlWaitMillis}. */
+    public static final long DEFAULT_CONTROL_WAIT_MILLIS = 10_000;
+
+    /**
+     * Design "Agent threads and replies": how long a void control method ({@code addEventProcessor},
+     * {@code stopProcessor}, {@code registerService}, {@code removeService}) waits, off agent threads, for its outcome
+     * before returning; the request still applies after it returns.
+     */
+    private long controlWaitMillis = DEFAULT_CONTROL_WAIT_MILLIS;
+
+    /**
+     * What the void {@code addEventProcessor} does, off agent threads, when the add it waited for did not apply.
+     * {@code REPORT} (the default, as since mongoose#57): a failed start is isolated, reported and the call returns.
+     * {@code THROW} (the design's table): a failed start throws {@code ProcessorStartException}; a refused add or a
+     * stopping group throws {@code IllegalStateException}. Either way the outcome is in {@code addProcessor}'s reply.
+     */
+    public enum AddFailurePolicy { REPORT, THROW }
+
+    /**
+     * What the boot error handler ({@code GlobalErrorHandler}, installed by {@code bootServer}) does with an error that
+     * escapes a group's agent (issue #77, A1; owner confirmed: exit is never the default).
+     */
+    public enum FatalErrorPolicy {
+        /**
+         * Default. Log it and keep the process alive: an {@code Error} ends that group's thread, so the group is DEAD
+         * (health {@code group:<name>/control} DOWN, its requests answered {@code FAILED_DEAD}); other groups keep
+         * serving. Any other throwable leaves the group running, as Agrona does.
+         */
+        CONTAIN,
+        /** Opt-in deployment policy: log it and exit the JVM with status -1 (the behaviour before issue #77). */
+        EXIT_PROCESS
+    }
+
+    /** YAML: {@code fatalErrorPolicy: EXIT_PROCESS} to restore process exit on a fatal group error. */
+    private FatalErrorPolicy fatalErrorPolicy = FatalErrorPolicy.CONTAIN;
+
+    private AddFailurePolicy addFailurePolicy = AddFailurePolicy.REPORT;
+
+    /** Default bound on the startup wait, see {@link #startupTimeoutMillis}. */
+    public static final long DEFAULT_STARTUP_TIMEOUT_MILLIS = 60_000;
+
+    /**
+     * mongoose#60: how long {@code MongooseServer.start()} waits for every agent group to become active before it fails,
+     * naming the groups that did not. A group that closes while starting (its onStart threw) fails start at once.
+     */
+    private long startupTimeoutMillis = DEFAULT_STARTUP_TIMEOUT_MILLIS;
 
     /**
      * Gets the list of event handler groups, initializing if {@code null} and adding
@@ -474,8 +554,21 @@ public class MongooseServerConfig {
         private IdleStrategy idleStrategy;
         private final Map<CallBackType, Supplier<EventToInvokeStrategy>> eventInvokeStrategies = new HashMap<>();
         private ReplayConfig replay;
+        private long shutdownDrainTimeoutMillis = DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS;
+        private long shutdownTimeoutMillis = DEFAULT_SHUTDOWN_TIMEOUT_MILLIS;
+        private long startupTimeoutMillis = DEFAULT_STARTUP_TIMEOUT_MILLIS;
+        private boolean isolateProcessorStartFailuresAtBoot;
 
         private Builder() {
+        }
+
+        /**
+         * Isolate a processor whose start fails during boot (report and drop it, boot on) instead of failing the boot.
+         * Off by default; see {@link MongooseServerConfig#isIsolateProcessorStartFailuresAtBoot()}.
+         */
+        public Builder isolateProcessorStartFailuresAtBoot(boolean isolate) {
+            this.isolateProcessorStartFailuresAtBoot = isolate;
+            return this;
         }
 
         /**
@@ -578,6 +671,36 @@ public class MongooseServerConfig {
         }
 
         /**
+         * How long {@code MongooseServer.stop()} waits for events already queued to processors to be delivered, after
+         * the feeds stop (default {@value MongooseServerConfig#DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MILLIS} ms; zero or less
+         * does not wait). See {@link MongooseServerConfig#getShutdownDrainTimeoutMillis()}.
+         */
+        public Builder shutdownDrainTimeoutMillis(long shutdownDrainTimeoutMillis) {
+            this.shutdownDrainTimeoutMillis = shutdownDrainTimeoutMillis;
+            return this;
+        }
+
+        /**
+         * The end-to-end deadline of {@code MongooseServer.stop()} (default
+         * {@value MongooseServerConfig#DEFAULT_SHUTDOWN_TIMEOUT_MILLIS} ms). See
+         * {@link MongooseServerConfig#getShutdownTimeoutMillis()}.
+         */
+        public Builder shutdownTimeoutMillis(long shutdownTimeoutMillis) {
+            this.shutdownTimeoutMillis = shutdownTimeoutMillis;
+            return this;
+        }
+
+        /**
+         * How long {@code MongooseServer.start()} waits for every agent group to become active before it fails, naming
+         * the groups that did not (default {@value MongooseServerConfig#DEFAULT_STARTUP_TIMEOUT_MILLIS} ms). See
+         * {@link MongooseServerConfig#getStartupTimeoutMillis()}.
+         */
+        public Builder startupTimeoutMillis(long startupTimeoutMillis) {
+            this.startupTimeoutMillis = startupTimeoutMillis;
+            return this;
+        }
+
+        /**
          * Convenience for the common ON_EVENT callback type.
          *
          * @param factory supplier that produces the strategy instance
@@ -645,8 +768,12 @@ public class MongooseServerConfig {
             if (!services.isEmpty()) cfg.setServices(new ArrayList<>(services));
             if (!agentThreads.isEmpty()) cfg.setAgentThreads(new ArrayList<>(agentThreads));
             if (idleStrategy != null) cfg.setIdleStrategy(idleStrategy);
+            cfg.setIsolateProcessorStartFailuresAtBoot(isolateProcessorStartFailuresAtBoot);
             if (!eventInvokeStrategies.isEmpty()) cfg.setEventInvokeStrategies(new HashMap<>(eventInvokeStrategies));
             if (replay != null) cfg.setReplay(replay);
+            cfg.setShutdownDrainTimeoutMillis(shutdownDrainTimeoutMillis);
+            cfg.setShutdownTimeoutMillis(shutdownTimeoutMillis);
+            cfg.setStartupTimeoutMillis(startupTimeoutMillis);
             return cfg;
         }
     }

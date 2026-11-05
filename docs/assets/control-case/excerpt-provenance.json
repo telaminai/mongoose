@@ -1,0 +1,9 @@
+{
+  "scope": "Selected documents for roots 472 and 473 only; NOT a complete control history or an invariant-pass manifest.",
+  "source": "chaos-g2-19796.yaml",
+  "sourceSha256": "8d45897f673320853b760f459adef500b0f10f8dd1924c10e3c13a034572fbcd",
+  "excerptSha256": "2d7b9956b061ff34ab1b1d433c1542f1348979cadfe410e513ceb27b16b6842b",
+  "documents": 8,
+  "runtimeCommit": "c7c92da8adbe087270e95a29eec51c3fcf159515",
+  "seed": 19796
+}

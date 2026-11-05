@@ -56,6 +56,21 @@ public class MongooseServerAdmin implements Lifecycle {
     private MongooseLatencyService latencyService;
     private MongooseAuditCaptureService auditCapture;
     private MongooseAuditIntrospectionService auditIntrospection;
+    private final java.util.concurrent.atomic.AtomicReference<ControlExportJob> controlExport =
+            new java.util.concurrent.atomic.AtomicReference<>();
+
+    private static final class ControlExportJob {
+        final String id = java.util.UUID.randomUUID().toString();
+        final String group;
+        final java.nio.file.Path directory;
+        volatile String result = "PENDING";
+        volatile boolean finished;
+
+        ControlExportJob(String group, java.nio.file.Path directory) {
+            this.group = group;
+            this.directory = directory;
+        }
+    }
 
     @ServiceRegistered
     public void admin(AdminCommandRegistry registry) {
@@ -119,6 +134,127 @@ public class MongooseServerAdmin implements Lifecycle {
         registry.registerCommand("audit.stop", this::auditStop);
         registry.registerCommand("audit.status", this::auditStatus);
         registry.registerCommand("audit.list", this::auditList);
+        registry.registerCommand("control.audit.export", this::controlAuditExport);
+        registry.registerCommand("control.audit.export.status", this::controlAuditExportStatus);
+        registry.registerCommand("control.group.status", this::controlGroupStatus);
+        registry.registerCommand("control.audit.acknowledge", this::acknowledgeControlAudit);
+        registry.registerCommand("control.capture.acknowledge", this::acknowledgeCaptureFailures);
+        // #79: overload health per feed and queue, and the operator clear of a latched never-drop feed
+        registry.registerCommand("overload.status", this::overloadStatus);
+        registry.registerCommand("overload.clear", this::overloadClear);
+    }
+
+    private void acknowledgeCaptureFailures(List<String> args, Consumer<String> out, Consumer<String> err) {
+        if (args.size() != 2) {
+            err.accept("usage: control.capture.acknowledge <group>");
+            return;
+        }
+        if (!(serverController instanceof com.telamin.mongoose.MongooseServer server)) {
+            err.accept("control capture acknowledge requires a MongooseServer");
+            return;
+        }
+        try {
+            server.acknowledgeCaptureFailures(args.get(1));
+            out.accept("capture failures acknowledged for group " + args.get(1) + "; they stay listed and owned");
+        } catch (IllegalArgumentException failed) {
+            err.accept(failed.getMessage());
+        }
+    }
+
+    private void acknowledgeControlAudit(List<String> args, Consumer<String> out, Consumer<String> err) {
+        if (args.size() != 2) {
+            err.accept("usage: control.audit.acknowledge <group>");
+            return;
+        }
+        if (!(serverController instanceof com.telamin.mongoose.MongooseServer server)) {
+            err.accept("control audit acknowledge requires a MongooseServer");
+            return;
+        }
+        try {
+            server.acknowledgeControlAuditGap(args.get(1));
+            out.accept("control audit gap acknowledged for group " + args.get(1) + "; the evidence stays incomplete");
+        } catch (IllegalArgumentException failed) {
+            err.accept(failed.getMessage());
+        }
+    }
+
+    private void controlGroupStatus(List<String> args, Consumer<String> out, Consumer<String> err) {
+        boolean json = args.size() == 3 && "--json".equals(args.get(2));
+        if (args.size() != 2 && !json) {
+            err.accept("usage: control.group.status <group> [--json]");
+            return;
+        }
+        if (!(serverController instanceof com.telamin.mongoose.MongooseServer server)) {
+            err.accept("control group status requires a MongooseServer");
+            return;
+        }
+        try {
+            var status = server.controlGroupStatus(args.get(1));
+            out.accept(json ? status.toJson() : status.toString());
+        } catch (IllegalArgumentException failed) {
+            err.accept(failed.getMessage());
+        }
+    }
+
+    private void controlAuditExport(List<String> args, Consumer<String> out, Consumer<String> err) {
+        if (args.size() != 3) {
+            err.accept("usage: control.audit.export <group> <new-directory>");
+            return;
+        }
+        if (!(serverController instanceof com.telamin.mongoose.MongooseServer server)) {
+            err.accept("control audit export requires a MongooseServer");
+            return;
+        }
+        final ControlExportJob job;
+        try {
+            job = new ControlExportJob(args.get(1), java.nio.file.Path.of(args.get(2)).toAbsolutePath().normalize());
+        } catch (RuntimeException invalid) {
+            err.accept("control audit export: " + invalid);
+            return;
+        }
+        ControlExportJob previous = controlExport.get();
+        if ((previous != null && !previous.finished) || !controlExport.compareAndSet(previous, job)) {
+            err.accept("control audit export already pending; inspect control.audit.export.status");
+            return;
+        }
+        // At most one daemon worker and one retained result per admin instance. Never hold an output callback
+        // beyond this command: transports may release their response as soon as it returns.
+        try {
+            Thread.ofVirtual().name("mongoose-control-audit-export").start(() -> {
+                try {
+                    var audit = server.exportControlAudit(job.group, job.directory);
+                    var verification = com.telamin.mongoose.control.ControlAuditExport.verify(audit);
+                    job.result = (verification.completeness() == com.telamin.mongoose.control.ControlAuditExport.Completeness.UNKNOWN
+                            ? "FAILED" : "EXPORTED") + " completeness=" + verification.completeness()
+                            + " audit=" + audit + " reason=" + verification.reason();
+                } catch (Exception failed) {
+                    job.result = "FAILED " + failed;
+                } finally {
+                    if (job.result.equals("PENDING")) job.result = "FAILED export worker terminated abnormally";
+                    job.finished = true;
+                }
+            });
+        } catch (Throwable failed) {
+            job.result = "FAILED could not start export worker: " + failed;
+            job.finished = true;
+            throw failed;
+        }
+        out.accept("control audit export job=" + job.id + " directory=" + job.directory
+                + "; inspect control.audit.export.status " + job.id);
+    }
+
+    private void controlAuditExportStatus(List<String> args, Consumer<String> out, Consumer<String> err) {
+        if (args.size() > 2) {
+            err.accept("usage: control.audit.export.status [job-id]");
+            return;
+        }
+        ControlExportJob job = controlExport.get();
+        if (job == null || (args.size() == 2 && !job.id.equals(args.get(1)))) {
+            err.accept("unknown control audit export job (only the latest job is retained)");
+            return;
+        }
+        out.accept("control audit export job=" + job.id + " group=" + job.group + " directory=" + job.directory
+                + " " + job.result);
     }
 
     @Override
@@ -186,10 +322,12 @@ public class MongooseServerAdmin implements Lifecycle {
             return;
         }
         String processor = args.get(1);
+        // mongoose#46: returns once the capture listener is installed on the processor's own thread; refused, not hung,
+        // when it cannot be (processor gone, group not running, its thread not reaching it in time)
         try {
             auditCapture.start(processor);
             out.accept("audit: RECORDING " + processor);
-        } catch (IllegalArgumentException e) {
+        } catch (IllegalArgumentException | IllegalStateException e) {
             err.accept("audit: " + e.getMessage());
         }
     }
@@ -201,15 +339,27 @@ public class MongooseServerAdmin implements Lifecycle {
             return;
         }
         String processor = args.get(1);
-        auditCapture.stop(processor);
-        out.accept("audit: STOPPED " + processor);
+        try {
+            auditCapture.stop(processor);
+            out.accept("audit: STOPPED " + processor);
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            err.accept("audit: " + e.getMessage());
+        }
     }
 
     private void auditStatus(List<String> args, Consumer<String> out, Consumer<String> err) {
         if (auditUnavailable(err)) return;
         if (args.size() >= 2) {
             String processor = args.get(1);
-            out.accept("audit: " + processor + " " + (auditCapture.isRecording(processor) ? "RECORDING" : "idle"));
+            try {
+                boolean recording = auditCapture.isRecording(processor);
+                AuditSinkHandle handle = auditIntrospection == null ? null : recording
+                        ? auditIntrospection.currentSink(processor) : auditIntrospection.latestCapture(processor);
+                out.accept("audit: " + processor + " " + (recording ? "RECORDING" : "idle")
+                        + (handle == null ? "" : (recording ? " " : " latest ") + captureLocation(handle)));
+            } catch (IllegalArgumentException | IllegalStateException refused) {
+                err.accept("audit: " + refused.getMessage());
+            }
             return;
         }
         // No processor — list state for every active processor we know about.
@@ -219,7 +369,7 @@ public class MongooseServerAdmin implements Lifecycle {
         }
         StringBuilder sb = new StringBuilder("audit status:");
         auditIntrospection.currentSinks().forEach((proc, handle) ->
-                sb.append("\n\t").append(proc).append("  RECORDING  ").append(handle.path()));
+                sb.append("\n\t").append("RECORDING ").append(captureLocation(handle)));
         out.accept(sb.toString());
     }
 
@@ -237,12 +387,15 @@ public class MongooseServerAdmin implements Lifecycle {
         for (AuditSinkHandle h : all) {
             sb.append("\n\t")
                     .append(h.isLive() ? "● " : "  ")
-                    .append(h.processorName())
+                    .append(captureLocation(h))
                     .append("  ").append(h.recordCount() < 0 ? "?" : h.recordCount()).append(" records")
-                    .append("  ").append(h.sizeBytes() < 0 ? "?" : (h.sizeBytes() + " bytes"))
-                    .append("  ").append(h.path());
+                    .append("  ").append(h.sizeBytes() < 0 ? "?" : (h.sizeBytes() + " bytes"));
         }
         out.accept(sb.toString());
+    }
+
+    private static String captureLocation(AuditSinkHandle handle) {
+        return "id=" + handle.id() + " selector=" + handle.processorName() + " path=" + handle.path();
     }
 
     private void listServices(List<String> args, Consumer<String> out, Consumer<String> err) {
@@ -279,10 +432,53 @@ public class MongooseServerAdmin implements Lifecycle {
                         .collect(Collectors.joining("\n", "\n", "\n")));
     }
 
+    private void overloadStatus(List<String> args, Consumer<String> out, Consumer<String> err) {
+        if (!(serverController instanceof com.telamin.mongoose.MongooseServer server)) {
+            err.accept("overload.status needs a MongooseServer");
+            return;
+        }
+        StringBuilder sb = new StringBuilder("overload:");
+        server.overloadStates().forEach((feed, queues) -> {
+            sb.append("\n\t").append(feed);
+            queues.forEach((q, s) -> sb.append("\n\t\t").append(q).append(": ").append(s));
+        });
+        out.accept(sb.toString());
+    }
+
+    private void overloadClear(List<String> args, Consumer<String> out, Consumer<String> err) {
+        if (!(serverController instanceof com.telamin.mongoose.MongooseServer server)) {
+            err.accept("overload.clear needs a MongooseServer");
+            return;
+        }
+        if (args.size() < 2) {
+            err.accept("usage: overload.clear <feed>");
+            return;
+        }
+        int cleared = server.clearOverloadState(args.get(1));
+        if (cleared < 0) {
+            err.accept("no such feed: " + args.get(1));
+        } else {
+            out.accept("overload.clear " + args.get(1) + ": " + cleared + " queue(s) cleared");
+        }
+    }
+
     private void stopProcessors(List<String> args, Consumer<String> out, Consumer<String> err) {
-        String arg = args.get(1);
+        // exactly one argument, <group>/<processor>, both parts non-blank: anything else is refused before any stop
+        String arg = args.size() == 2 ? args.get(1) : null;
+        String[] splitArgs = arg == null ? new String[0] : arg.split("/", -1);
+        if (splitArgs.length != 2 || splitArgs[0].isBlank() || splitArgs[1].isBlank()) {
+            err.accept("stop REFUSED (REFUSED_INVALID): usage: server.processors.stop <group>/<processor>");
+            return;
+        }
         out.accept("stopping processor:" + arg);
-        String[] splitArgs = arg.split("/");
-        serverController.stopProcessor(splitArgs[0], splitArgs[1]);
+        if (serverController instanceof com.telamin.mongoose.MongooseServer server) {
+            // the admin transport runs commands inline: wait at most 1 s, then report pending; the stop still applies.
+            // An unknown group or name is answered REFUSED at once, never "pending"
+            com.telamin.mongoose.control.ControlReply reply = server.stopProcessor(splitArgs[0], splitArgs[1], 1_000);
+            out.accept(reply == null ? "stop pending (still applies): " + arg
+                    : "stop " + reply.outcome() + " (" + reply.kind() + "): " + reply.reason());
+        } else {
+            serverController.stopProcessor(splitArgs[0], splitArgs[1]);
+        }
     }
 }

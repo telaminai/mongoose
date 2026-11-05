@@ -11,7 +11,7 @@ import com.telamin.mongoose.service.pool.impl.Pools;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Reproduces and validates that when the last reference is released AFTER an early returnToPool() call,
@@ -61,4 +61,27 @@ public class PoolTrackerRaceTest {
         m.getPoolTracker().returnToPool();
         assertEquals(1, pool.availableCount(), "Object should be returned automatically when last reference is released");
     }
+    @Test
+    public void legacyReturnAfterReuseCannotReleaseTheNewBorrow() {
+        var resets = new java.util.concurrent.atomic.AtomicInteger();
+        ObjectPool<PooledMsg> pool = Pools.SHARED.getOrCreate(PooledMsg.class, PooledMsg::new,
+                m -> resets.incrementAndGet(), 1, 1);
+        PooledMsg previous = pool.acquire();
+        previous.tracker.releaseReference();
+        PooledMsg current = pool.acquire();
+        assertSame(previous, current);
+        current.tracker.acquireReference();
+        previous.tracker.returnToPool();
+        assertEquals(2, current.tracker.currentRefCount());
+        assertEquals(0, pool.availableCount());
+        assertEquals(1, resets.get());
+        current.tracker.releaseReference();
+        previous.tracker.returnToPool();
+        assertEquals(1, current.tracker.currentRefCount());
+        current.tracker.releaseReference();
+        previous.tracker.returnToPool();
+        assertEquals(1, pool.availableCount());
+        assertEquals(2, resets.get(), "only each borrow's final release returns and resets it");
+    }
+
 }

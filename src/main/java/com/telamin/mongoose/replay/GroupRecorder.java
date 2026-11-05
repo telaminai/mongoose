@@ -40,11 +40,20 @@ public final class GroupRecorder {
         String uncopyable;
         /** A journalled input this processor received in a state the journal does not hold: recorded inline (N3). */
         boolean notAsJournalled;
+        /** This dispatch: the processor's handler threw, so its input is marked Failed and its retries go unrecorded (#53). */
+        boolean dispatchFailed;
 
         Recorded(String name, RecordingClock clock) {
             this.name = name;
             this.clock = clock;
         }
+    }
+
+    private volatile java.util.function.BooleanSupplier ownThread = com.telamin.mongoose.control.AgentThreads::isAgentThread;
+
+    /** How to tell the recording group's own agent thread: only there is a control request in input order. */
+    public void onOwnThread(java.util.function.BooleanSupplier ownThread) {
+        this.ownThread = ownThread;
     }
 
     public GroupRecorder(ReplayConfig config, LongSupplier live) {
@@ -54,9 +63,23 @@ public final class GroupRecorder {
 
     /** A processor joins the group: when it is recorded, its clock becomes a live {@link RecordingClock}. */
     public void attach(String name, DataFlow flow) {
+        attach(name, 1, flow);
+    }
+
+    /** As {@link #attach(String, DataFlow)}, into the stream of the processor's {@code incarnation} under the name. */
+    public void attach(String name, int incarnation, DataFlow flow) {
         if (!config.covers(name)) return;
         RecordingClock clock = new RecordingClock(live);
-        Recorded r = new Recorded(name, clock);
+        Recorded r = new Recorded(ReplayStreams.key(name, incarnation), clock);
+        if (config.recordProvenance()) {
+            try {
+                config.store().began(r.name, Provenance.of(flow, incarnation, live.getAsLong()));
+            } catch (VirtualMachineError e) {
+                throw e;
+            } catch (Throwable t) {
+                log.warning("replay recording of " + r.name + ": its provenance could not be recorded: " + t);
+            }
+        }
         byFlow.put(flow, r);
         // on the group's agent thread: a processor that refuses the recording's clock must not reach the agent's error
         // handler, which ends the process (review of cd52628, F3; N1's RECORD counterpart). Its recording is FAILED, by
@@ -75,8 +98,100 @@ public final class GroupRecorder {
         }
     }
 
+    /** A built stream must retain startup failure even after its processor is immediately released. */
+    public void startFailed(DataFlow flow, Throwable failure) {
+        Recorded recorded = byFlow.get(flow);
+        if (recorded == null || recorded.broken != null) return;
+        String why = "processor start failed: " + failure;
+        append(recorded, new ReplayEntry.Failed("start", why, recorded.clock.instant(recorded.clock.captured())));
+        if (recorded.broken == null) recorded.broken = why;
+    }
+
     public void detach(DataFlow flow) {
         byFlow.remove(flow);
+        wrapped.remove(flow);
+    }
+
+    /**
+     * The service {@code flow} is given: a recorded processor's {@code MongooseServerController} records every request
+     * that changes the server, with its outcome, in the processor's stream, then executes it (when the configuration
+     * intercepts control). Any other service, or processor, gets {@code service} itself.
+     */
+    public com.telamin.fluxtion.runtime.service.Service<?> serviceFor(DataFlow flow,
+                                                                      com.telamin.fluxtion.runtime.service.Service<?> service) {
+        if (!config.interceptControl() || !byFlow.containsKey(flow) || !ControlInterception.isController(service)) {
+            return service;
+        }
+        // the same wrapper for the same service, so a deregistration withdraws what was registered
+        return wrapped.computeIfAbsent(flow, f -> new IdentityHashMap<>()).computeIfAbsent(service, s -> recording(flow, s));
+    }
+
+    private final Map<DataFlow, Map<com.telamin.fluxtion.runtime.service.Service<?>,
+            com.telamin.fluxtion.runtime.service.Service<?>>> wrapped = new IdentityHashMap<>();
+
+    private com.telamin.fluxtion.runtime.service.Service<?> recording(DataFlow flow,
+                                                                      com.telamin.fluxtion.runtime.service.Service<?> service) {
+        Object target = service.instance();
+        return ControlInterception.wrap(service, (method, args, m, raw) -> {
+            Object result = null;
+            Throwable failure = null;
+            try {
+                result = ControlInterception.invoke(m, target, raw);
+            } catch (Throwable t) {
+                failure = t;
+            }
+            Recorded r = byFlow.get(flow);
+            if (r != null && !ownThread.getAsBoolean()) {
+                // off the processor's own thread: outside its input order, so the stream cannot reproduce it (final 11)
+                append(r, new ReplayEntry.Failed("control", "control request " + method + args
+                        + " made off the processor's thread", live.getAsLong()));
+            } else if (r != null) {
+                append(r, new ReplayEntry.ControlCall(method, List.copyOf(args), failure == null ? "ok" : "failed: " + failure,
+                        live.getAsLong()));
+            }
+            if (failure != null) throw failure;
+            return result;
+        });
+    }
+
+    /**
+     * A control action on {@code flow} begins (a stop by request, a service change): its clock readings from now on are
+     * recorded with the entry, as an input's are (review of PR 6, finding 4).
+     */
+    public void beforeControl(DataFlow flow) {
+        Recorded r = byFlow.get(flow);
+        if (r != null) r.clock.arm();
+    }
+
+    /** The processor was stopped by a request (not by its group closing): its stream ends here. */
+    public void stopped(DataFlow flow) {
+        Recorded r = byFlow.get(flow);
+        if (r == null || r.broken != null) return;
+        List<Long> reads = r.clock.captured();
+        append(r, new ReplayEntry.Stopped(r.clock.instant(reads), reads));
+    }
+
+    /** A service delivery's callback failed: the stream cannot be reproduced past this point. */
+    public void serviceFailed(DataFlow flow, String service, String failure) {
+        Recorded r = byFlow.get(flow);
+        if (r == null || r.broken != null) return;
+        List<Long> reads = r.clock.captured();
+        append(r, new ReplayEntry.Failed("service", "service " + service + " callback failed: " + failure,
+                r.clock.instant(reads)));
+    }
+
+    /** A control action began but changed nothing for the processor (a service it already held): nothing recorded. */
+    public void discardControl(DataFlow flow) {
+        Recorded r = byFlow.get(flow);
+        if (r != null) r.clock.captured();
+    }
+
+    /** A service was delivered to, or withdrawn from, the running processor, at registry {@code version}. */
+    public void serviceChanged(DataFlow flow, String service, boolean register, long version) {
+        Recorded r = byFlow.get(flow);
+        if (r == null || r.broken != null) return;
+        List<Long> reads = r.clock.captured();
+        append(r, new ReplayEntry.ServiceChanged(service, register, version, r.clock.instant(reads), reads));
     }
 
     /** A ReplayRecord input: pin a recorded processor's clock to its instant; false when {@code flow} is not recorded. */
@@ -108,6 +223,7 @@ public final class GroupRecorder {
             r.input = null;
             r.uncopyable = null;
             r.notAsJournalled = false;
+            r.dispatchFailed = false;
         }
     }
 
@@ -118,7 +234,7 @@ public final class GroupRecorder {
      */
     public void received(DataFlow target, Object event) {
         Recorded r = byFlow.get(target);
-        if (r == null || r.broken != null) return;
+        if (r == null || r.broken != null || r.dispatchFailed) return;   // a retry of a failed input is not recorded (#53)
         r.received = true;
         if (event instanceof UncapturedInput uncaptured) {
             r.uncopyable = uncaptured.reason();         // the strategy cannot say what this processor received (N4)
@@ -191,7 +307,7 @@ public final class GroupRecorder {
             if (r == null) continue;
             List<Long> reads = r.clock.captured();
             long instant = r.clock.instant(reads);
-            if (!r.received) continue;                  // the strategy did not give it this processor
+            if (!r.received) continue;                  // the strategy did not give it this processor, or it failed (#53)
             ReplayEntry entry;
             if (event instanceof AdminCommand admin && !admin.ran()) {
                 // cancelled by its caller, or refused before it ran: nothing reached the processor, so nothing is an
@@ -229,6 +345,21 @@ public final class GroupRecorder {
         }
     }
 
+    /**
+     * Items of {@code source} were dropped by a full queue before reaching {@code targets} (telaminai/mongoose#79): each
+     * recorded one's recording gets a {@link ReplayEntry.Dropped} entry naming the loss, at the point in its input
+     * sequence where the items would have arrived. A replay reports it and carries on: the processor never saw them.
+     * Called on the group's own thread.
+     */
+    public void inputDropped(String source, Collection<DataFlow> targets, String why) {
+        for (DataFlow t : targets) {
+            Recorded r = byFlow.get(t);
+            if (r == null || r.broken != null) continue;
+            log.warning("replay recording of " + r.name + ": " + why);
+            append(r, new ReplayEntry.Dropped(source, why, live.getAsLong()));
+        }
+    }
+
     /** A dispatch threw: marked, not reproduced (D4). */
     public void failed(String source, Object event, Throwable error, Collection<DataFlow> targets) {
         for (DataFlow t : targets) {
@@ -237,6 +368,22 @@ public final class GroupRecorder {
             r.input = null;
             append(r, new ReplayEntry.Failed(source, error + " on " + event, r.clock.instant(r.clock.captured())));
         }
+    }
+
+    /**
+     * Just after {@code target}'s handler threw {@code error} on its first attempt at an input of {@code source}: that
+     * processor's input alone is marked Failed (D4: a retry is a failure, marked, not reproduced) and its retries are not
+     * recorded (mongoose#53). The processors before it handled the input once and are recorded by {@link #afterDispatch}
+     * as usual, as are those after it, which are given it once the retries end.
+     */
+    public void failed(String source, Object event, Throwable error, DataFlow target) {
+        Recorded r = target == null ? null : byFlow.get(target);
+        if (r == null) return;
+        r.dispatchFailed = true;
+        r.received = false;
+        r.input = null;
+        r.uncopyable = null;
+        append(r, new ReplayEntry.Failed(source, error + " on " + event, r.clock.instant(r.clock.captured())));
     }
 
     /**

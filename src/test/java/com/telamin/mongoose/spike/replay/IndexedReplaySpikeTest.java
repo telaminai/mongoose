@@ -49,6 +49,7 @@ class IndexedReplaySpikeTest {
         ReplayableEventSource orders = new ReplayableEventSource();
         orders.setName(ORDERS);
         orders.setCacheEventLog(true);                  // the journal: every published order, with its sequence number
+        orders.setRetainEventLogAfterStart(true);       // ... including those published after startComplete
         ReplayableEventSource controls = new ReplayableEventSource();
         controls.setName(CONTROLS);
         controls.setCacheEventLog(true);                // so a control published before the subscription is not lost

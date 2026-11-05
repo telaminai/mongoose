@@ -1,0 +1,98 @@
+---
+eventLogRecord: 
+    eventTime: 1792926723869
+    logTime: 1792926723869
+    groupingId: null
+    event: AuditStartIntent
+    thread: chaos-g2
+    nodeLogs: 
+        - controlInputs: { thread: chaos-g2, method: onAuditStart, annotation: OnEventHandler, record: Input, seq: 3136, requestId: 472, rootId: 472, fact: "AuditStart", generation: 110, name: "c2-1", bound: true}
+        - captureRules: { thread: chaos-g2, method: onAuditStart, annotation: OnEventHandler, record: Decision, seq: 3137, requestId: 472, rootId: 472, causeSeq: 3136, rule: "auditStartOnStarted", generation: 110, name: "c2-1", capture: "Off->Opening", effects: "472.1 OpenCapture(110)"}
+    endTime: 1792926723869
+---
+eventLogRecord: 
+    eventTime: 1792926723869
+    logTime: 1792926723869
+    groupingId: null
+    event: EffectResult
+    thread: chaos-g2
+    nodeLogs: 
+        - effectOutcomes: { thread: chaos-g2, method: onResult, annotation: OnEventHandler, record: EffectOutcome, seq: 3138, requestId: 472, rootId: 472, causeOp: "472.1", opId: "472.1", effect: "OpenCapture", outcome: "pending", generation: 110, name: "c2-1"}
+        - captureRules: { thread: chaos-g2, method: onResult, annotation: OnEventHandler}
+        - lifecycleRules: { thread: chaos-g2, method: onResult, annotation: OnEventHandler}
+        - serviceRules: { thread: chaos-g2, method: onResult, annotation: OnEventHandler}
+    endTime: 1792926723869
+---
+eventLogRecord: 
+    eventTime: 1792926723869
+    logTime: 1792926723869
+    groupingId: null
+    event: AuditStopIntent
+    thread: chaos-g2
+    nodeLogs: 
+        - controlInputs: { thread: chaos-g2, method: onAuditStop, annotation: OnEventHandler, record: Input, seq: 3139, requestId: 473, rootId: 473, fact: "AuditStop", generation: 110, name: "c2-1", bound: true}
+        - captureRules: { thread: chaos-g2, method: onAuditStop, annotation: OnEventHandler, record: Decision, seq: 3140, requestId: 473, rootId: 473, causeSeq: 3139, rule: "auditStopCancelsOpen", generation: 110, name: "c2-1", capture: "Opening->Off", pendingCleanup: "472.1", effects: "472.2 Reply(110);473.1 Reply(110)"}
+    endTime: 1792926723869
+---
+eventLogRecord: 
+    eventTime: 1792926723869
+    logTime: 1792926723869
+    groupingId: null
+    event: EffectResult
+    thread: chaos-g2
+    nodeLogs: 
+        - effectOutcomes: { thread: chaos-g2, method: onResult, annotation: OnEventHandler, record: Reply, seq: 3141, requestId: 472, rootId: 472, causeOp: "472.2", opId: "472.2", outcome: "REFUSED", generation: 110, name: "c2-1", completed: true}
+        - captureRules: { thread: chaos-g2, method: onResult, annotation: OnEventHandler}
+        - lifecycleRules: { thread: chaos-g2, method: onResult, annotation: OnEventHandler}
+        - serviceRules: { thread: chaos-g2, method: onResult, annotation: OnEventHandler}
+    endTime: 1792926723869
+---
+eventLogRecord: 
+    eventTime: 1792926723869
+    logTime: 1792926723869
+    groupingId: null
+    event: EffectResult
+    thread: chaos-g2
+    nodeLogs: 
+        - effectOutcomes: { thread: chaos-g2, method: onResult, annotation: OnEventHandler, record: Reply, seq: 3142, requestId: 473, rootId: 473, causeOp: "473.1", opId: "473.1", outcome: "APPLIED", generation: 110, name: "c2-1", completed: true}
+        - captureRules: { thread: chaos-g2, method: onResult, annotation: OnEventHandler}
+        - lifecycleRules: { thread: chaos-g2, method: onResult, annotation: OnEventHandler}
+        - serviceRules: { thread: chaos-g2, method: onResult, annotation: OnEventHandler}
+    endTime: 1792926723869
+---
+eventLogRecord: 
+    eventTime: 1792926723872
+    logTime: 1792926723872
+    groupingId: null
+    event: CaptureCompletion
+    thread: chaos-g2
+    nodeLogs: 
+        - controlInputs: { thread: chaos-g2, method: onCompletion, annotation: OnEventHandler, record: Input, seq: 3143, requestId: 472, rootId: 472, causeOp: "472.1", fact: "CaptureOpened", completionId: 58, opId: "472.1", resourceId: 30, ok: true, cleanup: true}
+        - effectOutcomes: { thread: chaos-g2, method: onCompletion, annotation: OnEventHandler, record: EffectOutcome, seq: 3144, requestId: 472, rootId: 472, causeSeq: 3143, causeOp: "472.1", opId: "472.1", effect: "OpenCapture", outcome: "succeeded", resourceId: 30, cleanup: true}
+        - captureRules: { thread: chaos-g2, method: onCompletion, annotation: OnEventHandler, record: Decision, seq: 3145, requestId: 472, rootId: 472, causeSeq: 3143, causeOp: "472.1", rule: "captureOpenedStale", generation: 110, name: "c2-1", resourceId: 30, stale: true, cleanup: true, effects: "472.3 CloseCapture(110)"}
+    endTime: 1792926723872
+---
+eventLogRecord: 
+    eventTime: 1792926723872
+    logTime: 1792926723872
+    groupingId: null
+    event: EffectResult
+    thread: chaos-g2
+    nodeLogs: 
+        - effectOutcomes: { thread: chaos-g2, method: onResult, annotation: OnEventHandler, record: EffectOutcome, seq: 3146, requestId: 472, rootId: 472, causeOp: "472.3", opId: "472.3", effect: "CloseCapture", outcome: "pending", generation: 110, name: "c2-1", resourceId: 30, cleanup: true}
+        - captureRules: { thread: chaos-g2, method: onResult, annotation: OnEventHandler}
+        - lifecycleRules: { thread: chaos-g2, method: onResult, annotation: OnEventHandler}
+        - serviceRules: { thread: chaos-g2, method: onResult, annotation: OnEventHandler}
+    endTime: 1792926723872
+---
+eventLogRecord: 
+    eventTime: 1792926723872
+    logTime: 1792926723872
+    groupingId: null
+    event: CaptureCompletion
+    thread: chaos-g2
+    nodeLogs: 
+        - controlInputs: { thread: chaos-g2, method: onCompletion, annotation: OnEventHandler, record: Input, seq: 3147, requestId: 472, rootId: 472, causeOp: "472.3", fact: "CaptureClosed", completionId: 59, opId: "472.3", resourceId: 30, ok: true, cleanup: true}
+        - effectOutcomes: { thread: chaos-g2, method: onCompletion, annotation: OnEventHandler, record: EffectOutcome, seq: 3148, requestId: 472, rootId: 472, causeSeq: 3147, causeOp: "472.3", opId: "472.3", effect: "CloseCapture", outcome: "succeeded", resourceId: 30, cleanup: true}
+        - captureRules: { thread: chaos-g2, method: onCompletion, annotation: OnEventHandler, record: Decision, seq: 3149, requestId: 472, rootId: 472, causeSeq: 3147, causeOp: "472.3", rule: "captureClosed", generation: 110, name: "c2-1", resourceId: 30, cleared: "472.3", cleanup: true, effects: ""}
+    endTime: 1792926723872

@@ -1,0 +1,72 @@
+name: Recover an unpublished tagged release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag whose exact source has passed tests
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: recover-tagged-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - name: Require a release tag
+        shell: bash
+        run: '[[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]'
+
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
+
+      - name: Verify the tag version and absence from Central
+        shell: bash
+        run: |
+          version=$(python3 -c 'import xml.etree.ElementTree as E; print(E.parse("pom.xml").getroot().find("{http://maven.apache.org/POM/4.0.0}version").text)')
+          test "$RELEASE_TAG" = "v$version"
+          status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            "https://repo.maven.apache.org/maven2/com/telamin/mongoose/$version/mongoose-$version.pom")
+          test "$status" = 404 || { echo "Refusing publication: Central returned HTTP $status"; exit 1; }
+          echo "Publishing existing tag $RELEASE_TAG at $(git rev-parse HEAD)"
+
+      - name: Set up Java and Maven Central signing
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'adopt'
+          server-id: central
+          server-username: MAVEN_USERNAME
+          server-password: MAVEN_CENTRAL_TOKEN
+          gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          gpg-passphrase: MAVEN_GPG_PASSPHRASE
+
+      # The tagged POM uses Central plugin 0.10.0. Maven 3.10 leaves local metadata
+      # in its upload bundle, which Central rejects (upstream plugin issue #1).
+      - name: Use Maven 3.9.11 for the tagged publishing plugin
+        shell: bash
+        run: |
+          archive="$RUNNER_TEMP/apache-maven-3.9.11-bin.tar.gz"
+          curl --fail --silent --show-error --location \
+            https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.11/apache-maven-3.9.11-bin.tar.gz \
+            --output "$archive"
+          echo "bcfe4fe305c962ace56ac7b5fc7a08b87d5abd8b7e89027ab251069faebee516b0ded8961445d6d91ec1985dfe30f8153268843c89aa392733d1a3ec956c9978  $archive" | sha512sum --check
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/apache-maven-3.9.11/bin" >> "$GITHUB_PATH"
+
+      - name: Publish the tested tag without rerunning tests
+        run: mvn -P release -B -DskipTests clean deploy
+        env:
+          MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
+          MAVEN_CENTRAL_TOKEN: ${{ secrets.OSSRH_TOKEN }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}

@@ -39,11 +39,19 @@ public class ComposingServiceAgent extends DynamicCompositeAgent {
     private final MongooseServer mongooseServer;
     private final DeadWheelScheduler scheduler;
     private final Service<SchedulerService> schedulerService;
-    private final OneToOneConcurrentArrayQueue<ServiceAgent<?>> toStartList = new OneToOneConcurrentArrayQueue<>(128);
+    /**
+     * Design PR 4: written by many threads (the config loader, admin, a service's own start), so many-to-one; a full
+     * queue is waited on, bounded, never thrown at the first attempt.
+     */
+    private final org.agrona.concurrent.ManyToOneConcurrentArrayQueue<ServiceAgent<?>> toStartList =
+            new org.agrona.concurrent.ManyToOneConcurrentArrayQueue<>(128);
     private final OneToOneConcurrentArrayQueue<ServiceAgent<?>> toAddList = new OneToOneConcurrentArrayQueue<>(128);
-    private final OneToOneConcurrentArrayQueue<ServiceAgent<?>> toCallStartupCompleteList = new OneToOneConcurrentArrayQueue<>(128);
+    private final org.agrona.concurrent.ManyToOneConcurrentArrayQueue<ServiceAgent<?>> toCallStartupCompleteList =
+            new org.agrona.concurrent.ManyToOneConcurrentArrayQueue<>(128);
     private final ServiceRegistryNode serviceRegistry = new ServiceRegistryNode();
     private final AtomicBoolean startUpComplete = new AtomicBoolean(false);
+    /** Every service agent registered on this group, in registration order. */
+    private final java.util.List<ServiceAgent<?>> hostedAgents = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     public ComposingServiceAgent(String roleName,
                                  EventFlowManager eventFlowManager,
@@ -56,14 +64,38 @@ public class ComposingServiceAgent extends DynamicCompositeAgent {
         this.schedulerService = new Service<>(scheduler, SchedulerService.class);
     }
 
+    /** The names of the services this group hosts: their health follows the group's thread (issue #77 review round 4). */
+    public java.util.List<String> hostedServiceNames() {
+        return hostedAgents.stream().map(a -> a.exportedService().serviceName()).toList();
+    }
+
     public <T> void registerServer(ServiceAgent<T> server) {
-        toStartList.add(server);
-        toCallStartupCompleteList.add(server);
+        hostedAgents.add(server);
+        offerBounded(toStartList, server, "service start");
+        offerBounded(toCallStartupCompleteList, server, "service start-complete");
         log.info("registerServer toCallStartupCompleteList size:" + toCallStartupCompleteList.size());
     }
 
+    /** Offer with a bounded back-off (10 s); never on an agent thread, which is refused at once. */
+    private void offerBounded(org.agrona.concurrent.ManyToOneConcurrentArrayQueue<ServiceAgent<?>> queue, ServiceAgent<?> item,
+                              String what) {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+        while (!queue.offer(item)) {
+            if (com.telamin.mongoose.control.AgentThreads.isAgentThread() || System.nanoTime() - deadline > 0) {
+                throw new IllegalStateException("service group " + roleName() + ": " + what + " request refused: mailbox full (capacity "
+                        + queue.capacity() + ")");
+            }
+            java.util.concurrent.locks.LockSupport.parkNanos(50_000);
+        }
+    }
+
+    /** The thread that ran onStart: only it carries this group's agent mark. */
+    private volatile Thread agentThread;
+
     @Override
     public void onStart() {
+        agentThread = Thread.currentThread();
+        com.telamin.mongoose.control.AgentThreads.enter(mongooseServer != null ? mongooseServer : this);
         // Best-effort core pinning if configured for this agent group (guard for null during unit tests)
         if (mongooseServer != null) {
             Integer coreId = mongooseServer.resolveCoreIdForAgentName(roleName());
@@ -72,14 +104,46 @@ public class ComposingServiceAgent extends DynamicCompositeAgent {
             }
         }
         log.info("onStart toStartList size:" + toStartList.size());
-        checkForAdded();
-        super.onStart();
+        try {
+            checkForAdded();
+            super.onStart();
+        } catch (RuntimeException | Error failed) {
+            terminated();      // a failed onStart ends the loop before any work
+            throw failed;
+        }
+    }
+
+    private volatile Runnable onTerminated;
+
+    /**
+     * Run once when this group's loop ends abnormally (an Error or an agent termination escapes doWork or onStart):
+     * the server marks the hosted services down at once, so no health reading depends on evaluating another check
+     * first (issue #77 re-verification B).
+     */
+    public void onTerminated(Runnable action) {
+        this.onTerminated = action;
+    }
+
+    private void terminated() {
+        Runnable action = onTerminated;
+        onTerminated = null;
+        if (action == null) return;
+        try {
+            action.run();
+        } catch (RuntimeException failed) {
+            log.warning("service group termination callback failed: " + failed);
+        }
     }
 
     @Override
     public int doWork() throws Exception {
-        checkForAdded();
-        return super.doWork();
+        try {
+            checkForAdded();
+            return super.doWork();
+        } catch (Error | org.agrona.concurrent.AgentTerminationException ending) {
+            terminated();      // Agrona ends this loop for these: the thread will not do more work
+            throw ending;
+        }
     }
 
     public void startComplete() {
@@ -87,10 +151,45 @@ public class ComposingServiceAgent extends DynamicCompositeAgent {
         startUpComplete.set(true);
     }
 
+    /**
+     * mongoose#56: take the hosted agents matching {@code which} out of this group while it keeps running the others.
+     * Each removal is handed to the group's own thread, which closes the agent in its next duty cycle; this waits for
+     * each, at most {@code timeoutMillis} in all. A group that is not active runs nothing, so there is nothing to remove.
+     *
+     * @return false when the wait ran out before every matching agent was removed
+     */
+    public boolean removeHostedAgents(java.util.function.Predicate<ServiceAgent<?>> which, long timeoutMillis)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(Math.max(0, timeoutMillis));
+        for (ServiceAgent<?> serviceAgent : hostedAgents) {
+            if (!which.test(serviceAgent)) {
+                continue;
+            }
+            try {
+                while (!tryRemove(serviceAgent.delegate())) {   // another removal is still pending
+                    if (System.nanoTime() - deadline >= 0) return false;
+                    Thread.sleep(1);
+                }
+                while (!hasRemoveAgentCompleted()) {
+                    if (System.nanoTime() - deadline >= 0) return false;
+                    Thread.sleep(1);
+                }
+            } catch (IllegalStateException notActive) {
+                return true;   // the group is not (or no longer) running: none of its agents run
+            }
+        }
+        return true;
+    }
+
     @Override
     public void onClose() {
         log.info("onClose");
-        super.onClose();
+        try {
+            super.onClose();
+        } finally {
+            // a group that never started is closed on the closing thread, which may be another agent: keep its mark
+            if (Thread.currentThread() == agentThread) com.telamin.mongoose.control.AgentThreads.exit();
+        }
     }
 
     private void checkForAdded() {

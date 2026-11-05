@@ -83,11 +83,48 @@ public interface MongooseAuditCaptureService {
     /**
      * As above, with the processor's agent thread (mongoose#46): {@code start}/{@code stop} are called from the admin
      * transport's thread, and change the processor's audit sink through {@code onAgentThread}, so the processor is only
-     * ever driven from its own thread.
+     * ever driven from its own thread. They return once the change has been applied there, and are refused with an
+     * {@link IllegalStateException}, changing nothing, when it cannot be applied in time.
+     *
+     * @deprecated a server routes capture through each processor group's control processor (design "Audit capture"),
+     * which installs and uninstalls on the group's thread itself; the executor is used only by a service no server routes
      */
+    @Deprecated
     default void attach(DataFlow dataFlow, String processorName, LogRecordListener configuredListener,
                         java.util.concurrent.Executor onAgentThread) {
         attach(dataFlow, processorName, configuredListener);
+    }
+
+    /** Registration-scoped attachment. Existing capture plugins keep their original attachment contract. */
+    default void attachScoped(DataFlow flow, AuditCaptureIdentity identity, LogRecordListener listener,
+                        java.util.concurrent.Executor onAgentThread) {
+        attach(flow, identity.name(), listener, onAgentThread);
+    }
+
+    /** Registration-scoped start; existing plugins retain their bare-name API. */
+    default void startScoped(AuditCaptureIdentity identity) { start(identity.name()); }
+
+    /** Group-scoped lifecycle notifications; old implementations continue to receive the bare name. */
+    default void detach(String group, String name, DataFlow flow) { detach(name, flow); }
+    default void processorStopped(String group, String name, DataFlow flow) { processorStopped(name, flow); }
+
+    /**
+     * Forget a processor that left the server without stopping normally (a failed start, mongoose#57): stop any capture
+     * of it and drop the reference to {@code dataFlow}. Ignored when {@code processorName} is now bound to another
+     * {@code DataFlow}. Default: a no-op.
+     */
+    default void detach(String processorName, DataFlow dataFlow) {
+        // no-op default — NoOp impl ignores
+    }
+
+    /**
+     * The processor left its group normally: it was stopped and torn down (mongoose#46). Nothing is installed on that
+     * instance again: {@link #start} is refused until a processor is added under the name, and {@link #stop} closes
+     * the capture without touching it. A capture still recording carries on into a processor re-added under the name.
+     * Ignored when {@code processorName} is now bound to another {@code DataFlow}. Default: a no-op.
+     */
+    default void processorStopped(String processorName, DataFlow dataFlow) {
+        // no-op default — NoOp impl ignores
     }
 
     /**
@@ -100,8 +137,19 @@ public interface MongooseAuditCaptureService {
      *
      * @param processorName the YAML processor name (as it appears in
      *                      {@code eventHandlers.&lt;name&gt;}).
+     * <p>In a server with capture enabled, the start is a request to the
+     * processor's group: the queue is opened on an I/O helper, installed on
+     * the processor's agent thread, and this returns once it records.
+     * Called on an agent thread, or before the group has started, it
+     * returns at once and the start applies later.
+     *
      * @throws IllegalArgumentException if no processor with that name
      *         is registered.
+     * @throws IllegalStateException if the start was refused or failed (the
+     *         group is not running, the processor has not started, the open
+     *         failed or timed out, too many opens are in flight), or was not
+     *         applied in time; the message says whether anything may still
+     *         change.
      */
     void start(String processorName);
 
@@ -113,8 +161,21 @@ public interface MongooseAuditCaptureService {
     void stop(String processorName);
 
     /**
+     * Halt every live capture, flushing and closing each sink. The server calls it once its processors have stopped,
+     * at the end of {@code stop()}. Default: nothing to stop.
+     *
+     * @deprecated each processor group closes its captures as it closes (design "Audit capture"); this only closes what
+     * a closer had not reached when the server stopped
+     */
+    @Deprecated
+    default void stopAll() {
+    }
+
+    /**
      * True iff capture is currently active for the named processor.
-     * Constant-time lookup; safe to call from any thread.
+     * The built-in Chronicle service accepts a unique bare name or encoded group/name selector.
+     * Other implementations define their own namespace and are responsible for selector/ambiguity support.
+     * Safe to call from any thread.
      */
     boolean isRecording(String processorName);
 }

@@ -1,0 +1,227 @@
+com.telamin.mongoose.MongooseServer: booting server loading config from reader
+com.telamin.mongoose.MongooseServer: successfully loaded config from reader
+com.telamin.mongoose.MongooseServer: booting fluxtion server
+com.telamin.mongoose.internal.AgronaCountersService: AgronaCountersService initialised: bufferKb=256, maxCounters=2048
+com.telamin.mongoose.MongooseServer: registerService:Service(serviceClass=interface com.telamin.mongoose.service.counters.MongooseCountersService, serviceName=com.telamin.mongoose.service.counters.MongooseCountersService, instance=com.telamin.mongoose.internal.AgronaCountersService@545e1a0e)
+com.telamin.mongoose.MongooseServer: registerService:Service(serviceClass=interface com.telamin.mongoose.service.counters.MongooseLatencyService, serviceName=com.telamin.mongoose.service.counters.MongooseLatencyService, instance=com.telamin.mongoose.internal.NoOpLatencyService@14982a82)
+com.telamin.mongoose.MongooseServer: registerService:Service(serviceClass=interface com.telamin.mongoose.service.audit.MongooseAuditCaptureService, serviceName=com.telamin.mongoose.service.audit.MongooseAuditCaptureService, instance=com.telamin.mongoose.internal.ChronicleAuditCaptureService@30a3c1e1)
+com.telamin.mongoose.MongooseServer: registerService:Service(serviceClass=interface com.telamin.mongoose.service.audit.MongooseAuditIntrospectionService, serviceName=com.telamin.mongoose.service.audit.MongooseAuditIntrospectionService, instance=com.telamin.mongoose.internal.DirAuditIntrospectionService@4c6e3c25)
+com.telamin.mongoose.MongooseServer: registerService:Service(serviceClass=interface com.telamin.mongoose.service.health.MongooseHealthService, serviceName=com.telamin.mongoose.service.health.MongooseHealthService, instance=com.telamin.mongoose.internal.DefaultMongooseHealth@4f3db580)
+com.telamin.mongoose.MongooseServer: registerService:Service(serviceClass=interface com.telamin.mongoose.service.introspection.MongooseIntrospectionService, serviceName=com.telamin.mongoose.service.introspection.MongooseIntrospectionService, instance=com.telamin.mongoose.internal.DefaultMongooseIntrospection@6b975803)
+com.telamin.mongoose.MongooseServer: registerService:Service(serviceClass=interface com.telamin.mongoose.service.servercontrol.MongooseServerController, serviceName=com.telamin.mongoose.service.servercontrol.MongooseServerController, instance=com.telamin.mongoose.MongooseServer@45153059)
+com.telamin.mongoose.MongooseServer: registerService:Service(serviceClass=interface com.telamin.mongoose.service.pool.ObjectPoolsRegistry, serviceName=com.telamin.mongoose.pool.ObjectPoolsRegistry, instance=com.telamin.mongoose.service.pool.impl.GlobalObjectPool@48d293ee)
+com.telamin.mongoose.MongooseServer: registerWorkerService:ServiceAgent[agentGroup=readings-agent, idleStrategy=null, exportedService=Service(serviceClass=interface com.telamin.fluxtion.runtime.input.NamedFeed, serviceName=readings, instance=com.telamin.mongoose.connector.memory.InMemoryEventSource@485461b7), delegate=com.telamin.mongoose.connector.memory.InMemoryEventSource@485461b7] agentGroup:readings-agent idleStrategy:YieldingIdleStrategy{alias=yield}
+com.telamin.mongoose.dutycycle.ComposingServiceAgent: registerServer toCallStartupCompleteList size:1
+com.telamin.mongoose.MongooseServer: registerService:Service(serviceClass=interface com.telamin.mongoose.service.admin.AdminCommandRegistry, serviceName=admin, instance=com.telamin.mongoose.service.admin.impl.AdminCommandProcessor@5fd4377)
+com.telamin.mongoose.MongooseServer: adminCommandRegistry registered:admin
+com.telamin.mongoose.MongooseServer: registerService:Service(serviceClass=class com.telamin.mongoose.service.servercontrol.MongooseServerAdmin, serviceName=serverAdmin, instance=com.telamin.mongoose.service.servercontrol.MongooseServerAdmin@5dc38bc)
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Latency service available for admin toggle: com.telamin.mongoose.internal.NoOpLatencyService@14982a82
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Server command registry
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Audit capture service available for admin commands: com.telamin.mongoose.internal.ChronicleAuditCaptureService@30a3c1e1
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Admin command registry
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Audit introspection service available for admin commands: com.telamin.mongoose.internal.DirAuditIntrospectionService@4c6e3c25
+com.telamin.mongoose.internal.LifecycleManager: init
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Fluxtion Server admin init
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: init
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Audit capture service available for admin commands: com.telamin.mongoose.internal.ChronicleAuditCaptureService@30a3c1e1
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Audit introspection service available for admin commands: com.telamin.mongoose.internal.DirAuditIntrospectionService@4c6e3c25
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Latency service available for admin toggle: com.telamin.mongoose.internal.NoOpLatencyService@14982a82
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Server command registry
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Audit capture service available for admin commands: com.telamin.mongoose.internal.ChronicleAuditCaptureService@30a3c1e1
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Audit introspection service available for admin commands: com.telamin.mongoose.internal.DirAuditIntrospectionService@4c6e3c25
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Latency service available for admin toggle: com.telamin.mongoose.internal.NoOpLatencyService@14982a82
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Server command registry
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Audit capture service available for admin commands: com.telamin.mongoose.internal.ChronicleAuditCaptureService@30a3c1e1
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Audit introspection service available for admin commands: com.telamin.mongoose.internal.DirAuditIntrospectionService@4c6e3c25
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Latency service available for admin toggle: com.telamin.mongoose.internal.NoOpLatencyService@14982a82
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Server command registry
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Audit capture service available for admin commands: com.telamin.mongoose.internal.ChronicleAuditCaptureService@30a3c1e1
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Audit introspection service available for admin commands: com.telamin.mongoose.internal.DirAuditIntrospectionService@4c6e3c25
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Latency service available for admin toggle: com.telamin.mongoose.internal.NoOpLatencyService@14982a82
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Server command registry
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Audit capture service available for admin commands: com.telamin.mongoose.internal.ChronicleAuditCaptureService@30a3c1e1
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Audit introspection service available for admin commands: com.telamin.mongoose.internal.DirAuditIntrospectionService@4c6e3c25
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Latency service available for admin toggle: com.telamin.mongoose.internal.NoOpLatencyService@14982a82
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Server command registry
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Audit capture service available for admin commands: com.telamin.mongoose.internal.ChronicleAuditCaptureService@30a3c1e1
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Audit introspection service available for admin commands: com.telamin.mongoose.internal.DirAuditIntrospectionService@4c6e3c25
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Latency service available for admin toggle: com.telamin.mongoose.internal.NoOpLatencyService@14982a82
+com.telamin.mongoose.MongooseServer: adminCommandRegistry registered:admin
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Server command registry
+com.telamin.mongoose.internal.LifecycleManager: start
+com.telamin.mongoose.service.servercontrol.MongooseServerAdmin: Fluxtion Server admin started
+com.telamin.mongoose.internal.LifecycleManager: start flowManager
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: start
+com.telamin.mongoose.internal.LifecycleManager: start agent hosted services
+com.telamin.mongoose.internal.LifecycleManager: starting composing service agent readings-agent
+com.telamin.mongoose.internal.LifecycleManager: waiting for agent hosted services to start
+com.telamin.mongoose.dutycycle.ComposingServiceAgent: onStart toStartList size:1
+com.telamin.mongoose.MongooseServer: registerService:Service(serviceClass=interface com.telamin.fluxtion.runtime.input.NamedFeed, serviceName=readings, instance=com.telamin.mongoose.connector.memory.InMemoryEventSource@485461b7)
+com.telamin.mongoose.internal.LifecycleManager: start event processor agent workers
+com.telamin.mongoose.internal.LifecycleManager: starting composing event processor agent g1
+com.telamin.mongoose.internal.LifecycleManager: starting composing event processor agent g2
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: onStart g1
+com.telamin.mongoose.internal.LifecycleManager: waiting for event processor agents to start
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: onStart g2
+com.telamin.mongoose.service.extension.AbstractEventSourceService: registerSubscriber for broadcast receive com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785
+com.telamin.mongoose.service.extension.AbstractEventSourceService: registerSubscriber for broadcast receive com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3
+com.telamin.mongoose.service.extension.AbstractEventSourceService: adding subscription for service 'readings' to 'com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785'
+com.telamin.mongoose.service.extension.AbstractEventSourceService: adding subscription for service 'readings' to 'com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3'
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: registered command:alarm.reset queue:adminCommand.alarm.reset processor:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: registered command:alarm.reset queue:adminCommand.alarm.reset processor:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: registered command:alarm.lambda queue:adminCommand.alarm.lambda processor:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: registered command:alarm.lambda queue:adminCommand.alarm.lambda processor:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: registered command:alarm.refresh queue:adminCommand.alarm.refresh processor:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: registered command:alarm.refresh queue:adminCommand.alarm.refresh processor:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: registerSubscriber:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785 g1
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: registerSubscriber:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3 g2
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: subscribe subscriptionKey:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=adminCommand.alarm.refresh], callBackType=CallBackTypeByClass[callBackClass=class com.telamin.mongoose.service.admin.impl.AdminCommandProcessor$AdminCallbackType]] subscriber:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: subscribe subscriptionKey:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=adminCommand.alarm.refresh], callBackType=CallBackTypeByClass[callBackClass=class com.telamin.mongoose.service.admin.impl.AdminCommandProcessor$AdminCallbackType]] subscriber:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: added new subscribe subscriptionKey:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=adminCommand.alarm.refresh], callBackType=CallBackTypeByClass[callBackClass=class com.telamin.mongoose.service.admin.impl.AdminCommandProcessor$AdminCallbackType]] subscriber:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3
+EventQueueToEventProcessorAgent.g2/adminCommand.alarm.refresh/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: registerProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3
+EventQueueToEventProcessorAgent.g2/adminCommand.alarm.refresh/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: listener count:1
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: subscribe subscriptionKey:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=adminCommand.alarm.reset], callBackType=CallBackTypeByClass[callBackClass=class com.telamin.mongoose.service.admin.impl.AdminCommandProcessor$AdminCallbackType]] subscriber:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: added new subscribe subscriptionKey:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=adminCommand.alarm.refresh], callBackType=CallBackTypeByClass[callBackClass=class com.telamin.mongoose.service.admin.impl.AdminCommandProcessor$AdminCallbackType]] subscriber:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.refresh/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: registerProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.refresh/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: listener count:1
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: added new subscribe subscriptionKey:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=adminCommand.alarm.reset], callBackType=CallBackTypeByClass[callBackClass=class com.telamin.mongoose.service.admin.impl.AdminCommandProcessor$AdminCallbackType]] subscriber:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: subscribe subscriptionKey:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=adminCommand.alarm.reset], callBackType=CallBackTypeByClass[callBackClass=class com.telamin.mongoose.service.admin.impl.AdminCommandProcessor$AdminCallbackType]] subscriber:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785
+EventQueueToEventProcessorAgent.g2/adminCommand.alarm.reset/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: registerProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: added new subscribe subscriptionKey:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=adminCommand.alarm.reset], callBackType=CallBackTypeByClass[callBackClass=class com.telamin.mongoose.service.admin.impl.AdminCommandProcessor$AdminCallbackType]] subscriber:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.reset/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: registerProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.reset/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: listener count:1
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: subscribe subscriptionKey:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=readings], callBackType=com.telamin.mongoose.service.CallBackType$OnEventCallBack@750fe12e] subscriber:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785
+EventQueueToEventProcessorAgent.g2/adminCommand.alarm.reset/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: listener count:1
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: subscribe subscriptionKey:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=readings], callBackType=com.telamin.mongoose.service.CallBackType$OnEventCallBack@750fe12e] subscriber:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: added new subscribe subscriptionKey:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=readings], callBackType=com.telamin.mongoose.service.CallBackType$OnEventCallBack@750fe12e] subscriber:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: added new subscribe subscriptionKey:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=readings], callBackType=com.telamin.mongoose.service.CallBackType$OnEventCallBack@750fe12e] subscriber:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3
+EventQueueToEventProcessorAgent.g2/readings/onEventCallBack: registerProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3
+EventQueueToEventProcessorAgent.g2/readings/onEventCallBack: listener count:1
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: subscribe subscriptionKey:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=adminCommand.alarm.lambda], callBackType=CallBackTypeByClass[callBackClass=class com.telamin.mongoose.service.admin.impl.AdminCommandProcessor$AdminCallbackType]] subscriber:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3
+EventQueueToEventProcessorAgent.g1/readings/onEventCallBack: registerProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785
+EventQueueToEventProcessorAgent.g1/readings/onEventCallBack: listener count:1
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: added new subscribe subscriptionKey:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=adminCommand.alarm.lambda], callBackType=CallBackTypeByClass[callBackClass=class com.telamin.mongoose.service.admin.impl.AdminCommandProcessor$AdminCallbackType]] subscriber:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3
+EventQueueToEventProcessorAgent.g2/adminCommand.alarm.lambda/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: registerProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3
+EventQueueToEventProcessorAgent.g2/adminCommand.alarm.lambda/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: listener count:1
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: subscribe subscriptionKey:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=adminCommand.alarm.lambda], callBackType=CallBackTypeByClass[callBackClass=class com.telamin.mongoose.service.admin.impl.AdminCommandProcessor$AdminCallbackType]] subscriber:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785
+com.telamin.mongoose.service.extension.AbstractEventSourceService: subscribe request for EventSubscription{feedName=readings, eventClass=interface com.telamin.fluxtion.runtime.event.NamedFeedEvent, filterString=readings} from com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3
+com.telamin.mongoose.service.extension.AbstractEventSourceService: subscribe request for EventSubscription{feedName=readings, eventClass=interface com.telamin.fluxtion.runtime.event.NamedFeedEvent, filterString=readings} from com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3 matches service name:readings
+com.telamin.mongoose.service.extension.AbstractEventSourceService: adding subscription for service 'readings' to 'com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3'
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: added new subscribe subscriptionKey:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=adminCommand.alarm.lambda], callBackType=CallBackTypeByClass[callBackClass=class com.telamin.mongoose.service.admin.impl.AdminCommandProcessor$AdminCallbackType]] subscriber:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.lambda/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: registerProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.lambda/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: listener count:1
+com.telamin.mongoose.service.extension.AbstractEventSourceService: subscribe request for EventSubscription{feedName=readings, eventClass=interface com.telamin.fluxtion.runtime.event.NamedFeedEvent, filterString=readings} from com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785
+com.telamin.mongoose.service.extension.AbstractEventSourceService: subscribe request for EventSubscription{feedName=readings, eventClass=interface com.telamin.fluxtion.runtime.event.NamedFeedEvent, filterString=readings} from com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785 matches service name:readings
+com.telamin.mongoose.service.extension.AbstractEventSourceService: adding subscription for service 'readings' to 'com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785'
+com.telamin.mongoose.service.extension.AbstractEventSourceService: registerSubscriber for broadcast receive com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@21743abe
+com.telamin.mongoose.service.extension.AbstractEventSourceService: adding subscription for service 'readings' to 'com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@21743abe'
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: registered command:alarm.reset queue:adminCommand.alarm.reset processor:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@21743abe
+EventQueueToEventProcessorAgent.g2/adminCommand.alarm.refresh/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: start
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: registered command:alarm.lambda queue:adminCommand.alarm.lambda processor:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@21743abe
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: registered command:alarm.refresh queue:adminCommand.alarm.refresh processor:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@21743abe
+EventQueueToEventProcessorAgent.g2/adminCommand.alarm.reset/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: start
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: registerSubscriber:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@21743abe g1
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: subscribe subscriptionKey:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=adminCommand.alarm.refresh], callBackType=CallBackTypeByClass[callBackClass=class com.telamin.mongoose.service.admin.impl.AdminCommandProcessor$AdminCallbackType]] subscriber:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@21743abe
+EventQueueToEventProcessorAgent.g2/readings/onEventCallBack: start
+EventQueueToEventProcessorAgent.g2/adminCommand.alarm.lambda/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: start
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.refresh/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: registerProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@21743abe
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.refresh/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: listener count:2
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: subscribe subscriptionKey:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=adminCommand.alarm.reset], callBackType=CallBackTypeByClass[callBackClass=class com.telamin.mongoose.service.admin.impl.AdminCommandProcessor$AdminCallbackType]] subscriber:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@21743abe
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.reset/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: registerProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@21743abe
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.reset/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: listener count:2
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: subscribe subscriptionKey:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=readings], callBackType=com.telamin.mongoose.service.CallBackType$OnEventCallBack@750fe12e] subscriber:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@21743abe
+EventQueueToEventProcessorAgent.g1/readings/onEventCallBack: registerProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@21743abe
+EventQueueToEventProcessorAgent.g1/readings/onEventCallBack: listener count:2
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: subscribe subscriptionKey:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=adminCommand.alarm.lambda], callBackType=CallBackTypeByClass[callBackClass=class com.telamin.mongoose.service.admin.impl.AdminCommandProcessor$AdminCallbackType]] subscriber:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@21743abe
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.lambda/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: registerProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@21743abe
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.lambda/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: listener count:2
+com.telamin.mongoose.service.extension.AbstractEventSourceService: subscribe request for EventSubscription{feedName=readings, eventClass=interface com.telamin.fluxtion.runtime.event.NamedFeedEvent, filterString=readings} from com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@21743abe
+com.telamin.mongoose.service.extension.AbstractEventSourceService: subscribe request for EventSubscription{feedName=readings, eventClass=interface com.telamin.fluxtion.runtime.event.NamedFeedEvent, filterString=readings} from com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@21743abe matches service name:readings
+com.telamin.mongoose.service.extension.AbstractEventSourceService: adding subscription for service 'readings' to 'com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@21743abe'
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.refresh/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: start
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.reset/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: start
+EventQueueToEventProcessorAgent.g1/readings/onEventCallBack: start
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.lambda/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: start
+com.telamin.mongoose.internal.ChronicleAuditCaptureService: audit-capture STARTED for processor 'g2/p' at /var/folders/jw/qy248v_j4_34b9l6c_wt_xcc0000gn/T/junit-12459460175454429864/capture-8836236233177180509
+com.telamin.mongoose.internal.ChronicleAuditCaptureService: audit-capture STARTED for processor 'g1/unique' at /var/folders/jw/qy248v_j4_34b9l6c_wt_xcc0000gn/T/junit-12459460175454429864/capture-5439784546754440847
+com.telamin.mongoose.internal.ChronicleAuditCaptureService: audit-capture STARTED for processor 'g1/p' at /var/folders/jw/qy248v_j4_34b9l6c_wt_xcc0000gn/T/junit-12459460175454429864/capture-13149832184182549692
+com.telamin.mongoose.internal.LifecycleManager: calling startup complete on services
+com.telamin.mongoose.internal.LifecycleManager: calling startup complete on agent hosted services
+com.telamin.mongoose.dutycycle.ComposingServiceAgent: startComplete toCallStartupCompleteList size:1
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: processing: AdminCommandRequest(command=audit.status, arguments=[unique]) name: 'audit.status'
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: processing: AdminCommandRequest(command=audit.stop, arguments=[unique]) name: 'audit.stop'
+com.telamin.mongoose.internal.ChronicleAuditCaptureService: audit-capture STOPPED for processor 'unique'
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: processing: AdminCommandRequest(command=audit.start, arguments=[unique]) name: 'audit.start'
+com.telamin.mongoose.internal.ChronicleAuditCaptureService: audit-capture STARTED for processor 'g1/unique' at /var/folders/jw/qy248v_j4_34b9l6c_wt_xcc0000gn/T/junit-12459460175454429864/capture-18351476749687113799
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: processing: AdminCommandRequest(command=audit.start, arguments=[p]) name: 'audit.start'
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: processing: AdminCommandRequest(command=audit.stop, arguments=[g1/p]) name: 'audit.stop'
+com.telamin.mongoose.internal.ChronicleAuditCaptureService: audit-capture STOPPED for processor 'p'
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: processing: AdminCommandRequest(command=audit.start, arguments=[g1/p]) name: 'audit.start'
+com.telamin.mongoose.internal.ChronicleAuditCaptureService: audit-capture STARTED for processor 'g1/p' at /var/folders/jw/qy248v_j4_34b9l6c_wt_xcc0000gn/T/junit-12459460175454429864/capture-3056866775161142889
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: processing: AdminCommandRequest(command=audit.status, arguments=[]) name: 'audit.status'
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: processing: AdminCommandRequest(command=audit.list, arguments=[]) name: 'audit.list'
+com.telamin.mongoose.internal.LifecycleManager: stopping server
+com.telamin.mongoose.internal.LifecycleManager: stopping feeds
+com.telamin.mongoose.internal.LifecycleManager: stopping composing event source agent readings-agent
+com.telamin.mongoose.dutycycle.ComposingServiceAgent: onClose
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: stop
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: stop
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: stop
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: stop
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: stop
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: stop
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: stop
+com.telamin.mongoose.service.admin.impl.AdminCommandProcessor: stop
+com.telamin.mongoose.internal.LifecycleManager: draining queued events, at most 2000ms
+com.telamin.mongoose.internal.LifecycleManager: stopping event processor agents
+com.telamin.mongoose.internal.LifecycleManager: stopping composing event processor agent g2
+com.telamin.mongoose.internal.LifecycleManager: stopping composing event processor agent g1
+com.telamin.mongoose.internal.ChronicleAuditCaptureService: audit-capture STOPPED for processor 'p'
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: removing all subscriptions for:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3 g2
+com.telamin.mongoose.internal.ChronicleAuditCaptureService: audit-capture STOPPED for processor 'p'
+EventQueueToEventProcessorAgent.g2/adminCommand.alarm.refresh/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: deregisterProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: removing all subscriptions for:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785 g1
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.refresh/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: deregisterProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.reset/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: deregisterProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: EventQueueToEventProcessor listener count = 0, removing subscription:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=adminCommand.alarm.refresh], callBackType=CallBackTypeByClass[callBackClass=class com.telamin.mongoose.service.admin.impl.AdminCommandProcessor$AdminCallbackType]]
+EventQueueToEventProcessorAgent.g1/readings/onEventCallBack: deregisterProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785
+EventQueueToEventProcessorAgent.g2/adminCommand.alarm.reset/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: deregisterProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.lambda/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: deregisterProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: EventQueueToEventProcessor listener count = 0, removing subscription:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=adminCommand.alarm.reset], callBackType=CallBackTypeByClass[callBackClass=class com.telamin.mongoose.service.admin.impl.AdminCommandProcessor$AdminCallbackType]]
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: removing all subscriptions for:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785 g1
+EventQueueToEventProcessorAgent.g2/readings/onEventCallBack: deregisterProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.refresh/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: deregisterProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: EventQueueToEventProcessor listener count = 0, removing subscription:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=readings], callBackType=com.telamin.mongoose.service.CallBackType$OnEventCallBack@750fe12e]
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.reset/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: deregisterProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785
+EventQueueToEventProcessorAgent.g1/readings/onEventCallBack: deregisterProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.lambda/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: deregisterProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@e586785
+EventQueueToEventProcessorAgent.g2/adminCommand.alarm.lambda/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: deregisterProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3
+com.telamin.mongoose.MongooseServer: processor 'p' stopped in group 'g1'
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: EventQueueToEventProcessor listener count = 0, removing subscription:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=adminCommand.alarm.lambda], callBackType=CallBackTypeByClass[callBackClass=class com.telamin.mongoose.service.admin.impl.AdminCommandProcessor$AdminCallbackType]]
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: removing all subscriptions for:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@35ad6d3 g2
+com.telamin.mongoose.internal.ChronicleAuditCaptureService: audit-capture STOPPED for processor 'unique'
+com.telamin.mongoose.MongooseServer: processor 'p' stopped in group 'g2'
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: removing all subscriptions for:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@21743abe g1
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.refresh/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: deregisterProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@21743abe
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: onClose g2
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: EventQueueToEventProcessor listener count = 0, removing subscription:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=adminCommand.alarm.refresh], callBackType=CallBackTypeByClass[callBackClass=class com.telamin.mongoose.service.admin.impl.AdminCommandProcessor$AdminCallbackType]]
+EventQueueToEventProcessorAgent.g2/adminCommand.alarm.refresh/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: onClose
+EventQueueToEventProcessorAgent.g2/adminCommand.alarm.reset/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: onClose
+EventQueueToEventProcessorAgent.g2/readings/onEventCallBack: onClose
+EventQueueToEventProcessorAgent.g2/adminCommand.alarm.lambda/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: onClose
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.reset/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: deregisterProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@21743abe
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: EventQueueToEventProcessor listener count = 0, removing subscription:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=adminCommand.alarm.reset], callBackType=CallBackTypeByClass[callBackClass=class com.telamin.mongoose.service.admin.impl.AdminCommandProcessor$AdminCallbackType]]
+EventQueueToEventProcessorAgent.g1/readings/onEventCallBack: deregisterProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@21743abe
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: EventQueueToEventProcessor listener count = 0, removing subscription:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=readings], callBackType=com.telamin.mongoose.service.CallBackType$OnEventCallBack@750fe12e]
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.lambda/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: deregisterProcessor: com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@21743abe
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: EventQueueToEventProcessor listener count = 0, removing subscription:EventSubscriptionKey[eventSourceKey=EventSourceKey[sourceName=adminCommand.alarm.lambda], callBackType=CallBackTypeByClass[callBackClass=class com.telamin.mongoose.service.admin.impl.AdminCommandProcessor$AdminCallbackType]]
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: removing all subscriptions for:com.telamin.mongoose.internal.CaptureMigrationAcceptanceTest$TrackedProcessor@21743abe g1
+com.telamin.mongoose.MongooseServer: processor 'unique' stopped in group 'g1'
+com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent: onClose g1
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.refresh/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: onClose
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.reset/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: onClose
+EventQueueToEventProcessorAgent.g1/readings/onEventCallBack: onClose
+EventQueueToEventProcessorAgent.g1/adminCommand.alarm.lambda/com.telamin.mongoose.service.admin.impl.AdminCommandProcessor.AdminCallbackType: onClose
+com.telamin.mongoose.internal.LifecycleManager: stopping agent hosted services
+com.telamin.mongoose.internal.LifecycleManager: stopping registered services
+StopResult: StopResult[complete=true, handedOff=false, blockedStartup=null, groupsRunning=[], servicesLeftRunning=[]]

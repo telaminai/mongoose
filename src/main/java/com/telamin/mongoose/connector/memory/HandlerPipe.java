@@ -90,6 +90,17 @@ public class HandlerPipe<T> {
     }
 
     /**
+     * Keep logging published values after startComplete (only with {@link #cacheEventLog(boolean)} on). Off by
+     * default: the log then holds only what was cached before start and stops growing (#59). On, the log grows with
+     * every value sent into the pipe for its whole life, without bound: only for a bounded pipe, or one whose
+     * readers need the full history through the source's event log.
+     */
+    public HandlerPipe<T> retainEventLogAfterStart(boolean retain) {
+        source.setRetainEventLogAfterStart(retain);
+        return this;
+    }
+
+    /**
      * Forward a value into the event source immediately. Respects the source lifecycle:
      * prior to startComplete and with cache enabled, items are cached; afterwards they
      * are dispatched to subscribers.

@@ -78,6 +78,8 @@ public abstract class AbstractEventSourceService<T>
      */
     protected SchedulerService scheduler;
     private EventWrapStrategy eventWrapStrategy = EventWrapStrategy.SUBSCRIPTION_NOWRAP;
+    /** @deprecated Stored for compatibility only; never consulted by the publisher. */
+    @Deprecated
     private SlowConsumerStrategy slowConsumerStrategy = SlowConsumerStrategy.BACKOFF;
     @Getter(AccessLevel.PROTECTED)
     private Function<T, ?> dataMapper = Function.identity();
@@ -212,6 +214,8 @@ public abstract class AbstractEventSourceService<T>
         }
     }
 
+    /** @deprecated Ignored compatibility setting; the overload policy is set per feed (telaminai/mongoose#79). */
+    @Deprecated
     @Override
     public void setSlowConsumerStrategy(SlowConsumerStrategy slowConsumerStrategy) {
         this.slowConsumerStrategy = slowConsumerStrategy;

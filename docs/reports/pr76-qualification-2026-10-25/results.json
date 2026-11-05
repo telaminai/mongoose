@@ -1,0 +1,420 @@
+{
+  "schema": 1,
+  "date": "2026-10-25",
+  "status": "ready for external review; not a release or merge approval",
+  "finalFullSuiteCommit": "c40264b9b608585be2908ddc952d2b0d020bd2c1",
+  "exportHarnessCommit": "39b20c6746e25ea8c1daf52c4a016855cc2143be",
+  "environment": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "java": "Amazon Corretto 21.0.9",
+  "fluxtionRuntime": "1.1.2",
+  "fullSuite": {
+    "tests": 931,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 14
+  },
+  "fullSuiteCommand": "mvn -o package",
+  "defaultSuiteSkips": "Eight opt-in volume/chaos/soak/replay/shutdown cases were exercised separately; six pre-existing disabled cases remain unexecuted.",
+  "repeatedRegressionRuns": [
+    {
+      "round": 1,
+      "sha": "c7c92da8adbe087270e95a29eec51c3fcf159515",
+      "seconds": 10.6,
+      "counts": [
+        87,
+        0,
+        0,
+        0
+      ],
+      "success": true
+    },
+    {
+      "round": 2,
+      "sha": "c7c92da8adbe087270e95a29eec51c3fcf159515",
+      "seconds": 10.32,
+      "counts": [
+        87,
+        0,
+        0,
+        0
+      ],
+      "success": true
+    },
+    {
+      "round": 3,
+      "sha": "c7c92da8adbe087270e95a29eec51c3fcf159515",
+      "seconds": 10.21,
+      "counts": [
+        87,
+        0,
+        0,
+        0
+      ],
+      "success": true
+    },
+    {
+      "round": 4,
+      "sha": "c7c92da8adbe087270e95a29eec51c3fcf159515",
+      "seconds": 10.29,
+      "counts": [
+        87,
+        0,
+        0,
+        0
+      ],
+      "success": true
+    },
+    {
+      "round": 5,
+      "sha": "c7c92da8adbe087270e95a29eec51c3fcf159515",
+      "seconds": 10.75,
+      "counts": [
+        87,
+        0,
+        0,
+        0
+      ],
+      "success": true
+    }
+  ],
+  "extendedScenarios": {
+    "seedStart": 2201,
+    "seedCount": 2000,
+    "tests": 2005,
+    "failures": 0,
+    "originalFailures": [
+      4127,
+      4182,
+      4197
+    ],
+    "resolution": "Test ledger sampled closure too late after fail-fast startup. Counts now surround the actual close boundary; a negative control still rejects unauthorized stops. Production code unchanged.",
+    "command": "mvn -o -Dtest=ControlScenarioHarnessTest -Dmongoose.harness.seedStart=2201 -Dmongoose.harness.seedCount=2000 test",
+    "testedTreeCommit": "0de46da355747743c7040b6ed74257f5235f7a72"
+  },
+  "soak": {
+    "seconds": 600,
+    "seed": 20261025,
+    "feedEventsOffered": 2401723,
+    "instancesBuilt": 3796,
+    "asyncRequests": 58370,
+    "syncCalls": 8741,
+    "floods": 10,
+    "anomalies": 0,
+    "maxAsyncReplyMillis": 3130,
+    "maxSyncCallMillis": 1001,
+    "shutdownMillis": 4,
+    "shutdownComplete": true,
+    "auditDocumentsByGroup": [
+      101413,
+      59922,
+      78444
+    ],
+    "droppedAuditDocuments": 0,
+    "invariantViolations": 0,
+    "secondsIncludingOldAuditVerifier": 708.3,
+    "command": "mvn -o -Dtest=ControlPlaneSoakTest -Dmongoose.soak=true -Dmongoose.soak.seconds=600 -Dmongoose.soak.seed=20261025 test",
+    "limits": "Ten-minute synthetic lifecycle/capture fault workload, not overnight soak, real exchange traffic, sustained replay chaos, or a leak/latency proof. Successful long-run raw traces were not persisted; the separately exported 30-second run is bundled.",
+    "runtimeCommit": "c7c92da8adbe087270e95a29eec51c3fcf159515"
+  },
+  "volume": {
+    "sources": 4,
+    "groups": 3,
+    "processors": 6,
+    "eventsPerSource": 1000000,
+    "pacedDeliveredAcrossTwoScenarios": 48000000,
+    "pacedDrops": 0,
+    "overloadQueueCopiesDropped": 341,
+    "overloadProcessorDeliveriesMissing": 682,
+    "duplicateOrReordered": 0,
+    "command": "mvn -o -Dtest=HighVolumeEventStressTest,ControlPlaneChaosStressTest -Dmongoose.stress=true -Dmongoose.stress.seconds=30 -Dmongoose.stress.seed=19795 -Dmongoose.stress.eventsPerSource=1000000 test",
+    "limits": "Publisher credit-pacing is test-driven; overload intentionally exercises the existing 10ms spin-and-drop policy. These are correctness checks, not peak throughput benchmarks.",
+    "runtimeCommit": "c7c92da8adbe087270e95a29eec51c3fcf159515"
+  },
+  "exportedAudit": {
+    "seed": 19796,
+    "workloadSeconds": 30,
+    "archive": "chaos-audit-19796.tar.gz",
+    "sha256": "bb921dd2be3da7b2d88c0335ffe2e19d4b06064c5bdb659addd829a2725a9113",
+    "bytes": 881850,
+    "fileOnlyVerification": [
+      "chaos-g0-19796.yaml Verification[completeness=COMPLETE, reason=complete snapshot; invariants still require validation] records=18338 verified=true violations=[]",
+      "chaos-g1-19796.yaml Verification[completeness=COMPLETE, reason=complete snapshot; invariants still require validation] records=30990 verified=true violations=[]",
+      "chaos-g2-19796.yaml Verification[completeness=COMPLETE, reason=complete snapshot; invariants still require validation] records=5341 verified=true violations=[]"
+    ],
+    "command": "mvn -o -Dtest=ControlPlaneChaosStressTest -Dmongoose.stress=true -Dmongoose.stress.seconds=30 -Dmongoose.stress.seed=19796 -Dmongoose.stress.auditDir=target/review-audit test",
+    "runtimeCommit": "c7c92da8adbe087270e95a29eec51c3fcf159515"
+  },
+  "remainingQualification": [
+    "Pinned-core Linux performance comparison and longer deployment-like soak of the final commit.",
+    "Existing bounded-spin/drop overflow policy and unused SlowConsumerStrategy setting need explicit product treatment in issue #77.",
+    "Custom capture plugins using compatibility defaults remain name-keyed until implementing scoped ownership.",
+    "Replay retains documented provenance and historical-service reconstruction limitations.",
+    "Published stress work through 8d1b1ee was reviewed. The additional ControlPlaneSoakStressTest drift probe was deferred: insufficient samples can pass and inherited audit-capacity settings confound heap growth. Its original source remains on stress/control-plane."
+  ],
+  "initialRuntimeCommit": "c7c92da8adbe087270e95a29eec51c3fcf159515",
+  "finalCodeCommit": "c40264b9b608585be2908ddc952d2b0d020bd2c1",
+  "runtimeChangesAfterSoak": "Two replay-only fixes followed the ten-minute soak: version identity publication ordering/bounded waiting, and linear in-memory replay-store append. They were qualified with deterministic regressions, the final full suite, 30-second scoped replay and the final benchmark. The ten-minute soak was not repeated on the final commit.",
+  "replayAndShutdown": {
+    "commit": "c40264b9b608585be2908ddc952d2b0d020bd2c1",
+    "seed": 20261025,
+    "shutdownCycles": 20,
+    "permanentFailedServiceCasePassed": true,
+    "replayWorkloadSeconds": 30,
+    "matchedAnchorLines": [
+      120148,
+      119650,
+      119154
+    ],
+    "allReplayersComplete": true,
+    "allStoppedReasonsNull": true,
+    "tests": 3,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "command": "mvn -o -Dtest=ShutdownStormStressTest,ChaosReplayStressTest -Dmongoose.stress=true -Dmongoose.stress.shutdown.cycles=20 -Dmongoose.stress.replay.seconds=30 -Dmongoose.stress.seed=20261025 test",
+    "limits": "Successful replay covers the three boot anchors, not dynamic processor incarnations or historical service churn. Unavailable service incarnations remain fail-closed. Shutdown deadlines often expire in feed stopping; not every configured blocked callback is reached on the first attempt. Direct callback-blocking regressions cover those paths separately."
+  },
+  "replayStoreAllocation": {
+    "entries": 10000,
+    "beforeBytes": 200200200,
+    "afterBytes": 169136,
+    "entryObjectsPreallocated": true,
+    "scope": "current-thread append allocation in InMemoryReplayStore; not end-to-end per-event allocation or a zero-GC claim"
+  },
+  "initialBenchmark": {
+    "base": "74ad868249dc025c48aebd0a70c967542eb1dd6e",
+    "runtime": "c7c92da8adbe087270e95a29eec51c3fcf159515",
+    "sameBenchmarkSourceSha256": "73a79c347ad8b8260b8b029a06cfd394829a30a0a2aea4eb3dd6586238030144",
+    "normalization": "Both builds use Fluxtion runtime 1.1.2 and the same corrected padded-counter benchmark; throughputOnly; five independent JVM forks per build in alternating AB/BA order, 2 warm-up and 7 measured rounds of 2M events per fork; BusySpin feed/processor agents. No qualification stress test ran concurrently.",
+    "counterValueOffsetBytes": 144,
+    "forks": [
+      {
+        "pair": 1,
+        "build": "base",
+        "exit": 0,
+        "result": [
+          11.553,
+          11.073,
+          14.2
+        ]
+      },
+      {
+        "pair": 1,
+        "build": "candidate",
+        "exit": 0,
+        "result": [
+          12.114,
+          8.828,
+          15.112
+        ]
+      },
+      {
+        "pair": 2,
+        "build": "candidate",
+        "exit": 0,
+        "result": [
+          10.835,
+          10.788,
+          11.178
+        ]
+      },
+      {
+        "pair": 2,
+        "build": "base",
+        "exit": 0,
+        "result": [
+          11.778,
+          11.176,
+          26.004
+        ]
+      },
+      {
+        "pair": 3,
+        "build": "base",
+        "exit": 0,
+        "result": [
+          10.479,
+          7.644,
+          10.599
+        ]
+      },
+      {
+        "pair": 3,
+        "build": "candidate",
+        "exit": 0,
+        "result": [
+          9.754,
+          9.686,
+          10.26
+        ]
+      },
+      {
+        "pair": 4,
+        "build": "candidate",
+        "exit": 0,
+        "result": [
+          12.71,
+          11.282,
+          27.196
+        ]
+      },
+      {
+        "pair": 4,
+        "build": "base",
+        "exit": 0,
+        "result": [
+          12.444,
+          8.749,
+          20.957
+        ]
+      },
+      {
+        "pair": 5,
+        "build": "base",
+        "exit": 0,
+        "result": [
+          11.892,
+          10.936,
+          20.363
+        ]
+      },
+      {
+        "pair": 5,
+        "build": "candidate",
+        "exit": 0,
+        "result": [
+          12.91,
+          8.205,
+          23.444
+        ]
+      }
+    ],
+    "medianOfForkMediansMevPerSec": {
+      "base": 11.778,
+      "candidate": 12.114
+    },
+    "meanOfForkMediansMevPerSec": {
+      "base": 11.6292,
+      "candidate": 11.6646
+    },
+    "conclusion": "No consistent 12% regression reproduced here. High variation and unpinned heterogeneous-core macOS prevent resolving the earlier finding; Linux pinned-core confirmation remains open. No allocation or GC claim from this throughput benchmark."
+  },
+  "benchmark": {
+    "base": "74ad868249dc025c48aebd0a70c967542eb1dd6e",
+    "runtime": "c40264b9b608585be2908ddc952d2b0d020bd2c1",
+    "sameBenchmarkSourceSha256": "73a79c347ad8b8260b8b029a06cfd394829a30a0a2aea4eb3dd6586238030144",
+    "normalization": "Both builds use Fluxtion runtime 1.1.2 and the same corrected padded-counter benchmark; throughputOnly; five independent JVM forks per build in alternating AB/BA order, 2 warm-up and 7 measured rounds of 2M events per fork; BusySpin feed/processor agents. No qualification stress test ran concurrently.",
+    "counterValueOffsetBytes": 144,
+    "forks": [
+      {
+        "pair": 1,
+        "build": "base",
+        "exit": 0,
+        "result": [
+          11.498,
+          10.424,
+          11.874
+        ]
+      },
+      {
+        "pair": 1,
+        "build": "candidate",
+        "exit": 0,
+        "result": [
+          10.28,
+          9.89,
+          10.526
+        ]
+      },
+      {
+        "pair": 2,
+        "build": "candidate",
+        "exit": 0,
+        "result": [
+          11.901,
+          9.434,
+          25.858
+        ]
+      },
+      {
+        "pair": 2,
+        "build": "base",
+        "exit": 0,
+        "result": [
+          9.711,
+          8.666,
+          10.047
+        ]
+      },
+      {
+        "pair": 3,
+        "build": "base",
+        "exit": 0,
+        "result": [
+          10.056,
+          9.905,
+          10.398
+        ]
+      },
+      {
+        "pair": 3,
+        "build": "candidate",
+        "exit": 0,
+        "result": [
+          11.576,
+          8.174,
+          22.399
+        ]
+      },
+      {
+        "pair": 4,
+        "build": "candidate",
+        "exit": 0,
+        "result": [
+          14.343,
+          11.106,
+          27.886
+        ]
+      },
+      {
+        "pair": 4,
+        "build": "base",
+        "exit": 0,
+        "result": [
+          10.231,
+          9.878,
+          10.419
+        ]
+      },
+      {
+        "pair": 5,
+        "build": "base",
+        "exit": 0,
+        "result": [
+          9.308,
+          7.03,
+          10.236
+        ]
+      },
+      {
+        "pair": 5,
+        "build": "candidate",
+        "exit": 0,
+        "result": [
+          11.242,
+          10.611,
+          11.29
+        ]
+      }
+    ],
+    "medianOfForkMediansMevPerSec": {
+      "base": 10.056,
+      "candidate": 11.576
+    },
+    "meanOfForkMediansMevPerSec": {
+      "base": 10.1608,
+      "candidate": 11.8684
+    },
+    "conclusion": "This final run did not reproduce the earlier 12% loss. Large within-run and between-run variation on unpinned macOS prevents attributing the apparent improvement to the implementation. Pinned-core Linux confirmation remains open. No allocation or GC claim from this throughput benchmark."
+  }
+}

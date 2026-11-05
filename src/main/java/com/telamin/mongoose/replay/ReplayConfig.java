@@ -20,7 +20,7 @@ import java.util.Set;
 @Experimental
 public record ReplayConfig(Mode mode, Set<String> processors, Map<String, EventCodec> journalledFeeds,
                            EventJournal journal, ReplayStore store, java.util.function.LongSupplier clock,
-                           java.time.Duration deliveryTimeout) {
+                           java.time.Duration deliveryTimeout, boolean interceptControl, boolean recordProvenance) {
 
     public enum Mode { OFF, RECORD, REPLAY }
 
@@ -29,6 +29,12 @@ public record ReplayConfig(Mode mode, Set<String> processors, Map<String, EventC
     public ReplayConfig(Mode mode, Set<String> processors, Map<String, EventCodec> journalledFeeds, EventJournal journal,
                         ReplayStore store, java.util.function.LongSupplier clock) {
         this(mode, processors, journalledFeeds, journal, store, clock, null);
+    }
+
+    /** Control interception and provenance on, as by default. */
+    public ReplayConfig(Mode mode, Set<String> processors, Map<String, EventCodec> journalledFeeds, EventJournal journal,
+                        ReplayStore store, java.util.function.LongSupplier clock, java.time.Duration deliveryTimeout) {
+        this(mode, processors, journalledFeeds, journal, store, clock, deliveryTimeout, true, true);
     }
 
     public ReplayConfig {
@@ -52,12 +58,29 @@ public record ReplayConfig(Mode mode, Set<String> processors, Map<String, EventC
 
     /** The live clock recorded processors read (a test ticks one); the system clock by default. */
     public ReplayConfig withClock(java.util.function.LongSupplier liveClock) {
-        return new ReplayConfig(mode, processors, journalledFeeds, journal, store, liveClock, deliveryTimeout);
+        return new ReplayConfig(mode, processors, journalledFeeds, journal, store, liveClock, deliveryTimeout,
+                interceptControl, recordProvenance);
     }
 
     /** REPLAY: how long an entry may wait for its route or admin command before the replay stops, saying why. */
     public ReplayConfig withDeliveryTimeout(java.time.Duration timeout) {
-        return new ReplayConfig(mode, processors, journalledFeeds, journal, store, clock, timeout);
+        return new ReplayConfig(mode, processors, journalledFeeds, journal, store, clock, timeout, interceptControl,
+                recordProvenance);
+    }
+
+    /**
+     * Whether control requests a covered processor makes through {@code MongooseServerController} are recorded (RECORD)
+     * and intercepted (REPLAY: never executed, matched, answered with the recorded outcome). On by default.
+     */
+    public ReplayConfig withControlInterception(boolean on) {
+        return new ReplayConfig(mode, processors, journalledFeeds, journal, store, clock, deliveryTimeout, on,
+                recordProvenance);
+    }
+
+    /** Whether each stream's provenance is recorded (RECORD) and checked (REPLAY). On by default. */
+    public ReplayConfig withProvenance(boolean on) {
+        return new ReplayConfig(mode, processors, journalledFeeds, journal, store, clock, deliveryTimeout,
+                interceptControl, on);
     }
 
     public boolean covers(String processorName) {

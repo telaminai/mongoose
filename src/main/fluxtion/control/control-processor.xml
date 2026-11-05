@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- fluxtion-builder -->
+<!--
+  The group control processor: the design IR for every lifecycle decision a processor group makes.
+  Each <bean> is a Fluxtion node; each <constructor-arg ref="..."/> is a dependency edge, so dispatch
+  order follows these edges: ControlInputs and EffectOutcomes record what arrived before any rule
+  decides. Regenerate after a change with:  mvn -o -Pregen process-classes
+-->
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="http://www.springframework.org/schema/beans
+           https://www.springframework.org/schema/beans/spring-beans.xsd">
+
+    <!-- decided state: registrations, open request chains, record identities -->
+    <bean id="controlState" class="com.telamin.mongoose.control.node.ControlState"/>
+
+    <!-- entries: record each command and each effect outcome before any rule sees it -->
+    <bean id="controlInputs" class="com.telamin.mongoose.control.node.ControlInputs">
+        <constructor-arg ref="controlState"/>
+    </bean>
+    <bean id="effectOutcomes" class="com.telamin.mongoose.control.node.EffectOutcomes">
+        <constructor-arg ref="controlState"/>
+        <constructor-arg ref="controlInputs"/>
+    </bean>
+
+    <!-- effects are requested by rules and performed at batchEnd -->
+    <bean id="effectQueue" class="com.telamin.mongoose.control.node.EffectQueue"/>
+
+    <!-- rules. captureRules is upstream of lifecycleRules, which asks it for a release's capture effects -->
+    <bean id="captureRules" class="com.telamin.mongoose.control.node.CaptureRules">
+        <constructor-arg ref="controlInputs"/>
+        <constructor-arg ref="effectOutcomes"/>
+        <constructor-arg ref="controlState"/>
+        <constructor-arg ref="effectQueue"/>
+    </bean>
+    <bean id="lifecycleRules" class="com.telamin.mongoose.control.node.LifecycleRules">
+        <constructor-arg ref="controlInputs"/>
+        <constructor-arg ref="effectOutcomes"/>
+        <constructor-arg ref="controlState"/>
+        <constructor-arg ref="effectQueue"/>
+        <constructor-arg ref="captureRules"/>
+    </bean>
+    <bean id="serviceRules" class="com.telamin.mongoose.control.node.ServiceRules">
+        <constructor-arg ref="controlInputs"/>
+        <constructor-arg ref="effectOutcomes"/>
+        <constructor-arg ref="controlState"/>
+        <constructor-arg ref="effectQueue"/>
+    </bean>
+
+    <bean id="fluxtionSpringConfig" class="com.telamin.fluxtion.builder.extern.spring.FluxtionSpringConfig">
+        <property name="nodeBeans">
+            <list>
+                <value>controlState</value>
+                <value>controlInputs</value>
+                <value>effectOutcomes</value>
+                <value>effectQueue</value>
+                <value>captureRules</value>
+                <value>lifecycleRules</value>
+                <value>serviceRules</value>
+            </list>
+        </property>
+        <property name="logLevel" value="INFO"/>
+    </bean>
+
+</beans>

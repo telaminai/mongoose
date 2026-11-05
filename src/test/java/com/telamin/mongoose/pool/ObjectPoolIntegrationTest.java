@@ -61,8 +61,8 @@ public class ObjectPoolIntegrationTest {
         assertSame(msg, d2);
         msg.getPoolTracker().releaseReference();
 
-        // Not automatically returned; explicit returnToPool required
-        assertEquals(0, pool.availableCount());
+        // the last release returns it to the pool (#54); a later returnToPool is a no-op
+        assertEquals(1, pool.availableCount());
         msg.getPoolTracker().returnToPool();
         assertEquals(1, pool.availableCount());
     }
@@ -81,20 +81,19 @@ public class ObjectPoolIntegrationTest {
         pub.setCacheEventLog(true);
 
         pub.publish(msg);
-        //initial 1 (acquire) is released on publish: 0 + 1 for queue + 1 for cache
-        assertEquals(2, msg.getPoolTracker().currentRefCount());
+        // initial 1 (acquire) is released after dispatch: 1 for the queue. The cache keeps a detached String
+        // snapshot, not the pooled instance, so it holds no reference (#54: holding one kept the item out of the pool)
+        assertEquals(1, msg.getPoolTracker().currentRefCount());
 
         // drain queue -> NamedFeedEvent wrapper
         Object e = q.remove();
         assertTrue(e instanceof com.telamin.fluxtion.runtime.event.NamedFeedEvent);
         com.telamin.fluxtion.runtime.event.NamedFeedEvent<?> nfe = (com.telamin.fluxtion.runtime.event.NamedFeedEvent<?>) e;
         assertSame(msg, nfe.data());
-        // consumer done
+        // consumer done: the last reference, so it is back in the pool
         msg.getPoolTracker().releaseReference();
-        // still one held by cache
-        assertEquals(1, msg.getPoolTracker().currentRefCount());
-
-        // not back in pool yet
-        assertEquals(0, pool.availableCount());
+        assertEquals(0, msg.getPoolTracker().currentRefCount());
+        assertEquals(1, pool.availableCount());
+        assertEquals("PooledMessage{helloWrap}", pub.getEventLog().get(0).data(), "the cache keeps a snapshot");
     }
 }

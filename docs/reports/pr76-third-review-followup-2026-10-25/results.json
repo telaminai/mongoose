@@ -1,0 +1,81 @@
+{
+  "kind": "implementation checkpoint, not frozen RC qualification",
+  "commit": "cc9956c10c59afd9a3bca9eabe52afc8f9e0d528",
+  "fullSuite": {
+    "command": "mvn -o test",
+    "java": "Corretto 21.0.9",
+    "buildSuccess": true,
+    "tests": 1013,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 14,
+    "logSha256": "247f3b4ebd0a571e00a6307e3d13d5d690f73029d250697ebb0e7ac49cd351dd",
+    "reportCollection": "only classes listed as Running in this invocation, matching Maven totals",
+    "staleReportsExcluded": [
+      "com.telamin.mongoose.dutycycle.GeneratedProcessorFailureTerminationTest"
+    ]
+  },
+  "mutations": [
+    {
+      "name": "baseline",
+      "exitCode": 0,
+      "tests": 40,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "name-only-stop-without-release",
+      "exitCode": 1,
+      "tests": 40,
+      "failures": 5,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "missing-stop-reply",
+      "exitCode": 1,
+      "tests": 40,
+      "failures": 18,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "applied-without-release-renamed-rule",
+      "exitCode": 1,
+      "tests": 40,
+      "failures": 19,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "missing-stale-open-close",
+      "exitCode": 1,
+      "tests": 40,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "skip-terminal-sweep",
+      "exitCode": 1,
+      "tests": 40,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "drop-claimed-stop",
+      "exitCode": 1,
+      "tests": 40,
+      "failures": 7,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "mutationCommand": "JAVA_HOME=/path/to/jdk21 python3 run-source-mutations.py /path/to/mongoose cc9956c10c59afd9a3bca9eabe52afc8f9e0d528",
+  "runtime": "1.1.2",
+  "builder": "1.0.79",
+  "finalStressAndSoak": "not rerun on this checkpoint; 7610609 evidence is not reused",
+  "upstream105": "runtime 1.1.3 and compiler are still in review; upgrade requires issue36 evidence and regeneration before qualification"
+}

@@ -1,0 +1,32 @@
+[
+  {
+    "file": "chaos-audits.tar.gz",
+    "bytes": 1002863,
+    "sha256": "af3f21186a6a24e928233d8fb50f3004c48136b59d9295330bdcd687dc91cc4b"
+  },
+  {
+    "file": "replay-audits.tar.gz",
+    "bytes": 861229,
+    "sha256": "873588b0cfaafb8256ac6c464f1bbbd379bcb40d811cd60a07a341ca3fa3e69a"
+  },
+  {
+    "file": "soak-audits.tar.gz",
+    "bytes": 4405648,
+    "sha256": "121c81912ae9ad3e01dcd0ca46e012c9afdaf8eca790e64410ec46defd26485a"
+  },
+  {
+    "file": "chaos-second-audits.tar.gz",
+    "bytes": 954158,
+    "sha256": "80ea98a7858a457315d6841556d2bc85f88deaefd485cd1f196f6e0a3a7f7587"
+  },
+  {
+    "file": "source-mutation-logs.tar.gz",
+    "bytes": 54421,
+    "sha256": "f39dcc82b39adba73d9a289e51f21e1701af38ddb358c4d5d10a22d09c8a1edc"
+  },
+  {
+    "file": "qualification-logs.tar.gz",
+    "bytes": 1382071,
+    "sha256": "253c512f240b0de0b66dd88b804ce5971d12535bfe61660261e29480d1fd9f4d"
+  }
+]

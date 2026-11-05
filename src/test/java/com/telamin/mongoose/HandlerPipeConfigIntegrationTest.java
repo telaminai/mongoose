@@ -37,9 +37,10 @@ import static org.junit.jupiter.api.Assertions.*;
  * <ol>
  *   <li><b>Round-trip:</b> a value sent into the sink half is delivered to a
  *       subscribed processor on a different agent group.</li>
- *   <li><b>Cross-thread safety:</b> publisher + subscriber run on independent
- *       agent threads; no in-line dispatch, no concurrent mutation of subscriber
- *       state from the publisher's thread.</li>
+ *   <li><b>Cross-thread delivery:</b> publisher + subscriber run on independent
+ *       agent threads; subscriber state is only touched on the subscriber's thread.
+ *       Several concurrent publishers are covered by
+ *       {@code HandlerPipeTest#concurrentPublishersThroughTheSinkLoseNothing}.</li>
  *   <li><b>{@code @ServiceRegistered}-based sink discovery:</b> the publishing
  *       processor receives the sink via {@code @ServiceRegistered MessageSink}
  *       callback, name-matched against the pipe's name.</li>
@@ -159,6 +160,36 @@ public class HandlerPipeConfigIntegrationTest {
         assertEquals(2, cfg.getPipes().size());
         assertEquals("p1", cfg.getPipes().get(0).getName());
         assertFalse(cfg.getPipes().get(1).isBroadcast());
+    }
+
+    @Test
+    void retainEventLogAfterStart_is_settable_by_builder_and_applied_to_the_source() {
+        HandlerPipeConfig<String> cfg = HandlerPipeConfig.<String>builder()
+                .name("retained").cacheEventLog(true).retainEventLogAfterStart(true).build();
+        assertTrue(cfg.isRetainEventLogAfterStart());
+        assertTrue(cfg.build().pipe.getSource().isRetainEventLogAfterStart(), "applied to the pipe's source");
+
+        HandlerPipeConfig<String> defaults = HandlerPipeConfig.<String>builder().name("bounded").build();
+        assertFalse(defaults.isRetainEventLogAfterStart(), "off by default: the log stops growing after start");
+        assertFalse(defaults.build().pipe.getSource().isRetainEventLogAfterStart());
+    }
+
+    @Test
+    void retainEventLogAfterStart_is_settable_from_yaml() {
+        String yaml = """
+                pipes:
+                  - name: retained
+                    cacheEventLog: true
+                    retainEventLogAfterStart: true
+                  - name: bounded
+                    cacheEventLog: true
+                """;
+        org.yaml.snakeyaml.LoaderOptions options = new org.yaml.snakeyaml.LoaderOptions();
+        options.setTagInspector(tag -> true);
+        MongooseServerConfig cfg = new org.yaml.snakeyaml.Yaml(options).loadAs(yaml, MongooseServerConfig.class);
+        assertTrue(cfg.getPipes().get(0).isRetainEventLogAfterStart());
+        assertTrue(cfg.getPipes().get(0).build().pipe.getSource().isRetainEventLogAfterStart());
+        assertFalse(cfg.getPipes().get(1).isRetainEventLogAfterStart());
     }
 
     @Test

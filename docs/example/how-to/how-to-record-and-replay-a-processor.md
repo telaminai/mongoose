@@ -33,10 +33,61 @@ then filters, redispatch and fan-out have happened, so the record is what the pr
 | a scheduler timer firing | a timer entry, so it fires at the same point on replay |
 | a processor-owned admin command | its name and arguments, once it ran; a cancelled or refused command records nothing |
 | a dispatch that threw | a failure marker; a replay stops there |
+| the processor stopped by a request | a `Stopped` entry; a replay stops the processor at the same point |
+| a service delivered to or withdrawn from the running processor, after the server started | a `ServiceChanged` entry with the service's registry version; a replay delivers it at the same point |
+| a control request the processor made through `MongooseServerController` | a `ControlCall` entry with its arguments and outcome; a replay matches it instead of executing it |
+
+Beside each stream, not among its entries, the recording keeps the stream's **provenance**: the processor class and
+the handler class it wraps. A replay into a processor whose classes differ stops. The exact contract for every entry
+kind, and every reason a replay stops, is in
+[Control-plane contracts: Record and replay](../../reference/control-plane-contracts.md#record-and-replay).
 
 Each entry also carries every clock reading the processor made in that cycle, including readings for events the
 graph raised itself. On replay the processor reads the same instants. An admin command runs as the processor's own
 event cycle, so its entry carries that cycle's readings: a `DefaultEventProcessor` takes one when the cycle opens.
+
+### Control requests a replayed processor makes
+
+With control interception on (the default), each control request a replayed processor makes is matched against the
+`ControlCall` the recorded run made at that point, and answered with the recorded outcome:
+
+- `stopService`, `startService` and `stopProcessor` are **never executed** in a replay, so a replay never changes the
+  live server a second time.
+- `registerService`, `registerEventSource` and `removeService` stop replay and throw `UnsupportedOperationException`,
+  even when matched. Executing them would change resources shared with unreplayed processors; they require a
+  separate replay registry.
+- Requests the processor made in `start()` are recorded before its first input and expected before its first
+  replayed input.
+- A request the recorded run did not make, or made with different arguments, stops the replay, and so does a
+  recorded request the replay does not make.
+
+Three cases always stop the replay:
+
+- `addEventProcessor`. Its supplier is executable code, and the recording does not identify the supplier's build and
+  configuration well enough to reproduce or validate it. It is never run against the live server, and the call throws
+  `UnsupportedOperationException` into the processor.
+- A recorded call that failed. Only its exception's text was recorded, and exception types and payloads can change
+  the processor's branch. The replay stops even if the processor catches the substitute `IllegalStateException`.
+- A request made off the processor's own agent thread, which is outside its input order.
+
+Provenance compares processor and handler class names. It does not authenticate a build, configuration, or generated
+graph fingerprint.
+
+### Stream identity when a processor is replaced
+
+Each name's first built processor records under that name; its replacements use `name#2`, `name#3`, and so on. The
+number counts processors actually built under the name in the group (the
+[build ordinal](../../reference/glossary.md#build-ordinal)): an add that was refused, cancelled or never built
+consumes none. A replay that reaches a later build whose stream was never recorded stops, rather than replay it as
+empty.
+Literal `#` characters in processor names are doubled first: the first `p#2` processor records under `p##2`,
+which is distinct from `p`'s second incarnation (`p#2`). Use `ReplayStreams.key(name, incarnation)` when querying
+streams or replay outputs. This identity is independent of concurrently added processors with other names.
+
+Recordings made before this escaping rule keep working unchanged for names without `#`. For legacy names containing
+`#`, migrate the store's processor keys using the known original names and incarnation numbers. Mongoose refuses an
+unescaped legacy key when the escaped stream is absent; it cannot safely infer whether `p#2` means the literal name
+or `p`'s second incarnation. An already mixed legacy stream cannot be separated without external provenance.
 
 ## Configure it
 
@@ -57,6 +108,10 @@ ReplayConfig replay = ReplayConfig.replay(Set.of("pricer"), Map.of("prices", new
   as indexes.
 - **`journal`** (`EventJournal`): where journalled items are written, and read back on replay.
 - **`store`** (`ReplayStore`): where each processor's entries are appended, and read back on replay.
+- **`withDeliveryTimeout(Duration)`**: REPLAY only. How long an entry may wait for its route or admin command before
+  the replay stops (5 s by default).
+- **`withControlInterception(boolean)`**: record control requests, and intercept them in a replay. On by default.
+- **`withProvenance(boolean)`**: record each stream's provenance, and check it in a replay. On by default.
 
 Implementations:
 
@@ -164,9 +219,16 @@ Sample code:
 - **Calls outside Mongoose's paths**, from code holding a processor directly, are not recorded.
 - **After a failure** the recording is marked and a replay stops there. Determinism is not claimed after a failure.
 - **A replay stops, saying why,** rather than stalling, in the cases it can see: an entry that cannot be delivered
-  within `ReplayConfig.deliveryTimeout` (5 s), a journal missing an item, a store or decoder that fails, or a cycle that
-  reads the clock a different number of times from the recorded one. `replayers().get(group).stopped(processor)` gives
-  the reason. A replay failure stops that processor's replay; it does not end the server.
+  within `ReplayConfig.deliveryTimeout` (5 s), a journal missing an item, a store or decoder that fails, a cycle that
+  reads the clock a different number of times from the recorded one, a provenance mismatch, or a control-request
+  divergence. `replayers().get(group).stopped(processor)` gives the reason. A replay failure stops that processor's
+  replay; it does not end the server. The full list is in
+  [When a replay stops](../../reference/control-plane-contracts.md#when-a-replay-stops).
+- **Service changes:** a positive recorded version must match the currently published live binding. Replay waits
+  for a future version or a publication still in progress, bounded by `deliveryTimeout`. Missing identity after that
+  window and past versions are refused, including cached objects already withdrawn.
+  A failed replay callback stops replay. New recordings omit skipped duplicates and mark failed callbacks.
+  Unversioned legacy entries retain configuration-based lookup and cannot establish incarnation equivalence.
 - **A recording is refused over a recording.** `RECORD` needs an empty journal and store: a second run numbers its
   items from 1 again. A store in the earlier six-field CSV format is read, never appended to. A torn last CSV line (a
   crash mid-write) is set aside with a warning; the file is still read,

@@ -21,6 +21,12 @@ public interface EventSource<T> {
 
     enum EventWrapStrategy {SUBSCRIPTION_NOWRAP, SUBSCRIPTION_NAMED_EVENT, BROADCAST_NOWRAP, BROADCAST_NAMED_EVENT}
 
+    /**
+     * @deprecated Ignored by the publisher and by sources. Feed configuration maps an explicit {@code BACKOFF} to
+     * {@link com.telamin.mongoose.dispatch.OverloadPolicy#DROP_AFTER_SPIN} and fails boot on {@code DISCONNECT} or
+     * {@code EXIT_PROCESS}; set the {@code overload} policy instead (telaminai/mongoose#79).
+     */
+    @Deprecated
     enum SlowConsumerStrategy {DISCONNECT, EXIT_PROCESS, BACKOFF}
 
     /**
@@ -53,10 +59,13 @@ public interface EventSource<T> {
     }
 
     /**
-     * Configure the strategy used when consumers cannot keep up with event rate.
+     * Retained for source compatibility; does not change publisher overload behaviour.
+     * @deprecated Ignored. The overload policy is set per feed: {@code overload} in the feed configuration, or
+     * {@code MongooseServer.setFeedOverload} (telaminai/mongoose#79).
      *
      * @param slowConsumerStrategy slow consumer handling strategy
      */
+    @Deprecated
     default void setSlowConsumerStrategy(SlowConsumerStrategy slowConsumerStrategy) {
     }
 
