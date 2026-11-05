@@ -51,6 +51,19 @@ jobs:
           gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
           gpg-passphrase: MAVEN_GPG_PASSPHRASE
 
+      # The tagged POM uses Central plugin 0.10.0. Maven 3.10 leaves local metadata
+      # in its upload bundle, which Central rejects (upstream plugin issue #1).
+      - name: Use Maven 3.9.11 for the tagged publishing plugin
+        shell: bash
+        run: |
+          archive="$RUNNER_TEMP/apache-maven-3.9.11-bin.tar.gz"
+          curl --fail --silent --show-error --location \
+            https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.11/apache-maven-3.9.11-bin.tar.gz \
+            --output "$archive"
+          echo "bcfe4fe305c962ace56ac7b5fc7a08b87d5abd8b7e89027ab251069faebee516b0ded8961445d6d91ec1985dfe30f8153268843c89aa392733d1a3ec956c9978  $archive" | sha512sum --check
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/apache-maven-3.9.11/bin" >> "$GITHUB_PATH"
+
       - name: Publish the tested tag without rerunning tests
         run: mvn -P release -B -DskipTests clean deploy
         env:
