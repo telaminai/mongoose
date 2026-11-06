@@ -69,6 +69,13 @@ public class OverloadPolicyConfig {
         return cfg;
     }
 
+    /** Pause a re-readable source while a queue is full (docs/design/feed-delivery.md). */
+    public static OverloadPolicyConfig pause() {
+        OverloadPolicyConfig cfg = new OverloadPolicyConfig();
+        cfg.setPolicy(OverloadPolicy.PAUSE);
+        return cfg;
+    }
+
     public static OverloadPolicyConfig blockWithDeadline(Duration deadline) {
         OverloadPolicyConfig cfg = new OverloadPolicyConfig();
         cfg.setPolicy(OverloadPolicy.BLOCK_WITH_DEADLINE);
@@ -167,6 +174,14 @@ public class OverloadPolicyConfig {
                 yield new OverloadSettings(OverloadPolicy.BLOCK_WITH_DEADLINE, spinNanos,
                         TimeUnit.MILLISECONDS.toNanos(blockDeadlineMillis));
             }
+            case PAUSE -> {
+                if (blockDeadlineMillis != null) {
+                    throw new ConfigurationException("feed '" + feed + "': " + where
+                            + ".blockDeadlineMillis applies only to BLOCK_WITH_DEADLINE");
+                }
+                // the spin bound applies only when a push source (one that cannot pause) publishes into the queue
+                yield new OverloadSettings(OverloadPolicy.PAUSE, spinNanos, 0);
+            }
         };
     }
 
@@ -205,8 +220,9 @@ public class OverloadPolicyConfig {
                         + "block (DROP_AFTER_SPIN or BLOCK_WITH_DEADLINE)");
             }
         }
-        LOG.warning("feed '" + feed + "' has no explicit overload policy: using DROP_AFTER_SPIN (spin 10 ms, then "
-                + "drop for that queue). Set overload.policy on the feed to make the choice explicit");
+        LOG.warning("feed '" + feed + "' has no explicit overload policy: using the source's default, PAUSE for a "
+                + "re-readable source (FileEventSource), else DROP_AFTER_SPIN (spin 10 ms, then drop for that queue). "
+                + "Set overload.policy on the feed to make the choice explicit");
         return FeedOverloadSettings.DEFAULT;
     }
 }

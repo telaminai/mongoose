@@ -57,6 +57,12 @@ public class EventFlowManager {
     private final ConcurrentHashMap<CallBackType, Supplier<EventToInvokeStrategy>> eventToInvokerFactoryMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<EventSourceKey_Subscriber<?>, OneToOneConcurrentArrayQueue<Object>> subscriberKeyToQueueMap = new ConcurrentHashMap<>();
     /**
+     * Per subscriber queue, by identity, the items its readers have finished dispatching (docs/design/feed-caught-up.md):
+     * compared with the queue position a feed status was reported at, it says the processors have drained the feed.
+     */
+    private final java.util.Map<OneToOneConcurrentArrayQueue<Object>, java.util.concurrent.atomic.AtomicLong> dispatchedByQueue =
+            java.util.Collections.synchronizedMap(new java.util.IdentityHashMap<>());
+    /**
      * mongoose#55 review: how many group readers each subscription key has, across all groups. A source is told to
      * unsubscribe a key only when the last of them is released, not when one group's last listener leaves. The count
      * object is also the lock that orders a release against a new reader for the same key.
@@ -316,6 +322,142 @@ public class EventFlowManager {
         return pending;
     }
 
+    // ---- processing checkpoints (docs/design/feed-delivery.md, section 5) ----
+    private final ConcurrentHashMap<String, Checkpoint> checkpoints = new ConcurrentHashMap<>();
+
+    private static String checkpointKey(String feed, String group) {
+        return feed + '\u0000' + group;
+    }
+
+    private static final java.util.concurrent.atomic.AtomicLong CHECKPOINT_BINDINGS = new java.util.concurrent.atomic.AtomicLong();
+
+    /**
+     * One queue's durable state for a checkpoint (review F3): its own dispatched counter and durable mark, so a mark is
+     * in the units of the queue it was taken on, a resubscribe starts from nothing durable, and an unsubscribe drops it.
+     */
+    private static final class CheckpointBinding {
+        final long id = CHECKPOINT_BINDINGS.incrementAndGet();
+        final java.util.concurrent.atomic.AtomicLong dispatched;
+        final java.util.concurrent.atomic.AtomicLong durable = new java.util.concurrent.atomic.AtomicLong();
+
+        CheckpointBinding(java.util.concurrent.atomic.AtomicLong dispatched) {
+            this.dispatched = dispatched;
+        }
+    }
+
+    /** A (feed, processor group) acknowledgement hold; unheld, acknowledgement follows the queue's dispatched count. */
+    private static final class Checkpoint implements com.telamin.mongoose.service.delivery.ProcessingCheckpoint {
+        final String feed;
+        final String group;
+        volatile CheckpointBinding binding;
+        volatile boolean held;
+
+        Checkpoint(String feed, String group) {
+            this.feed = feed;
+            this.group = group;
+        }
+
+        /** How far {@code b}'s queue may be acknowledged. */
+        long processed(CheckpointBinding b) {
+            long dispatchedNow = b.dispatched.get();
+            return held ? Math.min(dispatchedNow, b.durable.get()) : dispatchedNow;
+        }
+
+        @Override public String feedName() { return feed; }
+
+        @Override public String processorGroup() { return group; }
+
+        @Override
+        public Mark mark() {
+            CheckpointBinding b = binding;
+            return b == null ? new Mark(-1, 0) : new Mark(b.id, b.dispatched.get());
+        }
+
+        @Override
+        public void durableThrough(Mark mark) {
+            CheckpointBinding b = binding;
+            if (mark != null && b != null && b.id == mark.binding()) {
+                b.durable.accumulateAndGet(mark.count(), Math::max);
+            }
+        }
+
+        @Override
+        public void release() {
+            held = false;
+        }
+
+        @Override
+        public String toString() {
+            CheckpointBinding b = binding;
+            return "ProcessingCheckpoint[" + feed + "/" + group + " held=" + held + " durable="
+                    + (b == null ? "unbound" : b.durable.get()) + "]";
+        }
+    }
+
+    /**
+     * Hold acknowledgement of {@code feedName}'s items on {@code processorGroup}'s queue until the processor says its
+     * state is durable (docs/design/feed-delivery.md, section 5). Registered as the server's
+     * {@link com.telamin.mongoose.service.delivery.ProcessingCheckpointService}.
+     */
+    public com.telamin.mongoose.service.delivery.ProcessingCheckpoint processingCheckpoint(String feedName,
+                                                                                           String processorGroup) {
+        Objects.requireNonNull(feedName, "feedName must be non-null");
+        Objects.requireNonNull(processorGroup, "processorGroup must be non-null");
+        Checkpoint checkpoint = checkpoints.computeIfAbsent(checkpointKey(feedName, processorGroup),
+                k -> new Checkpoint(feedName, processorGroup));
+        checkpoint.held = true;
+        return checkpoint;
+    }
+
+    /**
+     * The status of the named feeds, or of every registered feed when {@code feedNames} is empty, for a host deciding
+     * whether its feeds have settled (docs/design/feed-caught-up.md). A feed is drained when each of its subscriber
+     * queues has dispatched at least as many items as the queue had been given when the status was reported: a position
+     * comparison, never "queue empty", which races with a dispatch in flight. A queue added without a reader of this
+     * manager is judged by its consumer position instead, which counts an item taken but still being dispatched.
+     *
+     * @throws IllegalArgumentException naming a feed that is not registered
+     */
+    public com.telamin.mongoose.service.feedstatus.FeedStatusReport feedStatus(java.util.Collection<String> feedNames) {
+        java.util.TreeMap<String, EventToQueuePublisher<?>> selected = new java.util.TreeMap<>();
+        if (feedNames == null || feedNames.isEmpty()) {
+            eventSourceToQueueMap.forEach((key, p) -> selected.put(key.sourceName(), p.queuePublisher()));
+        } else {
+            for (String feed : feedNames) {
+                EventSource_QueuePublisher<?> p = eventSourceToQueueMap.get(new EventSourceKey<>(feed));
+                if (p == null) throw new IllegalArgumentException("no such feed: " + feed);
+                selected.put(feed, p.queuePublisher());
+            }
+        }
+        java.util.List<com.telamin.mongoose.service.feedstatus.FeedStatusReport.Feed> feeds = new java.util.ArrayList<>();
+        selected.forEach((feed, publisher) -> {
+            // the position first, then the dispatched counts: they only grow, so a count read after the position that
+            // reaches it proves every item published before the report was dispatched
+            EventToQueuePublisher.FeedPosition position = publisher.feedPosition();
+            java.util.List<com.telamin.mongoose.service.feedstatus.FeedStatusReport.Subscriber> subscribers = new java.util.ArrayList<>();
+            boolean drained = !position.cachedPending();
+            for (EventToQueuePublisher.NamedQueue q : publisher.getTargetQueues()) {
+                long at = position.positionOf(q.targetQueue());
+                java.util.concurrent.atomic.AtomicLong counter = dispatchedByQueue.get(q.targetQueue());
+                long done = counter != null ? counter.get() : q.targetQueue().removedCount();
+                boolean queueDrained = done >= at;
+                drained &= queueDrained;
+                subscribers.add(new com.telamin.mongoose.service.feedstatus.FeedStatusReport.Subscriber(q.name(), at, done,
+                        queueDrained));
+            }
+            var status = position.status();
+            var delivery = new com.telamin.mongoose.service.feedstatus.FeedStatusReport.Delivery(
+                    publisher.overload().feedDefault().policy().name(), publisher.droppedCount(),
+                    publisher.refusedCount(), publisher.downgradedCount(), publisher.paused(), publisher.pausedCount(),
+                    publisher.acknowledgedSequence(), publisher.pendingAcknowledgements(), publisher.liveConsumers(),
+                    publisher.stallReason());
+            feeds.add(new com.telamin.mongoose.service.feedstatus.FeedStatusReport.Feed(feed, status.state(),
+                    status.bounded(), status.sequence(), position.version(), status.detail(), drained, delivery,
+                    subscribers));
+        });
+        return com.telamin.mongoose.service.feedstatus.FeedStatusReport.of(feeds);
+    }
+
     @SuppressWarnings("unchecked")
     public <T> ManyToOneConcurrentArrayQueue<T> registerEventSink(EventSourceKey<T> sinkKey, Object sinkReader) {
         Objects.requireNonNull(sinkKey, "sinkKey must be non-null");
@@ -489,8 +631,23 @@ public class EventFlowManager {
             count.readers++;
         }
 
+        java.util.concurrent.atomic.AtomicLong dispatched =
+                dispatchedByQueue.computeIfAbsent(eventQueue, q -> new java.util.concurrent.atomic.AtomicLong());
+        // docs/design/feed-delivery.md: an item is acknowledged to its source once this queue has dispatched it, or, for
+        // a group holding a processing checkpoint on the feed, once the group's state is durable through it
+        Checkpoint checkpoint = checkpoints.computeIfAbsent(checkpointKey(eventSourceKey.sourceName(), subscriber.roleName()),
+                k -> new Checkpoint(eventSourceKey.sourceName(), subscriber.roleName()));
+        CheckpointBinding binding = new CheckpointBinding(dispatched);
+        checkpoint.binding = binding;
+        queuePublisher.bindAcknowledgementPoint(eventQueue, () -> checkpoint.processed(binding));
+        Runnable unsubscribeAndUnbind = () -> {
+            unsubscribe.run();
+            // the queue is gone: its durable state goes with it; a resubscribe starts a new binding (review F3)
+            if (checkpoint.binding == binding) checkpoint.binding = null;
+        };
         var reader = new EventQueueToEventProcessorAgent(eventQueue, eventMapperSupplier.get(), name, eventSourceKey.sourceName(),
-                type.name()).withUnsubscribeAction(unsubscribe).withDropMarks(dropMarks);
+                type.name()).withUnsubscribeAction(unsubscribeAndUnbind).withDropMarks(dropMarks)
+                .withDispatchedCounter(dispatched);
         queuePublisher.bindContainment(name, () -> reader.failureFenced()
                 || (subscriber instanceof com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent group
                     && group.control().state() == com.telamin.mongoose.control.ControlDriver.GroupState.DEAD),
@@ -550,7 +707,8 @@ public class EventFlowManager {
     private Runnable createUnsubscribeAction(EventSource_QueuePublisher<?> sourcePublisher, String name, EventSourceKey_Subscriber<?> keySubscriber) {
         return () -> {
             sourcePublisher.queuePublisher().removeTargetQueueByName(name);
-            subscriberKeyToQueueMap.remove(keySubscriber);
+            OneToOneConcurrentArrayQueue<Object> removed = subscriberKeyToQueueMap.remove(keySubscriber);
+            if (removed != null) dispatchedByQueue.remove(removed);
             queueDropChecks.computeIfPresent(keySubscriber, (key, check) -> {
                 check.bindings.remove(name);
                 if (!check.bindings.isEmpty()) return check;

@@ -55,6 +55,9 @@ public class EventToQueuePublisher<T> {
             new com.telamin.mongoose.control.ControlAuditSink();
 
     private final List<NamedFeedEvent<?>> eventLog = new ArrayList<>();
+    /** Per {@link #eventLog} entry, the source position it was cached with (null for none); guarded by the lock. */
+    @Getter(lombok.AccessLevel.NONE)
+    private final List<Object> eventLogPositions = new ArrayList<>();
     private final String name;
     /**
      * Per-feed publish counter. Hot-path field — incremented once per
@@ -67,6 +70,9 @@ public class EventToQueuePublisher<T> {
     public EventToQueuePublisher(String name, MongooseCounter publishCounter) {
         this.name = name;
         this.publishCounter = publishCounter;
+        this.feedPosition = new FeedPosition(new com.telamin.mongoose.service.feedstatus.FeedStatus(name,
+                com.telamin.mongoose.service.feedstatus.FeedState.UNKNOWN, 0, false, "the source does not report feed status"),
+                0, java.util.Collections.emptyMap(), false);
         register(this);
     }
 
@@ -201,7 +207,7 @@ public class EventToQueuePublisher<T> {
     @Getter(lombok.AccessLevel.NONE)
     private boolean drainingDeferred;
 
-    private enum DeferredKind { PUBLISH, PUBLISH_OR_CACHE, CACHE, REPLAY, START_COMPLETE, DISPATCH_CACHED }
+    private enum DeferredKind { PUBLISH, PUBLISH_OR_CACHE, CACHE, REPLAY, START_COMPLETE, DISPATCH_CACHED, FEED_STATUS }
 
     /** A producer operation deferred until the commit in progress completes. */
     private record Deferred(DeferredKind kind, Object item) {
@@ -259,6 +265,240 @@ public class EventToQueuePublisher<T> {
     @Getter(lombok.AccessLevel.NONE)
     private volatile long downgradedCount;
 
+    // ---- feed status (docs/design/feed-caught-up.md) ----
+    /**
+     * Deliver each reported {@link com.telamin.mongoose.service.feedstatus.FeedStatus} to the target queues, in order
+     * with the feed's items, so the subscribed processors receive it as an ordinary event. Off by default: a processor
+     * then sees nothing new, and the host still reads the status through {@link #feedPosition()}.
+     */
+    @Setter
+    private boolean deliverFeedStatus;
+    /** The last reported status, with the queue positions it was reported at. Written under the publish lock. */
+    @Getter(lombok.AccessLevel.NONE)
+    private volatile FeedPosition feedPosition;
+    /** A source that has no transitions to report (a pipe, the admin queues): caught up when this says so, now. */
+    @Getter(lombok.AccessLevel.NONE)
+    private volatile java.util.function.BooleanSupplier feedStatusProbe;
+    @Getter(lombok.AccessLevel.NONE)
+    private volatile boolean feedStatusProbeBounded;
+    /** The last status was reported before {@link #startComplete()}; guarded by the publish lock. */
+    @Getter(lombok.AccessLevel.NONE)
+    private boolean statusReportedBeforeStart;
+
+    // ---- delivery: acknowledge/commit and PAUSE (docs/design/feed-delivery.md) ----
+    /** Largest window of unacknowledged positioned items before {@link #tryPublish} pauses the source. */
+    static volatile int maxPendingAcknowledgements = 1 << 16;
+    /** The source's committer; null while the feed tracks no positions. Written under the publish lock. */
+    @Getter(lombok.AccessLevel.NONE)
+    private volatile com.telamin.mongoose.service.delivery.SourceCommitter<Object> committer;
+    /** Published but unacknowledged positioned items; guarded by the publish lock. */
+    @Getter(lombok.AccessLevel.NONE)
+    private PendingAcknowledgements pendingAcks;
+    /** Per physical target queue: how far its readers have processed; guarded by the publish lock. */
+    @Getter(lombok.AccessLevel.NONE)
+    private final java.util.IdentityHashMap<OneToOneConcurrentArrayQueue<Object>, AckPoint> ackPoints =
+            new java.util.IdentityHashMap<>();
+    /** The distinct physical target queues, rebuilt when a target is added or removed; guarded by the publish lock. */
+    @Getter(lombok.AccessLevel.NONE)
+    private OneToOneConcurrentArrayQueue<?>[] ackQueues = new OneToOneConcurrentArrayQueue<?>[0];
+    /** The position of the item {@link #tryPublish} or a positioned cache is committing; guarded by the lock. */
+    @Getter(lombok.AccessLevel.NONE)
+    private boolean positionPending;
+    @Getter(lombok.AccessLevel.NONE)
+    private Object pendingPosition;
+    /** Serialises {@link #pollAcknowledgements} callers (the source's duty cycle and its stop). */
+    @Getter(lombok.AccessLevel.NONE)
+    private final Object ackPollLock = new Object();
+    @Getter(lombok.AccessLevel.NONE)
+    private long[] ackOutSeq = new long[64];
+    @Getter(lombok.AccessLevel.NONE)
+    private Object[] ackOutPos = new Object[64];
+    /** The highest sequence number acknowledged to the source. */
+    @Getter(lombok.AccessLevel.NONE)
+    private volatile long acknowledgedSequence;
+    /** Bindings whose policy is PAUSE; guarded by the publish lock. */
+    @Getter(lombok.AccessLevel.NONE)
+    private int pauseTargets;
+    /** The source can re-read: a feed that configured no policy pauses instead of dropping. */
+    @Getter(lombok.AccessLevel.NONE)
+    private boolean pauseByDefault;
+    /** The policy the feed configured, before the source's default is applied; guarded by the publish lock. */
+    @Getter(lombok.AccessLevel.NONE)
+    private FeedOverloadSettings requestedOverload = FeedOverloadSettings.DEFAULT;
+    /** Whether the last {@link #tryPublish} paused, and how many times the feed has entered a pause. */
+    @Getter(lombok.AccessLevel.NONE)
+    private volatile boolean paused;
+    @Getter(lombok.AccessLevel.NONE)
+    private volatile long pausedCount;
+    @Getter(lombok.AccessLevel.NONE)
+    private boolean pauseFallbackWarned;
+    /** True while a {@link #tryPublish} is in progress: a nested one (mapper, codec, toString) is told to retry. */
+    @Getter(lombok.AccessLevel.NONE)
+    private boolean tryPublishing;
+    /**
+     * The source's epoch (docs/design/feed-delivery.md 5a): identifies the source position space. Stamped on every
+     * positioned item and exposed with its position, so an application never treats a position of a reset or replaced
+     * source as already applied.
+     */
+    @Getter(lombok.AccessLevel.NONE)
+    private volatile long sourceEpoch;
+    /**
+     * An in-band status a full PAUSE queue had no room for: reported (positions and delivery) once there is room, before
+     * any later item, by {@link #flushPaused()} or {@link #tryPublish}. A later report replaces it. Guarded by the lock.
+     */
+    @Getter(lombok.AccessLevel.NONE)
+    private PendingStatus pausedStatus;
+
+    /** How far one physical target queue's readers have processed, and whether its group is fenced off. */
+    private static final class AckPoint {
+        volatile java.util.function.LongSupplier processed;
+        volatile java.util.function.BooleanSupplier unavailable = () -> false;
+
+        AckPoint(java.util.function.LongSupplier processed) {
+            this.processed = processed;
+        }
+    }
+
+    /** A status the source reported while a commit on this feed was running, reported once it completes. */
+    private record PendingStatus(com.telamin.mongoose.service.feedstatus.FeedState state, boolean bounded, String detail) {
+    }
+
+    /**
+     * A feed's status and where each target queue was when it was reported.
+     *
+     * @param status         the status: its sequence is this feed's publish sequence number at the report
+     * @param version        how many states have been reported; for a probed feed, the sequence number
+     * @param positions      per target queue, by identity, how many items it had been given (its producer position)
+     * @param cachedPending  items given to the event log and not yet dispatched: the feed is not drained while true
+     */
+    public record FeedPosition(com.telamin.mongoose.service.feedstatus.FeedStatus status, long version,
+                               java.util.Map<OneToOneConcurrentArrayQueue<Object>, Long> positions,
+                               boolean cachedPending) {
+        /** The position of {@code queue} at the report: 0 for a queue added after it, which holds only later items. */
+        public long positionOf(OneToOneConcurrentArrayQueue<Object> queue) {
+            Long p = positions.get(queue);
+            return p == null ? 0 : p;
+        }
+    }
+
+    /**
+     * The source's feed state changed (docs/design/feed-caught-up.md). Call on a transition only, never per poll: a
+     * report equal to the last one, at the same sequence number, is ignored. Records the state at this feed's current
+     * sequence number together with every target queue's position, which is what the host compares each queue's
+     * dispatched count with to know the processors have handled everything published before it. With
+     * {@link #setDeliverFeedStatus delivery} on and the start complete, the status is also offered to every target queue,
+     * after the items published before it; it takes no sequence number, is not journalled and is not counted as a
+     * publish. A source reports {@code BEHIND} before it publishes items that follow a {@code CAUGHT_UP}.
+     */
+    public void reportFeedStatus(com.telamin.mongoose.service.feedstatus.FeedState state, boolean bounded, String detail) {
+        java.util.Objects.requireNonNull(state, "state must be non-null");
+        yieldToSubscriberChanges();
+        synchronized (publishLock) {
+            if (committing) {
+                defer(DeferredKind.FEED_STATUS, new PendingStatus(state, bounded, detail));
+                return;
+            }
+            reportFeedStatusSerialised(state, bounded, detail);
+        }
+    }
+
+    private void reportFeedStatusSerialised(com.telamin.mongoose.service.feedstatus.FeedState state, boolean bounded,
+                                            String detail) {
+        com.telamin.mongoose.service.feedstatus.FeedStatus last = feedPosition.status();
+        if (last.state() == state && last.sequence() == sequenceNumber && last.bounded() == bounded
+                && java.util.Objects.equals(last.detail(), detail)) {
+            return;
+        }
+        if (startComplete && deliverFeedStatus && pauseTargets > 0 && withoutRoom(OverloadSettings::pauses, 0, true) != null) {
+            // a PAUSE queue never drops: the status waits for room, and the host keeps seeing the previous state
+            pausedStatus = new PendingStatus(state, bounded, detail);
+            return;
+        }
+        pausedStatus = null;
+        var status = new com.telamin.mongoose.service.feedstatus.FeedStatus(name, state, sequenceNumber, bounded, detail);
+        if (startComplete) {
+            // what was cached goes first, as on a publish: the status claims it was delivered
+            dispatchCachedEventLogSerialised();
+            if (deliverFeedStatus) {
+                deliverFeedStatusSerialised(status);
+            }
+        }
+        // before the start completes nothing has been dispatched: the positions are taken again once the cache is
+        // replayed (see startComplete), which is also when a status reported before it is delivered
+        statusReportedBeforeStart = !startComplete;
+        // positions after the in-band status, so a drained queue has also dispatched the status itself
+        feedPosition = new FeedPosition(status, feedPosition.version() + 1, positionsNow(),
+                cacheReadPointer < eventLog.size());
+    }
+
+    /** The status, bare (never wrapped or mapped), to every target queue, after the items published before it. */
+    private void deliverFeedStatusSerialised(com.telamin.mongoose.service.feedstatus.FeedStatus status) {
+        for (int i = 0, n = targetQueues.size(); i < n; i++) {
+            writeToQueue(targetQueues.get(i), status, -1);
+        }
+    }
+
+    /**
+     * The start has completed and the cache was replayed: a status reported before it is delivered now (the first status
+     * a subscriber receives is the feed's status at start completion) and its positions taken again, so they count the
+     * replayed items. Under the publish lock.
+     */
+    private void feedStatusAtStartComplete() {
+        if (!statusReportedBeforeStart) {
+            return;
+        }
+        statusReportedBeforeStart = false;
+        FeedPosition reported = feedPosition;
+        if (deliverFeedStatus) {
+            deliverFeedStatusSerialised(reported.status());
+        }
+        feedPosition = new FeedPosition(reported.status(), reported.version(), positionsNow(),
+                cacheReadPointer < eventLog.size());
+    }
+
+    /**
+     * For a source with no transitions to report, whose items go straight to the queues (an in-memory pipe, the admin
+     * command queues): the host evaluates {@code caughtUp} when it asks, under the publish lock, and takes the queue
+     * positions then. {@code caughtUp} must be cheap and must not take a lock a publisher can hold.
+     */
+    public void feedStatusProbe(java.util.function.BooleanSupplier caughtUp, boolean bounded) {
+        this.feedStatusProbeBounded = bounded;
+        this.feedStatusProbe = caughtUp;
+    }
+
+    /**
+     * The feed's status for the host (docs/design/feed-caught-up.md): the last reported status and the queue positions
+     * it was reported at or, for a probed feed, the probe's answer and the positions now. Takes the publish lock, so it
+     * can wait behind a dispatch to a full queue; for polling, not the hot path.
+     */
+    public FeedPosition feedPosition() {
+        synchronized (publishLock) {
+            java.util.function.BooleanSupplier probe = feedStatusProbe;
+            boolean cachedPending = cacheReadPointer < eventLog.size();
+            if (probe == null) {
+                FeedPosition reported = feedPosition;
+                return reported.cachedPending() == cachedPending ? reported
+                        : new FeedPosition(reported.status(), reported.version(), reported.positions(), cachedPending);
+            }
+            boolean caughtUp = probe.getAsBoolean();
+            var status = new com.telamin.mongoose.service.feedstatus.FeedStatus(name, caughtUp
+                    ? com.telamin.mongoose.service.feedstatus.FeedState.CAUGHT_UP
+                    : com.telamin.mongoose.service.feedstatus.FeedState.BEHIND, sequenceNumber, feedStatusProbeBounded,
+                    null);
+            return new FeedPosition(status, sequenceNumber, positionsNow(), cachedPending);
+        }
+    }
+
+    /** Every target queue's producer position, by identity. Under the publish lock: this publisher is their producer. */
+    private java.util.Map<OneToOneConcurrentArrayQueue<Object>, Long> positionsNow() {
+        java.util.IdentityHashMap<OneToOneConcurrentArrayQueue<Object>, Long> positions = new java.util.IdentityHashMap<>();
+        for (int i = 0, n = targetQueues.size(); i < n; i++) {
+            OneToOneConcurrentArrayQueue<Object> q = targetQueues.get(i).targetQueue();
+            positions.put(q, q.addedCount());
+        }
+        return java.util.Collections.unmodifiableMap(positions);
+    }
+
     /** Journal this feed's items (spec-replay-recording R3). */
     public void journal(EventJournal journal, EventCodec codec) {
         this.journal = journal;
@@ -303,6 +543,12 @@ public class EventToQueuePublisher<T> {
                     if (binding.settings.blocks()) {
                         blockingTargets++;
                     }
+                    if (binding.settings.pauses()) {
+                        pauseTargets++;
+                    }
+                    // until a reader binds its dispatched count, a queue is judged by its consumer position
+                    ackPoints.computeIfAbsent(targetQueue, q -> new AckPoint(q::removedCount));
+                    rebuildAckQueues();
                 }
             }
         } finally {
@@ -320,15 +566,45 @@ public class EventToQueuePublisher<T> {
         subscriberChangesWaiting.incrementAndGet();
         try {
             synchronized (publishLock) {
-                overload = settings;
-                int blocking = 0;
-                for (QueueDrops binding : queueDrops.values()) {
-                    binding.settings = settings.forGroup(binding.group);
-                    if (binding.settings.blocks()) {
-                        blocking++;
-                    }
-                }
-                blockingTargets = blocking;
+                requestedOverload = settings;
+                applyOverload();
+            }
+        } finally {
+            subscriberChangesWaiting.decrementAndGet();
+        }
+        wakeWaiters();
+    }
+
+    /** The requested policy, or PAUSE when it is the unconfigured default and the source can re-read. Under the lock. */
+    private void applyOverload() {
+        FeedOverloadSettings settings = requestedOverload;
+        if (!settings.explicit() && pauseByDefault) {
+            settings = new FeedOverloadSettings(OverloadSettings.PAUSE, java.util.Map.of(), settings.quietPeriodNanos(),
+                    false, false);
+        }
+        overload = settings;
+        int blocking = 0;
+        int pausing = 0;
+        for (QueueDrops binding : queueDrops.values()) {
+            binding.settings = settings.forGroup(binding.group);
+            if (binding.settings.blocks()) blocking++;
+            if (binding.settings.pauses()) pausing++;
+        }
+        blockingTargets = blocking;
+        pauseTargets = pausing;
+    }
+
+    /**
+     * The source can re-read what it has not published (a file, by contract a Kafka or Chronicle source): when the
+     * feed configures no overload policy its queues use {@link OverloadPolicy#PAUSE} instead of
+     * {@link OverloadPolicy#DROP_AFTER_SPIN} (docs/design/feed-delivery.md). An explicit policy always wins.
+     */
+    public void setPauseByDefault(boolean pauseByDefault) {
+        subscriberChangesWaiting.incrementAndGet();
+        try {
+            synchronized (publishLock) {
+                this.pauseByDefault = pauseByDefault;
+                applyOverload();
             }
         } finally {
             subscriberChangesWaiting.decrementAndGet();
@@ -409,7 +685,7 @@ public class EventToQueuePublisher<T> {
         refreshBinding(queue, binding, nowNanos, nowMillis);
         binding.lastLossNanos = nowNanos;
         binding.lastLossEpochMillis = nowMillis;
-        OverloadState to = binding.settings.blocks() ? OverloadState.LATCHED : OverloadState.DEGRADED;
+        OverloadState to = binding.settings.neverDrop() ? OverloadState.LATCHED : OverloadState.DEGRADED;
         if (binding.state == to || binding.state == OverloadState.LATCHED) {
             return;
         }
@@ -435,7 +711,7 @@ public class EventToQueuePublisher<T> {
         binding.state = to;
         binding.stateReason = why;
         writeStateRecord(queueName, binding, from, to.name(), why, epochMillis, observedEpochMillis,
-                binding.settings.blocks() || "LATCHED".equals(from) || to == OverloadState.LATCHED);
+                binding.settings.neverDrop() || "LATCHED".equals(from) || to == OverloadState.LATCHED);
     }
 
     private void writeStateRecord(String queueName, QueueDrops binding, String from, String to, String why,
@@ -800,6 +1076,339 @@ public class EventToQueuePublisher<T> {
         }
     }
 
+    // ---- delivery (docs/design/feed-delivery.md) ----
+
+    /**
+     * Track the positions of items published with {@link #tryPublish} or {@link #cache(Object, Object)} and acknowledge
+     * them to {@code committer} once processed (docs/design/feed-delivery.md). Call before publishing; the committer is
+     * called only from {@link #pollAcknowledgements()}, on the caller's thread.
+     */
+    @SuppressWarnings("unchecked")
+    public void acknowledgeWith(com.telamin.mongoose.service.delivery.SourceCommitter<?> committer) {
+        synchronized (publishLock) {
+            if (pendingAcks == null) pendingAcks = new PendingAcknowledgements(maxPendingAcknowledgements);
+            this.committer = (com.telamin.mongoose.service.delivery.SourceCommitter<Object>) committer;
+        }
+    }
+
+    /**
+     * How far {@code queue}'s readers have processed it: by default its consumer position; the flow manager binds its
+     * readers' dispatched count (bounded by any {@link com.telamin.mongoose.service.delivery.ProcessingCheckpoint}).
+     */
+    public void bindAcknowledgementPoint(OneToOneConcurrentArrayQueue<Object> queue, java.util.function.LongSupplier processed) {
+        java.util.Objects.requireNonNull(processed, "processed must be non-null");
+        synchronized (publishLock) {
+            AckPoint point = ackPoints.get(queue);
+            if (point != null) point.processed = processed;
+        }
+    }
+
+    /** The distinct physical target queues, for the acknowledgement snapshot. Under the lock. */
+    private void rebuildAckQueues() {
+        java.util.Set<OneToOneConcurrentArrayQueue<Object>> distinct =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        for (NamedQueue q : targetQueues) distinct.add(q.targetQueue());
+        ackQueues = distinct.toArray(new OneToOneConcurrentArrayQueue<?>[0]);
+    }
+
+    /**
+     * Publish {@code item}, read at {@code position}, unless a never-drop queue (PAUSE, or BLOCK_WITH_DEADLINE) has no
+     * room for it: then nothing is committed (no sequence number, no journal entry, no queue holds it) and false is
+     * returned; the source keeps the item and its read position and offers it again on a later duty cycle
+     * (docs/design/feed-delivery.md). Never waits, so it is safe on an agent thread. Before {@link #startComplete()} the
+     * item is cached, as {@link #publishOrCache}. A DROP_AFTER_SPIN queue still drops after its spin bound; a queue whose
+     * group is fenced or dead does not hold the feed back. With a committer, the position is acknowledged once the item
+     * is processed, and the source pauses while {@link #maxPendingAcknowledgements} items await acknowledgement.
+     *
+     * @return true when the item was taken (published, cached, filtered by the data mapper, or dropped for a
+     * drop-tolerant queue); false when the source must keep it and try again
+     */
+    public boolean tryPublish(T item, Object position) {
+        if (item == null) {
+            return true;
+        }
+        yieldToSubscriberChanges();
+        synchronized (publishLock) {
+            if (committing || tryPublishing) {
+                // nested in this feed's own commit or tryPublish (a mapper, a codec, a toString): try again later; not a
+                // pause of the source, so not counted as one
+                return false;
+            }
+            boolean tracked = committer != null && position != null;
+            if (tracked && startComplete && consumersUnavailable() != null) {
+                // a positioned feed with no live consumer, or one fenced or dead, holds its position: reading on would
+                // either commit what nobody processed or grow the window without bound (review F1, F2)
+                return pause();
+            }
+            tryPublishing = true;
+            try {
+                return tryPublishSerialised(item, position, tracked);
+            } finally {
+                tryPublishing = false;
+            }
+        }
+    }
+
+    /** {@link #tryPublish} under the lock, once nesting and consumers are checked. */
+    private boolean tryPublishSerialised(T item, Object position, boolean tracked) {
+        {
+            if (!startComplete) {
+                positionPending = tracked;
+                pendingPosition = position;
+                try {
+                    cacheSerialised(item);
+                } finally {
+                    positionPending = false;
+                    pendingPosition = null;
+                }
+                return true;
+            }
+            if (cacheReadPointer < eventLog.size() && !dispatchCached(CacheFlush.NEVER_DROP)) {
+                return pause();
+            }
+            if (!flushPausedStatus()) {
+                return pause();
+            }
+            if (withoutRoom(OverloadSettings::neverDrop, 0, true) != null) {
+                return pause();
+            }
+            if (tracked && pendingAcks.full()) {
+                return pause();
+            }
+            paused = false;
+            Object mappedItem = mapItemSafely(item, "publish");
+            if (mappedItem == null) {
+                if (tracked) pendingAcks.addDone(sequenceNumber, position);
+                return true;
+            }
+            positionPending = tracked;
+            pendingPosition = position;
+            try {
+                publishMapped(item, mappedItem);
+            } finally {
+                positionPending = false;
+                pendingPosition = null;
+            }
+            return true;
+        }
+    }
+
+    /**
+     * Why a positioned feed cannot deliver now, or null: no live consumer (the last subscriber was removed, or none has
+     * subscribed), or a consumer fenced (quarantine in progress) or dead. Under the publish lock.
+     */
+    private String consumersUnavailable() {
+        if (targetQueues.isEmpty()) {
+            return "no live consumer";
+        }
+        for (int i = 0, n = targetQueues.size(); i < n; i++) {
+            NamedQueue q = targetQueues.get(i);
+            QueueDrops b = queueDrops.get(q);
+            if (b != null && b.unavailable.getAsBoolean()) return "consumer " + q.name() + " fenced or dead";
+        }
+        return null;
+    }
+
+    /**
+     * Why this positioned feed is stalled, holding its position, or null (docs/design/feed-delivery.md section 7): no
+     * live consumer, a consumer fenced or dead, or a removed consumer that left unprocessed items the pointer may not
+     * pass in this run. Always null for a feed that tracks no positions.
+     */
+    public String stallReason() {
+        synchronized (publishLock) {
+            if (committer == null) return null;
+            String unavailable = consumersUnavailable();
+            if (unavailable != null) {
+                int pending = pendingAcks.size();
+                return unavailable + ": the source holds its position" + (pending > 0 ? " (" + pending
+                        + " item(s) unacknowledged)" : "");
+            }
+            if (pendingAcks.headDispatched()) {
+                for (OneToOneConcurrentArrayQueue<?> q : pendingAcks.headQueues()) {
+                    AckPoint point = ackPoints.get(q);
+                    if (point != null && targetQueues.stream().noneMatch(t -> t.targetQueue() == q)
+                            && point.processed.getAsLong() < countFor(q)) {
+                        return "a removed consumer left unprocessed items: the pointer stays before them until a "
+                                + "restart re-delivers them";
+                    }
+                }
+            }
+            return null;
+        }
+    }
+
+    /** The head entry's condition for {@code queue}. Under the lock. */
+    private long countFor(OneToOneConcurrentArrayQueue<?> queue) {
+        OneToOneConcurrentArrayQueue<?>[] queues = pendingAcks.headQueues();
+        long[] counts = pendingAcks.headCounts();
+        for (int j = 0; j < queues.length; j++) if (queues[j] == queue) return counts[j];
+        return 0;
+    }
+
+    /** Target queue bindings whose group can consume now (not fenced, not dead). */
+    public int liveConsumers() {
+        synchronized (publishLock) {
+            int live = 0;
+            for (NamedQueue q : targetQueues) {
+                QueueDrops b = queueDrops.get(q);
+                if (b == null || !b.unavailable.getAsBoolean()) live++;
+            }
+            return live;
+        }
+    }
+
+    /** The source's epoch, stamped on its positioned items (docs/design/feed-delivery.md 5a). */
+    public void setSourceEpoch(long sourceEpoch) {
+        this.sourceEpoch = sourceEpoch;
+    }
+
+    public long sourceEpoch() {
+        return sourceEpoch;
+    }
+
+    /** Cache {@code item}, read at {@code position}, for replay at {@link #startComplete()}, tracking its position. */
+    public void cache(T item, Object position) {
+        if (item == null) {
+            return;
+        }
+        yieldToSubscriberChanges();
+        synchronized (publishLock) {
+            if (committing) {
+                defer(DeferredKind.CACHE, item);
+                return;
+            }
+            positionPending = committer != null && position != null;
+            pendingPosition = position;
+            try {
+                cacheSerialised(item);
+            } finally {
+                positionPending = false;
+                pendingPosition = null;
+            }
+        }
+    }
+
+    /**
+     * Continue a cache replay that paused at a full PAUSE queue (docs/design/feed-delivery.md); a source calls it at the
+     * start of each duty cycle. True when nothing cached is left to dispatch.
+     */
+    public boolean flushPaused() {
+        yieldToSubscriberChanges();
+        synchronized (publishLock) {
+            if (committing) return false;
+            if (!startComplete) return true;
+            if (cacheReadPointer < eventLog.size() && !dispatchCached(CacheFlush.NEVER_DROP)) return pause();
+            return flushPausedStatus() || pause();
+        }
+    }
+
+    /** Report a status that waited for room in a PAUSE queue, if there is room now; true when none waits. Under the lock. */
+    private boolean flushPausedStatus() {
+        PendingStatus waiting = pausedStatus;
+        if (waiting == null) return true;
+        if (withoutRoom(OverloadSettings::pauses, 0, true) != null) return false;
+        reportFeedStatusSerialised(waiting.state(), waiting.bounded(), waiting.detail());
+        return pausedStatus == null;
+    }
+
+    /** A pause: counted once per episode. Under the publish lock. */
+    private boolean pause() {
+        if (!paused) {
+            paused = true;
+            pausedCount++;
+        }
+        return false;
+    }
+
+    /** A publish that cannot pause met a full PAUSE queue: it drops after the spin bound, counted as a downgrade. */
+    private void notePauseFallback(NamedQueue queue) {
+        downgradedCount++;
+        onDowngrade("PAUSE queue " + queue.name() + " given an item that cannot pause");
+        if (!pauseFallbackWarned && logWarning) {
+            pauseFallbackWarned = true;
+            log.warning("feed " + name + ": PAUSE queue " + queue.name() + " was full for an item that cannot pause (a "
+                    + "push publish, a cached or replayed item, a feed status, or a fenced group): dropped after the "
+                    + "spin bound; counted in downgradedCount() and droppedCount(), warned once");
+        }
+    }
+
+    /**
+     * Acknowledge, to the committer, every positioned item that has been processed: each queue it was delivered to has
+     * dispatched it (and any processing checkpoint on that queue is durable through it). A queue removed since, or whose
+     * group is fenced or dead, no longer holds it back. Call from the source's own thread, typically at the start of
+     * each duty cycle and at stop; the committer runs on that thread, outside the publish lock.
+     *
+     * @return how many acknowledgements were delivered (after coalescing)
+     */
+    public int pollAcknowledgements() {
+        com.telamin.mongoose.service.delivery.SourceCommitter<Object> c = committer;
+        if (c == null) {
+            return 0;
+        }
+        synchronized (ackPollLock) {
+            int n = 0;
+            yieldToSubscriberChanges();
+            synchronized (publishLock) {
+                while (pendingAcks.headDispatched()) {
+                    OneToOneConcurrentArrayQueue<?>[] queues = pendingAcks.headQueues();
+                    long[] counts = pendingAcks.headCounts();
+                    boolean due = true;
+                    for (int j = 0; j < queues.length && due; j++) {
+                        AckPoint point = ackPoints.get(queues[j]);
+                        // a removed binding no longer holds; a fenced or dead one does (review F1): its backlog is
+                        // unprocessed, and a fence can lift
+                        if (point == null) continue;
+                        due = point.processed.getAsLong() >= counts[j];
+                    }
+                    if (!due) break;
+                    if (n == ackOutSeq.length) {
+                        ackOutSeq = java.util.Arrays.copyOf(ackOutSeq, n * 2);
+                        ackOutPos = java.util.Arrays.copyOf(ackOutPos, n * 2);
+                    }
+                    ackOutSeq[n] = pendingAcks.headSeq();
+                    ackOutPos[n] = pendingAcks.headPosition();
+                    n++;
+                    pendingAcks.removeHead();
+                }
+            }
+            if (n == 0) {
+                return 0;
+            }
+            try {
+                for (int i = 0; i < n; i++) {
+                    c.acknowledged(ackOutSeq[i], ackOutPos[i]);
+                }
+                acknowledgedSequence = ackOutSeq[n - 1];
+                c.commit();
+            } finally {
+                java.util.Arrays.fill(ackOutPos, 0, n, null);
+            }
+            return n;
+        }
+    }
+
+    /** The highest sequence number acknowledged to the source's committer. */
+    public long acknowledgedSequence() {
+        return acknowledgedSequence;
+    }
+
+    /** Positioned items published (or cached) and not yet acknowledged. */
+    public int pendingAcknowledgements() {
+        synchronized (publishLock) {
+            return pendingAcks == null ? 0 : pendingAcks.size();
+        }
+    }
+
+    /** Whether the last {@link #tryPublish} paused the source. */
+    public boolean paused() {
+        return paused;
+    }
+
+    /** How many times the feed has paused its source (episodes, not retries). */
+    public long pausedCount() {
+        return pausedCount;
+    }
+
     public void publish(T itemToPublish) {
         if (itemToPublish == null) {
             log.info("itemToPublish is null");
@@ -1033,7 +1642,12 @@ public class EventToQueuePublisher<T> {
                                 java.util.function.LongSupplier fenceVersion) {
         synchronized (publishLock) {
             queueDrops.forEach((q, b) -> {
-                if (q.name().equals(queueName)) { b.unavailable = unavailable; b.fenceVersion = fenceVersion; }
+                if (q.name().equals(queueName)) {
+                    b.unavailable = unavailable;
+                    b.fenceVersion = fenceVersion;
+                    AckPoint point = ackPoints.get(q.targetQueue());
+                    if (point != null) point.unavailable = unavailable;
+                }
             });
         }
     }
@@ -1044,11 +1658,24 @@ public class EventToQueuePublisher<T> {
      * types of one group share it), plus one per cached item the publish dispatches first.
      */
     private NamedQueue blockerWithoutRoom() {
-        int cachedFirst = cacheEventLog ? eventLog.size() - cacheReadPointer : 0;
+        return withoutRoom(OverloadSettings::blocks, cacheEventLog ? eventLog.size() - cacheReadPointer : 0, false);
+    }
+
+    /**
+     * The first binding selected by {@code policy} whose physical queue lacks room for one more item (one slot per
+     * binding sharing it, times {@code 1 + cachedFirst}), or null. With {@code skipUnavailable}, a binding whose group is
+     * fenced or dead is ignored: it must not hold the feed back (it takes the drop path, counted). Under the lock.
+     */
+    private NamedQueue withoutRoom(java.util.function.Predicate<OverloadSettings> policy, int cachedFirst,
+                                   boolean skipUnavailable) {
         for (int i = 0, n = targetQueues.size(); i < n; i++) {
             NamedQueue candidate = targetQueues.get(i);
-            if (!settingsOf(candidate).blocks()) {
+            if (!policy.test(settingsOf(candidate))) {
                 continue;
+            }
+            if (skipUnavailable) {
+                QueueDrops b = queueDrops.get(candidate);
+                if (b != null && b.unavailable.getAsBoolean()) continue;
             }
             OneToOneConcurrentArrayQueue<Object> physical = candidate.targetQueue();
             int bindings = 0;
@@ -1056,7 +1683,7 @@ public class EventToQueuePublisher<T> {
             for (int j = 0; j < n; j++) {
                 NamedQueue other = targetQueues.get(j);
                 if (other.targetQueue() == physical) {
-                    if (j < i && settingsOf(other).blocks()) {
+                    if (j < i && policy.test(settingsOf(other))) {
                         checkedAlready = true;
                         break;
                     }
@@ -1128,7 +1755,9 @@ public class EventToQueuePublisher<T> {
         // On a feed with a blocking queue, the room checked for this item is reserved until its offers are done: a
         // publish into this feed from code run during the commit (the journal codec or append, an error listener, an
         // item's toString) is deferred until the commit completes (external review of d9eec79, finding 1)
-        boolean reserve = blockingTargets > 0 && !committing;
+        // a feed with positions reserves too: a publish nested in the commit (codec, error listener, toString) must not
+        // number and dispatch an item between this item's position and its dispatch (review: nested publish)
+        boolean reserve = (blockingTargets > 0 || committer != null) && !committing;
         if (!reserve) {
             commit(itemToPublish, mappedItem);
             return;
@@ -1199,10 +1828,15 @@ public class EventToQueuePublisher<T> {
                 warnCacheReplayOnBlockingFeed();
                 dispatchCachedEventLogSerialised();
                 startComplete = true;
+                feedStatusAtStartComplete();
             }
             case DISPATCH_CACHED -> {
                 warnCacheReplayOnBlockingFeed();
                 dispatchCachedEventLogSerialised();
+            }
+            case FEED_STATUS -> {
+                PendingStatus pending = (PendingStatus) op.item();
+                reportFeedStatusSerialised(pending.state(), pending.bounded(), pending.detail());
             }
         }
     }
@@ -1210,6 +1844,13 @@ public class EventToQueuePublisher<T> {
     private void commit(Object itemToPublish, Object mappedItem) {
         publishCounter.increment();
         sequenceNumber++;
+        Object position = null;
+        if (positionPending) {
+            positionPending = false;
+            position = pendingPosition;
+            pendingAcks.add(sequenceNumber, position);
+            pendingPosition = null;
+        }
         journalItem(mappedItem, sequenceNumber);
 
         if (log.isLoggable(Level.FINE)) {
@@ -1222,7 +1863,8 @@ public class EventToQueuePublisher<T> {
         PoolTracker<?> publisherRef = trackerOf(mappedItem);
         try {
             if (cacheEventLog) {
-                dispatchCachedEventLogSerialised();
+                // a publish dispatches what was cached first, whatever the policy (a tryPublish flushed it already)
+                dispatchCached(CacheFlush.ALL);
                 if (!startComplete || retainEventLogAfterStart) {
                     // Store a detached snapshot in the cache to avoid retaining pooled instances: the cache holds no
                     // reference
@@ -1233,12 +1875,13 @@ public class EventToQueuePublisher<T> {
                             .data(cachedData)
                             .sequenceNumber(sequenceNumber);
                     eventLog.add(namedFeedEvent);
+                    eventLogPositions.add(position);
                     // dispatched below, so never replayed from the log
                     cacheReadPointer = eventLog.size();
                 }
             }
 
-            dispatch(mappedItem, sequenceNumber);
+            dispatch(mappedItem, sequenceNumber, position);
         } finally {
             if (publisherRef != null) {
                 publisherRef.releaseReference();
@@ -1294,6 +1937,11 @@ public class EventToQueuePublisher<T> {
 
         Object mappedItem = mapItemSafely(itemToCache, "cache");
         if (mappedItem == null) {
+            if (positionPending) {
+                positionPending = false;
+                pendingAcks.addDone(sequenceNumber, pendingPosition);
+                pendingPosition = null;
+            }
             return;
         }
 
@@ -1301,7 +1949,19 @@ public class EventToQueuePublisher<T> {
             log.fine("listenerCount:" + targetQueues.size() + " sequenceNumber:" + sequenceNumber + " publish:" + itemToCache);
         }
         sequenceNumber++;
+        boolean positioned = positionPending;
+        Object position = null;
+        if (positionPending) {
+            positionPending = false;
+            position = pendingPosition;
+            pendingAcks.add(sequenceNumber, position);
+            pendingPosition = null;
+        }
         journalItem(mappedItem, sequenceNumber);
+        if (!cacheEventLog && positioned) {
+            // nothing will ever hold it: due as soon as what was published before it is
+            pendingAcks.dispatched(sequenceNumber, new OneToOneConcurrentArrayQueue<?>[0], new long[0]);
+        }
         if (cacheEventLog) {
             // For explicit cache without publish, detach from pool and store the original instance
             PoolTracker<?> tracker = trackerOf(mappedItem);
@@ -1312,6 +1972,7 @@ public class EventToQueuePublisher<T> {
                     .data(mappedItem)
                     .sequenceNumber(sequenceNumber);
             eventLog.add(namedFeedEvent);
+            eventLogPositions.add(position);
         } else {
             // nothing holds the item (no event log, no dispatch): drop the reference handed over with it
             PoolTracker<?> tracker = trackerOf(mappedItem);
@@ -1367,6 +2028,7 @@ public class EventToQueuePublisher<T> {
             warnCacheReplayOnBlockingFeed();
             dispatchCachedEventLogSerialised();
             startComplete = true;
+            feedStatusAtStartComplete();
         }
     }
 
@@ -1394,21 +2056,46 @@ public class EventToQueuePublisher<T> {
         }
     }
 
+    /** How a replay of the cached event log treats a full queue. */
+    private enum CacheFlush {
+        /** Every cached item now, dropping after the spin bound for a full queue (the behaviour before PAUSE). */
+        ALL,
+        /** Stop, keeping the rest cached, at a PAUSE queue without room; resumed by {@link #flushPaused()}. */
+        PAUSE,
+        /** As PAUSE, also for BLOCK_WITH_DEADLINE queues: a {@link #tryPublish} never waits and never drops. */
+        NEVER_DROP
+    }
+
+    /** The cache replay for the operations that do not decide for themselves: pausing when the feed has PAUSE queues. */
     private void dispatchCachedEventLogSerialised() {
+        dispatchCached(pauseTargets > 0 || committer != null ? CacheFlush.PAUSE : CacheFlush.ALL);
+    }
+
+    /** Replay the cached items not yet dispatched; true when none is left. Under the publish lock. */
+    private boolean dispatchCached(CacheFlush flush) {
         if (cacheReadPointer < eventLog.size()) {
             if (log.isLoggable(Level.FINE)) {
                 log.fine("publishing cached items cacheReadPointer:" + cacheReadPointer + " eventLog.size():" + eventLog.size());
             }
+            java.util.function.Predicate<OverloadSettings> pausing = flush == CacheFlush.PAUSE ? OverloadSettings::pauses
+                    : OverloadSettings::neverDrop;
             //send updates
             for (int i = cacheReadPointer, eventLogSize = eventLog.size(); i < eventLogSize; i++) {
+                if (flush != CacheFlush.ALL && (withoutRoom(pausing, 0, true) != null
+                        || committer != null && consumersUnavailable() != null)) {
+                    cacheReadPointer = i;
+                    return false;
+                }
                 NamedFeedEvent<?> cachedFeedEvent = eventLog.get(i);
                 // each cached item with ITS sequence number: it was the current one, which a late subscriber's
                 // catch-up then carried on every cached item (found by the replay spike, R3)
-                dispatch(cachedFeedEvent.data(), cachedFeedEvent.sequenceNumber());
+                dispatch(cachedFeedEvent.data(), cachedFeedEvent.sequenceNumber(),
+                        i < eventLogPositions.size() ? eventLogPositions.get(i) : null);
             }
 
         }
         cacheReadPointer = eventLog.size();
+        return true;
     }
 
     /**
@@ -1522,25 +2209,34 @@ public class EventToQueuePublisher<T> {
         return journalBroken;
     }
 
-    private void dispatch(Object mappedItem, long seq) {
+    private void dispatch(Object mappedItem, long seq, Object position) {
         // writeToQueue acquires one PoolAware reference per queue
         for (int i = 0, targetQueuesSize = targetQueues.size(); i < targetQueuesSize; i++) {
             NamedQueue namedQueue = targetQueues.get(i);
             OneToOneConcurrentArrayQueue<Object> targetQueue = namedQueue.targetQueue();
-            switch (eventWrapStrategy) {
-                case SUBSCRIPTION_NOWRAP, BROADCAST_NOWRAP -> writeToQueue(namedQueue,
-                        journal == null ? mappedItem : new JournalledItem(seq, mappedItem), seq);
-                case SUBSCRIPTION_NAMED_EVENT, BROADCAST_NAMED_EVENT -> {
-                    //TODO reduce memory pressure by using copy or a recyclable wrapper if needed
-                    NamedFeedEventImpl<Object> namedFeedEvent = new NamedFeedEventImpl<>(name)
-                            .data(mappedItem)
-                            .sequenceNumber(seq);
-                    writeToQueue(namedQueue, namedFeedEvent, seq);
-                }
-            }
+            Object queued = switch (eventWrapStrategy) {
+                case SUBSCRIPTION_NOWRAP, BROADCAST_NOWRAP ->
+                        journal == null ? mappedItem : new JournalledItem(seq, mappedItem);
+                //TODO reduce memory pressure by using copy or a recyclable wrapper if needed
+                case SUBSCRIPTION_NAMED_EVENT, BROADCAST_NAMED_EVENT -> new NamedFeedEventImpl<>(name)
+                        .data(mappedItem)
+                        .sequenceNumber(seq);
+            };
+            // a positioned item carries its source position to the reader, which exposes it to the processor for the
+            // event cycle (DeliveryContext; docs/design/feed-delivery.md, section 5a)
+            writeToQueue(namedQueue, position == null ? queued : new PositionedItem(seq, position, sourceEpoch, queued), seq);
             if (log.isLoggable(Level.FINE)) {
                 log.fine("queue:" + namedQueue.name() + " size:" + targetQueue.size());
             }
+        }
+        if (pendingAcks != null && pendingAcks.size() > 0) {
+            // each queue's producer position just after this item: acknowledged once every one has dispatched to it
+            OneToOneConcurrentArrayQueue<?>[] queuesNow = ackQueues;
+            long[] counts = new long[queuesNow.length];
+            for (int i = 0; i < queuesNow.length; i++) {
+                counts[i] = queuesNow[i].addedCount();
+            }
+            pendingAcks.dispatched(seq, queuesNow, counts);
         }
     }
 
@@ -1565,6 +2261,7 @@ public class EventToQueuePublisher<T> {
                         startNs = System.nanoTime();
                         maxSpinNs = settingsOf(namedQueue).spinBoundNanos();
                     } else if (System.nanoTime() - startNs > maxSpinNs) {
+                        if (settingsOf(namedQueue).pauses() && currentDowngrade == null) notePauseFallback(namedQueue);
                         recordDrop(namedQueue, sequence, dropReason(namedQueue, maxSpinNs));
                         if (queueRef) {
                             queueRef = false;
@@ -1605,6 +2302,10 @@ public class EventToQueuePublisher<T> {
     /** The drop's reason for the first-loss evidence: unchanged text for the default policy. */
     private String dropReason(NamedQueue queue, long spinNanos) {
         String spun = "queue full after " + java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(spinNanos) + " ms spin";
+        if (settingsOf(queue).pauses()) {
+            return spun + "; PAUSE not possible: a publish that cannot pause (push publish, cached or replayed item, "
+                    + "feed status, or the subscriber's group is fenced)";
+        }
         if (!settingsOf(queue).blocks()) {
             return spun;
         }
@@ -1613,6 +2314,9 @@ public class EventToQueuePublisher<T> {
     }
 
     private PoolTracker<?> trackerOf(Object item) {
+        if (item instanceof PositionedItem positioned) {
+            item = positioned.item();
+        }
         if (item instanceof JournalledItem journalled) {
             item = journalled.item();
         }
@@ -1702,12 +2406,22 @@ public class EventToQueuePublisher<T> {
             wakeWaiters();
             synchronized (publishLock) {
                 targetQueues.removeIf(q -> queueName.equals(q.name()));
+                // a queue no binding uses any more no longer holds acknowledgement back
+                // ... except the last consumer of a positioned feed: what it did not process must not be committed
+                // (review F2); its point stays, frozen at what it processed, and holds those items until a restart
+                if (committer == null || !targetQueues.isEmpty()) {
+                    ackPoints.keySet().removeIf(q -> targetQueues.stream().noneMatch(t -> t.targetQueue() == q));
+                }
+                rebuildAckQueues();
                 queueDrops.entrySet().removeIf(e -> {
                     if (!queueName.equals(e.getKey().name())) {
                         return false;
                     }
                     if (e.getValue().settings.blocks()) {
                         blockingTargets--;
+                    }
+                    if (e.getValue().settings.pauses()) {
+                        pauseTargets--;
                     }
                     if (e.getValue().state == OverloadState.LATCHED) {
                         diagnosticBindings.put(queueName, new DiagnosticBinding(e.getValue(), true));

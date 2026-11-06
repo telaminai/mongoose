@@ -199,6 +199,9 @@ public class AdminCommandProcessor implements AdminCommandRegistry, LifeCycleEve
 
     @Override
     public void setEventToQueuePublisher(com.telamin.mongoose.dispatch.EventToQueuePublisher<AdminCommand> targetQueue) {
+        // a command goes straight to its queue as it is requested: the queues are always caught up, and drained once
+        // the processors have run what was asked (docs/design/feed-caught-up.md)
+        targetQueue.feedStatusProbe(() -> true, false);
     }
 
     private static class AdminCallbackType implements CallBackType {

@@ -301,6 +301,17 @@ public class MongooseServer implements MongooseServerController {
                 com.telamin.mongoose.service.health.MongooseHealthService.class,
                 com.telamin.mongoose.service.health.MongooseHealthService.SERVICE_NAME));
 
+        // docs/design/feed-delivery.md: a processor whose state is durable only later holds its feeds' acknowledgements
+        registerService(new Service<>(
+                (com.telamin.mongoose.service.delivery.ProcessingCheckpointService) flowManager::processingCheckpoint,
+                com.telamin.mongoose.service.delivery.ProcessingCheckpointService.class,
+                com.telamin.mongoose.service.delivery.ProcessingCheckpointService.SERVICE_NAME));
+
+        // docs/design/feed-delivery.md 5a: the source position of the event being handled, for consumer-side offsets
+        registerService(new Service<>(com.telamin.mongoose.service.delivery.DeliveryContext.INSTANCE,
+                com.telamin.mongoose.service.delivery.DeliveryContext.class,
+                com.telamin.mongoose.service.delivery.DeliveryContext.SERVICE_NAME));
+
         // Self-register the introspection service so consumers can pick it up
         // via @ServiceRegistered regardless of how the server is constructed
         // (programmatic or YAML-driven). The impl reads the composing-agent
@@ -2179,6 +2190,27 @@ public class MongooseServer implements MongooseServerController {
      */
     public int clearOverloadState(String feedName) {
         return flowManager.clearOverloadState(feedName);
+    }
+
+    /**
+     * Whether the named feeds, or every feed when none is named, have settled (docs/design/feed-caught-up.md): each
+     * reporting feed {@code CAUGHT_UP} or {@code END_OF_STREAM} and every subscriber queue dispatched up to the position
+     * it was reported at. Feeds whose source cannot tell are listed as fallback feeds, for the caller's own heuristic.
+     * Admin command {@code feed.status [--json] [feed ...]}.
+     *
+     * @throws IllegalArgumentException naming a feed that is not registered
+     */
+    public com.telamin.mongoose.service.feedstatus.FeedStatusReport feedStatus(String... feedNames) {
+        return flowManager.feedStatus(java.util.Arrays.asList(feedNames));
+    }
+
+    /**
+     * Hold acknowledgement of {@code feedName}'s items on {@code processorGroup}'s queue until the processor's state is
+     * durable (docs/design/feed-delivery.md, section 5); also the {@code ProcessingCheckpointService} service.
+     */
+    public com.telamin.mongoose.service.delivery.ProcessingCheckpoint processingCheckpoint(String feedName,
+                                                                                           String processorGroup) {
+        return flowManager.processingCheckpoint(feedName, processorGroup);
     }
 
     /** Per feed and queue, the overload state (#79). Admin command {@code overload.status}. */

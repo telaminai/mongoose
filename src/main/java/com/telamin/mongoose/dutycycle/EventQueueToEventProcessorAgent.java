@@ -62,6 +62,14 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     private com.telamin.mongoose.dispatch.DropMarks dropMarks;
     /** RECORD mode: the recorder's per-processor copy of each input, taken just before the processor is given it. */
     private java.util.function.BiConsumer<DataFlow, Object> received;
+    /**
+     * Items taken from the queue whose dispatch has finished (handled, or skipped after a failure), shared by the
+     * readers of one queue; with the queue's producer position it tells the host the processors have drained it
+     * (docs/design/feed-caught-up.md). One ordered write per item. Null when built outside the flow manager.
+     */
+    private java.util.concurrent.atomic.AtomicLong dispatched;
+    /** The item being dispatched set a DeliveryContext; cleared once its cycle is done. */
+    private boolean positionEntered;
 
     public EventQueueToEventProcessorAgent(
             OneToOneConcurrentArrayQueue<?> inputQueue,
@@ -111,6 +119,14 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
             // a drop marked after the check above but before this item was offered precedes it: mark it first, so the
             // Dropped entry lands exactly where the items were lost (review of 1d925ee, finding 7)
             if (marking) markDrops(inputQueue.removedCount() - 1);
+            if (event instanceof com.telamin.mongoose.service.feedstatus.FeedStatus && !route.isEmpty()
+                    && !com.telamin.mongoose.service.CallBackType.ON_EVENT_CALL_BACK.name().equals(route)) {
+                // an in-band feed status (docs/design/feed-caught-up.md) reaches onEvent processors only: a typed
+                // callback route cannot take it. Taken and counted, so the host still sees the queue drained
+                processed++;
+                if (dispatched != null) dispatched.lazySet(dispatched.get() + 1);
+                continue;
+            }
             // this queue's reference to a pooled event is held until every processor has been given it (released in
             // the finally below, so a failure that escapes the retry loop cannot leak it)
             PoolTracker<?> tracker = trackerOf(event);
@@ -120,6 +136,14 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                 // item (R3)
                 long seq = -1;
                 java.util.Collection<DataFlow> targets = null;
+                // a positioned item (docs/design/feed-delivery.md, section 5a): its source position is readable by the
+                // processor through DeliveryContext for this item's event cycle, cleared in the finally below
+                if (event instanceof com.telamin.mongoose.dispatch.PositionedItem positioned) {
+                    com.telamin.mongoose.service.delivery.DeliveryContext.enter(sourceName, positioned.sequence(),
+                            positioned.epoch(), positioned.position());
+                    event = positioned.item();
+                    positionEntered = true;
+                }
                 // a journalled feed writes JournalledItems to EVERY queue, including those of groups that do not record:
                 // always unwrap, so every processor receives the bare item (review of #63)
                 boolean journalledItem = event instanceof JournalledItem;
@@ -395,6 +419,10 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                 }
 
             } finally {
+                if (positionEntered) {
+                    positionEntered = false;
+                    com.telamin.mongoose.service.delivery.DeliveryContext.exit();
+                }
                 // After dispatching to all processors, drop this queue's reference: released before dispatch, another
                 // queue's last release could recycle the event while a processor here still read it (#54). In a
                 // finally: a throw out of the retry loop (a backoff, the recorder, failure logging) must not leak it.
@@ -414,6 +442,10 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
 
             // Count it as processed even if dropped to avoid infinite loops
             processed++;
+            if (dispatched != null) {
+                // single writer (the group's thread); ordered, so a host that reads it sees the processors' effects
+                dispatched.lazySet(dispatched.get() + 1);
+            }
         }
         return processed;
     }
@@ -519,6 +551,12 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                     + (unmarked > 0 ? ", plus " + unmarked + " dropped while the drop marks were full" : "") + "): "
                     + reason + "; the processor never received them");
         }
+    }
+
+    /** Count each item this reader finishes dispatching into {@code dispatched} (docs/design/feed-caught-up.md). */
+    public EventQueueToEventProcessorAgent withDispatchedCounter(java.util.concurrent.atomic.AtomicLong dispatched) {
+        this.dispatched = dispatched;
+        return this;
     }
 
     /** RECORD mode: record what this queue dispatches (spec-replay-recording R2). */
@@ -660,6 +698,9 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     private PoolTracker<?> trackerOf(Object event) {
         if (event == null) return null;
         Object candidate = event;
+        if (candidate instanceof com.telamin.mongoose.dispatch.PositionedItem positioned) {
+            candidate = positioned.item();
+        }
         if (candidate instanceof JournalledItem journalled) { // any group: see doWork
             candidate = journalled.item();
         }

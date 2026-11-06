@@ -48,9 +48,33 @@ public class InMemoryEventSource<T> extends AbstractAgentHostedEventSourceServic
      * to wait for the next publish.
      */
     private volatile boolean publishToQueue = false;
+    /**
+     * Items accepted ({@link #offer}, {@link #publishNow}) and items whose publish has returned: the feed is caught up
+     * when they are equal (docs/design/feed-caught-up.md). Accepted is counted before the item is queued and published
+     * after its publish, so the host can only see BEHIND too long, never CAUGHT_UP with an item still on its way. The
+     * host evaluates this when it asks; the source reports no transitions, so it delivers no in-band status.
+     */
+    private final java.util.concurrent.atomic.AtomicLong accepted = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong published = new java.util.concurrent.atomic.AtomicLong();
 
     public InMemoryEventSource() {
         super("inMemoryEventFeed");
+    }
+
+    /** Called by the flow manager as it registers this source, before {@code output} is assigned. */
+    @Override
+    public void setEventToQueuePublisher(EventToQueuePublisher<T> targetQueue) {
+        probeFeedStatus(targetQueue);
+    }
+
+    /**
+     * Unbounded: anyone may offer more at any time. Caught up once the start is complete and nothing accepted is still
+     * waiting to be published.
+     */
+    private void probeFeedStatus(EventToQueuePublisher<?> publisher) {
+        if (publisher != null) {
+            publisher.feedStatusProbe(() -> startComplete.get() && published.get() == accepted.get(), false);
+        }
     }
 
     @Override
@@ -83,6 +107,7 @@ public class InMemoryEventSource<T> extends AbstractAgentHostedEventSourceServic
         if (item == null) {
             return;
         }
+        accepted.incrementAndGet();
         pending.offer(item);
     }
 
@@ -91,10 +116,15 @@ public class InMemoryEventSource<T> extends AbstractAgentHostedEventSourceServic
      */
     public void publishNow(T item) {
         if (item == null) return;
-        if (publishToQueue) {
-            output.publish(item);
-        } else {
-            output.publishOrCache(item);
+        accepted.incrementAndGet();
+        try {
+            if (publishToQueue) {
+                output.publish(item);
+            } else {
+                output.publishOrCache(item);
+            }
+        } finally {
+            published.incrementAndGet();
         }
     }
 
@@ -103,10 +133,14 @@ public class InMemoryEventSource<T> extends AbstractAgentHostedEventSourceServic
         int count = 0;
         T item;
         while ((item = pending.poll()) != null) {
-            if (publishToQueue) {
-                output.publish(item);
-            } else {
-                output.publishOrCache(item);
+            try {
+                if (publishToQueue) {
+                    output.publish(item);
+                } else {
+                    output.publishOrCache(item);
+                }
+            } finally {
+                published.incrementAndGet();
             }
             count++;
         }
@@ -127,5 +161,6 @@ public class InMemoryEventSource<T> extends AbstractAgentHostedEventSourceServic
     // for testing
     void setOutput(EventToQueuePublisher<?> output) {
         this.output = (EventToQueuePublisher<T>) output;
+        probeFeedStatus(output);
     }
 }

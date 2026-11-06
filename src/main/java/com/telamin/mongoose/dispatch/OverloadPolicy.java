@@ -20,7 +20,18 @@ public enum OverloadPolicy {
      * without holding the publish lock, until every queue under this policy has room; then deliver to all of them, or
      * refuse the publish with {@link com.telamin.mongoose.exception.PublishRefusedException} and deliver to none. Only a
      * non-agent thread waits: on an agent thread, or a publish nested inside another, the queue falls back to
-     * {@link #DROP_AFTER_SPIN} with the same spin bound, and the downgrade is counted.
+     * {@link #DROP_AFTER_SPIN} with the same spin bound, and the downgrade is counted. A re-readable source that
+     * publishes with {@link EventToQueuePublisher#tryPublish} pauses instead of downgrading (see {@link #PAUSE}).
      */
-    BLOCK_WITH_DEADLINE
+    BLOCK_WITH_DEADLINE,
+    /**
+     * Never drop, never wait: when a queue under this policy has no room, a re-readable source's
+     * {@link EventToQueuePublisher#tryPublish} commits nothing and returns false; the source keeps the item and its read
+     * position and tries again on its next duty cycle (docs/design/feed-delivery.md). Safe on an agent thread: nothing
+     * blocks, so there is no deadlock and no head-of-line wait on the source's agent. The default for
+     * {@link com.telamin.mongoose.connector.file.FileEventSource} when its feed configures no policy. A plain
+     * {@code publish} (a push source that cannot pause) into such a queue falls back to {@link #DROP_AFTER_SPIN} with
+     * the spin bound; the drop is counted and the fallback counted as a downgrade.
+     */
+    PAUSE
 }
