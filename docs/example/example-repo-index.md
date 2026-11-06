@@ -43,3 +43,11 @@ These examples range from simple "getting started" tutorials to more complex cas
 - [Core Pin]({{example_root}}/how-to/core-pin) - Shows how to pin agent threads to specific CPU cores for optimal performance in latency-sensitive applications.
 - [Writing a Custom Event to Invoke Strategy]({{example_root}}/how-to/writing-a-custom-event-to-invoke-strategy) - Demonstrates how to create custom EventToInvokeStrategy implementations for specialized event handling patterns.
 - [Scheduler processAsNewEventCycle]({{example_root}}/how-to/scheduler-processAsNewEventCycle) - Demonstrates re-entrant publishing with processAsNewEventCycle and SchedulerService.
+
+### Feed delivery (Mongoose 1.1.3)
+
+These examples need Mongoose 1.1.3, which is not released yet. They build only with the root profile
+`-Pmongoose-1.1.3`, against a locally installed 1.1.3-SNAPSHOT.
+
+- [Wait for Feed Caught Up]({{example_root}}/how-to/wait-for-feed-caught-up) - Waits until a file feed has caught up and every line has been processed, with `MongooseServer.feedStatus`, the `feed.status` admin command and the in-graph `FeedStatus` event. See [Wait until a feed has caught up](how-to/how-to-wait-for-feed-caught-up.md).
+- [File Feed At Least Once]({{example_root}}/how-to/file-feed-at-least-once) - Kills a server with SIGKILL part way through a `COMMITED` file feed, restarts it, and shows that no line is lost, and that `DeliveryContext` de-duplication applies each line exactly once. See [Process a file feed at least once](how-to/how-to-file-feed-at-least-once.md) and [De-duplicate re-delivered events](how-to/how-to-deduplicate-with-delivery-context.md).
