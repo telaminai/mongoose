@@ -373,8 +373,16 @@ public class EventToQueuePublisher<T> {
         }
     }
 
-    /** A status the source reported while a commit on this feed was running, reported once it completes. */
-    private record PendingStatus(com.telamin.mongoose.service.feedstatus.FeedState state, boolean bounded, String detail) {
+    /**
+     * A status the source reported while a commit on this feed was running, reported once it completes; or one waiting
+     * for room in a PAUSE queue. {@code startup}: the status reported before the start completed, already recorded as the
+     * feed's status and waiting only to be delivered behind the cached items (review R6).
+     */
+    private record PendingStatus(com.telamin.mongoose.service.feedstatus.FeedState state, boolean bounded, String detail,
+                                 boolean startup) {
+        PendingStatus(com.telamin.mongoose.service.feedstatus.FeedState state, boolean bounded, String detail) {
+            this(state, bounded, detail, false);
+        }
     }
 
     /**
@@ -423,10 +431,15 @@ public class EventToQueuePublisher<T> {
                 && java.util.Objects.equals(last.detail(), detail)) {
             return;
         }
-        if (startComplete && deliverFeedStatus && pauseTargets > 0 && withoutRoom(OverloadSettings::pauses, 0, true) != null) {
-            // a PAUSE queue never drops: the status waits for room, and the host keeps seeing the previous state
-            pausedStatus = new PendingStatus(state, bounded, detail);
-            return;
+        if (startComplete && deliverFeedStatus) {
+            // what was cached goes first, as on a publish: the status claims it was delivered
+            dispatchCachedEventLogSerialised();
+            if (statusMustWait()) {
+                // a PAUSE queue never drops, and a status never overtakes cached items: it waits, and the host keeps
+                // seeing the previous state. A later report replaces it
+                pausedStatus = new PendingStatus(state, bounded, detail);
+                return;
+            }
         }
         pausedStatus = null;
         var status = new com.telamin.mongoose.service.feedstatus.FeedStatus(name, state, sequenceNumber, bounded, detail);
@@ -462,6 +475,27 @@ public class EventToQueuePublisher<T> {
             return;
         }
         statusReportedBeforeStart = false;
+        if (deliverFeedStatus && statusMustWait()) {
+            // the cache replay paused at a full PAUSE queue (or one has no room for the status): the status is delivered
+            // behind the cached items once there is room, never dropped (review R6). Until then the feed is not drained
+            com.telamin.mongoose.service.feedstatus.FeedStatus reported = feedPosition.status();
+            pausedStatus = new PendingStatus(reported.state(), reported.bounded(), reported.detail(), true);
+            return;
+        }
+        deliverStartupStatus();
+    }
+
+    /**
+     * An in-band status cannot be delivered now without dropping or overtaking: cached items wait to be dispatched, or a
+     * PAUSE queue has no room for it. Under the publish lock.
+     */
+    private boolean statusMustWait() {
+        return cacheReadPointer < eventLog.size()
+                || pauseTargets > 0 && withoutRoom(OverloadSettings::pauses, 0, true) != null;
+    }
+
+    /** Deliver the status reported before the start completed, and take its positions again. Under the publish lock. */
+    private void deliverStartupStatus() {
         FeedPosition reported = feedPosition;
         if (deliverFeedStatus) {
             deliverFeedStatusSerialised(reported.status());
@@ -488,7 +522,8 @@ public class EventToQueuePublisher<T> {
     public FeedPosition feedPosition() {
         synchronized (publishLock) {
             java.util.function.BooleanSupplier probe = feedStatusProbe;
-            boolean cachedPending = cacheReadPointer < eventLog.size();
+            // a startup status waiting behind the cache is part of the cached delivery: not drained until it is delivered
+            boolean cachedPending = cacheReadPointer < eventLog.size() || pausedStatus != null && pausedStatus.startup();
             if (probe == null) {
                 FeedPosition reported = feedPosition;
                 return reported.cachedPending() == cachedPending ? reported
@@ -1331,7 +1366,13 @@ public class EventToQueuePublisher<T> {
     private boolean flushPausedStatus() {
         PendingStatus waiting = pausedStatus;
         if (waiting == null) return true;
-        if (withoutRoom(OverloadSettings::pauses, 0, true) != null) return false;
+        if (statusMustWait()) return false;
+        if (waiting.startup()) {
+            // already the feed's status: delivered now, with its positions taken again (review R6)
+            pausedStatus = null;
+            deliverStartupStatus();
+            return true;
+        }
         reportFeedStatusSerialised(waiting.state(), waiting.bounded(), waiting.detail());
         return pausedStatus == null;
     }

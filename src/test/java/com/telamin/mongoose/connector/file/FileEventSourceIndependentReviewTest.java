@@ -176,4 +176,45 @@ class FileEventSourceIndependentReviewTest {
             r.src().stop();
         }
     }
+
+    // ---- R6 ----
+
+    /**
+     * R6: nine cached lines and an eight-slot PAUSE queue. The startup status is neither dropped nor delivered ahead of
+     * the ninth line: it follows it once there is room, and the feed is not drained meanwhile.
+     */
+    @Test
+    void aCachedStartupStatusWaitsBehindTheCacheAndIsNotDropped() throws Exception {
+        Files.writeString(data(), "a\nb\nc\nd\ne\nf\ng\nh\ni\n");
+        EventToQueuePublisher<String> p = new EventToQueuePublisher<>("feed");
+        OneToOneConcurrentArrayQueue<Object> q = new OneToOneConcurrentArrayQueue<>(8);
+        p.addTargetQueue(q, "first");
+        p.setDeliverFeedStatus(true);
+        FileEventSource s = new FileEventSource(8);
+        s.setFilename(data().toString());
+        s.setCacheEventLog(true);
+        s.setOutput(p);
+        try {
+            s.start();
+            s.startComplete();
+            assertEquals(0, p.droppedCount(), "a PAUSE status waits behind cached data");
+            assertTrue(p.feedPosition().cachedPending(), "the cached delivery, with its status, is not complete");
+            List<Object> seen = new ArrayList<>();
+            q.drainTo(seen, 100);
+            for (int i = 0; i < 3; i++) {
+                s.doWork();
+                q.drainTo(seen, 100);
+            }
+            assertEquals(0, p.droppedCount());
+            List<String> lines = seen.stream().filter(o -> !(o instanceof FeedStatus)).map(String::valueOf).toList();
+            assertEquals(List.of("a", "b", "c", "d", "e", "f", "g", "h", "i"), lines);
+            int firstStatus = 0;
+            while (!(seen.get(firstStatus) instanceof FeedStatus)) firstStatus++;
+            assertEquals(9, firstStatus, "the startup status follows every cached line: " + seen);
+            assertEquals(FeedState.CAUGHT_UP, ((FeedStatus) seen.get(seen.size() - 1)).state());
+            assertFalse(p.feedPosition().cachedPending());
+        } finally {
+            s.stop();
+        }
+    }
 }
