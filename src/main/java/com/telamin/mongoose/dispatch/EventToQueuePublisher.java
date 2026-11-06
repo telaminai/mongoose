@@ -316,6 +316,9 @@ public class EventToQueuePublisher<T> {
     /** The highest sequence number acknowledged to the source. */
     @Getter(lombok.AccessLevel.NONE)
     private volatile long acknowledgedSequence;
+    /** Ack points of removed queues retained for their unprocessed items ({@link AckPoint#retained}); under the lock. */
+    @Getter(lombok.AccessLevel.NONE)
+    private int retainedAckPoints;
     /** Bindings whose policy is PAUSE; guarded by the publish lock. */
     @Getter(lombok.AccessLevel.NONE)
     private int pauseTargets;
@@ -353,6 +356,13 @@ public class EventToQueuePublisher<T> {
     private static final class AckPoint {
         volatile java.util.function.LongSupplier processed;
         volatile java.util.function.BooleanSupplier unavailable = () -> false;
+        /**
+         * The queue was removed from the feed while acknowledgement entries still wait for it to process items it was
+         * given (review 2, findings 2 and 3): the point is retained, still reading what its readers counted, so those
+         * items are never acknowledged on another consumer's progress. Dropped once no entry waits for it. Guarded by
+         * the publish lock.
+         */
+        boolean retained;
 
         AckPoint(java.util.function.LongSupplier processed) {
             this.processed = processed;
@@ -547,7 +557,12 @@ public class EventToQueuePublisher<T> {
                         pauseTargets++;
                     }
                     // until a reader binds its dispatched count, a queue is judged by its consumer position
-                    ackPoints.computeIfAbsent(targetQueue, q -> new AckPoint(q::removedCount));
+                    AckPoint point = ackPoints.computeIfAbsent(targetQueue, q -> new AckPoint(q::removedCount));
+                    if (point.retained) {
+                        // a removed queue back on the feed: a live consumer again
+                        point.retained = false;
+                        retainedAckPoints--;
+                    }
                     rebuildAckQueues();
                 }
             }
@@ -1223,13 +1238,13 @@ public class EventToQueuePublisher<T> {
                 return unavailable + ": the source holds its position" + (pending > 0 ? " (" + pending
                         + " item(s) unacknowledged)" : "");
             }
-            if (pendingAcks.headDispatched()) {
+            if (retainedAckPoints > 0 && pendingAcks.headDispatched()) {
                 for (OneToOneConcurrentArrayQueue<?> q : pendingAcks.headQueues()) {
                     AckPoint point = ackPoints.get(q);
-                    if (point != null && targetQueues.stream().noneMatch(t -> t.targetQueue() == q)
-                            && point.processed.getAsLong() < countFor(q)) {
-                        return "a removed consumer left unprocessed items: the pointer stays before them until a "
-                                + "restart re-delivers them";
+                    if (point != null && point.retained && point.processed.getAsLong() < countFor(q)) {
+                        int pending = pendingAcks.size();
+                        return "a removed consumer left unprocessed items: the source holds its position before them "
+                                + "until a restart re-delivers them (" + pending + " item(s) unacknowledged)";
                     }
                 }
             }
@@ -1370,6 +1385,7 @@ public class EventToQueuePublisher<T> {
                     n++;
                     pendingAcks.removeHead();
                 }
+                if (n > 0 && retainedAckPoints > 0) dropRetainedAckPointsNoLongerWaitedFor();
             }
             if (n == 0) {
                 return 0;
@@ -1384,6 +1400,40 @@ public class EventToQueuePublisher<T> {
                 java.util.Arrays.fill(ackOutPos, 0, n, null);
             }
             return n;
+        }
+    }
+
+    /** Drop or retain the ack point of each queue no target uses any more. Under the publish lock. */
+    private void retainOrDropRemovedAckPoints() {
+        for (var it = ackPoints.entrySet().iterator(); it.hasNext(); ) {
+            var e = it.next();
+            OneToOneConcurrentArrayQueue<Object> q = e.getKey();
+            if (targetQueues.stream().anyMatch(t -> t.targetQueue() == q)) continue;
+            AckPoint point = e.getValue();
+            if (committer != null && pendingAcks != null && pendingAcks.waitsFor(q, point.processed.getAsLong())) {
+                // a positioned feed: what this consumer was given and did not process must not be acknowledged on
+                // another consumer's progress (whatever removed it: quarantine, deregistration, a restart, an
+                // unsubscribe); the point is retained until no entry waits for it
+                if (!point.retained) {
+                    point.retained = true;
+                    retainedAckPoints++;
+                }
+            } else {
+                if (point.retained) retainedAckPoints--;
+                it.remove();
+            }
+        }
+    }
+
+    /** After acknowledgements moved the window: drop a retained point no entry waits for any more. Under the lock. */
+    private void dropRetainedAckPointsNoLongerWaitedFor() {
+        for (var it = ackPoints.entrySet().iterator(); it.hasNext(); ) {
+            var e = it.next();
+            AckPoint point = e.getValue();
+            if (point.retained && !pendingAcks.waitsFor(e.getKey(), point.processed.getAsLong())) {
+                retainedAckPoints--;
+                it.remove();
+            }
         }
     }
 
@@ -2406,12 +2456,11 @@ public class EventToQueuePublisher<T> {
             wakeWaiters();
             synchronized (publishLock) {
                 targetQueues.removeIf(q -> queueName.equals(q.name()));
-                // a queue no binding uses any more no longer holds acknowledgement back
-                // ... except the last consumer of a positioned feed: what it did not process must not be committed
-                // (review F2); its point stays, frozen at what it processed, and holds those items until a restart
-                if (committer == null || !targetQueues.isEmpty()) {
-                    ackPoints.keySet().removeIf(q -> targetQueues.stream().noneMatch(t -> t.targetQueue() == q));
-                }
+                // a queue no binding uses any more no longer holds acknowledgement back, unless it is a consumer of a
+                // positioned feed with items it was given and did not process: its point is retained, and holds those
+                // items in this run, whether or not other consumers remain (review F2; review 2, findings 2 and 3).
+                // Only points of removed queues are touched: a retained point of an earlier removal is never erased
+                retainOrDropRemovedAckPoints();
                 rebuildAckQueues();
                 queueDrops.entrySet().removeIf(e -> {
                     if (!queueName.equals(e.getKey().name())) {

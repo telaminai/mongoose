@@ -146,6 +146,23 @@ final class PendingAcknowledgements {
         return after[head];
     }
 
+    /**
+     * Whether a dispatched entry still waits for {@code queue} to process beyond {@code processed}: its condition for
+     * that queue is greater. O(window); used only when a consumer is removed and while a removed one is retained.
+     */
+    boolean waitsFor(OneToOneConcurrentArrayQueue<?> queue, long processed) {
+        for (int k = 0; k < undispatchedFrom; k++) {
+            int i = index(k);
+            OneToOneConcurrentArrayQueue<?>[] q = queues[i];
+            if (q == null) continue;
+            long[] c = after[i];
+            for (int j = 0; j < q.length; j++) {
+                if (q[j] == queue && c[j] > processed) return true;
+            }
+        }
+        return false;
+    }
+
     void removeHead() {
         positions[head] = null;
         queues[head] = null;

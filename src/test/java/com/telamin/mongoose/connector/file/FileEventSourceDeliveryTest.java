@@ -201,9 +201,12 @@ class FileEventSourceDeliveryTest {
         src.stop();
     }
 
-    /** A subscriber removed (unsubscribed) no longer holds the pointer back. */
+    /**
+     * A subscriber removed (unsubscribed) holds the pointer back only for what it was given and did not process (review
+     * 2, finding 2): here it processed 3 of 5, the other subscriber all 5.
+     */
     @Test
-    void aRemovedSubscriberNoLongerHoldsThePointerBack() throws Exception {
+    void aRemovedSubscriberHoldsThePointerOnlyForWhatItDidNotProcess() throws Exception {
         write(1, 5);
         OneToOneConcurrentArrayQueue<Object> stays = new OneToOneConcurrentArrayQueue<>(256);
         OneToOneConcurrentArrayQueue<Object> leaves = new OneToOneConcurrentArrayQueue<>(256);
@@ -217,11 +220,13 @@ class FileEventSourceDeliveryTest {
         start(src);
         src.doWork();
         dStays.set(5);
+        dLeaves.set(3);
         src.doWork();
-        assertEquals(0, pointerOnDisk());
+        assertEquals(offsetAfter(3), pointerOnDisk());
         publisher.removeTargetQueueByName("leaves");
         src.doWork();
-        assertEquals(offsetAfter(5), pointerOnDisk());
+        assertEquals(offsetAfter(3), pointerOnDisk(), "its 2 unprocessed lines are not committed on the other's progress");
+        assertNotNull(publisher.stallReason());
         src.stop();
     }
 
