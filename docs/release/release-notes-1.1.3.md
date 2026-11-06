@@ -1,8 +1,20 @@
-# Mongoose 1.1.3 (unreleased)
+# Mongoose 1.1.3
 
-This release adds a caught-up signal for feeds and makes file feeds lossless. It is not published yet: the
-features below are on the `feature/feed-caught-up` branch, and this page describes that branch. Dependencies are
-unchanged from 1.1.2.
+Release date: 2026-11-06. Source: PR #98, merged at `f0ca638`, feature head `4741b47`.
+The release tag `v1.1.3` identifies the qualified source and final release metadata.
+Dependencies are unchanged from 1.1.2.
+
+Read before upgrading:
+
+- **File feeds now default to PAUSE**, so a full queue slows the source instead of dropping lines.
+- **Outputs are at-least-once after a crash.** With mongoose-plugins 1.1.2, `PersistentNode` state is
+  exactly-once across positioned redelivery in supported generated/interpreted processors. This does not make
+  external outputs transactional. Handwritten adapters that retry partial mutations are unsupported; use a
+  supported processor and restart after quarantine. `JsonFileCache` survives process kills, not guaranteed power loss.
+- **Voluntary unsubscribe with outstanding work holds the pointer until restart.** Operator release through
+  `delivery.release` is follow-up work.
+- **Recordings from pre-release builds without delivery metadata replay without context.** Re-record streams
+  whose processors depend on `DeliveryContext`.
 
 - **Know when a run has processed everything.** The `feed.status` admin command and `MongooseServer.feedStatus(...)`
   report, per feed, `UNKNOWN`, `BEHIND`, `CAUGHT_UP` or `END_OF_STREAM`, whether the processors have drained it, and
