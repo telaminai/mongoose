@@ -10,15 +10,15 @@ From Mongoose 1.1.3 a processor can tell a re-delivery from a new line. For each
 after a restart skip any item at or before it. Each line's effect on your state is then applied exactly once, however
 far the source's own pointer lags. This is the pattern Kafka applications use when they store offsets with their state.
 
-The design is in [Feed delivery guarantees (design), section 5a](../../design/feed-delivery.md).
+The design is in [Feed delivery guarantees (design), sections 5a and 5b](../../design/feed-delivery.md).
 
 ## Sample code
 
 - Complete how-to example: [File feed at least once]({{example_root}}/how-to/file-feed-at-least-once). Its
   `LedgerProcessor` keeps a running total, and the example kills and restarts the server with and without the guard.
 - Tests in the Mongoose repository: `FeedDeliveryKillTest` (a real `kill -9`: without the guard the state counts
-  5,005 lines for 5,000; with it, exactly 5,000) and `FeedDeliveryReplayContextTest` (the delivery is recorded and
-  replayed).
+  5,005 lines for 5,000; with it, exactly 5,000), `FeedDeliveryReplayContextTest` (the delivery is recorded and
+  replayed), `DeliveryCompletionTest` and `DeliveryCompletionServerTest` (the delivery-complete hook).
 
 ## The API
 
@@ -97,13 +97,71 @@ void write(Path file) throws IOException {
 }
 ```
 
+This processor saves in its handler, which is right for it: it never sends itself another event. A processor that
+does (a handler or a sink calling `onEvent`) should save at delivery completion instead, below.
+
+## Save at delivery completion (recommended)
+
+A handler, or a sink it publishes to, may send the processor another event with `onEvent` while it handles a line. A
+generated processor queues that event and runs it after the current cycle's `@AfterEvent`, as a second cycle under the
+same delivery. A save in the first cycle's handler or `@AfterEvent` then stores the line's position before the queued
+event has run:
+
+- the queued event runs under a position already saved, so a guard skips it as a replay, and it is lost;
+- and if it is applied anyway, a crash after the first save skips the re-delivered line, so nothing queues the event
+  again: its effect is lost after the restart.
+
+`DeliveryContext.onComplete(Runnable)` runs a callback when the delivery is complete. Register the save there:
+
+```java
+private final Runnable save = this::save;   // one instance: registering it again in the same delivery is a no-op
+
+@AfterEvent
+public void afterEvent() {
+    if (!DeliveryContext.onComplete(save)) {
+        save();   // no positioned delivery (a timer, another feed): save now, as before
+    }
+}
+
+private void save() {
+    Delivery d = DeliveryContext.current();   // still set in the callback
+    if (d != null) {
+        epoch = d.epoch();
+        position = d.positionAsLong();
+    }
+    new LedgerState(applied, total, epoch, position).write(stateFile);   // state + position, atomically
+}
+```
+
+The guarantees:
+
+- **After all the work of the delivery.** The callbacks run once the processors of the queue have handled the line,
+  including every event the line queued reentrantly, on the processor group's thread, with `DeliveryContext` still set.
+- **Before the feed can commit the line.** The line counts as processed only after its callbacks return, so the source
+  cannot acknowledge or commit it before the save. A crash before the callback leaves nothing of the line saved and the
+  line uncommitted: the restart re-delivers it and the whole delivery, queued events included, is applied again. A
+  crash after it skips the re-delivered line, and the saved state already holds all of it.
+- **Once per callback, in order.** Callbacks run in registration order; registering the same instance again while it is
+  pending does nothing, so a node can register in every cycle of the delivery.
+- **Only for positioned deliveries.** `onComplete` returns false, and keeps nothing, when the calling thread is not
+  handling an item with a source position (a timer, another feed, a service callback): do the work yourself then.
+- **Failures.** If a processor's dispatch throws, the callbacks it registered are discarded and a retry registers them
+  again; `DeliveryContext.attempt()` tells a retry (the count grew) from a queued event (the same count). A callback
+  that throws is retried alone, under the processor group's retry policy, with the line still uncommitted; if the policy
+  gives up, the error is reported and the line is committed, like any line a failure policy has decided on.
+- **Replay.** A replay runs each replayed input's callbacks the same way, inside the input's replay.
+
+The mongoose-plugins `PersistentNode` (svc-cache) does this for you from Mongoose 1.1.3.
+
 The rules:
 
 1. **Save the position with the state, in one atomic write.** Keep `(epoch, position)` per feed you consume, in the
    same record as the state it produced. Write it atomically: a temporary file and an `ATOMIC_MOVE`, a database
    transaction, or an append to a log with a checksum per record.
-2. **Read the position in the cycle that changes the state.** In the handler, or in the `@AfterEvent` that saves. If
-   `DeliveryContext.current()` is null, save the state and leave the stored position unchanged. Key positions by
+2. **Save when the delivery is complete.** In a `DeliveryContext.onComplete` callback (recommended, and required if
+   the processor sends itself events while handling a line), or, for a processor that never does, in the handler or
+   the `@AfterEvent` that saves. If `DeliveryContext.current()` is null, save the state and leave the stored position
+   unchanged. Key positions by
    `Delivery.feed()` if the processor consumes more than one positioned feed.
 3. **Check before every change and every output.** Call `alreadyApplied` before the first mutation and the first
    output for the event, and skip the event if it is true.
@@ -128,7 +186,7 @@ Do not use `sequence()` for this. It restarts at 1 with every run.
 
 ## Outputs
 
-The order inside an event cycle is: outputs, then the state save. A kill between the two re-applies nothing (the state
+The order of a delivery is: outputs, then the state save. A kill between the two re-applies nothing (the state
 does not contain the line, so the line is applied once, after the restart) but repeats that line's outputs. So the
 guard gives at most one duplicated output per crash. For exactly-once outputs too, either:
 

@@ -6,7 +6,9 @@ review of 9567d6d (R1 to R6, section 11). Scope: `EventToQueuePublisher`, `Event
 (`OverloadPolicy`, `OverloadSettings`, `OverloadPolicyConfig`), `FeedStatusReport` / `feed.status`, a new package
 `service.delivery`, and the final commit step of the ordered shutdown (`LifecycleManager`). No change to Fluxtion,
 generated processors or the plugins. The replay recording gains the delivery of each positioned input (section 8a): a
-`delivery` component on `ReplayEntry.Indexed` and `Inline`, and a `DELIVERY` line kind in `CsvReplayStore`.
+`delivery` component on `ReplayEntry.Indexed` and `Inline`, and a `DELIVERY` line kind in `CsvReplayStore`. A
+delivery-complete hook (section 5b, `DeliveryContext.onComplete`) runs callbacks once a positioned item's delivery,
+including the events it queued reentrantly, is complete and before the item counts as dispatched.
 
 Each item is marked **implemented** or **proposed** (follow-up).
 
@@ -344,9 +346,11 @@ DeliveryContext.currentPosition();  // the position only, no allocation
    to a log with a checksum per record): a `kill -9` during an in-place rewrite would otherwise leave a torn file.
    If several nodes share one file, each node's entry carries its own position; a single whole-file write per event is
    simplest.
-2. **When to read the position.** In the `@AfterEvent` that saves the state, read `DeliveryContext.current()`; if it
-   is null (an event with no source position: a timer, a service callback) save the state and leave
-   `lastAppliedPosition` unchanged. Otherwise store `d.epoch()` and `d.position()`. Key both by `Delivery.feed()`.
+2. **When to save.** At delivery completion: register the save with `DeliveryContext.onComplete` (section 5b) and,
+   in it, read `DeliveryContext.current()` and store `d.epoch()` and `d.position()`, keyed by `Delivery.feed()`. If
+   `onComplete` returns false (an event with no source position: a timer, a service callback) save the state at once
+   and leave `lastAppliedPosition` unchanged. Saving in the `@AfterEvent` of the first cycle is correct only for a
+   processor that never sends itself an event while handling a delivery (section 5b says why).
 3. **Skip a re-delivery before applying it.** In each handler that changes state (or in one guard checked by all
    handlers of the node, before any mutation): `Delivery d = DeliveryContext.current(); if (d != null &&
    d.alreadyApplied(lastAppliedEpoch.get(d.feed()), lastAppliedPosition.get(d.feed()))) return false;` (no change, no
@@ -358,7 +362,7 @@ DeliveryContext.currentPosition();  // the position only, no allocation
    only if the persistent node is the one that decides. If a non-persistent node emits outputs for a re-delivered
    event, those outputs are duplicated; give it the same guard (it can read the persistent node's
    `lastAppliedPosition`) if its outputs must not repeat.
-6. **Outputs (sinks).** The order inside an event cycle is: outputs, then state save. A kill between them re-applies
+6. **Outputs (sinks).** The order of a delivery is: outputs, then state save. A kill between them re-applies
    nothing (the state does not contain the line, so the line is applied once, after the restart) but repeats that
    line's outputs: at most the outputs of one line per crash. For exactly-once outputs too, write outputs keyed by
    `(feed, position)` and let the sink drop a key it has already written, or write the outputs into the same atomic
@@ -370,6 +374,80 @@ DeliveryContext.currentPosition();  // the position only, no allocation
 Verified by `FeedDeliveryKillTest` (a separate JVM killed with SIGKILL mid-burst, a processor that saves
 `applied count + position` atomically after every line): without the guard the restart applies the lines of the commit
 lag twice (state count 5,005 for 5,000 lines in one run); with it, exactly 5,000, every line in the output.
+
+## 5b. Delivery complete: saving state once per delivery (implemented)
+
+**Problem** (mongoose-plugins `PersistentNode`, review finding F1). A handler, or a sink it publishes to, may send the
+processor another event (`onEvent`, `EventDispatcher.queueReentrantEvent`) while it handles a positioned item. A
+generated processor queues that event and runs it after the current cycle's `@AfterEvent`, as a second cycle under the
+same `DeliveryContext`. A node that saves `(state, position)` in the first cycle's `@AfterEvent` has stored the item's
+position before the queued event ran: its guard then skips the queued event as already applied; and applying it does
+not help, because a crash after the first save makes the restart skip the re-delivered item, so nothing queues the
+event again. Neither Fluxtion nor the node knows when the delivery as a whole is done; the reader does.
+
+**API.** `DeliveryContext.onComplete(Runnable)` (and `whenComplete` on the injected instance) registers a callback
+for the current positioned delivery. The reader (`EventQueueToEventProcessorAgent`) runs the callbacks after the
+dispatch of the item to the queue's processors returns, on the processor group's thread, with `DeliveryContext` still
+entered, then advances the queue's `dispatched` counter:
+
+```
+dispatch item to the queue's processors (each drains its reentrant events)
+  -> completion callbacks, in registration order          (DeliveryContext still entered)
+  -> recorder.afterDispatch (RECORD)
+  -> DeliveryContext.exit
+  -> dispatched[q] += 1                                    (only now can the source acknowledge and commit it)
+```
+
+**Ordering guarantee.** Callbacks run after all the reentrantly queued work of the delivery (everything the processors
+ran synchronously within their dispatch of the item on this thread), and before the feed can acknowledge or commit the
+item. Work the delivery publishes to another feed, queue or processor group is not part of it.
+
+**Rules.**
+
+- *Registration outside a delivery*: when the calling thread is handling no item with a source position
+  (`DeliveryContext.current()` null: another feed, a timer, a service callback, a processor driven without a Mongoose
+  reader) `onComplete` keeps nothing, runs nothing and returns **false**; the caller does its work itself. Chosen over
+  running at once (inside a handler, before `@AfterEvent`, which would save half a cycle) and over throwing (a node
+  should not need to know which feed delivered the event).
+- *Non-positioned items*: have no completion; nothing changes for them.
+- *Re-registration*: the same instance, while pending, is kept once (a node may register on every cycle of the
+  delivery); distinct callbacks run in registration order; a callback registered by a running callback runs in the
+  same pass. At most 65,536 registrations per delivery (`MAX_COMPLETIONS_PER_DELIVERY`), so a callback that registers
+  itself fails instead of spinning.
+- *A failed dispatch*: the callbacks the failing processor registered, and any registered with no current processor,
+  are discarded (all of them when the failing processor is not known); a retry registers them again. Callbacks of the
+  processors that handled the item are kept and run (with #53 they are not given the item again). A processor whose
+  retries are exhausted runs none; a generated processor quarantined for the failure runs none. A delivery that ends
+  without completing (the group ends, `exit()`) runs none. `DeliveryContext.attempt()` counts the failed attempts of
+  the item, so a node can tell a retry of a cycle it completed (the count grew: its effect is in memory) from a further
+  cycle of the same attempt (a queued event: new work).
+- *A callback that throws*: retried alone under the reader's `RetryPolicy`, the processors never given the item again
+  (their cycles completed), the item **not** counted as dispatched meanwhile, so not acknowledged. When the policy gives
+  up the failure is reported (ERROR), the callback skipped, the callbacks after it run, and the item counts as
+  dispatched: the same rule as any failed item (section 3, *A failed item*). Holding the item instead would stall the
+  feed for good on one failing save.
+- *Several queues* (a broadcast feed, several groups): each queue's reader completes its own delivery of the item on
+  its own thread, with the callbacks registered there; the source acknowledges the item when every queue has counted
+  it (section 3), so after every group's callbacks.
+- *Record and replay* (R2, R3): the callbacks run before `afterDispatch`, so anything they read through a recording
+  clock belongs to the input's entry. `GroupReplayer` runs a replayed input's callbacks inside the input's replay,
+  after `replayTo` and before the delivery is cleared, so a replay makes the same saves at the same point; no retry
+  in a replay (a live retry is a failure, marked and not reproduced, D4), and a callback that throws stops that
+  processor's replay with the reason. An input replayed without a recorded delivery has no completion, as it had none
+  live.
+- *ProcessingCheckpoint*: a `mark()` taken in a callback does not cover the item being completed (it is not dispatched
+  yet), as for a mark taken in a handler (section 5).
+
+**Cost.** Nothing for an item without a position; for a positioned item one thread-local read when nothing is
+registered, and a reused `ArrayDeque` with one small record per registration.
+
+**PersistentNode** (mongoose-plugins svc-cache) uses it from 1.1.3, found through method handles: its `@AfterEvent`
+registers one callback per delivery and the callback writes state and position once; a queued event is applied; a crash
+before the callback leaves nothing of the delivery saved and the item uncommitted, so the restart re-applies the whole
+delivery. Tests: `DeliveryCompletionTest` (agent level: ordering against reentrant work and the `dispatched` counter,
+order and de-duplication, no position, failure discard and retry, exhausted retries, a throwing callback retried and
+skipped, two queues, `exit` discards) and `DeliveryCompletionServerTest` (on a server: after the queued event and before
+the feed acknowledges the line; indexed and inline recordings replay the callbacks where they ran live).
 
 ## 5. Processing checkpoints: commit never ahead of durable state (implemented)
 
@@ -657,7 +735,8 @@ And `setPauseByDefault(true)` in `setEventFlowManager` if PAUSE should be its de
 - Replay format: `ReplayEntry.Indexed` and `Inline` gain a `delivery` component (the earlier constructors remain, with
   no delivery); `CsvReplayStore` writes a `DELIVERY` line before a positioned input, which an earlier reader refuses
   (section 8a). Recordings of feeds without positions are unchanged.
-- New `DeliveryContext` / `Delivery` (registered as `mongoose.deliveryContext`).
+- New `DeliveryContext` / `Delivery` (registered as `mongoose.deliveryContext`), with the delivery-complete hook
+  `onComplete` / `whenComplete` / `attempt()` (section 5b).
 - Push sources and every existing publish path are unchanged.
 
 ## 11. Tests (implemented)
@@ -707,6 +786,10 @@ And `setPauseByDefault(true)` in `setEventFlowManager` if PAUSE should be its de
   `aV112PointerBetweenCrAndLfResumesAfterTheTerminator`; `ProcessingCheckpointSharedQueueTest`
   `aRepeatedDeregistrationDoesNotUnbindTheOtherBindingOfTheQueue` (item 3); `FeedDeliveryStopOrderTest` (item 5);
   `FileEventSourceFeedStatusTest.aOnceReadLastLineEndedByALoneCrIsPublished` (item 6).
+
+- Delivery-complete hook (section 5b): `dutycycle/DeliveryCompletionTest` (9) and
+  `service/delivery/DeliveryCompletionServerTest` (3). With the API but not the reader and replayer change, 11 of the 12
+  failed on the missing completion; the twelfth failed on an expectation error in the test, since corrected.
 
 - `service/delivery/FeedDeliveryKillTest` (2): a real crash. The server runs in a separate JVM
   (`KillChildServer`: COMMITED file feed, default PAUSE, a processor that appends each line to an unbuffered output and

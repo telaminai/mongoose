@@ -15,6 +15,8 @@ unchanged from 1.1.2.
   file feeds. See [Configuring overload and loss](../guide/overload-configuration.md).
 - **`DeliveryContext`.** A processor can read each item's feed, sequence, epoch and source position, store the position
   with its state, and skip re-delivered items (`Delivery.alreadyApplied`). Recordings carry it.
+  `DeliveryContext.onComplete(Runnable)` runs a callback once the delivery is complete, after the events it queued
+  reentrantly and before the feed can commit it: the recommended place to save state with the position.
   See [De-duplicate re-delivered events](../example/how-to/how-to-deduplicate-with-delivery-context.md).
 - **`ProcessingCheckpoint`.** A processor that saves state asynchronously or in batches can hold commits until its
   state is durable.
@@ -62,7 +64,8 @@ Read these before upgrading a deployment that uses file feeds.
   (registered by `MongooseServerAdmin`).
 - `FeedState`, `FeedStatus`; `EventFeedConfig.feedStatusEvents` (YAML `feedStatusEvents: true`), off by default.
 - `OverloadPolicy.PAUSE`, `OverloadPolicyConfig.pause()`; YAML `overload.policy: PAUSE`.
-- `DeliveryContext` and `Delivery` (service `mongoose.deliveryContext`).
+- `DeliveryContext` and `Delivery` (service `mongoose.deliveryContext`); `DeliveryContext.onComplete`,
+  `whenComplete` and `attempt()`.
 - `ProcessingCheckpointService` (service `mongoose.processingCheckpoints`), `ProcessingCheckpoint`,
   `MongooseServer.processingCheckpoint(feed, group)`.
 - For source authors: `EventToQueuePublisher.tryPublish(item, position)`, `acknowledgeWith`, `pollAcknowledgements`,
