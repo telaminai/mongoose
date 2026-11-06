@@ -16,8 +16,11 @@ import static org.junit.jupiter.api.Assertions.*;
 class IndependentFinalSeamTest {
     static void awaitPark(Thread thread) throws InterruptedException {
         long end=System.nanoTime()+TimeUnit.SECONDS.toNanos(3);
-        while(thread.getState()!=Thread.State.TIMED_WAITING && System.nanoTime()<end)Thread.sleep(1);
-        assertEquals(Thread.State.TIMED_WAITING,thread.getState());
+        // the sender parks in short timed waits between spins, so its state can flip back to RUNNABLE between a
+        // check and a second read: assert what the loop saw, not a fresh read
+        Thread.State seen=thread.getState();
+        while(seen!=Thread.State.TIMED_WAITING && System.nanoTime()<end){Thread.sleep(1);seen=thread.getState();}
+        assertEquals(Thread.State.TIMED_WAITING,seen);
     }
     @Test void newlyAddedDeadTargetMustBeCheckedBeforeWaitingPublishCommits() throws Exception {
         var publisher=new EventToQueuePublisher<Object>("feed");
