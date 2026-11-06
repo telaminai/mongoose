@@ -413,14 +413,16 @@ public final class LifecycleManager {
             }
             progress.drained = true;
         }
-        // the feeds stopped before the groups drained: commit what the groups have finished since (feed-delivery.md 4)
-        if (flowManager != null) flowManager.commitProcessedAfterStop();
+        // the feeds stopped before the groups drained: commit what the groups have finished since (feed-delivery.md 4).
+        // Only once every source has stopped: a committer may be called after its source's stop, never during it
+        // (SourceCommitter.commitsAfterStop; review 3, item 5)
+        if (flowManager != null && progress.feedsStopped) flowManager.commitProcessedAfterStop();
 
         // 4. close processor groups, each from a tracked helper, joined with the deadline
         log.info("stopping event processor agents");
         java.util.List<String> running = closeAll("event processor agent", "processor:", composingEventProcessorAgents, deadline);
         // and once more when they have closed (or what closed of them): nothing processed is left uncommitted
-        if (flowManager != null) flowManager.commitProcessedAfterStop();
+        if (flowManager != null && progress.feedsStopped) flowManager.commitProcessedAfterStop();
         if (!running.isEmpty()) {
             java.util.List<String> services = servicesNotStopped(registeredServices);
             log.warning("stop incomplete: processor group(s) " + running + " did not close within the shutdown deadline;"
@@ -439,6 +441,8 @@ public final class LifecycleManager {
             if (sources == null || join(sources, deadline)) {
                 progress.helpers.remove("feeds:stop");
                 if (running.isEmpty()) progress.feedsStopped = true;
+                // the sources have stopped late, after the processor groups closed: their final commit now
+                if (flowManager != null) flowManager.commitProcessedAfterStop();
             } else {
                 running.add("<event sources stopping>");
             }
