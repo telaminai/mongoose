@@ -1,15 +1,15 @@
 # Feed delivery guarantees: commit after processing, PAUSE, honest status
 
-Status: implemented on `feature/feed-caught-up`, on top of the feed caught-up work ([feed-caught-up.md](feed-caught-up.md)).
-Uncommitted. Scope: `EventToQueuePublisher`, `EventFlowManager`, `FileEventSource`, the overload policy
+Status: implemented and committed on `feature/feed-caught-up` (not yet merged), on top of the feed caught-up work
+([feed-caught-up.md](feed-caught-up.md)), including the fixes of the second independent review (section 11). Scope: `EventToQueuePublisher`, `EventFlowManager`, `FileEventSource`, the overload policy
 (`OverloadPolicy`, `OverloadSettings`, `OverloadPolicyConfig`), `FeedStatusReport` / `feed.status`, a new package
-`service.delivery`. No change to Fluxtion, generated processors, the plugins, or the replay format.
+`service.delivery`, and the final commit step of the ordered shutdown (`LifecycleManager`). No change to Fluxtion, generated processors, the plugins, or the replay format.
 
 Each item is marked **implemented** or **proposed** (follow-up).
 
 ## 1. Problem: measured
 
-A kill test on a real server (a Fluxtion gym processor on this branch, a `COMMITED` file feed, a file sink, state saved
+A kill test on a real server (an example stateful processor on this branch, a `COMMITED` file feed, a file sink, state saved
 after every event; `kill -9`, restart, compare alerts with a clean run) showed:
 
 1. Kills between events (the queue empty at the kill): lossless, 4/4 identical.
@@ -111,19 +111,33 @@ state and need a handoff queue back to the source; rejected.
 **Edges (implemented, each tested or argued):**
 
 - *Several subscriber queues*: the commit follows the slowest (`thePointerFollowsTheSlowestOfSeveralSubscriberQueues`).
-- *A queue removed while other consumers remain* (unsubscribe): no longer holds acknowledgement back; its unprocessed
-  items were withdrawn by the unsubscribe (`aRemovedSubscriberNoLongerHoldsThePointerBack`).
-- *The last consumer of a positioned feed removed* (an unsubscribe, or a quarantine deregistering the only processor,
-  review F2): its acknowledgement point is **kept**, frozen at what it processed, so the items it left unprocessed are
-  never acknowledged in this run (a restart re-delivers them), and the source **pauses**: with no live consumer it
-  reads nothing and commits nothing (`theLastSubscriberGoneStopsReadingAndCommitting`). A later subscriber resumes
-  reading, but the pointer stays before the removed consumer's items; `feed.status` reports the feed stalled
-  (section 7; `PositionedFeedStallTest`). Before this fix the source read on and committed the rest of the file
-  unprocessed.
+- *A consumer removed from a positioned feed*, for any reason: a quarantine or deregistration of its processor, a group
+  restart (the restarted group subscribes a new queue), or a voluntary unsubscribe. Mongoose cannot tell a deliberate
+  unsubscribe from a failure, so the rule is the same for all, and it is the safe one: **what the removed queue was
+  given and did not process is never acknowledged in this run**. Its acknowledgement point is *retained* (marked
+  explicitly, still reading what its reader counted) for as long as an entry of the window waits for it, then dropped;
+  a later removal of another queue never touches it (review 2, findings 2 and 3; before, removing one of several
+  consumers acknowledged its backlog on the others' progress, and any later unsubscribe erased a retained point).
+  A consumer that had processed everything it was given leaves nothing behind and holds nothing.
+  - *Other consumers remain*: they go on being fed; the pointer stays before the removed consumer's first unprocessed
+    item, the window grows behind it until its cap (below) pauses the source, and `feed.status` reports the feed
+    `stalled` with the reason `a removed consumer left unprocessed items` (section 7). A restart re-delivers from the
+    pointer to every consumer: duplicates for the consumers that had processed those items, which section 5a absorbs
+    (`removingOneOfTwoConsumersDoesNotCommitItsBacklog`, `aRemovedSubscriberHoldsThePointerOnlyForWhatItDidNotProcess`).
+  - *It was the last consumer* (review F2): the source also **pauses**: with no live consumer it reads nothing and
+    commits nothing (`theLastSubscriberGoneStopsReadingAndCommitting`). A later subscriber resumes reading, but the
+    pointer stays before the removed consumer's items (`theHeldPointOfARemovedLastConsumerSurvivesALaterUnsubscribe`,
+    `PositionedFeedStallTest`).
+  - *Liveness trade-off*: a feed held this way does not complete in this run; it reports `stalled` with its reason and
+    is not `settled`, so a launcher times out with the reason instead of declaring an incomplete run complete. An
+    operator command to release a removed consumer's hold, accepting the loss of its backlog, is open question 1.
 - *A queue whose group is fenced (quarantine in progress) or dead* (review F1): **holds** acknowledgement, and a
   positioned feed pauses while any of its consumers is fenced or dead: nothing reaches a fenced queue, nothing of its
   backlog is committed, and reading resumes when the fence lifts (`aTransientFenceHoldsThePointer`). Before this fix a
-  momentary fence acknowledged the fenced queue's whole backlog. A feed without positions keeps the containment rule
+  momentary fence acknowledged the fenced queue's whole backlog. A **dead** group never lifts its fence, so a positioned
+  feed with a dead consumer stalls feed-wide (every consumer of the feed stops receiving) until the group is removed
+  (then the rule above applies) or the server restarts: a deliberate liveness trade-off for "never commit what was not
+  processed", reported as `stalled: consumer <queue> fenced or dead`. A feed without positions keeps the containment rule
   of #79 (a fenced or dead group does not hold the feed back; its losses are counted).
 - *A publish nested in a positioned commit* (a journal codec, a data mapper or an item's `toString` calling into the
   same feed): a positioned feed reserves its commit like a blocking one (`committing`), and a nested `tryPublish` is
@@ -161,15 +175,41 @@ state and need a handoff queue back to the source; rejected.
   stray Latin-1 byte should still be read, with the position exact; the line's text carries U+FFFD where the bytes
   were not UTF-8. Tests: `thePointerCountsBytesSoARestartAfterNonAsciiLinesResumesAtALineStart`,
   `thePointerIsTheByteOffsetEvenForBytesThatAreNotUtf8`.
-- **Epoch** (review F5): the pointer file also holds an epoch and the input file's identity (file key, creation time).
-  A new pointer file gets a new epoch; at each open, an input file that was replaced (another identity) or truncated
-  (shorter than the pointer) resets the pointer to 0 under a new epoch, with a warning (before, a truncated file was
-  read from past its end, i.e. not at all). Strategies without a pointer use the file's identity as their epoch. See
-  5a.
+- **Epoch** (review F5): the pointer file (1,024 bytes) also holds an epoch, the input file's identity and a content
+  fingerprint: `[0]` offset, `[8]` epoch, `[16]` file key hash, `[24]` layout version, `[32]` fingerprint length,
+  `[40]` fingerprint. A new pointer file gets a new epoch; at each open, an input file that was **replaced** or
+  **truncated** resets the pointer to 0 under a new epoch, with a warning (before, a truncated file was read from past
+  its end, i.e. not at all). Replaced means another file key (device and inode on Unix) or other leading bytes than
+  those fingerprinted at the last open (an FNV-1a hash of the first `min(4096, size)` bytes, kept in the pointer
+  file); truncated means shorter than the pointer. **Never a time** (review 2, finding 1, a blocker): the first
+  version used `creationTime()`, which on Linux before JDK 21's `statx` support (verified in Docker, Temurin 21.0.1) and
+  on file systems without a birth time is the modification time, so every append followed by a restart reset the
+  pointer and re-delivered the whole file under a new epoch, defeating `alreadyApplied`. Appending to the file, or
+  changing its times, is not a replacement. With no file key (Windows) only the fingerprint and the size decide.
+  Strategies without a pointer use the file key as their epoch (an in-place rewrite is not detected for them: they have
+  no pointer to keep a fingerprint in, and their items carry no position). See 5a.
+- **Pointer files of earlier layouts** (review 2, findings 7 and 8): a pointer file shorter than 1,024 bytes (v1.1.2
+  and before wrote only the 8-byte offset) is extended in place, keeping its offset; shorter than 8 bytes, it restarts
+  at 0. A pointer with no epoch was written by v1.1.2 as a count of decoded chars, which after non-ASCII text is less
+  than the byte offset and may point inside a line: if the byte before it is not `\n` or `\r`, reading resumes after
+  the next line terminator, and that offset is committed at once. The char count is never past the true byte offset of
+  the processed lines, so this skips only the rest of a line already processed, never an unprocessed line; a line may be
+  re-delivered.
 - `start()` resets the read buffer and pending line, and registers the committer for `COMMITED` only (other strategies
   have no pointer).
-- `stop()` polls acknowledgements first, so a clean stop commits everything processed; a crash leaves the pointer at
-  the last acknowledged line, re-read on restart.
+- **Clean stop** (review 2, finding 4): `stop()` polls acknowledgements once (enough for a source stopped on its own).
+  On a server, the ordered shutdown stops the feeds *before* the processor groups drain their queues, so a group goes
+  on processing after its source stopped (measured before the fix: 1,226 lines processed, pointer after line ~200). The
+  shutdown therefore commits again, on the stop thread, once the queues have drained and once more when the processor
+  groups have closed (`EventFlowManager.commitProcessedAfterStop`, for committers that declare
+  `SourceCommitter.commitsAfterStop()`; the file source re-maps its pointer file for that write). The pointer then
+  covers exactly what the slowest group processed (`FeedDeliveryCleanStopTest`, one and two groups). Items a group
+  never processed (the drain timed out, the queue was dropped at close) stay uncommitted and are re-delivered at the
+  next start. A crash leaves the pointer at the last acknowledged line, re-read on restart.
+- After a reset in the middle of a run (a reopen that finds the file replaced), an acknowledgement of an item of the
+  old file is never committed: the committer forgets the last acknowledged offset on the reset and commits only after
+  an acknowledgement of the current epoch (review 2, finding 6;
+  `anAcknowledgementOfTheOldFileIsNotCommittedAfterAReset`).
 - With `cacheEventLog`, the cached lines carry their positions; they are acknowledged once dispatched after the start
   completes.
 
@@ -223,8 +263,8 @@ DeliveryContext.currentPosition();  // the position only, no allocation
   `current()`.
 - **Epoch.** A position means something only within its source's position space. A `FileEventSource` with `COMMITED`
   keeps an epoch in its pointer file: a new one when the pointer file is created (first run, or the pointer deleted),
-  and a new one, with the pointer reset to 0, when the input file is replaced (another file key or creation time) or
-  truncated (shorter than the pointer). `EARLIEST`/`LATEST`/`ONCE_*` have no pointer; their epoch is the input file's
+  and a new one, with the pointer reset to 0, when the input file is replaced (another file key, or other leading
+  bytes; never a time, section 4) or truncated (shorter than the pointer). Appending to the file keeps the epoch. `EARLIEST`/`LATEST`/`ONCE_*` have no pointer; their epoch is the input file's
   identity. `alreadyApplied` is false for any other epoch, so after a reset the app re-applies (it does not silently
   skip new lines whose offsets happen to be at or below the stored one). What the app does with a new epoch is its
   decision: a fresh start should normally start from fresh state too (an app can compare `epoch()` with its stored one
@@ -271,7 +311,7 @@ lag twice (state count 5,005 for 5,000 lines in one run); with it, exactly 5,000
 ## 5. Processing checkpoints: commit never ahead of durable state (implemented)
 
 By default "processed" means the event cycle finished. That is the right commit point for an application that saves
-its state synchronously in the cycle (the gym app saves after every event). An application that persists state
+its state synchronously in the cycle (the example app of section 1 saves after every event). An application that persists state
 asynchronously or in batches must hold commits back until its state is durable, or a crash after the commit and
 before the save loses the effect of items the source will not re-deliver.
 
@@ -287,10 +327,14 @@ saveAsync(state).thenRun(() -> checkpoint.durableThrough(mark));  // any thread
 
 - A hold is per (feed, processor group): the group's one queue for the feed. While held, that queue's acknowledgement
   point is `min(dispatched, durableThrough)` instead of `dispatched`. `release()` returns to the default.
-- A mark belongs to the queue it was taken on (review F3): each subscription of the group to the feed is a binding
-  with its own `dispatched` counter and its own durable mark. A resubscribe (a new queue counting from 0) starts a new
-  binding held at nothing durable; an unsubscribe drops the binding; a mark of an old binding is ignored by
-  `durableThrough`. Before this fix the durable value survived the resubscribe and released the new queue's items
+- A mark belongs to the queue it was taken on (review F3): the group's queue for the feed is a binding with its own
+  `dispatched` counter and its own durable mark. A resubscribe (a new queue counting from 0) starts a new binding held
+  at nothing durable; the queue going away drops the binding; a mark of an old binding is ignored by `durableThrough`.
+  There is **one binding per physical queue**, counted by the subscriptions that read it: a group bound to the feed by
+  two callback types shares one queue, so the second subscription joins the binding instead of replacing it, and one
+  of them leaving neither unbinds the checkpoint nor drops the queue's `dispatched` counter while the other still
+  reads the queue (review 2, finding 5; before, a held checkpoint then wedged forever:
+  `ProcessingCheckpointSharedQueueTest`). Before this fix the durable value survived the resubscribe and released the new queue's items
   before its state was durable (`ProcessingCheckpointRebindTest`). `Mark(binding, count)` replaces the plain `long`.
 - `mark()` reads the queue's `dispatched` count. Inside a handler it does not count the item being handled: a state
   snapshot taken there includes it, the mark does not, so that item is re-delivered after a crash. Conservative, never
@@ -323,8 +367,9 @@ re-readable source does not need to wait, because it can simply not read.
 - **BLOCK_WITH_DEADLINE under `tryPublish`** pauses too, instead of the downgrade to drop on an agent thread. A source
   that can re-read is strictly better off pausing than dropping; the deadline exists to bound a waiting caller, and a
   paused source holds no thread.
-- **Fenced or dead group**: its queue does not hold the feed back (section 3); items for it take the drop path,
-  counted.
+- **Fenced or dead group**: on a feed **without positions** (a push source) its queue does not hold the feed back;
+  items for it take the drop path, counted (the containment rule of #79). On a **positioned** feed (COMMITED file) it
+  holds: the source pauses while the group is fenced or dead and nothing of its backlog is committed (section 3).
 - **Cache replay** (`cacheEventLog`): under PAUSE the replay at start completion stops at a full queue and resumes from
   `flushPaused()` (which a source calls at the start of each duty cycle); `tryPublish` replays the rest first, so order
   is kept. Before this, the replay dropped.
@@ -377,12 +422,20 @@ eventFeeds:
 
 - `consumers` (subscriber bindings that can consume now) and `stalled` (review F2): for a positioned feed, why it
   holds its position and cannot complete: `no live consumer` (the last subscriber removed, e.g. its only processor
-  quarantined), `consumer <queue> fenced or dead`, or `a removed consumer left unprocessed items`; null otherwise and
-  always null for a feed without positions. **A stalled feed is not `settled`** (per feed and top level). It stays
+  quarantined), `consumer <queue> fenced or dead`, or `a removed consumer left unprocessed items` (any removed
+  consumer, whether or not others remain; section 3); null otherwise and always null for a feed without positions. **A stalled feed is not `settled`** (per feed and top level). It stays
   `lossless`: nothing is lost, the pointer still holds every unprocessed item and a restart re-delivers them. So a
   launcher waiting for `settled` does not declare a run complete whose consumer is gone; it times out with the reason
   in `stalled`, which is the truth (the run cannot complete without an operator or a restart). Making `lossless` false
   instead would misreport a recoverable stall as a loss.
+
+- `unterminated` (review 2, finding 9): bytes after the last line terminator that a bounded source ended without
+  publishing: a once-read file (`ONCE_EARLIEST`) whose last line has no newline. Such a feed is still `settled`
+  (`END_OF_STREAM` is final: nothing more will ever be published, so holding `settled` back would only turn a definite
+  answer into a launcher timeout) and still `lossless` (the bytes never became an item, so nothing the feed took was
+  lost: the file format defines a line by its terminator, and a tailing strategy publishes the line once its
+  terminator arrives). Before, only the human-readable `detail` said so; the count makes it machine-checkable, so a
+  launcher that requires every byte fails the run on `unterminated > 0`. 0 for every other source.
 
 **Decision: an explicit `lossless` flag, not `settled:false`.** Making `settled` false while a feed has drops would
 turn a definite answer into a launcher timeout (drops are cumulative and never go away), hide *why* the run did not
@@ -414,8 +467,9 @@ of section 5a, which turns at-least-once delivery into exactly-once effect on st
 So a re-delivered line can produce output twice (a duplicate alert). Never a loss.
 
 **Still lossy by configuration** (visible as `lossless:false` or explained in section 3): an explicit
-`DROP_AFTER_SPIN` queue, a fenced/dead group's queue, output produced off the feed threads (feed-caught-up section 7),
-and state the app keeps only in memory.
+`DROP_AFTER_SPIN` queue (including the deprecated `slowConsumerStrategy: BACKOFF`), a fenced or dead group's queue on a
+feed *without positions* (on a positioned feed it holds instead, section 3), output produced off the feed threads
+(feed-caught-up section 7), and state the app keeps only in memory.
 
 **Exactly-once (out of scope; what it would need).** Either:
 
@@ -484,21 +538,28 @@ And `setPauseByDefault(true)` in `setEventFlowManager` if PAUSE should be its de
 - **Behaviour change**: a `FileEventSource` feed without an `overload` block pauses instead of dropping (section 6).
   To keep the old behaviour set `overload.policy: DROP_AFTER_SPIN`.
 - **Behaviour change**: a `COMMITED` file feed writes its pointer after processing, not after reading: after a crash
-  it re-delivers instead of skipping. After a clean stop it is unchanged (everything processed is committed).
+  it re-delivers instead of skipping. After a clean server stop everything processed is committed, including what the
+  processor groups finished after the feed stopped (section 4); items they never processed are re-delivered.
 - **Behaviour change**: the pointer is the exact byte offset on disk. A pointer written by an earlier release after
   non-ASCII text was a char count, which resumed early (inside a line); it now resumes where it says. ASCII files are
-  unaffected. The pointer file also holds an epoch and the input file's identity; a replaced or truncated input file
-  resets the pointer to 0 (it used to stay past the end). A pointer written before epochs keeps its position and gets
-  an epoch on first use.
+  unaffected. The pointer file also holds an epoch, the input file's key and a fingerprint of its first bytes; a
+  replaced or truncated input file resets the pointer to 0 (it used to stay past the end); an appended one never does.
+  A pointer written before epochs keeps its position (aligned to a line start if it was inside a line, section 4) and
+  gets an epoch on first use; a pointer file shorter than the current layout is extended.
 - **Behaviour change**: a positioned feed (COMMITED file) pauses, holding its position, while it has no live consumer
-  or a consumer is fenced or dead, and is reported `stalled` (not settled).
+  or a consumer is fenced or dead, holds its position before what a removed consumer did not process, and is reported
+  `stalled` (not settled) meanwhile.
+- **Behaviour change**: an explicit `slowConsumerStrategy: BACKOFF` (deprecated) is an explicit `DROP_AFTER_SPIN`, as
+  its warning says, also on a file feed (it used to resolve to the unconfigured default, which a file source turns
+  into PAUSE). An explicit policy also changes the feed's queue-drop health check to the #79 overload states.
 - `feed.status` JSON gains fields (`lossless`, per feed `lossless`, `policy`, `dropped`, `refused`, `downgraded`,
-  `paused`, `pauses`, `acknowledged`, `pendingAcks`); `FeedStatusReport` and `FeedStatusReport.Feed` gain components
+  `paused`, `pauses`, `acknowledged`, `pendingAcks`, `consumers`, `stalled`, `unterminated`); `FeedStatusReport` and `FeedStatusReport.Feed` gain components
   (both new on this branch, unreleased).
 - New: `OverloadPolicy.PAUSE`, `OverloadSettings.PAUSE`/`pause()`/`pauses()`/`neverDrop()`,
   `OverloadPolicyConfig.pause()`; `EventToQueuePublisher.tryPublish`, `cache(item, position)`, `acknowledgeWith`,
-  `pollAcknowledgements`, `flushPaused`, `bindAcknowledgementPoint`, `setPauseByDefault`, counters; package
-  `service.delivery` (`SourceCommitter`, `ProcessingCheckpoint`, `ProcessingCheckpointService`, registered by every
+  `pollAcknowledgements`, `pollAcknowledgementsAfterStop`, `flushPaused`, `bindAcknowledgementPoint`,
+  `setPauseByDefault`, `setUnterminatedBytes`, counters; `EventFlowManager.commitProcessedAfterStop`; package
+  `service.delivery` (`SourceCommitter` with `commitsAfterStop()`, `ProcessingCheckpoint`, `ProcessingCheckpointService`, registered by every
   server as `mongoose.processingCheckpoints`); `MongooseServer.processingCheckpoint`.
 - A positioned feed's items travel in their queues as `PositionedItem` (the reader unwraps it; processors see the bare
   item). Code that drains a subscriber queue itself (tests) sees the wrapper; its `toString` is the item's.
@@ -516,6 +577,24 @@ And `setPauseByDefault(true)` in `setEventFlowManager` if PAUSE should be its de
   durable. `dispatch/PositionedFeedStallTest` (F2 status): the last consumer gone, `consumers:0`, `stalled`, not
   settled, still lossless; a new consumer resumes reading but the pointer stays before the removed consumer's items.
 
+- Second review regressions, each failing before its fix (the failure is in the commit message of the fix):
+  `connector/file/FileEventSourcePointerTest` (7): an append that moves the file's times (creation time included, as
+  Linux without birth time reports it) keeps the pointer and epoch (finding 1); a new file at the path and a file
+  rewritten in place with other leading bytes reset it; an acknowledgement of the old file is never committed after a
+  reset (finding 6); an 8-byte pointer file is upgraded (finding 7); a v1.1.2 char-count pointer inside a line resumes
+  at the next line start, one at a line start resumes there (finding 8).
+  `connector/file/FileEventSourceConsumerRemovalTest` (3): one of two consumers removed with a backlog does not commit
+  it, the feed reports `stalled`, and the hold ends once the removed reader's count covers its items (finding 2); a
+  consumer removed with nothing unprocessed holds nothing; the retained point of a removed last consumer survives a
+  later unsubscribe (finding 3). `dispatch/ProcessingCheckpointSharedQueueTest` (2): a held checkpoint on a queue
+  shared by two callback bindings releases after one leaves, and a second binding keeps the durable mark (finding 5).
+  `service/delivery/FeedDeliveryCleanStopTest` (2): a clean server stop with one and with two groups commits exactly
+  what the slowest group processed (finding 4). `OverloadPolicyConfigTest`: `BACKOFF` is an explicit
+  `DROP_AFTER_SPIN`, also on a file feed (finding 9). `FileEventSourceFeedStatusTest.anUnterminatedLastLineOfAOnceReadIsCounted`
+  and `FeedStatusServerTest.aBoundedFileEndsAndASilentSourceIsAFallbackFeed`: `unterminated` (finding 9). The Linux
+  behaviour of finding 1 was also checked outside the suite, in Docker (Temurin 21.0.1 and 21.0.7): an append and a
+  restart re-deliver only the appended line; a new inode and an in-place rewrite reset the pointer.
+
 - `service/delivery/FeedDeliveryKillTest` (2): a real crash. The server runs in a separate JVM
   (`KillChildServer`: COMMITED file feed, default PAUSE, a processor that appends each line to an unbuffered output and
   saves `applied position` atomically after every line); 2,000 lines are applied, a 3,000-line burst is appended in one
@@ -525,8 +604,8 @@ And `setPauseByDefault(true)` in `setEventFlowManager` if PAUSE should be its de
 
 - `connector/file/FileEventSourceDeliveryTest` (10): read-but-not-dispatched lines are not committed and are
   re-delivered after a crash (with and without `cacheEventLog`); a clean stop commits only processed lines; the pointer
-  follows the slowest of three queues, forward only, exactly at the lowest dispatched line; a removed subscriber stops
-  holding it back; explicit DROP drops, counts and commits past the drop; PAUSE with 10,000 lines into a 1,024 queue
+  follows the slowest of three queues, forward only, exactly at the lowest dispatched line; a removed subscriber holds
+  it back only for what it did not process; explicit DROP drops, counts and commits past the drop; PAUSE with 10,000 lines into a 1,024 queue
   and a slow consumer thread: zero drops, every line once and in order, the source paused (with and without
   `cacheEventLog`); an in-band status waits for room; the pointer counts UTF-8 bytes.
 - `service/delivery/FeedDeliveryServerTest` (4), on a booted server: default config, slow processor, 10,000-line file:
@@ -542,8 +621,9 @@ And `setPauseByDefault(true)` in `setEventFlowManager` if PAUSE should be its de
 1. Plugins (section 9): `connector-kafka` (commit + pause/resume + rebalance), `connector-chronicle`,
    `connector-file`, `connector-aeron` archive mode; a JMS connector with individual acknowledge.
 2. Starter `BundleLifecycle`: the settled rule with the `lossless` step (section 7).
-3. Expose the current item's source position (or feed sequence) to processors and sinks, for idempotent sinks
-   (exactly-once option 1).
+3. (Done: section 5a, `DeliveryContext`.) Exposing the current item's source position to processors and sinks, for
+   idempotent sinks (exactly-once option 1), is implemented; position-keyed de-duplication in the core sinks remains
+   (section 8a).
 4. A `PAUSE` gauge and pause-duration counter in the counters service, and a health check "paused longer than N"
    (a wedged PAUSE subscriber stalls the feed silently today, visible only in `feed.status`).
 5. Fold `BLOCK_WITH_DEADLINE`'s agent-thread downgrade into PAUSE for push sources that can buffer (in-memory: keep in
@@ -551,9 +631,10 @@ And `setPauseByDefault(true)` in `setEventFlowManager` if PAUSE should be its de
 
 ## 13. Open questions
 
-1. (Resolved by review F1/F2: a fenced or dead group holds acknowledgement and pauses a positioned feed.) Should a
-   dead group's hold be released by an operator command (accepting the loss of its backlog), e.g.
-   `overload.clear`-style `delivery.release <feed> <group>`?
+1. (Resolved by review F1/F2 and review 2: a fenced or dead group holds acknowledgement and pauses a positioned feed;
+   a removed consumer holds what it did not process.) Should such a hold be released by an operator command
+   (accepting the loss of the backlog), e.g. `overload.clear`-style `delivery.release <feed> <group>`? Until then a
+   held feed is reported `stalled`, and a restart re-delivers.
 2. Should PAUSE be the default for every feed whose source declares itself re-readable (an `EventSource` capability
    flag), rather than a per-source call? Today only `FileEventSource` sets it.
 3. (Resolved by review F3: marks belong to a binding; a resubscribe starts a new one.)

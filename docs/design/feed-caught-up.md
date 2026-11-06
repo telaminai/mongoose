@@ -1,6 +1,7 @@
 # Feed caught-up signal
 
-Status: implemented on `feature/feed-caught-up` (based on `main` at `902c3b6`, release `v1.1.2`). Uncommitted.
+Status: implemented and committed on `feature/feed-caught-up` (based on `main` at `902c3b6`, release `v1.1.2`), not
+yet merged.
 Scope: the Mongoose dispatch layer (`EventToQueuePublisher`, `EventFlowManager`, `EventQueueToEventProcessorAgent`),
 the core sources (`FileEventSource`, `InMemoryEventSource`, the admin command queues), the admin command surface
 (`feed.status`), and feed configuration (`feedStatusEvents`). No change to Fluxtion, generated processors, the control
@@ -144,7 +145,8 @@ Edge cases:
   empty file and reads it once when it has data, then `END_OF_STREAM`.
 - **Unterminated last line**: not published (existing behaviour). A tailing source reports `CAUGHT_UP` with detail
   `partial line pending` and publishes the line when its newline arrives; a once source reports `END_OF_STREAM` with
-  detail `unterminated last line not published`.
+  detail `unterminated last line not published`, and `feed.status` counts the bytes in `unterminated`
+  ([feed-delivery.md](feed-delivery.md) section 7).
 - **Read error**: `UNKNOWN`, detail `read failed, reopening: ...`; the next poll reopens at the stream offset and
   reports as above.
 - **`cacheEventLog: true`**: lines read in `start()` are cached; the status is reported after `startComplete()`, and
