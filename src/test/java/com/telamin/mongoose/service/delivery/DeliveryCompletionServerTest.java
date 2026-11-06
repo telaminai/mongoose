@@ -70,6 +70,8 @@ class DeliveryCompletionServerTest {
         boolean failFirstCompletion;
         /** The completion of line "a" always throws: the reader's retry policy gives up. */
         boolean alwaysFailFirstLine;
+        /** Line "a" fails its dispatch, and its failure callback (a rollback) throws. */
+        boolean rollbackFails;
 
         @ServiceRegistered
         public void sink(MessageSink<String> sink, String name) {
@@ -87,6 +89,12 @@ class DeliveryCompletionServerTest {
             sink.accept("apply " + line);
             applied.add(line);
             DeliveryContext.onComplete(complete);
+            if (rollbackFails && line.equals("a")) {
+                DeliveryContext.onFailure(() -> {
+                    throw new IllegalStateException("DEMO the rollback fails");
+                });
+                throw new IllegalStateException("DEMO line a fails");
+            }
             if (!line.endsWith("+")) {
                 DataFlow self = ProcessorContext.currentProcessor();
                 self.onEvent(line + "+");    // reentrant: within this delivery
@@ -306,5 +314,33 @@ class DeliveryCompletionServerTest {
         assertTrue(report.lossless(), json);
         assertTrue(report.feed(FEED).lossless(), json);
         assertTrue(json.contains("\"completionFailures\":0"), json);
+    }
+
+    /**
+     * Recheck 2: a failure callback (a node's rollback) that throws fails closed. Line a is never acknowledged (the
+     * source holds its position), the feed is not lossless and reports itself stalled, and line b is not processed.
+     */
+    @Test
+    void aRollbackThatFailsHoldsThePositionAndReportsTheFeedStalledAndNotLossless() throws Exception {
+        Path file = tempDir.resolve("lines.txt");
+        Files.writeString(file, "a\nb\n", StandardCharsets.UTF_8);
+        InMemoryMessageSink sink = new InMemoryMessageSink();
+        Saver saver = new Saver();
+        saver.rollbackFails = true;
+        MongooseServer server = boot(null, file, ReadStrategy.COMMITED, sink, saver);
+        try {
+            await(() -> server.feedStatus(FEED).feed(FEED).delivery().stalled() != null, "stalled: "
+                    + server.feedStatus(FEED).toJson());
+            Thread.sleep(200);
+            var report = server.feedStatus(FEED);
+            String json = report.toJson();
+            assertFalse(report.lossless(), json);
+            assertFalse(report.settled(), json);
+            assertEquals(0, report.feed(FEED).delivery().acknowledged(), "line a is never acknowledged: " + json);
+            assertEquals(1, report.feed(FEED).delivery().completionFailures(), json);
+            assertFalse(strings(sink.getMessages()).contains("apply b"), "nothing after it: " + sink.getMessages());
+        } finally {
+            server.stop();
+        }
     }
 }

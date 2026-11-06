@@ -212,4 +212,19 @@ class DeliveryCompletionOwnershipTest {
         assertNotNull(kept, "claimed by its processor, so another processor's failure keeps it");
         assertSame(owner, kept.owner());
     }
+
+    // ---- recheck 2, F2: one Failed mark per processor and input across dispatch and completion ---------------------
+
+    @Test
+    void dispatchFailureThenCompletionFailureShouldMarkInputOnce() {
+        var attempts = new java.util.concurrent.atomic.AtomicInteger();
+        var store = record(new Proc(() -> {
+            if (attempts.getAndIncrement() == 0) throw new IllegalStateException("DEMO dispatch fails once");
+            DeliveryContext.onComplete(broken());
+        }), new Proc(() -> { }), "input");
+        assertEquals(1, store.entries("one").size(), "one input should have one Failed: " + store.entries("one"));
+        assertInstanceOf(ReplayEntry.Failed.class, store.entries("one").get(0));
+        assertEquals(1, store.entries("two").size());
+        assertInstanceOf(ReplayEntry.Inline.class, store.entries("two").get(0));
+    }
 }

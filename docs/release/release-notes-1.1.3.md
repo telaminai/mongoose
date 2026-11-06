@@ -66,7 +66,7 @@ Read these before upgrading a deployment that uses file feeds.
 - `FeedState`, `FeedStatus`; `EventFeedConfig.feedStatusEvents` (YAML `feedStatusEvents: true`), off by default.
 - `OverloadPolicy.PAUSE`, `OverloadPolicyConfig.pause()`; YAML `overload.policy: PAUSE`.
 - `DeliveryContext` and `Delivery` (service `mongoose.deliveryContext`); `DeliveryContext.onComplete`,
-  `whenComplete` and `attempt()`.
+  `whenComplete`, `onFailure`, `whenFailed` and `attempt()`.
 - `FeedStatusReport.Delivery.completionFailures()` (`feed.status` field `completionFailures`), counted in `lossless`.
 - `ProcessingCheckpointService` (service `mongoose.processingCheckpoints`), `ProcessingCheckpoint`,
   `MongooseServer.processingCheckpoint(feed, group)`.

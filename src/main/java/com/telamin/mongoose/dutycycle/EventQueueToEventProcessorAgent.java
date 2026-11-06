@@ -130,6 +130,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
             // this queue's reference to a pooled event is held until every processor has been given it (released in
             // the finally below, so a failure that escapes the retry loop cannot leak it)
             PoolTracker<?> tracker = trackerOf(event);
+            failureMarks = null;    // RECORD: the processors whose input of this item is marked Failed, so far
             try {
                 // Replay OFF pays one instanceof and one null check here (measured: DispatchPathJmh). A journalled item
                 // exists only in RECORD mode; it carries its feed's sequence number, and the processor receives the bare
@@ -259,7 +260,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                         if (at < 0) {
                             // Unknown progress: the recording cannot attribute successful input delivery and is
                             // marked for every target, not continued as if nothing happened (the recorder never throws)
-                            if (recorder != null && !wholeFailed) recorder.failed(sourceName, delivered(event), t, targets);
+                            if (recorder != null && !wholeFailed) markAllFailed(event, t, targets);
                             if (!wholeFailed) {
                                 wholeFailed = true;
                                 attempt = 0;        // a resumed processor's attempts were its own; the whole dispatch starts its count
@@ -271,7 +272,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                                 // is marked failed (D4); the processors before it are recorded as they handled it
                                 failingAt = at;
                                 attempt = 0;
-                                if (recorder != null) recorder.failed(sourceName, delivered(event), t, failed);
+                                if (recorder != null) markFailed(event, t, failed);
                             }
                             from = at;
                         }
@@ -284,11 +285,15 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                         if (identified == null && thrower != null) {
                             synchronized (subscribed) { if (subscribed.contains(thrower)) identified = thrower; }
                         }
-                        // the delivery-complete hook (feed-delivery.md 5b): the callbacks the failing processor registered
-                        // in this attempt are discarded (all of them when it is not known); a retry registers them again
+                        // the delivery-complete hook (feed-delivery.md 5b): the failing processor's failure callbacks run now,
+                        // before it is given the item again (a node's rollback, hook recheck 2), then the completion
+                        // callbacks it registered in this attempt are discarded (all of them when it is not known); a
+                        // retry registers them again. A failure callback that throws fails closed
                         if (positionEntered) {
-                            com.telamin.mongoose.service.delivery.DeliveryContext.dispatchFailed(
-                                    identified != null ? identified : thrower);
+                            DataFlow failing = identified != null ? identified : thrower;
+                            Throwable rollbackFailure =
+                                    com.telamin.mongoose.service.delivery.DeliveryContext.dispatchFailed(failing);
+                            if (rollbackFailure != null) failClosed(event, failing, t, rollbackFailure);
                         }
                         if (at < 0 && solo == null && identified != null
                                 && !ProcessorDispatchException.requiresIsolation(identified)) {
@@ -416,7 +421,10 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                 // the delivery is complete: its callbacks run now, after every event the processors queued reentrantly,
                 // with the delivery still entered, before the recording and before the item counts as dispatched (so
                 // before the source can acknowledge it); feed-delivery.md 5b
-                if (positionEntered && completeDelivery(event, seq, targets)) wholeFailed = true;
+                if (positionEntered) {
+                    com.telamin.mongoose.service.delivery.DeliveryContext.dispatchSucceeded();
+                    if (completeDelivery(event, seq, targets)) wholeFailed = true;
+                }
 
                 // recorded after the dispatch, outside it: a recording failure is not a dispatch failure, so it is never
                 // retried as one (the processor would handle the input again) and never marks the processor as failing.
@@ -473,7 +481,6 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
         // RECORD (hook review R2): a callback that throws is a failure of its processor's input, marked and not
         // reproduced (D4), as a dispatch failure is: the first failure marks the owner's input Failed (its normal entry
         // is then not written); a callback with no known owner marks every target, and nothing more is recorded
-        java.util.Set<DataFlow> marked = null;
         boolean allMarked = false;
         com.telamin.mongoose.service.delivery.DeliveryContext.Completion completion;
         while ((completion = com.telamin.mongoose.service.delivery.DeliveryContext.takeCompletion()) != null) {
@@ -485,18 +492,13 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                     throw fatal;
                 } catch (Throwable t) {
                     if (recorder != null && !allMarked) {
-                        // once per processor and input, whichever way its callbacks fail (hook recheck F3)
-                        if (marked == null) marked = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+                        // once per processor and input, across dispatch and completion (hook recheck F3, recheck 2 F2)
                         DataFlow owner = completion.owner();
                         if (owner == null || targets == null) {
-                            if (targets != null) {
-                                for (DataFlow target : targets) {
-                                    if (marked.add(target)) recorder.failed(sourceName, delivered(event), t, target);
-                                }
-                            }
+                            markAllFailed(event, t, targets);
                             allMarked = true;
-                        } else if (marked.add(owner)) {
-                            recorder.failed(sourceName, delivered(event), t, owner);
+                        } else {
+                            markFailed(event, t, owner);
                         }
                     }
                     String warnMsg = "delivery completion callback failed: agent=" + name + ", attempt=" + attempt
@@ -521,6 +523,50 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
             }
         }
         return allMarked;
+    }
+
+    /** RECORD: the processors whose input of the item being dispatched is already marked Failed. */
+    private java.util.Set<DataFlow> failureMarks;
+
+    /** RECORD: mark {@code target}'s input of this item Failed, once. */
+    private void markFailed(Object event, Throwable t, DataFlow target) {
+        if (recorder == null || target == null) return;
+        if (failureMarks == null) failureMarks = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        if (failureMarks.add(target)) recorder.failed(sourceName, delivered(event), t, target);
+    }
+
+    /** RECORD: mark every one of {@code targets} not yet marked for this item Failed. */
+    private void markAllFailed(Object event, Throwable t, java.util.Collection<DataFlow> targets) {
+        if (recorder == null || targets == null) return;
+        if (failureMarks == null) failureMarks = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        java.util.List<DataFlow> fresh = new java.util.ArrayList<>();
+        for (DataFlow target : targets) {
+            if (failureMarks.add(target)) fresh.add(target);
+        }
+        if (!fresh.isEmpty()) recorder.failed(sourceName, delivered(event), t, fresh);
+    }
+
+    /**
+     * A failure callback (a node's rollback before a retry) threw: the processor's state cannot be made consistent with
+     * what is saved, so nothing about this item may be acknowledged as if it succeeded. The loss is counted (the feed
+     * is not lossless), the error reported, and the reader ends as for an unrecoverable dispatch: the item is never
+     * counted as dispatched, so the source holds its position, and the group's queue reads as dead, so a positioned
+     * feed reports it stalled. Throws.
+     */
+    private void failClosed(Object event, DataFlow failing, Throwable dispatchError, Throwable rollbackFailure) {
+        String why = "delivery rollback failed after a dispatch failure: the item is not acknowledged and this reader"
+                + " stops (the source holds its position); agent=" + name
+                + (failing == null ? "" : ", processor=" + failing) + ", event=" + event
+                + ", dispatchError=" + dispatchError + ", rollbackError=" + rollbackFailure;
+        logger.severe(why);
+        if (completionFailed != null) completionFailed.run();
+        markFailed(event, rollbackFailure, failing);
+        var closed = new ProcessorDispatchException(failing, why, rollbackFailure);
+        closed.addSuppressed(dispatchError);
+        com.telamin.mongoose.service.error.ErrorReporting.report("EventQueueToEventProcessorAgent:" + name, why,
+                closed, com.telamin.mongoose.service.error.ErrorEvent.Severity.CRITICAL);
+        terminalFailure = closed;
+        throw closed;
     }
 
     /** What the processor was given: the event a ReplayRecord or BroadcastEvent carries, else the event itself. */

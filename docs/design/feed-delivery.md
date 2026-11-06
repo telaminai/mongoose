@@ -409,6 +409,20 @@ dispatch item to the queue's processors (each drains its reentrant events)
 ran synchronously within their dispatch of the item on this thread), and before the feed can acknowledge or commit the
 item. Work the delivery publishes to another feed, queue or processor group is not part of it.
 
+**Failure callbacks** (hook recheck 2). `DeliveryContext.onFailure(Runnable)` (`whenFailed` on the injected instance)
+is the symmetric hook: when a processor's dispatch of the item fails, the reader runs **that processor's** failure
+callbacks at once, on the group thread with the delivery still entered, before it gives the item to the processor
+again (a retry) and before it discards the processor's completion callbacks. A successful dispatch discards them
+unrun. Registration, de-duplication and ownership are those of `onComplete` (below), so a processor that handled the
+item never has its failure callbacks run for another processor's failure; with the thrower unknown, every failure
+callback runs. A node that saves at completion registers its rollback here: a retry then starts from the state before
+the delivery before any code, a handler or an adapter around the processor, reads it. A replay runs them the same way
+when a replayed input throws. **A failure callback that throws fails closed**: the reader counts the loss (the feed's
+`completionFailures`, so `lossless:false`), reports CRITICAL, does not count the item as dispatched (the source holds
+its position: nothing of it is acknowledged) and ends as for an unrecoverable dispatch failure, so the group's queue
+reads as dead and a positioned feed reports `stalled`; a restart re-delivers the item to state restored from what was
+saved (`DeliveryCompletionServerTest.aRollbackThatFailsHoldsThePositionAndReportsTheFeedStalledAndNotLossless`).
+
 **Rules.**
 
 - *Registration outside a delivery*: when the calling thread is handling no item with a source position
@@ -434,7 +448,10 @@ item. Work the delivery publishes to another feed, queue or processor group is n
   without completing (the group ends, `exit()`) runs none. `DeliveryContext.attempt()` counts the failed attempts of
   the item, so a node can tell a retry (the count grew) from a further cycle of the same attempt (a queued event).
   A node that saves only at completion handles a retry by **rolling back**: its last saved record is its state before
-  the delivery, so at the retry's first cycle it restores that and applies every cycle of the retry as new work. Do
+  the delivery, so in a failure callback it restores that, and every cycle of the retry is applied as new work. The
+  rollback must happen at the failure, not lazily at the retry's first handler: code that reads the state before any
+  handler runs (an adapter computing an argument or choosing a branch) would otherwise see the failed attempt's state
+  (hook recheck 2, F1). Do
   not try to match the retry's cycles to the failed attempt's: a retried handler may queue other events (or none), a
   synthetic clock is installed on the first attempt only, and work the failed attempt never reached appears; any
   matching skips some of it (hook recheck F1). What the failed attempt published is published again: outputs are
@@ -446,7 +463,8 @@ item. Work the delivery publishes to another feed, queue or processor group is n
   feed for good on one failing save. In RECORD mode the first failure of a callback marks its processor's input
   `Failed` (D4: a retry is a failure, marked and not reproduced), exactly as a failed dispatch does, and that input's
   ordinary entry is not written; a callback with no known processor marks every target. Each processor's input is
-  marked once, whichever of its callbacks fail and in whatever order (hook recheck F3). A replay stops at the mark,
+  marked once per input, whichever of its callbacks fail, in whatever order, and also when its dispatch failed before
+  (one set per dequeued item across dispatch and completion: hook recheck F3, recheck 2 F2). A replay stops at the mark,
   saying why (hook review R2, `DeliveryCompletionServerTest.aCallbackThatFailedLiveIsRecorded...`; before, the input
   was recorded as ordinary and the replay ran the callback once, diverging from the live run without a mark).
 - *Decision after R2: an exhausted callback's item is acknowledged, and reported as a loss.* Fixing R2 changes what
@@ -787,7 +805,7 @@ And `setPauseByDefault(true)` in `setEventFlowManager` if PAUSE should be its de
   no delivery); `CsvReplayStore` writes a `DELIVERY` line before a positioned input, which an earlier reader refuses
   (section 8a). Recordings of feeds without positions are unchanged.
 - New `DeliveryContext` / `Delivery` (registered as `mongoose.deliveryContext`), with the delivery-complete hook
-  `onComplete` / `whenComplete` / `attempt()` (section 5b).
+  `onComplete` / `whenComplete` / `attempt()` and its failure counterpart `onFailure` / `whenFailed` (section 5b).
 - Push sources and every existing publish path are unchanged.
 
 ## 11. Tests (implemented)
