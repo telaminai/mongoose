@@ -432,8 +432,13 @@ item. Work the delivery publishes to another feed, queue or processor group is n
   processors that handled the item are kept and run (with #53 they are not given the item again). A processor whose
   retries are exhausted runs none; a generated processor quarantined for the failure runs none. A delivery that ends
   without completing (the group ends, `exit()`) runs none. `DeliveryContext.attempt()` counts the failed attempts of
-  the item, so a node can tell a retry of a cycle it completed (the count grew: its effect is in memory) from a further
-  cycle of the same attempt (a queued event: new work).
+  the item, so a node can tell a retry (the count grew) from a further cycle of the same attempt (a queued event).
+  A node that saves only at completion handles a retry by **rolling back**: its last saved record is its state before
+  the delivery, so at the retry's first cycle it restores that and applies every cycle of the retry as new work. Do
+  not try to match the retry's cycles to the failed attempt's: a retried handler may queue other events (or none), a
+  synthetic clock is installed on the first attempt only, and work the failed attempt never reached appears; any
+  matching skips some of it (hook recheck F1). What the failed attempt published is published again: outputs are
+  at-least-once.
 - *A callback that throws*: retried alone under the reader's `RetryPolicy`, the processors never given the item again
   (their cycles completed), the item **not** counted as dispatched meanwhile, so not acknowledged. When the policy gives
   up the failure is reported (ERROR), the callback skipped, the callbacks after it run, and the item counts as
@@ -477,7 +482,8 @@ registered, and a reused `ArrayDeque` with one small record per registration.
 **PersistentNode** (mongoose-plugins svc-cache) uses it from 1.1.3, found through method handles: its `@AfterEvent`
 registers one callback per delivery and the callback writes state and position once; a queued event is applied; a crash
 before the callback leaves nothing of the delivery saved and the item uncommitted, so the restart re-applies the whole
-delivery. Tests: `DeliveryCompletionTest` (agent level: ordering against reentrant work and the `dispatched` counter,
+delivery; a retry restores the node's last saved state and applies the whole delivery again (each PersistentNode of
+the processor on its own; a processor that is not retried keeps its state and its save). Tests: `DeliveryCompletionTest` (agent level: ordering against reentrant work and the `dispatched` counter,
 order and de-duplication, no position, failure discard and retry, exhausted retries, a throwing callback retried and
 skipped, two queues, `exit` discards) and `DeliveryCompletionServerTest` (on a server: after the queued event and before
 the feed acknowledges the line; indexed and inline recordings replay the callbacks where they ran live).

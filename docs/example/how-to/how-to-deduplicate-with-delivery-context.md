@@ -146,7 +146,10 @@ The guarantees:
 - **Only for positioned deliveries.** `onComplete` returns false, and keeps nothing, when the calling thread is not
   handling an item with a source position (a timer, another feed, a service callback): do the work yourself then.
 - **Failures.** If a processor's dispatch throws, the callbacks it registered are discarded and a retry registers them
-  again; `DeliveryContext.attempt()` tells a retry (the count grew) from a queued event (the same count). A callback
+  again; `DeliveryContext.attempt()` tells a retry (the count grew) from a queued event (the same count). On a retry,
+  restore the state your last save wrote (with the hook it is the state before this line) and apply every cycle of the
+  retry: never try to skip the cycles the failed attempt ran, since a retry need not run the same ones. Outputs of the
+  failed attempt are published again (at-least-once outputs). A callback
   that throws is retried alone, under the processor group's retry policy, with the line still uncommitted; if the policy
   gives up, the error is reported and the line is committed, like any line a failure policy has decided on, and
   `feed.status` counts it in the feed's `completionFailures` and reports the feed `lossless:false`: a save that kept
