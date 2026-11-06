@@ -146,12 +146,9 @@ The guarantees:
 - **Only for positioned deliveries.** `onComplete` returns false, and keeps nothing, when the calling thread is not
   handling an item with a source position (a timer, another feed, a service callback): do the work yourself then.
 - **Failures.** If a processor's dispatch throws, the callbacks it registered are discarded and a retry registers them
-  again. Register your rollback with `DeliveryContext.onFailure(Runnable)`: it runs at the failure, before the retry,
-  and should restore the state your last save wrote (with the hook, the state before this line); the retry then
-  applies every cycle afresh. Never try to skip the cycles the failed attempt ran (a retry need not run the same ones),
-  and never roll back lazily at the retry's first handler (code before it would read the failed attempt's state). A
-  rollback that throws fails closed: the line is not committed, the feed reports `stalled` and `lossless:false`, and
-  the processor group ends; a restart re-delivers the line. Outputs of the
+  again; `DeliveryContext.attempt()` tells a retry (the count grew) from a queued event (the same count). On a retry,
+  restore the state your last save wrote (with the hook it is the state before this line) and apply every cycle of the
+  retry: never try to skip the cycles the failed attempt ran, since a retry need not run the same ones. Outputs of the
   failed attempt are published again (at-least-once outputs). A callback
   that throws is retried alone, under the processor group's retry policy, with the line still uncommitted; if the policy
   gives up, the error is reported and the line is committed, like any line a failure policy has decided on, and
@@ -160,6 +157,10 @@ The guarantees:
   recording, a callback that failed marks its processor's input
   `Failed`, and a replay stops there.
 - **Replay.** A replay runs each replayed input's callbacks the same way, inside the input's replay.
+- **Supported processors.** Saving state at completion is supported in generated or interpreted processors: one that
+  throws is quarantined, never retried. A handwritten processor that throws part-way through a line and is retried is
+  not supported: what it saves after the retry is not guaranteed, since code that reads state before a guarded handler
+  sees the failed attempt's state.
 
 The mongoose-plugins `PersistentNode` (svc-cache) does this for you from Mongoose 1.1.3.
 

@@ -601,17 +601,7 @@ public final class GroupReplayer {
         }
         com.telamin.mongoose.service.delivery.DeliveryContext.enter(delivery.feed(), delivery.sequence(), delivery.epoch(), delivery.position());
         try {
-            try {
-                route.replayTo(flow, event);
-            } catch (RuntimeException | Error failure) {
-                // as live: the processor's failure callbacks run at its failure (hook recheck 2), then the replay stops
-                if (!(failure instanceof VirtualMachineError)) {
-                    Throwable rollback = com.telamin.mongoose.service.delivery.DeliveryContext.dispatchFailed(flow);
-                    if (rollback != null) failure.addSuppressed(rollback);
-                }
-                throw failure;
-            }
-            com.telamin.mongoose.service.delivery.DeliveryContext.dispatchSucceeded();
+            route.replayTo(flow, event);
             // the input's completion callbacks run as they did live (feed-delivery.md 5b): after the replayed cycle and
             // the events it queued, with the delivery entered, inside the input's replay; no retry
             com.telamin.mongoose.service.delivery.DeliveryContext.runCompletions();

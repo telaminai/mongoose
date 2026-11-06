@@ -37,9 +37,6 @@ package com.telamin.mongoose.service.delivery;
  *     <li>A callback that throws is retried, alone, under the reader's retry policy, with the item still not
  *     dispatched (not acknowledged); once the policy gives up it is reported and skipped, the callbacks after it
  *     run, and the item counts as dispatched, as any item a failure policy has decided on.</li>
- *     <li>{@link #onFailure(Runnable)} is the symmetric hook: a failing processor's failure callbacks run at its
- *     failure, before it is given the item again; a success discards them. One that throws fails closed: the item is
- *     not acknowledged, the feed is not lossless and the reader ends.</li>
  *     <li>{@link #attempt()} counts the failed dispatch attempts of the current item, so a node can tell a retry of a
  *     cycle it completed (attempt grew) from a further cycle of the same attempt (an event queued reentrantly).</li>
  *     <li>A replay (REPLAY mode) runs the callbacks of each replayed input that had a position the same way, inside
@@ -61,8 +58,6 @@ public final class DeliveryContext {
         int attempt;
         /** Callbacks pending for the current delivery; created on first use, reused. */
         java.util.ArrayDeque<Completion> completions;
-        /** Failure callbacks pending for the current delivery ({@link #onFailure}); created on first use, reused. */
-        java.util.ArrayDeque<Completion> failures;
         /** Callbacks registered for the current delivery, to bound a callback that keeps registering itself. */
         int registered;
     }
@@ -128,59 +123,33 @@ public final class DeliveryContext {
         java.util.Objects.requireNonNull(callback, "callback");
         Current c = CURRENT.get();
         if (c.position == null) return false;
-        if (c.completions == null) c.completions = new java.util.ArrayDeque<>(4);
-        return register(c, c.completions, callback);
-    }
-
-    /**
-     * Run {@code callback} if the dispatch of the current delivery to the calling processor fails (hook recheck 2):
-     * the reader runs the failing processor's failure callbacks at the failure, on the group thread with this context
-     * still entered and before the processor is given the item again (a retry), then discards that processor's
-     * completion callbacks. A successful dispatch discards them unrun. Registration, de-duplication and ownership are
-     * as for {@link #onComplete}: kept per owning processor; the callbacks of a processor that handled the item are
-     * never run for another processor's failure. A node that saves at completion registers its rollback here, so a retry
-     * starts from the state before the delivery before any code reads it. A failure callback that throws fails closed:
-     * the reader does not count the item as dispatched (the source holds its position), counts the loss (the feed is
-     * not lossless) and ends, as for an unrecoverable dispatch failure (the feed reports the consumer dead: stalled).
-     *
-     * @return true when registered (or already pending); false, and nothing kept, outside a positioned delivery
-     */
-    public static boolean onFailure(Runnable callback) {
-        java.util.Objects.requireNonNull(callback, "callback");
-        Current c = CURRENT.get();
-        if (c.position == null) return false;
-        if (c.failures == null) c.failures = new java.util.ArrayDeque<>(4);
-        return register(c, c.failures, callback);
-    }
-
-    /** As {@link #onFailure(Runnable)}, for an injected instance. */
-    public boolean whenFailed(Runnable callback) {
-        return onFailure(callback);
-    }
-
-    private static boolean register(Current c, java.util.ArrayDeque<Completion> pendingList, Runnable callback) {
-        com.telamin.fluxtion.runtime.DataFlow current = null;
-        boolean looked = false;
-        for (Completion pending : pendingList) {
-            if (pending.callback() != callback) continue;
-            if (pending.owner() == null) {
-                if (!looked) {
-                    current = com.telamin.mongoose.dispatch.ProcessorContext.currentProcessor();
-                    looked = true;
+        if (c.completions == null) {
+            c.completions = new java.util.ArrayDeque<>(4);
+        } else {
+            com.telamin.fluxtion.runtime.DataFlow current = null;
+            boolean looked = false;
+            for (java.util.Iterator<Completion> it = c.completions.iterator(); it.hasNext(); ) {
+                Completion pending = it.next();
+                if (pending.callback() != callback) continue;
+                if (pending.owner() == null) {
+                    if (!looked) {
+                        current = com.telamin.mongoose.dispatch.ProcessorContext.currentProcessor();
+                        looked = true;
+                    }
+                    if (current != null) {
+                        // registered first with no current processor (hook recheck F2): a processor's dispatch that
+                        // registers it again claims it, in place, so another processor's failure no longer discards it
+                        replaceOwner(c.completions, pending, current);
+                    }
                 }
-                if (current != null) {
-                    // registered first with no current processor (hook recheck F2): a processor's dispatch that
-                    // registers it again claims it, in place, so another processor's failure no longer discards it
-                    replaceOwner(pendingList, pending, current);
-                }
+                return true;
             }
-            return true;
         }
         if (++c.registered > MAX_COMPLETIONS_PER_DELIVERY) {
             throw new IllegalStateException("more than " + MAX_COMPLETIONS_PER_DELIVERY + " completion callbacks for"
                     + " the delivery of " + c.feed + "#" + c.sequence + ": a callback that registers itself?");
         }
-        pendingList.add(new Completion(com.telamin.mongoose.dispatch.ProcessorContext.currentProcessor(), callback));
+        c.completions.add(new Completion(com.telamin.mongoose.dispatch.ProcessorContext.currentProcessor(), callback));
         return true;
     }
 
@@ -208,12 +177,6 @@ public final class DeliveryContext {
         return c.position == null ? 0 : c.attempt;
     }
 
-    /** Internal: the dispatch succeeded: the failure callbacks of the current delivery are discarded unrun. */
-    public static void dispatchSucceeded() {
-        java.util.ArrayDeque<Completion> failures = CURRENT.get().failures;
-        if (failures != null) failures.clear();
-    }
-
     /** Internal: the reader takes the next pending callback of the current delivery, in order, or null. */
     public static Completion takeCompletion() {
         java.util.ArrayDeque<Completion> pending = CURRENT.get().completions;
@@ -221,46 +184,20 @@ public final class DeliveryContext {
     }
 
     /**
-     * Internal: a dispatch attempt of the current item failed in {@code processor} (null: not known). Its failure
-     * callbacks ({@link #onFailure}), and those registered with no current processor (every one when the processor is
-     * not known), are run now, then its completion callbacks are discarded likewise; the failed attempt is counted
-     * ({@link #attempt()}). Returns what a failure callback threw (the others suppressed), or null: the caller fails
-     * closed on it.
+     * Internal: a dispatch attempt of the current item failed in {@code processor} (null: not known). Its callbacks,
+     * and those registered with no current processor, are discarded (every callback when the processor is not known);
+     * the failed attempt is counted ({@link #attempt()}).
      */
-    public static Throwable dispatchFailed(com.telamin.fluxtion.runtime.DataFlow processor) {
+    public static void dispatchFailed(com.telamin.fluxtion.runtime.DataFlow processor) {
         Current c = CURRENT.get();
-        if (c.position == null) return null;
+        if (c.position == null) return;
         c.attempt++;
-        Throwable failed = null;
-        if (c.failures != null && !c.failures.isEmpty()) {
-            // the failing processor's failure callbacks, in order, now: before the processor is given the item again
-            java.util.List<Completion> run = new java.util.ArrayList<>();
-            for (java.util.Iterator<Completion> it = c.failures.iterator(); it.hasNext(); ) {
-                Completion f = it.next();
-                if (processor == null || f.owner() == null || f.owner() == processor) {
-                    run.add(f);
-                    it.remove();
-                }
-            }
-            for (Completion f : run) {
-                try {
-                    f.run();
-                } catch (VirtualMachineError fatal) {
-                    throw fatal;
-                } catch (Throwable t) {
-                    if (failed == null) failed = t;
-                    else failed.addSuppressed(t);
-                }
-            }
+        if (c.completions == null) return;
+        if (processor == null) {
+            c.completions.clear();
+        } else {
+            c.completions.removeIf(p -> p.owner() == null || p.owner() == processor);
         }
-        if (c.completions != null) {
-            if (processor == null) {
-                c.completions.clear();
-            } else {
-                c.completions.removeIf(p -> p.owner() == null || p.owner() == processor);
-            }
-        }
-        return failed;
     }
 
     /**
@@ -288,7 +225,6 @@ public final class DeliveryContext {
         c.attempt = 0;
         c.registered = 0;
         if (c.completions != null) c.completions.clear();
-        if (c.failures != null) c.failures.clear();
     }
 
     /** Internal: the reader leaves the event cycle; callbacks still pending are discarded, never run. */
@@ -301,6 +237,5 @@ public final class DeliveryContext {
         c.attempt = 0;
         c.registered = 0;
         if (c.completions != null) c.completions.clear();
-        if (c.failures != null) c.failures.clear();
     }
 }

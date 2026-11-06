@@ -285,15 +285,11 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                         if (identified == null && thrower != null) {
                             synchronized (subscribed) { if (subscribed.contains(thrower)) identified = thrower; }
                         }
-                        // the delivery-complete hook (feed-delivery.md 5b): the failing processor's failure callbacks run now,
-                        // before it is given the item again (a node's rollback, hook recheck 2), then the completion
-                        // callbacks it registered in this attempt are discarded (all of them when it is not known); a
-                        // retry registers them again. A failure callback that throws fails closed
+                        // the delivery-complete hook (feed-delivery.md 5b): the callbacks the failing processor registered
+                        // in this attempt are discarded (all of them when it is not known); a retry registers them again
                         if (positionEntered) {
-                            DataFlow failing = identified != null ? identified : thrower;
-                            Throwable rollbackFailure =
-                                    com.telamin.mongoose.service.delivery.DeliveryContext.dispatchFailed(failing);
-                            if (rollbackFailure != null) failClosed(event, failing, t, rollbackFailure);
+                            com.telamin.mongoose.service.delivery.DeliveryContext.dispatchFailed(
+                                    identified != null ? identified : thrower);
                         }
                         if (at < 0 && solo == null && identified != null
                                 && !ProcessorDispatchException.requiresIsolation(identified)) {
@@ -421,10 +417,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                 // the delivery is complete: its callbacks run now, after every event the processors queued reentrantly,
                 // with the delivery still entered, before the recording and before the item counts as dispatched (so
                 // before the source can acknowledge it); feed-delivery.md 5b
-                if (positionEntered) {
-                    com.telamin.mongoose.service.delivery.DeliveryContext.dispatchSucceeded();
-                    if (completeDelivery(event, seq, targets)) wholeFailed = true;
-                }
+                if (positionEntered && completeDelivery(event, seq, targets)) wholeFailed = true;
 
                 // recorded after the dispatch, outside it: a recording failure is not a dispatch failure, so it is never
                 // retried as one (the processor would handle the input again) and never marks the processor as failing.
@@ -528,7 +521,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     /** RECORD: the processors whose input of the item being dispatched is already marked Failed. */
     private java.util.Set<DataFlow> failureMarks;
 
-    /** RECORD: mark {@code target}'s input of this item Failed, once. */
+    /** RECORD: mark {@code target}'s input of this item Failed, once per item, whichever phase failed. */
     private void markFailed(Object event, Throwable t, DataFlow target) {
         if (recorder == null || target == null) return;
         if (failureMarks == null) failureMarks = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
@@ -544,29 +537,6 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
             if (failureMarks.add(target)) fresh.add(target);
         }
         if (!fresh.isEmpty()) recorder.failed(sourceName, delivered(event), t, fresh);
-    }
-
-    /**
-     * A failure callback (a node's rollback before a retry) threw: the processor's state cannot be made consistent with
-     * what is saved, so nothing about this item may be acknowledged as if it succeeded. The loss is counted (the feed
-     * is not lossless), the error reported, and the reader ends as for an unrecoverable dispatch: the item is never
-     * counted as dispatched, so the source holds its position, and the group's queue reads as dead, so a positioned
-     * feed reports it stalled. Throws.
-     */
-    private void failClosed(Object event, DataFlow failing, Throwable dispatchError, Throwable rollbackFailure) {
-        String why = "delivery rollback failed after a dispatch failure: the item is not acknowledged and this reader"
-                + " stops (the source holds its position); agent=" + name
-                + (failing == null ? "" : ", processor=" + failing) + ", event=" + event
-                + ", dispatchError=" + dispatchError + ", rollbackError=" + rollbackFailure;
-        logger.severe(why);
-        if (completionFailed != null) completionFailed.run();
-        markFailed(event, rollbackFailure, failing);
-        var closed = new ProcessorDispatchException(failing, why, rollbackFailure);
-        closed.addSuppressed(dispatchError);
-        com.telamin.mongoose.service.error.ErrorReporting.report("EventQueueToEventProcessorAgent:" + name, why,
-                closed, com.telamin.mongoose.service.error.ErrorEvent.Severity.CRITICAL);
-        terminalFailure = closed;
-        throw closed;
     }
 
     /** What the processor was given: the event a ReplayRecord or BroadcastEvent carries, else the event itself. */
