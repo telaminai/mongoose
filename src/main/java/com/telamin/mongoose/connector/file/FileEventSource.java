@@ -34,6 +34,11 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
     private String filename;
     private InputStream stream;
     /**
+     * The channel {@link #stream} reads: the file being read, whatever the path names now. Its identity checks and its
+     * fingerprint are of this file, never of a replacement at the path (review R4). Closed with the stream.
+     */
+    private volatile java.nio.channels.FileChannel channel;
+    /**
      * Bytes read from the file and not yet taken as lines. Lines are split on the bytes {@code \n} and {@code \r}
      * (never part of a multi-byte UTF-8 sequence, nor of any ASCII-compatible encoding) and only then decoded, so the
      * read position is the exact byte offset on disk whatever the bytes decode to (review F4).
@@ -355,6 +360,15 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
                     }
                 }
             }
+            if (!once) {
+                // at the end of the open file: before it is reported caught up, the path must still name this file and
+                // the file must not be shorter than what was read (review R4)
+                String changed = inputChangedWhileOpen();
+                if (changed != null) {
+                    reopenAfterChange(changed);
+                    return readCount + 1;
+                }
+            }
             if (onceReadData) {
                 if (offset > 0 && buffer[offset - 1] == '\r' && !latestRead) {
                     // at the end of a once read nothing can follow a trailing \r: it terminates the last line
@@ -392,6 +406,7 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
 
             }
             stream = null;
+            channel = null;
         }
         return 0;
     }
@@ -428,6 +443,7 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
         } finally {
             // mongoose#56: drop the references once released, so a second stop neither closes nor unmaps them again
             stream = null;
+            channel = null;
             synchronized (commitLock) {
                 if (commitPointer != null) {
                     commitPointer.force();
@@ -446,7 +462,13 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
     private InputStream connectReader() {
         if (startComplete.get() & stream == null && filename != null && !filename.isEmpty()) {
             try {
-                stream = Files.newInputStream(Paths.get(filename));
+                java.nio.channels.FileChannel opened = java.nio.channels.FileChannel.open(Paths.get(filename),
+                        java.nio.file.StandardOpenOption.READ);
+                channel = opened;
+                stream = java.nio.channels.Channels.newInputStream(opened);
+                // read from the position again: bytes of a partial line buffered from an earlier stream are read again
+                // (a reopen after a read failure or a live change), never appended to twice
+                offset = 0;
                 checkSourceIdentity();
                 if (legacyAlign) {
                     legacyAlign = false;
@@ -524,15 +546,72 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
      */
     private long fileIdentity() {
         try {
-            var attrs = Files.readAttributes(Paths.get(filename), java.nio.file.attribute.BasicFileAttributes.class);
-            Object key = attrs.fileKey();
-            if (key == null) {
-                return 0;
-            }
-            long id = fnv1a(key.toString().getBytes(StandardCharsets.UTF_8), 0, -1);
-            return id == 0 ? 1 : id;
+            return identityOf(Files.readAttributes(Paths.get(filename), java.nio.file.attribute.BasicFileAttributes.class));
         } catch (IOException e) {
             return 0;
+        }
+    }
+
+    private static long identityOf(java.nio.file.attribute.BasicFileAttributes attrs) {
+        Object key = attrs.fileKey();
+        if (key == null) {
+            return 0;
+        }
+        long id = fnv1a(key.toString().getBytes(StandardCharsets.UTF_8), 0, -1);
+        return id == 0 ? 1 : id;
+    }
+
+    /** The identity of the file the open stream reads, taken when it was opened; 0 when unknown. */
+    private long openIdentity;
+
+    /**
+     * While tailing, at the end of the open file (review R4): why the open stream no longer reads the input, or null.
+     * The path names another file (replaced, or rotated and recreated: another file key), or the file is shorter than
+     * what was read from it (truncated). A path with no file (a rotation in progress) is not a change: the open file is
+     * read on until a file appears at the path. One file-attribute read per idle duty cycle. Not detected while running:
+     * a file rewritten in place to at least the length read, or replaced on a platform without file keys by a file at
+     * least that long; both are detected by the fingerprint at the next open.
+     */
+    private String inputChangedWhileOpen() {
+        java.nio.file.attribute.BasicFileAttributes attrs;
+        try {
+            attrs = Files.readAttributes(Paths.get(filename), java.nio.file.attribute.BasicFileAttributes.class);
+        } catch (IOException e) {
+            return null;
+        }
+        long identity = identityOf(attrs);
+        if (identity != 0 && openIdentity != 0 && identity != openIdentity) {
+            return "the input file was replaced while being read (another file at the path)";
+        }
+        long read = streamOffset + offset;
+        if (attrs.size() < read) {
+            return "the input file was truncated while being read (" + attrs.size() + " bytes, " + read + " read)";
+        }
+        return null;
+    }
+
+    /**
+     * The input changed under the open stream: it is closed, and the next duty cycle opens the file at the path, whose
+     * identity check moves a COMMITED pointer to a new epoch (replaced or truncated) or keeps it (the same leading bytes
+     * under another file key: a rewrite-and-rename appender). Lines of the old file already published are still
+     * delivered, but their acknowledgements are of the old epoch and never committed into the new file's pointer. An
+     * unterminated last line of the old file is not published. Other strategies read the new file from its start.
+     */
+    private void reopenAfterChange(String changed) {
+        if (warningEnabled) {
+            log.log(Level.WARNING, serviceName + ": " + changed + "; reopening " + filename);
+        }
+        if (publishToQueue) report(FeedState.BEHIND, changed + ": reopening");
+        try {
+            stream.close();
+        } catch (IOException e) {
+            // the stream is dropped either way
+        }
+        stream = null;
+        channel = null;
+        offset = 0;
+        if (!commitRead) {
+            streamOffset = 0;
         }
     }
 
@@ -546,14 +625,23 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
         return h;
     }
 
-    /** The fingerprint of the first {@code length} bytes of the input file, or 0 when fewer can be read. */
+    /**
+     * The fingerprint of the first {@code length} bytes of the file being read (the open channel, by positional reads
+     * that leave the stream's position alone), or 0 when fewer can be read or no file is open. Never of the file the
+     * path names now: after a replacement that is another file (review R4).
+     */
     private long fingerprint(int length) throws IOException {
-        try (InputStream in = Files.newInputStream(Paths.get(filename))) {
-            byte[] head = in.readNBytes(length);
-            if (head.length < length) return 0;
-            long h = fnv1a(head, 0, -1) ^ length;
-            return h == 0 ? 1 : h;
+        java.nio.channels.FileChannel in = channel;
+        if (in == null) return 0;
+        java.nio.ByteBuffer head = java.nio.ByteBuffer.allocate(length);
+        long at = 0;
+        while (head.hasRemaining()) {
+            int n = in.read(head, at);
+            if (n < 0) return 0;
+            at += n;
         }
+        long h = fnv1a(head.array(), 0, -1) ^ length;
+        return h == 0 ? 1 : h;
     }
 
     /** Extend a pointer file shorter than the current layout, keeping its offset (or 0 if it has none). */
@@ -660,6 +748,7 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
      */
     private void checkSourceIdentity() throws IOException {
         long identity = fileIdentity();
+        openIdentity = identity;
         synchronized (commitLock) {
             if (commitPointer == null || !commitRead) {
                 epoch = identity == 0 ? 1 : identity;
@@ -667,7 +756,7 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
                 boolean layoutCurrent = commitPointer.getLong(LAYOUT_SLOT) == LAYOUT_VERSION;
                 long recorded = layoutCurrent ? commitPointer.getLong(IDENTITY_SLOT) : 0;
                 int fingerprinted = layoutCurrent ? (int) commitPointer.getLong(FINGERPRINT_LENGTH_SLOT) : 0;
-                long size = Files.size(Paths.get(filename));
+                long size = channel.size();
                 boolean keyChanged = recorded != 0 && identity != 0 && recorded != identity;
                 boolean sameLeadingBytes = fingerprinted > 0
                         && fingerprint(fingerprinted) == commitPointer.getLong(FINGERPRINT_SLOT);
@@ -724,12 +813,16 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
      * fingerprinted over the header alone, and a rewrite with the same header go unnoticed at the next start. At each
      * commit, while the cover is below the maximum and the file has grown past it, the fingerprint is taken again over
      * up to the maximum: at most 4 KB read per commit, and nothing once the cover is full. A file rewritten in place
-     * while the source is running is not detected (the fingerprint is then taken of the new content). Under commitLock.
+     * while the source is running to at least the length read is not detected (the fingerprint is then taken of the new
+     * content). The fingerprint is of the file being read, never of the path: with no file open (the source stopped, or
+     * reopening after a replacement) it is not grown (review R4). Under commitLock.
      */
     private void growFingerprint(MappedByteBuffer pointer) {
         if (fingerprintCover >= FINGERPRINT_MAX_BYTES) return;
+        java.nio.channels.FileChannel open = channel;
+        if (open == null) return;
         try {
-            long size = Files.size(Paths.get(filename));
+            long size = open.size();
             if (size <= fingerprintCover) return;
             int cover = (int) Math.min(FINGERPRINT_MAX_BYTES, size);
             long fingerprint = fingerprint(cover);
@@ -895,6 +988,7 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
         if (stream != null) {
             stream.close();
             stream = null;
+            channel = null;
         }
     }
 

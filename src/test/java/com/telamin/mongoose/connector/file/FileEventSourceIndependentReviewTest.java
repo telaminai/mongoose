@@ -106,6 +106,169 @@ class FileEventSourceIndependentReviewTest {
         }
     }
 
+    // ---- R4 ----
+
+    /** R4: a file replaced at the path while it is tailed is read, under a new epoch. */
+    @Test
+    void aFileReplacedWhileTailedIsReadUnderANewEpoch() throws Exception {
+        Files.writeString(data(), "a\nb\n");
+        Run r = start();
+        try {
+            r.src().doWork();
+            assertEquals(List.of("a", "b"), r.drain());
+            r.src().doWork();
+            assertEquals(4, pointer());
+            long epoch = r.src().epoch();
+            Files.move(data(), dir.resolve("events.1"));
+            Files.writeString(data(), "new\n");
+            r.work(4);
+            assertEquals(List.of("new"), r.drain(), "the replacement is delivered, not reported caught up on the old file");
+            assertNotEquals(epoch, r.src().epoch());
+            r.work(2);
+            assertEquals(4, pointer(), "the new file's own offset");
+            assertEquals(r.src().epoch(), pointerEpoch());
+        } finally {
+            r.src().stop();
+        }
+    }
+
+    /** R4: a file truncated while it is tailed is read from its start, under a new epoch. */
+    @Test
+    void aFileTruncatedWhileTailedIsReadUnderANewEpoch() throws Exception {
+        Files.writeString(data(), "old-line\n");
+        Run r = start();
+        try {
+            r.src().doWork();
+            r.drain();
+            r.src().doWork();
+            assertEquals(9, pointer());
+            long epoch = r.src().epoch();
+            Files.writeString(data(), "new\n", StandardOpenOption.TRUNCATE_EXISTING);
+            r.work(4);
+            assertEquals(List.of("new"), r.drain());
+            assertNotEquals(epoch, r.src().epoch());
+            r.work(2);
+            assertEquals(4, pointer());
+        } finally {
+            r.src().stop();
+        }
+    }
+
+    /**
+     * R4, rotation: what the writer appended to the old file after it was renamed, before the source noticed, is read
+     * first; then the new file. The host sees the feed BEHIND across the switch, never CAUGHT_UP on the old file alone.
+     */
+    @Test
+    void aRotatedFileIsReadToItsEndBeforeTheNewOne() throws Exception {
+        Files.writeString(data(), "a\n");
+        Run r = start(ReadStrategy.COMMITED, true);
+        try {
+            r.src().doWork();
+            assertEquals(List.of("a"), r.drain());
+            r.src().doWork();
+            Path rotated = dir.resolve("events.1");
+            Files.move(data(), rotated);
+            Files.writeString(rotated, "b\n", StandardOpenOption.APPEND);
+            r.work(2);
+            Files.writeString(data(), "new\n");
+            List<Object> seen = new ArrayList<>();
+            for (int i = 0; i < 4; i++) {
+                r.src().doWork();
+                r.queue().drainTo(seen, 100);
+            }
+            assertEquals(List.of("b", "new"), seen.stream().filter(o -> !(o instanceof FeedStatus)).map(String::valueOf).toList());
+            List<FeedStatus> statuses = seen.stream().filter(o -> o instanceof FeedStatus).map(o -> (FeedStatus) o).toList();
+            assertTrue(statuses.stream().anyMatch(s -> s.state() == FeedState.BEHIND && s.detail() != null
+                    && s.detail().contains("replaced")), statuses.toString());
+            assertEquals(FeedState.CAUGHT_UP, statuses.get(statuses.size() - 1).state(), statuses.toString());
+        } finally {
+            r.src().stop();
+        }
+    }
+
+    /**
+     * R4: lines of the old file still unprocessed when the file is replaced are delivered, but their acknowledgement is
+     * of the old epoch: it never writes the old file's offsets into the new file's pointer.
+     */
+    @Test
+    void anOldFileAcknowledgementIsNotCommittedAfterALiveReplacement() throws Exception {
+        Files.writeString(data(), "aaaa\nbbbb\n");
+        Run r = start();
+        try {
+            r.src().doWork();
+            Files.delete(data());
+            Files.writeString(data(), "n\n");
+            r.work(4);
+            assertEquals(0, pointer(), "reset: nothing of the new file processed yet");
+            assertNotNull(r.queue().poll());
+            assertNotNull(r.queue().poll());
+            r.work(2);
+            assertEquals(0, pointer(), "the old file's lines were processed: never committed as offsets of the new file");
+            assertEquals(List.of("n"), r.drain());
+            r.work(2);
+            assertEquals(2, pointer());
+        } finally {
+            r.src().stop();
+        }
+    }
+
+    /**
+     * R4: a commit made after the file was replaced, for lines of the old file, fingerprints the file being read, never
+     * the new file at the path. Fingerprinting the path made the next start take the new file for the old one and skip
+     * its first bytes.
+     */
+    @Test
+    void aCommitAfterAReplacementNeverFingerprintsTheNewFile() throws Exception {
+        Files.writeString(data(), "a\nb\n");
+        Run r = start();
+        r.src().doWork();
+        Files.delete(data());
+        Files.writeString(data(), "new-1\nnew-2\n");
+        assertEquals(List.of("a", "b"), r.drain());
+        r.src().doWork();
+        r.src().stop();
+        Run next = start();
+        try {
+            next.work(2);
+            assertEquals(List.of("new-1", "new-2"), next.drain(), "the new file is read from its start");
+        } finally {
+            next.src().stop();
+        }
+    }
+
+    /** R4, a strategy without a pointer (EARLIEST): a truncated file is read again from its start. */
+    @Test
+    void anEarliestTailReadsATruncatedFileFromItsStart() throws Exception {
+        Files.writeString(data(), "old-line\n");
+        Run r = start(ReadStrategy.EARLIEST, false);
+        try {
+            r.src().doWork();
+            assertEquals(List.of("old-line"), r.drain());
+            Files.writeString(data(), "new\n", StandardOpenOption.TRUNCATE_EXISTING);
+            r.work(4);
+            assertEquals(List.of("new"), r.drain());
+        } finally {
+            r.src().stop();
+        }
+    }
+
+    /** A partial line buffered when the file is reopened is read again, not appended to twice. */
+    @Test
+    void aPartialLineIsReadOnceAcrossAReopen() throws Exception {
+        Files.writeString(data(), "a\npart");
+        Run r = start();
+        try {
+            r.src().doWork();
+            assertEquals(List.of("a"), r.drain());
+            r.src().closeStreamForTesting();
+            Files.writeString(data(), "ial\n", StandardOpenOption.APPEND);
+            r.work(2);
+            assertEquals(List.of("partial"), r.drain());
+        } finally {
+            r.src().stop();
+        }
+    }
+
     // ---- R5 (fixed by 2d0597a; aPointerFileHoldingOnlyTheOffsetIsUpgraded covers the 8-byte ASCII case) ----
 
     /**
