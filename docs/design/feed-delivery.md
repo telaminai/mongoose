@@ -417,6 +417,12 @@ item. Work the delivery publishes to another feed, queue or processor group is n
   running at once (inside a handler, before `@AfterEvent`, which would save half a cycle) and over throwing (a node
   should not need to know which feed delivered the event).
 - *Non-positioned items*: have no completion; nothing changes for them.
+- *Ownership*: a callback belongs to the processor being dispatched when it is registered
+  (`ProcessorContext.currentProcessor()`). A synthetic clock (a `ReplayRecord`) is installed as its processor, so a
+  callback that the installation's event cycle registers is owned by it; and a pending callback registered with no
+  current processor is claimed by the first processor that registers the same instance again (hook recheck F2:
+  before, a generated processor's save registered during its clock installation had no owner, so another processor's
+  failure discarded it although its own processor had handled the item and was not retried).
 - *Re-registration*: the same instance, while pending, is kept once (a node may register on every cycle of the
   delivery); distinct callbacks run in registration order; a callback registered by a running callback runs in the
   same pass. At most 65,536 registrations per delivery (`MAX_COMPLETIONS_PER_DELIVERY`), so a callback that registers
@@ -434,7 +440,8 @@ item. Work the delivery publishes to another feed, queue or processor group is n
   dispatched: the same rule as any failed item (section 3, *A failed item*). Holding the item instead would stall the
   feed for good on one failing save. In RECORD mode the first failure of a callback marks its processor's input
   `Failed` (D4: a retry is a failure, marked and not reproduced), exactly as a failed dispatch does, and that input's
-  ordinary entry is not written; a callback with no known processor marks every target. A replay stops at the mark,
+  ordinary entry is not written; a callback with no known processor marks every target. Each processor's input is
+  marked once, whichever of its callbacks fail and in whatever order (hook recheck F3). A replay stops at the mark,
   saying why (hook review R2, `DeliveryCompletionServerTest.aCallbackThatFailedLiveIsRecorded...`; before, the input
   was recorded as ordinary and the replay ran the callback once, diverging from the live run without a mark).
 - *Decision after R2: an exhausted callback's item is acknowledged, and reported as a loss.* Fixing R2 changes what

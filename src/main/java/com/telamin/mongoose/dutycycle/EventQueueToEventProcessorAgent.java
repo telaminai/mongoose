@@ -485,13 +485,18 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                     throw fatal;
                 } catch (Throwable t) {
                     if (recorder != null && !allMarked) {
+                        // once per processor and input, whichever way its callbacks fail (hook recheck F3)
+                        if (marked == null) marked = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
                         DataFlow owner = completion.owner();
                         if (owner == null || targets == null) {
-                            if (targets != null) recorder.failed(sourceName, delivered(event), t, targets);
+                            if (targets != null) {
+                                for (DataFlow target : targets) {
+                                    if (marked.add(target)) recorder.failed(sourceName, delivered(event), t, target);
+                                }
+                            }
                             allMarked = true;
-                        } else {
-                            if (marked == null) marked = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
-                            if (marked.add(owner)) recorder.failed(sourceName, delivered(event), t, owner);
+                        } else if (marked.add(owner)) {
+                            recorder.failed(sourceName, delivered(event), t, owner);
                         }
                     }
                     String warnMsg = "delivery completion callback failed: agent=" + name + ", attempt=" + attempt

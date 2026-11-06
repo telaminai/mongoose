@@ -27,8 +27,10 @@ package com.telamin.mongoose.service.delivery;
  *     feed, a timer, a service callback, no Mongoose reader) {@code onComplete} keeps nothing, runs nothing and
  *     returns false; the caller does its work itself.</li>
  *     <li>Callbacks run in registration order. Registering a callback (the same instance) that is already pending is a
- *     no-op, so a node may register on every cycle of the delivery; a callback registered while the callbacks run
- *     (by one of them) is run in the same pass.</li>
+ *     no-op, so a node may register on every cycle of the delivery, except that a pending callback registered with no
+ *     current processor is claimed by the first processor that registers it again; a callback registered while the
+ *     callbacks run (by one of them) is run in the same pass. A synthetic clock is installed as its processor, so a
+ *     callback the installation's cycle registers is owned by it.</li>
  *     <li>A processor's dispatch that fails discards the callbacks that processor registered (and any registered
  *     with no current processor); a retry registers them again. Callbacks of processors that handled the item are
  *     kept. A delivery that ends without completing (the group ends, the reader closes) runs none.</li>
@@ -124,8 +126,23 @@ public final class DeliveryContext {
         if (c.completions == null) {
             c.completions = new java.util.ArrayDeque<>(4);
         } else {
-            for (Completion pending : c.completions) {
-                if (pending.callback() == callback) return true;
+            com.telamin.fluxtion.runtime.DataFlow current = null;
+            boolean looked = false;
+            for (java.util.Iterator<Completion> it = c.completions.iterator(); it.hasNext(); ) {
+                Completion pending = it.next();
+                if (pending.callback() != callback) continue;
+                if (pending.owner() == null) {
+                    if (!looked) {
+                        current = com.telamin.mongoose.dispatch.ProcessorContext.currentProcessor();
+                        looked = true;
+                    }
+                    if (current != null) {
+                        // registered first with no current processor (hook recheck F2): a processor's dispatch that
+                        // registers it again claims it, in place, so another processor's failure no longer discards it
+                        replaceOwner(c.completions, pending, current);
+                    }
+                }
+                return true;
             }
         }
         if (++c.registered > MAX_COMPLETIONS_PER_DELIVERY) {
@@ -134,6 +151,15 @@ public final class DeliveryContext {
         }
         c.completions.add(new Completion(com.telamin.mongoose.dispatch.ProcessorContext.currentProcessor(), callback));
         return true;
+    }
+
+    /** Give {@code pending} the owner {@code owner}, keeping its place in the order. */
+    private static void replaceOwner(java.util.ArrayDeque<Completion> completions, Completion pending,
+                                     com.telamin.fluxtion.runtime.DataFlow owner) {
+        java.util.ArrayDeque<Completion> reordered = new java.util.ArrayDeque<>(completions.size());
+        for (Completion p : completions) reordered.add(p == pending ? new Completion(owner, p.callback()) : p);
+        completions.clear();
+        completions.addAll(reordered);
     }
 
     /** As {@link #onComplete(Runnable)}, for an injected instance. */

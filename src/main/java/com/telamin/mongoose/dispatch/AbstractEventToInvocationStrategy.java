@@ -194,11 +194,23 @@ public abstract class AbstractEventToInvocationStrategy implements EventToInvoke
         // REPLAY: a replayed processor is muted, and its clock is its ReplayClock; a live ReplayRecord must not swap
         // it for a synthetic clock, or every later entry replays on the live record's instant (#47 re-review A)
         if (anyMuted && mutedForReplay.contains(eventProcessor)) return;
-        syntheticClocks.computeIfAbsent(eventProcessor, k -> {
-            AtomicLong atomicLong = new AtomicLong();
-            eventProcessor.setClockStrategy(atomicLong::get);
-            return atomicLong;
-        }).set(time);
+        AtomicLong clock = syntheticClocks.get(eventProcessor);
+        if (clock == null) {
+            // installing a clock runs an event cycle in a generated processor: run it as that processor, so what the
+            // cycle registers (a delivery-complete callback, feed-delivery.md 5b; hook recheck F2) is owned by it
+            DataFlow outer = ProcessorContext.currentProcessor();
+            ProcessorContext.setCurrentProcessor(eventProcessor);
+            try {
+                AtomicLong installed = new AtomicLong();
+                eventProcessor.setClockStrategy(installed::get);
+                syntheticClocks.put(eventProcessor, installed);
+                clock = installed;
+            } finally {
+                if (outer == null) ProcessorContext.removeCurrentProcessor();
+                else ProcessorContext.setCurrentProcessor(outer);
+            }
+        }
+        clock.set(time);
     }
 
     @Override
