@@ -150,6 +150,7 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
         onceReadData = false;
         acknowledgedOffset = -1;
         legacyAlign = false;
+        if (output != null) output.setUnterminatedBytes(0);
         if (commitRead && output != null) {
             output.acknowledgeWith(committer);
         }
@@ -357,6 +358,8 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
             }
             if (publishToQueue) {
                 if (!tail) {
+                    // counted, so a host can tell machine-readably that the file ended without a line terminator
+                    output.setUnterminatedBytes(offset);
                     report(FeedState.END_OF_STREAM, offset > 0 ? "unterminated last line not published" : null);
                 } else {
                     // at the end of the file as it is now; an unterminated last line is published once it ends

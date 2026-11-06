@@ -235,6 +235,21 @@ class FileEventSourceFeedStatusTest {
         src.stop();
     }
 
+    /**
+     * Review 2, finding 9: a once strategy that ends with an unterminated last line counts its bytes, machine-readably
+     * (the report's {@code unterminated}); the feed is still settled and lossless (docs/design/feed-delivery.md 7).
+     */
+    @Test
+    void anUnterminatedLastLineOfAOnceReadIsCounted() throws Exception {
+        append("u1\nu2-partial");
+        FileEventSource src = source(ReadStrategy.ONCE_EARLIEST, false);
+        src.onStart(); src.start(); src.startComplete(); src.doWork();
+        assertStatus(status(), FeedState.END_OF_STREAM, 1, true);
+        assertEquals("unterminated last line not published", status().detail());
+        assertEquals("u2-partial".length(), publisher.unterminatedBytes());
+        src.stop();
+    }
+
     @Test
     void cachedLinesAreCountedOnceReplayed() throws Exception {
         append("k1\nk2\nk3\n");

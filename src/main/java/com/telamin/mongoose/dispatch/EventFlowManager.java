@@ -473,7 +473,7 @@ public class EventFlowManager {
                     publisher.overload().feedDefault().policy().name(), publisher.droppedCount(),
                     publisher.refusedCount(), publisher.downgradedCount(), publisher.paused(), publisher.pausedCount(),
                     publisher.acknowledgedSequence(), publisher.pendingAcknowledgements(), publisher.liveConsumers(),
-                    publisher.stallReason());
+                    publisher.stallReason(), publisher.unterminatedBytes());
             feeds.add(new com.telamin.mongoose.service.feedstatus.FeedStatusReport.Feed(feed, status.state(),
                     status.bounded(), status.sequence(), position.version(), status.detail(), drained, delivery,
                     subscribers));

@@ -109,10 +109,19 @@ public record FeedStatusReport(boolean settled, boolean lossless, List<String> f
      * @param consumers    subscriber queues of the feed that can consume now (not fenced, not dead)
      * @param stalled      why a positioned feed holds its position and cannot complete (no live consumer, a consumer
      *                     fenced or dead, a removed consumer's unprocessed items), or null
+     * @param unterminated bytes after the last line terminator that a bounded source ended without publishing (a
+     *                     once-read file whose last line has no newline): not an item, so neither a loss nor a hold;
+     *                     0 for every other source (docs/design/feed-delivery.md section 7)
      */
     public record Delivery(String policy, long dropped, long refused, long downgraded, boolean paused, long pauses,
-                           long acknowledged, int pendingAcks, int consumers, String stalled) {
-        public static final Delivery NONE = new Delivery("DROP_AFTER_SPIN", 0, 0, 0, false, 0, 0, 0, 0, null);
+                           long acknowledged, int pendingAcks, int consumers, String stalled, long unterminated) {
+        public static final Delivery NONE = new Delivery("DROP_AFTER_SPIN", 0, 0, 0, false, 0, 0, 0, 0, null, 0);
+
+        /** As before {@code unterminated} was reported: 0. */
+        public Delivery(String policy, long dropped, long refused, long downgraded, boolean paused, long pauses,
+                        long acknowledged, int pendingAcks, int consumers, String stalled) {
+            this(policy, dropped, refused, downgraded, paused, pauses, acknowledged, pendingAcks, consumers, stalled, 0);
+        }
 
         public boolean lossless() {
             return dropped == 0 && refused == 0;
@@ -167,6 +176,7 @@ public record FeedStatusReport(boolean settled, boolean lossless, List<String> f
                     .append(",\"stalled\":");
             if (d.stalled() == null) b.append("null");
             else quote(b, d.stalled());
+            b.append(",\"unterminated\":").append(d.unterminated());
             b.append(",\"subscribers\":[");
             for (int j = 0; j < f.subscribers().size(); j++) {
                 Subscriber s = f.subscribers().get(j);
@@ -197,6 +207,7 @@ public record FeedStatusReport(boolean settled, boolean lossless, List<String> f
                     .append(" acknowledged=").append(f.delivery().acknowledged());
             if (f.delivery().paused()) b.append(" PAUSED");
             if (f.delivery().stalled() != null) b.append(" STALLED (").append(f.delivery().stalled()).append(')');
+            if (f.delivery().unterminated() > 0) b.append(" unterminated=").append(f.delivery().unterminated());
             if (f.detail() != null) b.append(" (").append(f.detail()).append(')');
             for (Subscriber s : f.subscribers()) {
                 b.append("\n\t\t").append(s.queue()).append(": ").append(s.dispatched()).append('/').append(s.position());

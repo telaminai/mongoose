@@ -190,8 +190,8 @@ public class OverloadPolicyConfig {
      * <ul>
      *     <li>an {@code overload} block wins; an explicit {@code slowConsumerStrategy} beside it is ignored, with a
      *     warning;</li>
-     *     <li>else an explicit {@code slowConsumerStrategy: BACKOFF} maps to {@code DROP_AFTER_SPIN} (what it has always
-     *     done), with a warning; {@code DISCONNECT} and {@code EXIT_PROCESS} fail boot, naming the feed, until they are
+     *     <li>else an explicit {@code slowConsumerStrategy: BACKOFF} maps to an explicit {@code DROP_AFTER_SPIN} (what it
+     *     has always done, also on a source whose own default is {@code PAUSE}), with a warning; {@code DISCONNECT} and {@code EXIT_PROCESS} fail boot, naming the feed, until they are
      *     implemented;</li>
      *     <li>else the feed gets {@link FeedOverloadSettings#DEFAULT}, with a one-time boot warning that it has no
      *     explicit policy.</li>
@@ -213,7 +213,9 @@ public class OverloadPolicyConfig {
                 case BACKOFF -> {
                     LOG.warning("feed '" + feed + "': slowConsumerStrategy BACKOFF is deprecated and means "
                             + "DROP_AFTER_SPIN (spin 10 ms, then drop for that queue); set overload.policy explicitly");
-                    return FeedOverloadSettings.DEFAULT;
+                    // explicit, so it means what the warning says on every source, including one whose default is
+                    // PAUSE (a file feed): an explicit choice always wins over the source's default (review 2, finding 9)
+                    return FeedOverloadSettings.of(com.telamin.mongoose.dispatch.OverloadSettings.DEFAULT);
                 }
                 case DISCONNECT, EXIT_PROCESS -> throw new ConfigurationException("feed '" + feed
                         + "': slowConsumerStrategy " + slowConsumerStrategy + " is not implemented; use an overload "

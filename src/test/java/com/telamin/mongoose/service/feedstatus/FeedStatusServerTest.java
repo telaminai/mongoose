@@ -187,7 +187,7 @@ class FeedStatusServerTest {
                 + "\"lines\",\"state\":\"CAUGHT_UP\",\"bounded\":false,\"sequence\":3,\"version\":2,\"detail\":null,"
                 + "\"drained\":true,\"settled\":true,\"lossless\":true,\"policy\":\"PAUSE\",\"dropped\":0,\"refused\":0,"
                 + "\"downgraded\":0,\"paused\":false,\"pauses\":0,\"acknowledged\":0,\"pendingAcks\":0,"
-                + "\"consumers\":1,\"stalled\":null,\"subscribers\":[{\"queue\":\"g/lines/onEventCallBack\",\"position\":3,\"dispatched\":3,"
+                + "\"consumers\":1,\"stalled\":null,\"unterminated\":0,\"subscribers\":[{\"queue\":\"g/lines/onEventCallBack\",\"position\":3,\"dispatched\":3,"
                 + "\"drained\":true}]}"), json);
         assertTrue(server.feedStatus().settled(), "every feed of the server settled: " + server.feedStatus());
 
@@ -202,7 +202,7 @@ class FeedStatusServerTest {
 
     @Test
     void aBoundedFileEndsAndASilentSourceIsAFallbackFeed() throws Exception {
-        Path data = file("once.txt", "o1\no2\n");
+        Path data = file("once.txt", "o1\no2\nend");
         Probe processor = new Probe("once", null);
         MongooseServerConfig cfg = new MongooseServerConfig();
         cfg.addProcessor("g", processor, "probe");
@@ -217,6 +217,10 @@ class FeedStatusServerTest {
         assertTrue(report.feed("once").bounded());
         assertEquals(2, report.feed("once").sequence());
         assertEquals(2, processor.lines.get());
+        // the unterminated "end" is not an item: settled and lossless, but counted (review 2, finding 9)
+        assertEquals(3, report.feed("once").delivery().unterminated());
+        assertTrue(report.lossless());
+        assertTrue(report.toJson().contains("\"unterminated\":3"), report.toJson());
         assertEquals(FeedState.UNKNOWN, report.feed("silent").state());
         assertEquals(List.of("silent"), report.fallbackFeeds(), "the caller falls back to its heuristic for this feed only");
     }

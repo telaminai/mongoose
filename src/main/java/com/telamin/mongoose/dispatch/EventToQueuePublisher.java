@@ -319,6 +319,12 @@ public class EventToQueuePublisher<T> {
     /** Ack points of removed queues retained for their unprocessed items ({@link AckPoint#retained}); under the lock. */
     @Getter(lombok.AccessLevel.NONE)
     private int retainedAckPoints;
+    /**
+     * Bytes after the last line terminator that a bounded source ended without publishing (an unterminated last line
+     * of a once-read file), as the source last reported them; 0 for every other source.
+     */
+    @Getter(lombok.AccessLevel.NONE)
+    private volatile long unterminatedBytes;
     /** Bindings whose policy is PAUSE; guarded by the publish lock. */
     @Getter(lombok.AccessLevel.NONE)
     private int pauseTargets;
@@ -1445,6 +1451,15 @@ public class EventToQueuePublisher<T> {
                 it.remove();
             }
         }
+    }
+
+    /** See {@link #unterminatedBytes}: set by a bounded source when it ends (0 otherwise). */
+    public void setUnterminatedBytes(long bytes) {
+        this.unterminatedBytes = bytes;
+    }
+
+    public long unterminatedBytes() {
+        return unterminatedBytes;
     }
 
     /** The highest sequence number acknowledged to the source's committer. */
