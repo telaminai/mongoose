@@ -19,11 +19,12 @@ import java.util.List;
  * its own thread can still follow, so a launcher keeps a short quiet period as a backstop.
  * <p>
  * {@code lossless} (docs/design/feed-delivery.md, section 7) is true when no feed in the report has dropped an item for
- * any subscriber queue or refused a publish. {@code settled} says the run is complete, {@code lossless} whether it is
+ * any subscriber queue, refused a publish, or acknowledged an item whose delivery-complete callback was given up on
+ * ({@code completionFailures}, section 5b). {@code settled} says the run is complete, {@code lossless} whether it is
  * whole: a launcher stops on {@code settled} and fails the run when {@code lossless} is false.
  *
  * @param settled       every reporting feed caught up (or ended) and drained
- * @param lossless      no feed in the report has dropped or refused an item
+ * @param lossless      no feed in the report has dropped or refused an item or given up on a delivery completion
  * @param fallbackFeeds feeds whose source cannot tell, sorted
  * @param feeds         every feed in the report, sorted by name
  */
@@ -87,7 +88,10 @@ public record FeedStatusReport(boolean settled, boolean lossless, List<String> f
             return state.caughtUp() && drained && delivery.stalled() == null;
         }
 
-        /** No item of this feed was dropped for any subscriber queue, and no publish was refused. */
+        /**
+         * No item of this feed was dropped for any subscriber queue, no publish was refused, and no item's
+         * delivery-complete callback was given up on.
+         */
         public boolean lossless() {
             return delivery.lossless();
         }
@@ -112,19 +116,32 @@ public record FeedStatusReport(boolean settled, boolean lossless, List<String> f
      * @param unterminated bytes after the last line terminator that a bounded source ended without publishing (a
      *                     once-read file whose last line has no newline): not an item, so neither a loss nor a hold;
      *                     0 for every other source (docs/design/feed-delivery.md section 7)
+     * @param completionFailures delivery-complete callbacks ({@code DeliveryContext.onComplete}) skipped after the
+     *                     reader's retry policy gave up: their items were acknowledged although the callback (typically
+     *                     a durable save) never succeeded, so each is a loss (docs/design/feed-delivery.md section 5b).
+     *                     A callback that failed and then succeeded on retry is not counted
      */
     public record Delivery(String policy, long dropped, long refused, long downgraded, boolean paused, long pauses,
-                           long acknowledged, int pendingAcks, int consumers, String stalled, long unterminated) {
-        public static final Delivery NONE = new Delivery("DROP_AFTER_SPIN", 0, 0, 0, false, 0, 0, 0, 0, null, 0);
+                           long acknowledged, int pendingAcks, int consumers, String stalled, long unterminated,
+                           long completionFailures) {
+        public static final Delivery NONE = new Delivery("DROP_AFTER_SPIN", 0, 0, 0, false, 0, 0, 0, 0, null, 0, 0);
+
+        /** As before {@code completionFailures} was reported: 0. */
+        public Delivery(String policy, long dropped, long refused, long downgraded, boolean paused, long pauses,
+                        long acknowledged, int pendingAcks, int consumers, String stalled, long unterminated) {
+            this(policy, dropped, refused, downgraded, paused, pauses, acknowledged, pendingAcks, consumers, stalled,
+                    unterminated, 0);
+        }
 
         /** As before {@code unterminated} was reported: 0. */
         public Delivery(String policy, long dropped, long refused, long downgraded, boolean paused, long pauses,
                         long acknowledged, int pendingAcks, int consumers, String stalled) {
-            this(policy, dropped, refused, downgraded, paused, pauses, acknowledged, pendingAcks, consumers, stalled, 0);
+            this(policy, dropped, refused, downgraded, paused, pauses, acknowledged, pendingAcks, consumers, stalled, 0, 0);
         }
 
+        /** Nothing dropped or refused, and no delivery completion given up on. */
         public boolean lossless() {
-            return dropped == 0 && refused == 0;
+            return dropped == 0 && refused == 0 && completionFailures == 0;
         }
     }
 
@@ -177,6 +194,7 @@ public record FeedStatusReport(boolean settled, boolean lossless, List<String> f
             if (d.stalled() == null) b.append("null");
             else quote(b, d.stalled());
             b.append(",\"unterminated\":").append(d.unterminated());
+            b.append(",\"completionFailures\":").append(d.completionFailures());
             b.append(",\"subscribers\":[");
             for (int j = 0; j < f.subscribers().size(); j++) {
                 Subscriber s = f.subscribers().get(j);
@@ -208,6 +226,9 @@ public record FeedStatusReport(boolean settled, boolean lossless, List<String> f
             if (f.delivery().paused()) b.append(" PAUSED");
             if (f.delivery().stalled() != null) b.append(" STALLED (").append(f.delivery().stalled()).append(')');
             if (f.delivery().unterminated() > 0) b.append(" unterminated=").append(f.delivery().unterminated());
+            if (f.delivery().completionFailures() > 0) {
+                b.append(" completionFailures=").append(f.delivery().completionFailures());
+            }
             if (f.detail() != null) b.append(" (").append(f.detail()).append(')');
             for (Subscriber s : f.subscribers()) {
                 b.append("\n\t\t").append(s.queue()).append(": ").append(s.dispatched()).append('/').append(s.position());

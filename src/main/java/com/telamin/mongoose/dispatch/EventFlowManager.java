@@ -473,7 +473,7 @@ public class EventFlowManager {
                     publisher.overload().feedDefault().policy().name(), publisher.droppedCount(),
                     publisher.refusedCount(), publisher.downgradedCount(), publisher.paused(), publisher.pausedCount(),
                     publisher.acknowledgedSequence(), publisher.pendingAcknowledgements(), publisher.liveConsumers(),
-                    publisher.stallReason(), publisher.unterminatedBytes());
+                    publisher.stallReason(), publisher.unterminatedBytes(), publisher.completionFailureCount());
             feeds.add(new com.telamin.mongoose.service.feedstatus.FeedStatusReport.Feed(feed, status.state(),
                     status.bounded(), status.sequence(), position.version(), status.detail(), drained, delivery,
                     subscribers));
@@ -690,7 +690,7 @@ public class EventFlowManager {
         };
         var reader = new EventQueueToEventProcessorAgent(eventQueue, eventMapperSupplier.get(), name, eventSourceKey.sourceName(),
                 type.name()).withUnsubscribeAction(unsubscribeAndUnbind).withDropMarks(dropMarks)
-                .withDispatchedCounter(dispatched);
+                .withDispatchedCounter(dispatched).withCompletionFailureCounter(queuePublisher::completionFailed);
         queuePublisher.bindContainment(name, () -> reader.failureFenced()
                 || (subscriber instanceof com.telamin.mongoose.dutycycle.ComposingEventProcessorAgent group
                     && group.control().state() == com.telamin.mongoose.control.ControlDriver.GroupState.DEAD),

@@ -2341,6 +2341,23 @@ public class EventToQueuePublisher<T> {
         return refusedCount;
     }
 
+    /**
+     * Delivery-complete callbacks of this feed's items that a reader skipped after its retry policy gave up (the item was
+     * acknowledged without them): a loss, reported in {@code feed.status} (docs/design/feed-delivery.md 5b). Written by
+     * the processor groups' threads.
+     */
+    private final java.util.concurrent.atomic.AtomicLong completionFailures = new java.util.concurrent.atomic.AtomicLong();
+
+    /** A reader gave up on a delivery-complete callback of one of this feed's items. Any thread. */
+    public void completionFailed() {
+        completionFailures.incrementAndGet();
+    }
+
+    /** See {@link #completionFailed()}. */
+    public long completionFailureCount() {
+        return completionFailures.get();
+    }
+
     /** Refusals attributed to the current binding named {@code queueName}; removed bindings are forgotten. */
     public long refusedCount(String queueName) {
         synchronized (publishLock) {

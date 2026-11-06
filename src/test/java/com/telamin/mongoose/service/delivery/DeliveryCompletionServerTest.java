@@ -68,6 +68,8 @@ class DeliveryCompletionServerTest {
         private final Runnable complete = this::complete;
         /** Live only: the first completion throws once, then the reader's retry succeeds. */
         boolean failFirstCompletion;
+        /** The completion of line "a" always throws: the reader's retry policy gives up. */
+        boolean alwaysFailFirstLine;
 
         @ServiceRegistered
         public void sink(MessageSink<String> sink, String name) {
@@ -98,6 +100,10 @@ class DeliveryCompletionServerTest {
                 throw new IllegalStateException("DEMO transient completion failure");
             }
             Delivery d = DeliveryContext.current();
+            if (alwaysFailFirstLine && d.positionAsLong() == 2) {
+                applied.clear();
+                throw new IllegalStateException("DEMO the save of line a keeps failing");
+            }
             MongooseServer s = server;
             if (s != null) {
                 try {
@@ -253,5 +259,52 @@ class DeliveryCompletionServerTest {
     @Test
     void aCallbackThatFailedLiveIsRecordedAsAFailureInline() throws Exception {
         aCallbackFailureIsRecordedAsAFailure(Map.of());
+    }
+
+    /** Run a live server over "a\nb\n" with {@code saver} until both lines are acknowledged; the feed's report. */
+    private com.telamin.mongoose.service.feedstatus.FeedStatusReport runToAcknowledged(Saver saver, int outputs)
+            throws Exception {
+        Path file = tempDir.resolve("lines.txt");
+        Files.writeString(file, "a\nb\n", StandardCharsets.UTF_8);
+        InMemoryMessageSink sink = new InMemoryMessageSink();
+        MongooseServer server = boot(null, file, ReadStrategy.COMMITED, sink, saver);
+        try {
+            await(() -> sink.getMessages().size() == outputs, "both lines handled: " + sink.getMessages());
+            await(() -> server.feedStatus(FEED).feed(FEED).delivery().acknowledged() == 2, "both lines acknowledged");
+            await(() -> server.feedStatus(FEED).settled(), "settled");
+            return server.feedStatus(FEED);
+        } finally {
+            server.stop();
+        }
+    }
+
+    /**
+     * Owner decision after hook review R2: a completion callback skipped after its retry policy gave up leaves the item
+     * acknowledged, so the feed reports it as a loss: {@code completionFailures} counts it and {@code lossless} is
+     * false for the feed and the report, so a launcher that fails a run that is not lossless fails this one.
+     */
+    @Test
+    void anExhaustedCallbackMakesTheFeedNotLossless() throws Exception {
+        Saver saver = new Saver();
+        saver.alwaysFailFirstLine = true;
+        var report = runToAcknowledged(saver, 5);
+        String json = report.toJson();
+        assertFalse(report.feed(FEED).lossless(), "the feed lost line a's completion: " + json);
+        assertFalse(report.lossless(), json);
+        assertTrue(json.contains("\"completionFailures\":1"), json);
+        assertTrue(json.startsWith("{\"settled\":true,\"lossless\":false"), json);
+        assertTrue(report.toString().contains("completionFailures=1"), report.toString());
+    }
+
+    /** A callback that fails and then succeeds on the reader's retry lost nothing: the feed stays lossless. */
+    @Test
+    void aCallbackThatSucceedsOnRetryKeepsTheFeedLossless() throws Exception {
+        Saver saver = new Saver();
+        saver.failFirstCompletion = true;
+        var report = runToAcknowledged(saver, 6);
+        String json = report.toJson();
+        assertTrue(report.lossless(), json);
+        assertTrue(report.feed(FEED).lossless(), json);
+        assertTrue(json.contains("\"completionFailures\":0"), json);
     }
 }

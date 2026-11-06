@@ -508,6 +508,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                         logger.severe(errMsg);
                         com.telamin.mongoose.service.error.ErrorReporting.report("EventQueueToEventProcessorAgent:" + name,
                                 errMsg, t, com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
+                        if (completionFailed != null) completionFailed.run();   // feed.status: not lossless
                         break;
                     }
                     retryPolicy.backoff(attempt);
@@ -618,6 +619,15 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                     + (unmarked > 0 ? ", plus " + unmarked + " dropped while the drop marks were full" : "") + "): "
                     + reason + "; the processor never received them");
         }
+    }
+
+    /** Called once per delivery-complete callback skipped after the retry policy gave up: the feed reports the loss. */
+    private Runnable completionFailed;
+
+    /** Report each delivery-complete callback given up on to the feed (docs/design/feed-delivery.md 5b, 7). */
+    public EventQueueToEventProcessorAgent withCompletionFailureCounter(Runnable completionFailed) {
+        this.completionFailed = completionFailed;
+        return this;
     }
 
     /** Count each item this reader finishes dispatching into {@code dispatched} (docs/design/feed-caught-up.md). */

@@ -219,6 +219,7 @@ Response (one `output` call; on an unknown feed one `errOutput` call:
   {"feed":"lines","state":"CAUGHT_UP","bounded":false,"sequence":3,"version":2,"detail":null,
    "drained":true,"settled":true,"lossless":true,"policy":"PAUSE","dropped":0,"refused":0,"downgraded":0,
    "paused":false,"pauses":0,"acknowledged":3,"pendingAcks":0,"consumers":1,"stalled":null,"unterminated":0,
+   "completionFailures":0,
    "subscribers":[{"queue":"g/lines/onEventCallBack","position":3,"dispatched":3,"drained":true}]}]}
 ```
 

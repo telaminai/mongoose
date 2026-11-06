@@ -148,9 +148,10 @@ The guarantees:
 - **Failures.** If a processor's dispatch throws, the callbacks it registered are discarded and a retry registers them
   again; `DeliveryContext.attempt()` tells a retry (the count grew) from a queued event (the same count). A callback
   that throws is retried alone, under the processor group's retry policy, with the line still uncommitted; if the policy
-  gives up, the error is reported and the line is committed, like any line a failure policy has decided on. That
-  commit is not shown as a loss in `feed.status`: alert on the ERROR report, because a save that keeps failing lets
-  the source move past state that is not saved. In a recording, a callback that failed marks its processor's input
+  gives up, the error is reported and the line is committed, like any line a failure policy has decided on, and
+  `feed.status` counts it in the feed's `completionFailures` and reports the feed `lossless:false`: a save that kept
+  failing let the source move past state that is not saved. A callback that succeeds on a retry is not a loss. In a
+  recording, a callback that failed marks its processor's input
   `Failed`, and a replay stops there.
 - **Replay.** A replay runs each replayed input's callbacks the same way, inside the input's replay.
 

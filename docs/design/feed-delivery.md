@@ -437,14 +437,21 @@ item. Work the delivery publishes to another feed, queue or processor group is n
   ordinary entry is not written; a callback with no known processor marks every target. A replay stops at the mark,
   saying why (hook review R2, `DeliveryCompletionServerTest.aCallbackThatFailedLiveIsRecorded...`; before, the input
   was recorded as ordinary and the replay ran the callback once, diverging from the live run without a mark).
-- *Decision kept after R2: an exhausted callback's item is acknowledged.* Fixing R2 changes what the recording says,
-  not the delivery policy. The item still counts as dispatched once the retry policy gives up, so the source commits
-  past it; the failure is visible as WARNING/ERROR reports and as the `Failed` mark in a recording, but **not** in
-  `feed.status` (`lossless` counts publisher drops and refusals only, `drained` and `acknowledged` advance). For a
-  node that saves state in its callback this means a save that keeps failing lets the source position move past
-  state that is not durable: a crash before a later successful save loses that delivery's effect. Completion is
-  therefore not a durability guarantee when saves fail; operators should alert on the ERROR report. A hold policy or a
-  `completionFailures` status field is follow-up 6 (section 12).
+- *Decision after R2: an exhausted callback's item is acknowledged, and reported as a loss.* Fixing R2 changes what
+  the recording says, not the delivery policy: the item still counts as dispatched once the retry policy gives up, so
+  the source commits past it (holding it would stall the feed for good on one failing save). For a node that saves
+  state in its callback, a save that keeps failing therefore lets the source position move past state that is not
+  durable; a crash before a later successful save loses that delivery's effect. So the owner decided it is a loss in
+  `feed.status`: each callback skipped after its retries counts in the feed's `completionFailures` (section 7), and a
+  non-zero count makes the feed and the report `lossless:false`, so a launcher that fails a run that is not lossless
+  (section 7, settled rule step 5) fails this one. Only exhausted callbacks count: a callback that fails and then
+  succeeds on the reader's retry lost nothing and leaves the feed lossless. The three signals answer different
+  questions: `completionFailures` (and `lossless`) say the run is not whole; the ERROR report says when and why; in a
+  recording, the `Failed` mark is written at a callback's **first** failure, retried or not, because the retry itself
+  is not reproducible (D4). `completionFailures` is separate from `dropped` and `refused`: those count items the
+  publisher never put in a queue, this counts items processed whose completion never succeeded; all three are losses
+  and none includes another (`DeliveryCompletionServerTest.anExhaustedCallbackMakesTheFeedNotLossless`,
+  `aCallbackThatSucceedsOnRetryKeepsTheFeedLossless`).
 - *Several queues* (a broadcast feed, several groups): each queue's reader completes its own delivery of the item on
   its own thread, with the callbacks registered there; the source acknowledges the item when every queue has counted
   it (section 3), so after every group's callbacks.
@@ -587,8 +594,10 @@ eventFeeds:
 ```
 
 - `dropped`, `refused`, `downgraded`: the publisher's cumulative counters (queue copies dropped; BLOCK publishes
-  refused; publishes that could neither wait nor pause). `lossless` per feed = `dropped == 0 && refused == 0`; top-level
-  = every feed in the report lossless. `downgraded` alone is not a loss (any loss it caused is in `dropped`).
+  refused; publishes that could neither wait nor pause). `completionFailures`: delivery-complete callbacks a reader
+  skipped after its retry policy gave up (section 5b), whose items were acknowledged without them. `lossless` per feed
+  = `dropped == 0 && refused == 0 && completionFailures == 0`; top-level = every feed in the report lossless.
+  `downgraded` alone is not a loss (any loss it caused is in `dropped`).
 - `policy` (the feed's effective default), `paused` (now), `pauses` (episodes), `acknowledged` (highest sequence
   committed by the source's committer; 0 for a source that tracks no positions), `pendingAcks` (the window).
 
@@ -749,7 +758,7 @@ And `setPauseByDefault(true)` in `setEventFlowManager` if PAUSE should be its de
   its warning says, also on a file feed (it used to resolve to the unconfigured default, which a file source turns
   into PAUSE). An explicit policy also changes the feed's queue-drop health check to the #79 overload states.
 - `feed.status` JSON gains fields (`lossless`, per feed `lossless`, `policy`, `dropped`, `refused`, `downgraded`,
-  `paused`, `pauses`, `acknowledged`, `pendingAcks`, `consumers`, `stalled`, `unterminated`); `FeedStatusReport` and `FeedStatusReport.Feed` gain components
+  `paused`, `pauses`, `acknowledged`, `pendingAcks`, `consumers`, `stalled`, `unterminated`, `completionFailures`); `FeedStatusReport` and `FeedStatusReport.Feed` gain components
   (both new on this branch, unreleased).
 - New: `OverloadPolicy.PAUSE`, `OverloadSettings.PAUSE`/`pause()`/`pauses()`/`neverDrop()`,
   `OverloadPolicyConfig.pause()`; `EventToQueuePublisher.tryPublish`, `cache(item, position)`, `acknowledgeWith`,
@@ -867,9 +876,9 @@ And `setPauseByDefault(true)` in `setEventFlowManager` if PAUSE should be its de
    (a wedged PAUSE subscriber stalls the feed silently today, visible only in `feed.status`).
 5. Fold `BLOCK_WITH_DEADLINE`'s agent-thread downgrade into PAUSE for push sources that can buffer (in-memory: keep in
    its staging queue instead of draining).
-6. Delivery-complete failures in `feed.status` (section 5b): a `completionFailures` count per feed, or an opt-in hold
-   that keeps an item unacknowledged while its completion keeps failing, reported `stalled` with the reason, so a
-   launcher and an operator see durable-state failures, not only the ERROR report.
+6. (Done: `completionFailures` in `feed.status`, section 5b.) An opt-in hold that keeps an item unacknowledged while
+   its completion keeps failing, reported `stalled` with the reason, for applications that prefer a stall to an
+   acknowledged loss.
 
 ## 13. Open questions
 

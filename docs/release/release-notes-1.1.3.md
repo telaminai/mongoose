@@ -16,7 +16,8 @@ unchanged from 1.1.2.
 - **`DeliveryContext`.** A processor can read each item's feed, sequence, epoch and source position, store the position
   with its state, and skip re-delivered items (`Delivery.alreadyApplied`). Recordings carry it.
   `DeliveryContext.onComplete(Runnable)` runs a callback once the delivery is complete, after the events it queued
-  reentrantly and before the feed can commit it: the recommended place to save state with the position.
+  reentrantly and before the feed can commit it: the recommended place to save state with the position. A callback
+  given up on after its retries is a loss: `feed.status` counts it in `completionFailures` and reports `lossless:false`.
   See [De-duplicate re-delivered events](../example/how-to/how-to-deduplicate-with-delivery-context.md).
 - **`ProcessingCheckpoint`.** A processor that saves state asynchronously or in batches can hold commits until its
   state is durable.
@@ -66,6 +67,7 @@ Read these before upgrading a deployment that uses file feeds.
 - `OverloadPolicy.PAUSE`, `OverloadPolicyConfig.pause()`; YAML `overload.policy: PAUSE`.
 - `DeliveryContext` and `Delivery` (service `mongoose.deliveryContext`); `DeliveryContext.onComplete`,
   `whenComplete` and `attempt()`.
+- `FeedStatusReport.Delivery.completionFailures()` (`feed.status` field `completionFailures`), counted in `lossless`.
 - `ProcessingCheckpointService` (service `mongoose.processingCheckpoints`), `ProcessingCheckpoint`,
   `MongooseServer.processingCheckpoint(feed, group)`.
 - For source authors: `EventToQueuePublisher.tryPublish(item, position)`, `acknowledgeWith`, `pollAcknowledgements`,

@@ -112,7 +112,7 @@ With `--json`, for a launcher:
 {"settled":true,"lossless":true,"fallbackFeeds":[],"feeds":[{"feed":"orders","state":"CAUGHT_UP",
  "bounded":false,"sequence":20000,"version":2,"detail":null,"drained":true,"settled":true,"lossless":true,
  "policy":"PAUSE","dropped":0,"refused":0,"downgraded":0,"paused":false,"pauses":1085,"acknowledged":0,
- "pendingAcks":0,"consumers":1,"stalled":null,"unterminated":0,
+ "pendingAcks":0,"consumers":1,"stalled":null,"unterminated":0,"completionFailures":0,
  "subscribers":[{"queue":"orders-agent/orders/onEventCallBack","position":20002,"dispatched":20002,"drained":true}]}]}
 ```
 
@@ -123,13 +123,13 @@ With `--json`, for a launcher:
 | Field | Meaning |
 | --- | --- |
 | `settled` (top level) | Every *reporting* feed in the report is settled. Feeds in `UNKNOWN` do not hold it back. |
-| `lossless` (top level) | No feed in the report has dropped or refused an item. |
+| `lossless` (top level) | No feed in the report has dropped or refused an item or given up on a delivery completion. |
 | `fallbackFeeds` | Feeds in `UNKNOWN`, sorted. |
 | `state`, `bounded`, `detail` | The state the source last reported, whether the source is finite, and its reason for humans (`starting`, `file not found: ...`, `partial line pending`, ...). |
 | `sequence` | How many items the feed had published **when it reported the state**. It is the position of the claim, not a live counter: while a feed reads, it can stay at the last report's value. |
 | `version` | Changes whenever the feed reports. A different value between two reads means the feed moved. |
 | `drained`, `settled` (per feed) | As above. |
-| `lossless`, `dropped`, `refused`, `downgraded` | Losses. `lossless` is `dropped == 0 && refused == 0`. `downgraded` counts publishes that met a full never-drop queue and could neither wait nor pause; any loss they caused is in `dropped`. |
+| `lossless`, `dropped`, `refused`, `downgraded`, `completionFailures` | Losses. `lossless` is `dropped == 0 && refused == 0 && completionFailures == 0`. `completionFailures` counts `DeliveryContext.onComplete` callbacks (typically a state save) given up on after the processor group's retry policy: the item was committed without them. A callback that succeeds on a retry is not counted. `downgraded` counts publishes that met a full never-drop queue and could neither wait nor pause; any loss they caused is in `dropped`. |
 | `policy`, `paused`, `pauses` | The feed's overload policy, whether the source is paused now, and how many times it has paused. See [Configuring overload and loss](../../guide/overload-configuration.md). |
 | `acknowledged`, `pendingAcks` | For a feed that commits positions (a `COMMITED` file feed): the highest sequence committed, and how many published items are not yet. 0 for other feeds. |
 | `consumers` | Subscriber queues that can consume now. |
