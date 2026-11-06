@@ -211,4 +211,51 @@ class FileEventSourcePointerTest {
         assertEquals("new-1\n".length(), pointer());
         src.stop();
     }
+
+    /** Finding 7: a pointer file shorter than the current layout (an 8-byte offset only) starts, at its offset. */
+    @Test
+    void aPointerFileHoldingOnlyTheOffsetIsUpgraded() throws Exception {
+        write(1, 4);
+        Files.write(pointerFile(), ByteBuffer.allocate(8).putLong(0, offsetAfter(2)).array());
+        Run r = run();
+        r.src().doWork();
+        assertEquals(List.of("line-3", "line-4"), r.drain());
+        r.src().doWork();
+        assertEquals(offsetAfter(4), pointer());
+        assertTrue(Files.size(pointerFile()) >= 1024, "extended to the current layout: " + Files.size(pointerFile()));
+        r.src().stop();
+    }
+
+    /**
+     * Finding 8: v1.1.2 stored a count of decoded chars, which is less than the byte offset after non-ASCII text, so it
+     * can point inside a line. A pointer without an epoch (written by v1.1.2) that is not at a line start resumes after
+     * the next line terminator: a partial line is never delivered, and no line is lost (the char count is never past
+     * the true byte offset).
+     */
+    @Test
+    void aV112CharCountPointerAfterNonAsciiTextResumesAtALineStart() throws Exception {
+        Files.writeString(data(), "café-1\nnext-2\nthird-3\n", StandardCharsets.UTF_8);
+        byte[] legacy = new byte[1024];
+        ByteBuffer.wrap(legacy).putLong(0, 7);        // "café-1\n": 7 chars, 8 bytes
+        Files.write(pointerFile(), legacy);
+        Run r = run();
+        r.src().doWork();
+        assertEquals(List.of("next-2", "third-3"), r.drain());
+        r.src().doWork();
+        assertEquals(Files.size(data()), pointer());
+        r.src().stop();
+    }
+
+    /** A v1.1.2 pointer that is at a line start (ASCII text before it) resumes exactly there. */
+    @Test
+    void aV112PointerAtALineStartResumesThere() throws Exception {
+        write(1, 4);
+        byte[] legacy = new byte[1024];
+        ByteBuffer.wrap(legacy).putLong(0, offsetAfter(2));
+        Files.write(pointerFile(), legacy);
+        Run r = run();
+        r.src().doWork();
+        assertEquals(List.of("line-3", "line-4"), r.drain());
+        r.src().stop();
+    }
 }

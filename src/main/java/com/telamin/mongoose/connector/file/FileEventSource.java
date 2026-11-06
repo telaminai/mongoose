@@ -143,6 +143,7 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
         pendingLine = null;
         onceReadData = false;
         acknowledgedOffset = -1;
+        legacyAlign = false;
         if (commitRead && output != null) {
             output.acknowledgeWith(committer);
         }
@@ -159,14 +160,20 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
         if (readStrategy == ReadStrategy.ONCE_EARLIEST | readStrategy == ReadStrategy.EARLIEST) {
             streamOffset = 0;
         } else if (committedReadFile.exists()) {
+            // a pointer file of an earlier layout (v1.1.2 and before wrote only the offset; a short file) is extended
+            // to the current one first, keeping its offset (review 2, finding 7)
+            extendPointerFile(committedReadFile);
             commitPointer = IoUtil.mapExistingFile(committedReadFile, "committedReadFile_" + filename);
             streamOffset = commitPointer.getLong(0);
             committedOffset = streamOffset;
             epoch = commitPointer.getLong(EPOCH_SLOT);
             if (epoch == 0) {
-                // a pointer written before epochs: its positions are kept, under a new epoch from now on
+                // a pointer written before epochs: its positions are kept, under a new epoch from now on. Such a
+                // pointer (v1.1.2) counted decoded chars, which after non-ASCII text is short of the byte offset and
+                // may point inside a line: it is aligned to a line start when the file is opened (finding 8)
                 epoch = newEpoch();
                 commitPointer.putLong(EPOCH_SLOT, epoch);
+                legacyAlign = commitRead && streamOffset > 0;
             }
             if (infoEnabled) {
                 log.log(Level.INFO, serviceName + " reading committedReadFile:" + committedReadFile.getAbsolutePath() + ", streamOffset:" + streamOffset);
@@ -415,6 +422,10 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
             try {
                 stream = Files.newInputStream(Paths.get(filename));
                 checkSourceIdentity();
+                if (legacyAlign) {
+                    legacyAlign = false;
+                    alignLegacyPointer();
+                }
                 if (infoEnabled) {
                     log.log(Level.INFO, "Found previous offset, trying to skip to file offset " + streamOffset);
                 }
@@ -469,6 +480,8 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
     private volatile long epoch;
     /** Acknowledgements of items published before the last reset are of the old epoch: ignored. */
     private long resetAtSequence;
+    /** The pointer predates epochs (v1.1.2, a char count): align it to a line start when the file is opened. */
+    private boolean legacyAlign;
 
     private static long newEpoch() {
         long e;
@@ -517,6 +530,90 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
         }
     }
 
+    /** Extend a pointer file shorter than the current layout, keeping its offset (or 0 if it has none). */
+    private void extendPointerFile(File pointerFile) {
+        long length = pointerFile.length();
+        if (length >= POINTER_FILE_SIZE) {
+            return;
+        }
+        try (RandomAccessFile raf = new RandomAccessFile(pointerFile, "rw")) {
+            if (length < 8) {
+                // not even a whole offset: start from 0 under a new epoch (slot 8 stays 0)
+                raf.setLength(0);
+            }
+            raf.setLength(POINTER_FILE_SIZE);
+            if (warningEnabled) {
+                log.log(Level.WARNING, serviceName + ": read pointer " + pointerFile + " had " + length
+                        + " bytes, extended to " + POINTER_FILE_SIZE + (length < 8 ? " (no offset: reading from 0)" : ""));
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException("cannot extend read pointer " + pointerFile, e);
+        }
+    }
+
+    /**
+     * A v1.1.2 pointer counted decoded chars: after non-ASCII text it is short of the byte offset and may be inside a
+     * line. If the byte before it is not a line terminator, resume after the next terminator. The char count is never
+     * past the true byte offset of the processed lines, so this skips only part of a line already processed (or a
+     * whole line re-delivered), never an unprocessed line. The aligned offset is committed at once: the pointer has an
+     * epoch from now on, so a later start would not know to align it.
+     */
+    private void alignLegacyPointer() {
+        long from = streamOffset;
+        long aligned = from;
+        try (RandomAccessFile raf = new RandomAccessFile(filename, "r")) {
+            if (from <= 0 || from > raf.length()) return;
+            raf.seek(from - 1);
+            int prev = raf.read();
+            if (prev == '\n') {
+                return;
+            }
+            if (prev == '\r') {
+                // between \r and \n of one terminator: past the \n
+                if (raf.read() == '\n') aligned = from + 1;
+            } else {
+                byte[] chunk = new byte[8192];
+                long pos = from;
+                int n;
+                scan:
+                while ((n = raf.read(chunk)) > 0) {
+                    for (int i = 0; i < n; i++) {
+                        byte b = chunk[i];
+                        if (b == '\n') {
+                            aligned = pos + i + 1;
+                            break scan;
+                        }
+                        if (b == '\r') {
+                            long cr = pos + i;
+                            raf.seek(cr + 1);
+                            aligned = raf.read() == '\n' ? cr + 2 : cr + 1;
+                            break scan;
+                        }
+                    }
+                    pos += n;
+                }
+            }
+        } catch (IOException e) {
+            if (warningEnabled) log.log(Level.WARNING, serviceName + ": cannot align a v1.1.2 read pointer: " + e);
+            return;
+        }
+        if (aligned == from) {
+            return;
+        }
+        if (warningEnabled) {
+            log.log(Level.WARNING, serviceName + ": the read pointer " + from + " (written by v1.1.2 as a char count) "
+                    + "is inside a line; resuming at the next line start, byte " + aligned + ": " + filename);
+        }
+        synchronized (commitLock) {
+            streamOffset = aligned;
+            committedOffset = aligned;
+            if (commitPointer != null) {
+                commitPointer.putLong(0, aligned);
+                commitPointer.force();
+            }
+        }
+    }
+
     /**
      * At each open: a COMMITED pointer is only meaningful for the file it was written for. When the input file was
      * replaced (another file key, or other leading bytes than those fingerprinted at the last open) or truncated
@@ -550,6 +647,7 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
                     committedOffset = 0;
                     offset = 0;
                     pendingLine = null;
+                    legacyAlign = false;
                     // nothing of the new file is acknowledged yet; a later acknowledgement of the old file is ignored
                     acknowledgedOffset = -1;
                     commitPointer.putLong(0, 0);
