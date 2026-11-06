@@ -328,6 +328,21 @@ public class EventFlowManager {
     private final java.util.Map<OneToOneConcurrentArrayQueue<Object>, CheckpointBinding> queueBindings =
             new java.util.IdentityHashMap<>();
 
+    /**
+     * The final commit of a clean stop (docs/design/feed-delivery.md section 4): each feed whose committer allows it
+     * acknowledges what the processor groups finished after its source stopped. Called by the ordered shutdown once
+     * the queues have drained and again once the processor groups have closed. A failure is logged, never thrown.
+     */
+    public void commitProcessedAfterStop() {
+        eventSourceToQueueMap.forEach((key, p) -> {
+            try {
+                p.queuePublisher().pollAcknowledgementsAfterStop();
+            } catch (Throwable t) {
+                LOG.log(Level.WARNING, "feed " + key.sourceName() + ": final commit after stop failed", t);
+            }
+        });
+    }
+
     private static String checkpointKey(String feed, String group) {
         return feed + '\u0000' + group;
     }

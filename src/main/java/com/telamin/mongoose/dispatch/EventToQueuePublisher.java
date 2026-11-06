@@ -1403,6 +1403,16 @@ public class EventToQueuePublisher<T> {
         }
     }
 
+    /**
+     * The final commit of a clean stop (docs/design/feed-delivery.md section 4): acknowledge what the processor groups
+     * finished after the source stopped, for a committer that allows it ({@code SourceCommitter.commitsAfterStop}).
+     * Called by the server's ordered shutdown once the groups have drained and again once they have closed.
+     */
+    public int pollAcknowledgementsAfterStop() {
+        com.telamin.mongoose.service.delivery.SourceCommitter<Object> c = committer;
+        return c != null && c.commitsAfterStop() ? pollAcknowledgements() : 0;
+    }
+
     /** Drop or retain the ack point of each queue no target uses any more. Under the publish lock. */
     private void retainOrDropRemovedAckPoints() {
         for (var it = ackPoints.entrySet().iterator(); it.hasNext(); ) {

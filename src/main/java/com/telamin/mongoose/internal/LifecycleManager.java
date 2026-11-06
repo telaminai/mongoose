@@ -263,7 +263,8 @@ public final class LifecycleManager {
      *   <li>fence startup: ask an in-progress startup step to return and wait for it, with the deadline;</li>
      *   <li>stop the feeds: close the agent groups that host only event sources, and take the event sources off the
      *   groups that also host other services (those keep running); then stop and tear down every event source;</li>
-     *   <li>drain: wait for the events already queued to processors to be delivered (processor groups still run);</li>
+     *   <li>drain: wait for the events already queued to processors to be delivered (processor groups still run), then
+     *   commit to each re-readable source what its processors finished after it stopped;</li>
      *   <li>close each processor group from its own helper thread, joining each with the deadline, because
      *   {@code AgentRunner.close()} itself retries until the runner closes;</li>
      *   <li>only when every processor group has closed: close the remaining service agent groups the same way, then
@@ -412,10 +413,14 @@ public final class LifecycleManager {
             }
             progress.drained = true;
         }
+        // the feeds stopped before the groups drained: commit what the groups have finished since (feed-delivery.md 4)
+        if (flowManager != null) flowManager.commitProcessedAfterStop();
 
         // 4. close processor groups, each from a tracked helper, joined with the deadline
         log.info("stopping event processor agents");
         java.util.List<String> running = closeAll("event processor agent", "processor:", composingEventProcessorAgents, deadline);
+        // and once more when they have closed (or what closed of them): nothing processed is left uncommitted
+        if (flowManager != null) flowManager.commitProcessedAfterStop();
         if (!running.isEmpty()) {
             java.util.List<String> services = servicesNotStopped(registeredServices);
             log.warning("stop incomplete: processor group(s) " + running + " did not close within the shutdown deadline;"

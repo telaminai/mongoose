@@ -89,6 +89,12 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
                     // only once an item of the current epoch has been acknowledged (review 2, finding 6)
                     if (acknowledgedOffset >= 0) writePointer(acknowledgedOffset);
                 }
+
+                @Override
+                public boolean commitsAfterStop() {
+                    // the server's clean stop commits what its processor groups finish after the source stopped
+                    return true;
+                }
             };
     /**
      * The offset after the last acknowledged line of the current epoch; -1 until one is acknowledged since the start or
@@ -380,7 +386,9 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
         }
         if (commitRead && output != null) {
             try {
-                // a clean stop commits everything processed so far; what is not is re-read at the next start
+                // commit everything processed so far; what is not is re-read at the next start. On a server, the
+                // processor groups go on draining their queues after the feeds stop: the server's ordered stop commits
+                // again once they have drained and closed (SourceCommitter.commitsAfterStop)
                 output.pollAcknowledgements();
             } catch (Throwable t) {
                 if (warningEnabled) {
@@ -747,14 +755,32 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
         return true;
     }
 
-    /** Write the read pointer for a processed position: forward only, and never after stop released the mapping. */
+    /**
+     * Write the read pointer for a processed position, forward only. After {@link #stop()} released the mapping (the
+     * final commit of a clean server stop, once the processor groups have drained) the pointer file is mapped again for
+     * the write.
+     */
     private void writePointer(long acknowledgedOffset) {
         synchronized (commitLock) {
-            if (commitPointer == null || acknowledgedOffset <= committedOffset) {
+            if (acknowledgedOffset <= committedOffset) {
                 return;
             }
-            commitPointer.putLong(0, acknowledgedOffset);
-            commitPointer.force();
+            if (commitPointer == null) {
+                File pointerFile = new File(filename + ".readPointer");
+                if (!stopped || !commitRead || !pointerFile.exists()) {
+                    return;
+                }
+                MappedByteBuffer remapped = IoUtil.mapExistingFile(pointerFile, "committedReadFile_" + filename);
+                try {
+                    remapped.putLong(0, acknowledgedOffset);
+                    remapped.force();
+                } finally {
+                    IoUtil.unmap(remapped);
+                }
+            } else {
+                commitPointer.putLong(0, acknowledgedOffset);
+                commitPointer.force();
+            }
             committedOffset = acknowledgedOffset;
         }
     }

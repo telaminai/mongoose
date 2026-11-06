@@ -40,4 +40,16 @@ public interface SourceCommitter<P> {
     /** A run of {@link #acknowledged} calls is complete: commit the last acknowledged position durably. */
     default void commit() {
     }
+
+    /**
+     * True when this committer may also be called after its source has stopped, on the server's stop thread, once the
+     * processor groups have drained their queues and closed: the final commit of a clean stop
+     * (docs/design/feed-delivery.md section 4). The ordered shutdown stops the feeds before the groups drain, so without
+     * it the items the groups finish after the source stopped are re-delivered at the next start (never lost). Return
+     * true only if {@link #acknowledged} and {@link #commit} are safe from another thread once the source's own thread
+     * has stopped (a file pointer: yes; a consumer that was closed at stop: no).
+     */
+    default boolean commitsAfterStop() {
+        return false;
+    }
 }
