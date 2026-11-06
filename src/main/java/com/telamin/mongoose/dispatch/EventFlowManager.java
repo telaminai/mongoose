@@ -324,6 +324,9 @@ public class EventFlowManager {
 
     // ---- processing checkpoints (docs/design/feed-delivery.md, section 5) ----
     private final ConcurrentHashMap<String, Checkpoint> checkpoints = new ConcurrentHashMap<>();
+    /** Per physical subscriber queue, by identity, its checkpoint binding; also the lock for its binding count. */
+    private final java.util.Map<OneToOneConcurrentArrayQueue<Object>, CheckpointBinding> queueBindings =
+            new java.util.IdentityHashMap<>();
 
     private static String checkpointKey(String feed, String group) {
         return feed + '\u0000' + group;
@@ -332,13 +335,18 @@ public class EventFlowManager {
     private static final java.util.concurrent.atomic.AtomicLong CHECKPOINT_BINDINGS = new java.util.concurrent.atomic.AtomicLong();
 
     /**
-     * One queue's durable state for a checkpoint (review F3): its own dispatched counter and durable mark, so a mark is
-     * in the units of the queue it was taken on, a resubscribe starts from nothing durable, and an unsubscribe drops it.
+     * One physical queue's durable state for a checkpoint (review F3): its own dispatched counter and durable mark, so a
+     * mark is in the units of the queue it was taken on, a resubscribe (a new queue) starts from nothing durable, and
+     * the queue going away drops it. One per physical queue, shared by every callback binding of the group that reads
+     * the queue, counted by {@code bindings}: a second binding does not replace it and one binding leaving does not
+     * drop it while another still reads the queue (review 2, finding 5).
      */
     private static final class CheckpointBinding {
         final long id = CHECKPOINT_BINDINGS.incrementAndGet();
         final java.util.concurrent.atomic.AtomicLong dispatched;
         final java.util.concurrent.atomic.AtomicLong durable = new java.util.concurrent.atomic.AtomicLong();
+        /** Subscription bindings reading the queue; guarded by {@link #queueBindings}. */
+        int bindings;
 
         CheckpointBinding(java.util.concurrent.atomic.AtomicLong dispatched) {
             this.dispatched = dispatched;
@@ -637,13 +645,28 @@ public class EventFlowManager {
         // a group holding a processing checkpoint on the feed, once the group's state is durable through it
         Checkpoint checkpoint = checkpoints.computeIfAbsent(checkpointKey(eventSourceKey.sourceName(), subscriber.roleName()),
                 k -> new Checkpoint(eventSourceKey.sourceName(), subscriber.roleName()));
-        CheckpointBinding binding = new CheckpointBinding(dispatched);
+        CheckpointBinding binding;
+        synchronized (queueBindings) {
+            // one binding per physical queue: a second callback type of the group reads the same queue (finding 5)
+            binding = queueBindings.computeIfAbsent(eventQueue, q -> new CheckpointBinding(dispatched));
+            binding.bindings++;
+        }
         checkpoint.binding = binding;
         queuePublisher.bindAcknowledgementPoint(eventQueue, () -> checkpoint.processed(binding));
         Runnable unsubscribeAndUnbind = () -> {
+            boolean lastOfQueue;
+            synchronized (queueBindings) {
+                lastOfQueue = --binding.bindings == 0;
+                if (lastOfQueue) queueBindings.remove(eventQueue, binding);
+            }
+            // the queue itself stays the group's queue for the feed while another of its bindings reads it
             unsubscribe.run();
-            // the queue is gone: its durable state goes with it; a resubscribe starts a new binding (review F3)
-            if (checkpoint.binding == binding) checkpoint.binding = null;
+            if (lastOfQueue) {
+                subscriberKeyToQueueMap.remove(keySubscriber, eventQueue);
+                dispatchedByQueue.remove(eventQueue);
+                // the queue is gone: its durable state goes with it; a resubscribe starts a new binding (review F3)
+                if (checkpoint.binding == binding) checkpoint.binding = null;
+            }
         };
         var reader = new EventQueueToEventProcessorAgent(eventQueue, eventMapperSupplier.get(), name, eventSourceKey.sourceName(),
                 type.name()).withUnsubscribeAction(unsubscribeAndUnbind).withDropMarks(dropMarks)
@@ -706,9 +729,9 @@ public class EventFlowManager {
 
     private Runnable createUnsubscribeAction(EventSource_QueuePublisher<?> sourcePublisher, String name, EventSourceKey_Subscriber<?> keySubscriber) {
         return () -> {
+            // the subscriber queue, its dispatched counter and its checkpoint binding are dropped by the caller once the
+            // last binding reading the queue has left (review 2, finding 5)
             sourcePublisher.queuePublisher().removeTargetQueueByName(name);
-            OneToOneConcurrentArrayQueue<Object> removed = subscriberKeyToQueueMap.remove(keySubscriber);
-            if (removed != null) dispatchedByQueue.remove(removed);
             queueDropChecks.computeIfPresent(keySubscriber, (key, check) -> {
                 check.bindings.remove(name);
                 if (!check.bindings.isEmpty()) return check;
