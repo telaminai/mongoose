@@ -434,10 +434,35 @@ public class EventToQueuePublisher<T> {
 
     private void reportFeedStatusSerialised(com.telamin.mongoose.service.feedstatus.FeedState state, boolean bounded,
                                             String detail) {
+        reportFeedStatusSerialised(state, bounded, detail, false);
+    }
+
+    /**
+     * {@code flushing}: a waiting status, now delivered; it is the latest report, never deduplicated. Otherwise a report
+     * is compared with the status waiting, if one does (the latest report wins, hook review R3), else with the
+     * published one.
+     */
+    private void reportFeedStatusSerialised(com.telamin.mongoose.service.feedstatus.FeedState state, boolean bounded,
+                                            String detail, boolean flushing) {
         com.telamin.mongoose.service.feedstatus.FeedStatus last = feedPosition.status();
-        if (last.state() == state && last.sequence() == sequenceNumber && last.bounded() == bounded
-                && java.util.Objects.equals(last.detail(), detail)) {
-            return;
+        boolean sameAsPublished = last.state() == state && last.sequence() == sequenceNumber && last.bounded() == bounded
+                && java.util.Objects.equals(last.detail(), detail);
+        if (!flushing) {
+            PendingStatus waiting = pausedStatus;
+            if (waiting != null) {
+                if (waiting.state() == state && waiting.bounded() == bounded
+                        && java.util.Objects.equals(waiting.detail(), detail)) {
+                    return;                 // already the latest report, waiting for room
+                }
+                if (sameAsPublished && !startupStatusPending) {
+                    pausedStatus = null;    // back to what subscribers already hold: the waiting report is dropped
+                    return;
+                }
+                // otherwise it replaces the waiting report (a published startup status not yet delivered is delivered
+                // again as the latest report, with its positions taken then)
+            } else if (sameAsPublished) {
+                return;
+            }
         }
         if (startComplete && deliverFeedStatus) {
             // what was cached goes first, as on a publish: the status claims it was delivered
@@ -1384,7 +1409,7 @@ public class EventToQueuePublisher<T> {
             deliverStartupStatus();
             return true;
         }
-        reportFeedStatusSerialised(waiting.state(), waiting.bounded(), waiting.detail());
+        reportFeedStatusSerialised(waiting.state(), waiting.bounded(), waiting.detail(), true);
         return pausedStatus == null;
     }
 

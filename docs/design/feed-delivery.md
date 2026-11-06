@@ -523,7 +523,10 @@ re-readable source does not need to wait, because it can simply not read.
   is kept. Before this, the replay dropped.
 - **In-band feed status** (`feedStatusEvents: true`): a status that finds a PAUSE queue full waits for room (the host
   keeps seeing the previous state meanwhile) and is delivered before any later item
-  (`anInBandStatusWaitsForRoomInAPausedQueue`). A later report replaces a waiting one. A status never overtakes cached
+  (`anInBandStatusWaitsForRoomInAPausedQueue`). A later report replaces a waiting one: the latest report is the one
+  delivered. A report is deduplicated against the waiting status when one waits, not against the published one, so A,
+  then B (waiting), then A again delivers A; if subscribers already hold A the waiting B is dropped and nothing is
+  delivered (hook review R3, `CachedStartupStatusReplacementTest`; before, the second A was ignored and B delivered). A status never overtakes cached
   items either: the status reported before the start completed waits behind a cache replay that paused, and is
   delivered once the cache is dispatched and there is room; until then the feed is not drained (`cachedPending`).
   Before, it was written into the full queue with drop semantics, so a PAUSE run lost it and counted a drop

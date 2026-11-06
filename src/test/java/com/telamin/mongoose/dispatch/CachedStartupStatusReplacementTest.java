@@ -78,4 +78,57 @@ class CachedStartupStatusReplacementTest {
         assertFalse(s.publisher().feedPosition().cachedPending());
         assertEquals(10, s.publisher().feedPosition().positionOf(s.queue()), "positions taken after the status");
     }
+
+    /**
+     * Hook review R3: A, then B, then A again with the same detail while the startup status waits. The last report
+     * equalled the published (still undelivered) startup status, so it was ignored and the waiting B was delivered:
+     * the feed stayed BEHIND although its latest report said CAUGHT_UP.
+     */
+    @Test
+    void aReturnToThePublishedStatusWhileAnotherWaitsIsTheOneDelivered() {
+        Setup s = nineCachedIntoEight();
+        s.publisher().reportFeedStatus(FeedState.BEHIND, false, "while paused");
+        s.publisher().reportFeedStatus(FeedState.CAUGHT_UP, false, "startup");
+        List<Object> taken = new ArrayList<>();
+        for (int round = 0; round < 20; round++) {
+            for (Object x; (x = s.queue().poll()) != null; ) taken.add(x);
+            s.publisher().flushPaused();
+        }
+        assertEquals(10, taken.size(), taken.toString());
+        assertInstanceOf(FeedStatus.class, taken.get(9));
+        assertEquals(FeedState.CAUGHT_UP, ((FeedStatus) taken.get(9)).state(), "the latest report: " + taken);
+        assertTrue(s.publisher().flushPaused(), "nothing left waiting");
+        assertFalse(s.publisher().feedPosition().cachedPending());
+        assertEquals(FeedState.CAUGHT_UP, s.publisher().feedPosition().status().state());
+        assertEquals(10, s.publisher().feedPosition().positionOf(s.queue()));
+    }
+
+    /**
+     * After the start, a guard for the coalescing: CAUGHT_UP is delivered, a full PAUSE queue makes a BEHIND report
+     * wait, then CAUGHT_UP is reported again at a later sequence. The waiting BEHIND is replaced: subscribers get the
+     * items, then CAUGHT_UP, never BEHIND.
+     */
+    @Test
+    void aLaterReportReplacesTheWaitingOne() {
+        EventFlowManager manager = new EventFlowManager();
+        EventToQueuePublisher<String> p = manager.registerEventSource("feed",
+                new com.telamin.mongoose.connector.file.FileEventSource());
+        OneToOneConcurrentArrayQueue<Object> q = new OneToOneConcurrentArrayQueue<>(8);
+        p.addTargetQueue(q, "q");
+        p.setPauseByDefault(true);
+        p.setDeliverFeedStatus(true);
+        p.startComplete();
+        p.reportFeedStatus(FeedState.CAUGHT_UP, false, "idle");
+        for (Object x; (x = q.poll()) != null; ) { }
+        for (int i = 0; i < 8; i++) assertTrue(p.tryPublish("item" + i, null), "room for item" + i);
+        p.reportFeedStatus(FeedState.BEHIND, false, "busy");          // no room: waits
+        p.reportFeedStatus(FeedState.CAUGHT_UP, false, "idle");       // the latest report
+        List<Object> taken = new ArrayList<>();
+        for (Object x; (x = q.poll()) != null; ) taken.add(x);
+        assertTrue(p.flushPaused(), "nothing waits once there is room");
+        for (Object x; (x = q.poll()) != null; ) taken.add(x);
+        assertEquals(9, taken.size(), taken.toString());
+        assertEquals(FeedState.CAUGHT_UP, ((FeedStatus) taken.get(8)).state());
+        assertTrue(taken.stream().noneMatch(x -> x instanceof FeedStatus f && f.state() == FeedState.BEHIND), taken.toString());
+    }
 }
