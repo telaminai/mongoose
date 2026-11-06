@@ -209,12 +209,16 @@ public final class GroupRecorder {
     private boolean indexedDispatch;
     private String dispatchSource;
     private long dispatchSeq;
+    /** The delivery context of the input being dispatched (its source position), or null: recorded with it (R3). */
+    private com.telamin.mongoose.service.delivery.Delivery dispatchDelivery;
 
     /** Just before a queue dispatches an input of {@code source} (numbered {@code seq}, or -1) to {@code targets}. */
     public void beforeDispatch(String source, long seq, Collection<DataFlow> targets) {
         indexedDispatch = seq >= 0 && config.journalled(source);
         dispatchSource = source;
         dispatchSeq = seq;
+        // the reader entered it for this input's cycle: what the processor can read, so what a replay restores
+        dispatchDelivery = com.telamin.mongoose.service.delivery.DeliveryContext.current();
         for (DataFlow t : targets) {
             Recorded r = byFlow.get(t);
             if (r == null) continue;
@@ -317,13 +321,13 @@ public final class GroupRecorder {
                 List<String> args = admin.getArgs();
                 entry = new ReplayEntry.AdminInvoked(args.get(0), List.copyOf(args.subList(1, args.size())), instant, reads);
             } else if (seq >= 0 && config.journalled(source) && !r.notAsJournalled) {
-                entry = new ReplayEntry.Indexed(source, route, seq, instant, reads);
+                entry = new ReplayEntry.Indexed(source, route, seq, instant, reads, dispatchDelivery);
             } else if (r.uncopyable != null) {
                 entry = new ReplayEntry.Failed(source, "the input could not be recorded as received, so it cannot be "
                         + "replayed: " + r.uncopyable, instant);
             } else {
                 long number = r.input instanceof RecordedNamedEvent named ? named.sequenceNumber() : -1;
-                entry = new ReplayEntry.Inline(source, route, r.input, number, instant, reads);
+                entry = new ReplayEntry.Inline(source, route, r.input, number, instant, reads, dispatchDelivery);
             }
             r.input = null;
             append(r, entry);

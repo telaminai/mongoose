@@ -54,6 +54,7 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
                 torn = read.torn();
                 List<String> lines = read.lines();
                 int fields = 0;
+                Map<String, com.telamin.mongoose.service.delivery.Delivery> delivering = new java.util.HashMap<>();
                 for (int i = 0; i < lines.size(); i++) {
                     if (i == 0) {
                         fields = lines.get(0).equals(HEADER) ? 8 : lines.get(0).equals(HEADER_6) ? 6 : 0;
@@ -69,8 +70,20 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
                                 Long.parseLong(f.get(5))));
                         continue;
                     }
-                    add(f.get(0), fields == 8 ? parse(f) : parse6(f));
+                    if (fields == 8 && "DELIVERY".equals(f.get(1))) {
+                        if (delivering.containsKey(f.get(0))) {
+                            throw new IllegalArgumentException(file + " line " + (i + 1) + ": a DELIVERY line follows another");
+                        }
+                        delivering.put(f.get(0), new com.telamin.mongoose.service.delivery.Delivery(f.get(2),
+                                Long.parseLong(f.get(4)), Long.parseLong(f.get(3)), decode(f.get(6))));
+                        continue;
+                    }
+                    ReplayEntry entry = fields == 8 ? parse(f) : parse6(f);
+                    com.telamin.mongoose.service.delivery.Delivery d = delivering.remove(f.get(0));
+                    add(f.get(0), d == null ? entry : withDelivery(entry, d));
                 }
+                // a DELIVERY line with no input after it: the write of its input did not complete, so the input was
+                // never recorded (as for a torn line); nothing is added for it
             }
             boolean fresh = !Files.exists(file) || Files.size(file) == 0;
             out = Files.newBufferedWriter(file, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
@@ -91,7 +104,11 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
             throw new IllegalStateException(file + " is a replay store in the earlier six-field format; it is read, never "
                     + "appended to (an eight-field entry under its header would make it unreadable): record into an empty file");
         }
-        String line = Csv.field(processor) + "," + format(entry);   // encoding first: an item that cannot be encoded adds nothing
+        // encoding first: an item that cannot be encoded adds nothing. An input's delivery metadata is a DELIVERY line
+        // just before it, in the same write (review R3): a reader before it refuses the file rather than drop it
+        com.telamin.mongoose.service.delivery.Delivery delivery = deliveryOf(entry);
+        String line = (delivery == null ? "" : Csv.field(processor) + "," + formatDelivery(delivery, entry.instant())
+                + System.lineSeparator()) + Csv.field(processor) + "," + format(entry);
         try {
             out.write(line);
             out.newLine();
@@ -140,6 +157,27 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
 
     private void add(String processor, ReplayEntry entry) {
         entries.computeIfAbsent(processor, p -> new CopyOnWriteArrayList<>()).add(entry);
+    }
+
+    private static com.telamin.mongoose.service.delivery.Delivery deliveryOf(ReplayEntry e) {
+        return e instanceof ReplayEntry.Indexed i ? i.delivery() : e instanceof ReplayEntry.Inline in ? in.delivery() : null;
+    }
+
+    /** {@code DELIVERY,feed,epoch,sequence,instant,position,}: the position through the store's codec. */
+    private String formatDelivery(com.telamin.mongoose.service.delivery.Delivery d, long instant) {
+        return "DELIVERY," + Csv.field(d.feed()) + "," + d.epoch() + "," + d.sequence() + "," + instant + ","
+                + encode(d.position()) + ",";
+    }
+
+    /** The input entry that follows a DELIVERY line, with its delivery. */
+    private static ReplayEntry withDelivery(ReplayEntry e, com.telamin.mongoose.service.delivery.Delivery d) {
+        if (e instanceof ReplayEntry.Indexed i) {
+            return new ReplayEntry.Indexed(i.source(), i.route(), i.seq(), i.instant(), i.reads(), d);
+        }
+        if (e instanceof ReplayEntry.Inline in) {
+            return new ReplayEntry.Inline(in.source(), in.route(), in.event(), in.seq(), in.instant(), in.reads(), d);
+        }
+        throw new IllegalArgumentException("a DELIVERY line is followed by " + e + ", not an input");
     }
 
     private String format(ReplayEntry e) {
