@@ -250,6 +250,20 @@ class FileEventSourceFeedStatusTest {
         src.stop();
     }
 
+    /** Review 3, item 6: under a once strategy a last line ended by a lone CR is terminated, and published. */
+    @Test
+    void aOnceReadLastLineEndedByALoneCrIsPublished() throws Exception {
+        append("a\rb\r");
+        FileEventSource src = source(ReadStrategy.ONCE_EARLIEST, false);
+        src.onStart(); src.start(); src.startComplete();
+        for (int i = 0; i < 3; i++) src.doWork();
+        assertEquals(List.of("a", "b"), drain());
+        assertStatus(status(), FeedState.END_OF_STREAM, 2, true);
+        assertNull(status().detail());
+        assertEquals(0, publisher.unterminatedBytes());
+        src.stop();
+    }
+
     @Test
     void cachedLinesAreCountedOnceReplayed() throws Exception {
         append("k1\nk2\nk3\n");

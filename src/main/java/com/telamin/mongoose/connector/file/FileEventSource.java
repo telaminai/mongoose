@@ -167,8 +167,9 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
         if (readStrategy == ReadStrategy.ONCE_EARLIEST | readStrategy == ReadStrategy.EARLIEST) {
             streamOffset = 0;
         } else if (committedReadFile.exists()) {
-            // a pointer file of an earlier layout (v1.1.2 and before wrote only the offset; a short file) is extended
-            // to the current one first, keeping its offset (review 2, finding 7)
+            // a pointer file shorter than the current layout (not one this source wrote: every release created a
+            // 1,024-byte file, v1.1.2 writing only slot 0; a hand-made or truncated file) is extended to it first,
+            // keeping its offset (review 2, finding 7)
             extendPointerFile(committedReadFile);
             commitPointer = IoUtil.mapExistingFile(committedReadFile, "committedReadFile_" + filename);
             streamOffset = commitPointer.getLong(0);
@@ -177,10 +178,12 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
             if (epoch == 0) {
                 // a pointer written before epochs: its positions are kept, under a new epoch from now on. Such a
                 // pointer (v1.1.2) counted decoded chars, which after non-ASCII text is short of the byte offset and
-                // may point inside a line: it is aligned to a line start when the file is opened (finding 8)
+                // may point inside a line: it is aligned to a line start when the file is opened (finding 8). Its epoch
+                // is written only with the aligned offset, so a start that stops before opening the file leaves it a
+                // legacy pointer, aligned at the next start (review 3, item 2)
                 epoch = newEpoch();
-                commitPointer.putLong(EPOCH_SLOT, epoch);
                 legacyAlign = commitRead && streamOffset > 0;
+                if (!legacyAlign) commitPointer.putLong(EPOCH_SLOT, epoch);
             }
             if (infoEnabled) {
                 log.log(Level.INFO, serviceName + " reading committedReadFile:" + committedReadFile.getAbsolutePath() + ", streamOffset:" + streamOffset);
@@ -353,6 +356,18 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
                 }
             }
             if (onceReadData) {
+                if (offset > 0 && buffer[offset - 1] == '\r' && !latestRead) {
+                    // at the end of a once read nothing can follow a trailing \r: it terminates the last line
+                    // (a tailing read waits for the next byte, which may be the \n of a \r\n; review 3, item 6)
+                    String last = new String(buffer, 0, offset - 1, StandardCharsets.UTF_8);
+                    long end = streamOffset + offset;
+                    streamOffset = end;
+                    offset = 0;
+                    if (!offer(last, end)) {
+                        return readCount;
+                    }
+                    readCount++;
+                }
                 // a once strategy has published everything to the end of the file as it was: it ends here
                 tail = false;
             }
@@ -475,8 +490,8 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
     // ---- source epoch (docs/design/feed-delivery.md 5a, review F5) ----
     // The pointer file (POINTER_FILE_SIZE bytes) holds: [0] the committed byte offset, [8] the epoch, [16] the input
     // file's identity (its file key), [24] the layout version, [32] how many leading bytes of the input file the
-    // fingerprint covers, [40] the fingerprint. v1.1.2 wrote only [0]; a layout without [24] == LAYOUT_VERSION has no
-    // trusted identity or fingerprint, and gets them at the next open.
+    // fingerprint covers, [40] the fingerprint. v1.1.2 created the same 1,024-byte file but wrote only [0]; a layout
+    // without [24] == LAYOUT_VERSION has no trusted identity or fingerprint, and gets them at the next open.
 
     private static final int POINTER_FILE_SIZE = 1024;
     private static final int EPOCH_SLOT = 8;
@@ -490,7 +505,7 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
     /** The epoch of this source's positions; a new one whenever the position space is reset. */
     private volatile long epoch;
     /** Acknowledgements of items published before the last reset are of the old epoch: ignored. */
-    private long resetAtSequence;
+    private volatile long resetAtSequence;
     /** The pointer predates epochs (v1.1.2, a char count): align it to a line start when the file is opened. */
     private boolean legacyAlign;
 
@@ -566,52 +581,23 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
      * A v1.1.2 pointer counted decoded chars: after non-ASCII text it is short of the byte offset and may be inside a
      * line. If the byte before it is not a line terminator, resume after the next terminator. The char count is never
      * past the true byte offset of the processed lines, so this skips only part of a line already processed (or a
-     * whole line re-delivered), never an unprocessed line. The aligned offset is committed at once: the pointer has an
-     * epoch from now on, so a later start would not know to align it.
+     * whole line re-delivered), never an unprocessed line. The aligned offset is committed at once, with the epoch: the
+     * pointer has an epoch from then on, so a later start does not align it again. If the file cannot be read the
+     * pointer stays a legacy one, aligned at a later open.
      */
     private void alignLegacyPointer() {
         long from = streamOffset;
         long aligned = from;
         try (RandomAccessFile raf = new RandomAccessFile(filename, "r")) {
-            if (from <= 0 || from > raf.length()) return;
-            raf.seek(from - 1);
-            int prev = raf.read();
-            if (prev == '\n') {
-                return;
-            }
-            if (prev == '\r') {
-                // between \r and \n of one terminator: past the \n
-                if (raf.read() == '\n') aligned = from + 1;
-            } else {
-                byte[] chunk = new byte[8192];
-                long pos = from;
-                int n;
-                scan:
-                while ((n = raf.read(chunk)) > 0) {
-                    for (int i = 0; i < n; i++) {
-                        byte b = chunk[i];
-                        if (b == '\n') {
-                            aligned = pos + i + 1;
-                            break scan;
-                        }
-                        if (b == '\r') {
-                            long cr = pos + i;
-                            raf.seek(cr + 1);
-                            aligned = raf.read() == '\n' ? cr + 2 : cr + 1;
-                            break scan;
-                        }
-                    }
-                    pos += n;
-                }
+            if (from > 0 && from <= raf.length()) {
+                aligned = alignedOffset(raf, from);
             }
         } catch (IOException e) {
             if (warningEnabled) log.log(Level.WARNING, serviceName + ": cannot align a v1.1.2 read pointer: " + e);
+            legacyAlign = true;
             return;
         }
-        if (aligned == from) {
-            return;
-        }
-        if (warningEnabled) {
+        if (aligned != from && warningEnabled) {
             log.log(Level.WARNING, serviceName + ": the read pointer " + from + " (written by v1.1.2 as a char count) "
                     + "is inside a line; resuming at the next line start, byte " + aligned + ": " + filename);
         }
@@ -620,17 +606,56 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
             committedOffset = aligned;
             if (commitPointer != null) {
                 commitPointer.putLong(0, aligned);
+                commitPointer.putLong(EPOCH_SLOT, epoch);
                 commitPointer.force();
             }
         }
     }
 
+    /** The first line start at or after {@code from} (see {@link #alignLegacyPointer}). */
+    private static long alignedOffset(RandomAccessFile raf, long from) throws IOException {
+        long aligned = from;
+        raf.seek(from - 1);
+        int prev = raf.read();
+        if (prev == '\n') {
+            return from;
+        }
+        if (prev == '\r') {
+            // between \r and \n of one terminator: past the \n
+            if (raf.read() == '\n') aligned = from + 1;
+        } else {
+            byte[] chunk = new byte[8192];
+            long pos = from;
+            int n;
+            scan:
+            while ((n = raf.read(chunk)) > 0) {
+                for (int i = 0; i < n; i++) {
+                    byte b = chunk[i];
+                    if (b == '\n') {
+                        aligned = pos + i + 1;
+                        break scan;
+                    }
+                    if (b == '\r') {
+                        long cr = pos + i;
+                        raf.seek(cr + 1);
+                        aligned = raf.read() == '\n' ? cr + 2 : cr + 1;
+                        break scan;
+                    }
+                }
+                pos += n;
+            }
+        }
+        return aligned;
+    }
+
     /**
      * At each open: a COMMITED pointer is only meaningful for the file it was written for. When the input file was
-     * replaced (another file key, or other leading bytes than those fingerprinted at the last open) or truncated
-     * (shorter than the pointer), the pointer restarts at 0 with a new epoch, so an application that keeps (epoch,
-     * position) with its state never takes a new line for an applied one. A file appended to, or whose times change,
-     * is the same file. With no file key (Windows) only the fingerprint and the size decide. Other strategies have no
+     * replaced (other leading bytes than those fingerprinted, or another file key with no matching fingerprint) or
+     * truncated (shorter than the pointer), the pointer restarts at 0 with a new epoch, so an application that keeps
+     * (epoch, position) with its state never takes a new line for an applied one. A file appended to, or whose times
+     * change, is the same file; so is one under another file key whose fingerprinted bytes match (a remount, a
+     * copy-up, a rewrite-and-rename appender), kept with a warning. With no file key (Windows) only the fingerprint and
+     * the size decide. Other strategies have no
      * pointer: their epoch is the file key, stable for as long as the file is the same.
      */
     private void checkSourceIdentity() throws IOException {
@@ -643,12 +668,22 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
                 long recorded = layoutCurrent ? commitPointer.getLong(IDENTITY_SLOT) : 0;
                 int fingerprinted = layoutCurrent ? (int) commitPointer.getLong(FINGERPRINT_LENGTH_SLOT) : 0;
                 long size = Files.size(Paths.get(filename));
-                String reset = recorded != 0 && identity != 0 && recorded != identity
-                        ? "the input file was replaced (another file key)"
-                        : size < streamOffset ? "the input file was truncated (" + size + " < pointer " + streamOffset + ")"
-                        : fingerprinted > 0 && fingerprint(fingerprinted) != commitPointer.getLong(FINGERPRINT_SLOT)
+                boolean keyChanged = recorded != 0 && identity != 0 && recorded != identity;
+                boolean sameLeadingBytes = fingerprinted > 0
+                        && fingerprint(fingerprinted) == commitPointer.getLong(FINGERPRINT_SLOT);
+                String reset = size < streamOffset
+                        ? "the input file was truncated (" + size + " < pointer " + streamOffset + ")"
+                        : fingerprinted > 0 && !sameLeadingBytes
                         ? "the input file was replaced (its first " + fingerprinted + " bytes changed)"
+                        : keyChanged && !sameLeadingBytes ? "the input file was replaced (another file key)"
                         : null;
+                if (reset == null && keyChanged && warningEnabled) {
+                    // a remount, a copy-up, or a writer that appends by rewrite-and-rename: the same content, kept
+                    // (review 3, item 4)
+                    log.log(Level.WARNING, serviceName + ": the input file has another file key but the same first "
+                            + fingerprinted + " bytes and is not shorter than the pointer: taken as the same file, the "
+                            + "read pointer is kept: " + filename);
+                }
                 if (reset != null) {
                     if (warningEnabled) {
                         log.log(Level.WARNING, serviceName + ": " + reset + "; the read pointer restarts at 0 with a "
@@ -675,9 +710,36 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
                 commitPointer.putLong(FINGERPRINT_SLOT, fingerprint);
                 commitPointer.putLong(LAYOUT_SLOT, LAYOUT_VERSION);
                 commitPointer.force();
+                fingerprintCover = cover;
             }
         }
         if (output != null) output.setSourceEpoch(epoch);
+    }
+
+    /** How many leading bytes the stored fingerprint covers; grown at commits up to the maximum. Under commitLock. */
+    private int fingerprintCover = FINGERPRINT_MAX_BYTES;
+
+    /**
+     * Grow the fingerprint with the file (review 3, item 1): a file opened holding only a header would otherwise be
+     * fingerprinted over the header alone, and a rewrite with the same header go unnoticed at the next start. At each
+     * commit, while the cover is below the maximum and the file has grown past it, the fingerprint is taken again over
+     * up to the maximum: at most 4 KB read per commit, and nothing once the cover is full. A file rewritten in place
+     * while the source is running is not detected (the fingerprint is then taken of the new content). Under commitLock.
+     */
+    private void growFingerprint(MappedByteBuffer pointer) {
+        if (fingerprintCover >= FINGERPRINT_MAX_BYTES) return;
+        try {
+            long size = Files.size(Paths.get(filename));
+            if (size <= fingerprintCover) return;
+            int cover = (int) Math.min(FINGERPRINT_MAX_BYTES, size);
+            long fingerprint = fingerprint(cover);
+            if (fingerprint == 0) return;
+            pointer.putLong(FINGERPRINT_LENGTH_SLOT, cover);
+            pointer.putLong(FINGERPRINT_SLOT, fingerprint);
+            fingerprintCover = cover;
+        } catch (IOException e) {
+            // the fingerprint keeps its current cover; the next commit tries again
+        }
     }
 
     /** The epoch of this source's positions (docs/design/feed-delivery.md 5a). */
@@ -776,12 +838,14 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
                 MappedByteBuffer remapped = IoUtil.mapExistingFile(pointerFile, "committedReadFile_" + filename);
                 try {
                     remapped.putLong(0, acknowledgedOffset);
+                    growFingerprint(remapped);
                     remapped.force();
                 } finally {
                     IoUtil.unmap(remapped);
                 }
             } else {
                 commitPointer.putLong(0, acknowledgedOffset);
+                growFingerprint(commitPointer);
                 commitPointer.force();
             }
             committedOffset = acknowledgedOffset;
@@ -823,6 +887,14 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
             return result;
         } else {
             return null;
+        }
+    }
+
+    /** For testing: what a read failure does, the stream closed and dropped; the next duty cycle reopens the file. */
+    void closeStreamForTesting() throws IOException {
+        if (stream != null) {
+            stream.close();
+            stream = null;
         }
     }
 

@@ -121,9 +121,9 @@ class FileEventSourcePointerTest {
         second.src().stop();
     }
 
-    /** A real replacement is still detected: a new file (another inode) at the same path, longer than the pointer. */
+    /** A real replacement is still detected: a new file (another inode) at the same path, with other content. */
     @Test
-    void aNewFileAtTheSamePathIsAReplacement() throws Exception {
+    void aNewFileWithOtherContentAtTheSamePathIsAReplacement() throws Exception {
         write(1, 3);
         Run first = run();
         first.src().doWork();
@@ -132,15 +132,77 @@ class FileEventSourcePointerTest {
 
         Path tmp = dir.resolve("events.txt.new");
         StringBuilder b = new StringBuilder();
-        for (int i = 1; i <= 10; i++) b.append("line-").append(i).append('\n');
+        for (int i = 1; i <= 10; i++) b.append("other-").append(i).append('\n');
         Files.writeString(tmp, b, StandardCharsets.UTF_8);
         Files.move(tmp, data(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
 
         Run second = run();
         second.src().doWork();
         assertNotEquals(epoch, second.epoch(), "another file: a new epoch");
-        assertEquals(10, second.drain().size(), "read from the start of the new file");
+        List<String> lines = second.drain();
+        assertEquals(10, lines.size(), "read from the start of the new file: " + lines);
+        assertEquals("other-1", lines.get(0));
         second.src().stop();
+    }
+
+    /**
+     * Review 3, item 4: a file key that changes while the content is the same (an NFS remount or a FUSE/overlay copy-up
+     * changes the device id; a writer that appends by rewriting to a temporary file and renaming it changes the inode)
+     * is not a replacement: the fingerprinted leading bytes match and the file is not shorter than the pointer. The
+     * pointer and epoch are kept, with a warning, instead of re-delivering the whole file.
+     */
+    @Test
+    void theSameContentUnderANewFileKeyKeepsThePointer() throws Exception {
+        write(1, 3);
+        Run first = run();
+        first.src().doWork();
+        long epoch = first.epoch();
+        processAndStop(first);
+
+        Path tmp = dir.resolve("events.txt.new");
+        StringBuilder b = new StringBuilder();
+        for (int i = 1; i <= 5; i++) b.append("line-").append(i).append('\n');
+        Files.writeString(tmp, b, StandardCharsets.UTF_8);
+        Files.move(tmp, data(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+
+        Run second = run();
+        second.src().doWork();
+        assertEquals(epoch, second.epoch(), "the same content: the same epoch");
+        assertEquals(List.of("line-4", "line-5"), second.drain(), "resumes at the pointer, nothing re-delivered");
+        second.src().stop();
+    }
+
+    /**
+     * Review 3, item 1: the fingerprint must cover what was read, not only what existed at the first open. The file
+     * holds only a 13-byte header when the source opens it, then grows; the producer later truncates and rewrites it in
+     * place (same inode) with the same header and other content, longer than the pointer. The restart must reset, not
+     * resume at the old pointer inside the new content.
+     */
+    @Test
+    void aHeaderOnlyFirstOpenThenAnInPlaceRewriteWithTheSameHeaderIsAReplacement() throws Exception {
+        Files.writeString(data(), "time,sym,qty\n", StandardCharsets.UTF_8);
+        Run a = run();
+        a.src().doWork();                                  // opens with 13 bytes on disk
+        StringBuilder b = new StringBuilder();
+        for (int i = 1; i <= 50; i++) b.append("day1-").append(i).append(",AAA,").append(i).append('\n');
+        Files.writeString(data(), b, StandardCharsets.UTF_8, StandardOpenOption.APPEND);
+        for (int i = 0; i < 5; i++) {
+            a.src().doWork();
+            a.drain();
+        }
+        a.src().doWork();
+        a.src().stop();
+        assertEquals(Files.size(data()), pointer(), "day 1 processed and committed");
+
+        StringBuilder c = new StringBuilder("time,sym,qty\n");
+        for (int i = 1; i <= 200; i++) c.append("d2-").append(i).append(",BBBBBB,").append(i).append('\n');
+        Files.writeString(data(), c, StandardCharsets.UTF_8, StandardOpenOption.TRUNCATE_EXISTING);
+        Run r = run();
+        r.src().doWork();
+        List<String> got = r.drain();
+        assertEquals("time,sym,qty", got.get(0), "a rewritten file is read from its start: " + got.subList(0, 3));
+        assertEquals(201, got.size());
+        r.src().stop();
     }
 
     /**
@@ -256,6 +318,86 @@ class FileEventSourcePointerTest {
         Run r = run();
         r.src().doWork();
         assertEquals(List.of("line-3", "line-4"), r.drain());
+        r.src().stop();
+    }
+
+    /**
+     * Review 3, item 7 (finding 6 on the mid-run path): the input file is replaced while the source runs and the source
+     * reopens it (as after a read error), with lines of the old file still unacknowledged. Their acknowledgement must
+     * not write the old file's offset into the new file's pointer.
+     */
+    @Test
+    void anAcknowledgementOfTheOldFileIsNotCommittedAfterAMidRunReopen() throws Exception {
+        write(1, 10);
+        OneToOneConcurrentArrayQueue<Object> q = new OneToOneConcurrentArrayQueue<>(256);
+        EventToQueuePublisher<String> p = new EventToQueuePublisher<>("feed");
+        p.addTargetQueue(q, "g/feed/onEvent");
+        AtomicLong dispatched = new AtomicLong();
+        p.bindAcknowledgementPoint(q, dispatched::get);
+        FileEventSource src = new FileEventSource(256);
+        src.setFilename(data().toString());
+        src.setReadStrategy(ReadStrategy.COMMITED);
+        src.setOutput(p);
+        src.onStart();
+        src.start();
+        src.startComplete();
+        src.doWork();
+        dispatched.set(5);
+        src.doWork();
+        assertEquals(offsetAfter(5), pointer());
+
+        Files.delete(data());
+        StringBuilder b = new StringBuilder();
+        for (int i = 1; i <= 20; i++) b.append("new-").append(i).append('\n');
+        Files.writeString(data(), b, StandardCharsets.UTF_8);
+        src.closeStreamForTesting();         // a read failure: the next duty cycle reopens the file
+        src.doWork();
+        assertEquals(0, pointer(), "reset: nothing of the new file processed yet");
+        dispatched.set(10);
+        src.doWork();
+        assertEquals(0, pointer(), "an acknowledgement of the old file is never committed into the new file's pointer");
+        dispatched.set(11);
+        src.doWork();
+        assertEquals("new-1\n".length(), pointer());
+        src.stop();
+    }
+
+    /** A v1.1.2 pointer between the CR and LF of one terminator resumes after the LF. */
+    @Test
+    void aV112PointerBetweenCrAndLfResumesAfterTheTerminator() throws Exception {
+        Files.writeString(data(), "\u00e91\r\nb2\r\nc3\r\n", StandardCharsets.UTF_8);
+        byte[] legacy = new byte[1024];
+        ByteBuffer.wrap(legacy).putLong(0, 4);      // C3 A9 31 0D | 0A
+        Files.write(pointerFile(), legacy);
+        Run r = run();
+        r.src().doWork();
+        assertEquals(List.of("b2", "c3"), r.drain());
+        r.src().stop();
+    }
+
+    /**
+     * Review 3, item 2: a v1.1.2 pointer whose first start stops before the file is opened (a later boot step failed)
+     * must still be aligned at the next start: its epoch is written only once the alignment is committed.
+     */
+    @Test
+    void aV112PointerIsAlignedEvenIfTheFirstStartStopsBeforeOpeningTheFile() throws Exception {
+        Files.writeString(data(), "\u00e9\u00e9\u00e9-abc\nnext-2\n", StandardCharsets.UTF_8);
+        byte[] legacy = new byte[1024];
+        ByteBuffer.wrap(legacy).putLong(0, 8);      // 8 chars: byte 8 is inside the first line (11 bytes)
+        Files.write(pointerFile(), legacy);
+        OneToOneConcurrentArrayQueue<Object> q = new OneToOneConcurrentArrayQueue<>(64);
+        EventToQueuePublisher<String> p = new EventToQueuePublisher<>("feed");
+        p.addTargetQueue(q, "q");
+        FileEventSource interrupted = new FileEventSource(256);
+        interrupted.setFilename(data().toString());
+        interrupted.setReadStrategy(ReadStrategy.COMMITED);
+        interrupted.setOutput(p);
+        interrupted.onStart();
+        interrupted.start();
+        interrupted.stop();                          // never opened the file
+        Run r = run();
+        r.src().doWork();
+        assertEquals(List.of("next-2"), r.drain());
         r.src().stop();
     }
 }
