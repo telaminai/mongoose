@@ -86,4 +86,29 @@ class ProcessingCheckpointSharedQueueTest {
         f.pub().pollAcknowledgements();
         assertEquals(List.of(1L, 2L), f.acked(), "the durable mark of the shared queue still counts");
     }
+
+    /**
+     * Review 3, item 3: the unsubscribe action of one reader run twice (a second deregistration with no listeners left)
+     * must not release the shared queue's binding a second time, unbinding the reader that remains.
+     */
+    @Test
+    void aRepeatedDeregistrationDoesNotUnbindTheOtherBindingOfTheQueue() {
+        Fixture f = fixture();
+        ProcessingCheckpoint checkpoint = f.fm().processingCheckpoint("feed", "g");
+        var s1 = new ProcessingCheckpointRebindTest.Sink();
+        var s2 = new ProcessingCheckpointRebindTest.Sink();
+        var r1 = bind(f, CallBackType.ON_EVENT_CALL_BACK);
+        r1.registerProcessor(s1);
+        var r2 = bind(f, CallBackType.forClass(String.class));
+        r2.registerProcessor(s2);
+        r2.deregisterProcessor(s2);
+        r2.deregisterProcessor(s2);          // again: the reader's unsubscribe action runs a second time
+        for (long i = 1; i <= 3; i++) assertTrue(f.pub().tryPublish("a" + i, i));
+        r1.doWork();
+        ProcessingCheckpoint.Mark mark = checkpoint.mark();
+        assertNotEquals(-1, mark.binding(), "the remaining binding still holds the checkpoint");
+        checkpoint.durableThrough(mark);
+        f.pub().pollAcknowledgements();
+        assertEquals(List.of(1L, 2L, 3L), f.acked());
+    }
 }

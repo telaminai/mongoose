@@ -668,11 +668,16 @@ public class EventFlowManager {
         }
         checkpoint.binding = binding;
         queuePublisher.bindAcknowledgementPoint(eventQueue, () -> checkpoint.processed(binding));
+        // a reader's unsubscribe action can run more than once (a second deregistration with no listeners left): it
+        // releases its share of the queue's binding once only (review 3, item 3)
+        java.util.concurrent.atomic.AtomicBoolean released = new java.util.concurrent.atomic.AtomicBoolean();
         Runnable unsubscribeAndUnbind = () -> {
-            boolean lastOfQueue;
-            synchronized (queueBindings) {
-                lastOfQueue = --binding.bindings == 0;
-                if (lastOfQueue) queueBindings.remove(eventQueue, binding);
+            boolean lastOfQueue = false;
+            if (released.compareAndSet(false, true)) {
+                synchronized (queueBindings) {
+                    lastOfQueue = --binding.bindings == 0;
+                    if (lastOfQueue) queueBindings.remove(eventQueue, binding);
+                }
             }
             // the queue itself stays the group's queue for the feed while another of its bindings reads it
             unsubscribe.run();
