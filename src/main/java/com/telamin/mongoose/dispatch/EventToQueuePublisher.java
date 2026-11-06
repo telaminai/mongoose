@@ -209,13 +209,16 @@ public class EventToQueuePublisher<T> {
 
     private enum DeferredKind { PUBLISH, PUBLISH_OR_CACHE, CACHE, REPLAY, START_COMPLETE, DISPATCH_CACHED, FEED_STATUS }
 
-    /** A producer operation deferred until the commit in progress completes. */
-    private record Deferred(DeferredKind kind, Object item) {
+    /**
+     * A producer operation deferred until the commit in progress completes; a positioned cache keeps its position, so it
+     * is acknowledged at that position when it runs (review R2).
+     */
+    private record Deferred(DeferredKind kind, Object item, boolean positioned, Object position) {
     }
 
     /** Defer an operation made during a commit on this feed. Under the lock; only the committing thread gets here. */
     private void defer(DeferredKind kind, Object item) {
-        deferredDuringCommit.addLast(new Deferred(kind, item));
+        deferredDuringCommit.addLast(new Deferred(kind, item, false, null));
     }
     private static final MongooseCounter NO_COUNTER = NoOpCountersService.INSTANCE.counter("noop");
     @Getter(lombok.AccessLevel.NONE)
@@ -301,11 +304,6 @@ public class EventToQueuePublisher<T> {
     /** The distinct physical target queues, rebuilt when a target is added or removed; guarded by the publish lock. */
     @Getter(lombok.AccessLevel.NONE)
     private OneToOneConcurrentArrayQueue<?>[] ackQueues = new OneToOneConcurrentArrayQueue<?>[0];
-    /** The position of the item {@link #tryPublish} or a positioned cache is committing; guarded by the lock. */
-    @Getter(lombok.AccessLevel.NONE)
-    private boolean positionPending;
-    @Getter(lombok.AccessLevel.NONE)
-    private Object pendingPosition;
     /** Serialises {@link #pollAcknowledgements} callers (the source's duty cycle and its stop). */
     @Getter(lombok.AccessLevel.NONE)
     private final Object ackPollLock = new Object();
@@ -1137,9 +1135,11 @@ public class EventToQueuePublisher<T> {
      * room for it: then nothing is committed (no sequence number, no journal entry, no queue holds it) and false is
      * returned; the source keeps the item and its read position and offers it again on a later duty cycle
      * (docs/design/feed-delivery.md). Never waits, so it is safe on an agent thread. Before {@link #startComplete()} the
-     * item is cached, as {@link #publishOrCache}. A DROP_AFTER_SPIN queue still drops after its spin bound; a queue whose
-     * group is fenced or dead does not hold the feed back. With a committer, the position is acknowledged once the item
-     * is processed, and the source pauses while {@link #maxPendingAcknowledgements} items await acknowledgement.
+     * item is cached (positioned, and reserved from nesting: {@link #cache(Object, Object)}). A DROP_AFTER_SPIN queue
+     * still drops after its spin bound. A queue whose group is fenced or dead does not hold back a publish without a
+     * position; a positioned one pauses while any consumer is fenced or dead, or none is live. With a committer, the
+     * position is acknowledged once the item is processed, and the source pauses while
+     * {@link #maxPendingAcknowledgements} items await acknowledgement.
      *
      * @return true when the item was taken (published, cached, filtered by the data mapper, or dropped for a
      * drop-tolerant queue); false when the source must keep it and try again
@@ -1174,14 +1174,7 @@ public class EventToQueuePublisher<T> {
     private boolean tryPublishSerialised(T item, Object position, boolean tracked) {
         {
             if (!startComplete) {
-                positionPending = tracked;
-                pendingPosition = position;
-                try {
-                    cacheSerialised(item);
-                } finally {
-                    positionPending = false;
-                    pendingPosition = null;
-                }
+                cachePositioned(item, tracked, position);
                 return true;
             }
             if (cacheReadPointer < eventLog.size() && !dispatchCached(CacheFlush.NEVER_DROP)) {
@@ -1202,14 +1195,7 @@ public class EventToQueuePublisher<T> {
                 if (tracked) pendingAcks.addDone(sequenceNumber, position);
                 return true;
             }
-            positionPending = tracked;
-            pendingPosition = position;
-            try {
-                publishMapped(item, mappedItem);
-            } finally {
-                positionPending = false;
-                pendingPosition = null;
-            }
+            publishMapped(item, mappedItem, tracked, position);
             return true;
         }
     }
@@ -1294,19 +1280,37 @@ public class EventToQueuePublisher<T> {
         }
         yieldToSubscriberChanges();
         synchronized (publishLock) {
+            boolean positioned = committer != null && position != null;
             if (committing) {
-                defer(DeferredKind.CACHE, item);
+                // run once the commit in progress completes, still at its own position (review R2)
+                deferredDuringCommit.addLast(new Deferred(DeferredKind.CACHE, item, positioned, position));
                 return;
             }
-            positionPending = committer != null && position != null;
-            pendingPosition = position;
-            try {
-                cacheSerialised(item);
-            } finally {
-                positionPending = false;
-                pendingPosition = null;
-            }
+            cachePositioned(item, positioned, position);
         }
+    }
+
+    /**
+     * Cache an item, reserving a positioned one from nesting as a positioned commit is (review R2): the user code the
+     * cache runs (the data mapper, the journal codec, an item's toString) cannot number, cache or publish another item
+     * between this one's position and its entry in the event log, nor take its position. A nested tryPublish is told to
+     * retry; any other producer operation is deferred until this item is cached, then run in order. Under the lock.
+     */
+    private void cachePositioned(T item, boolean positioned, Object position) {
+        if (!positioned || committing) {
+            cacheSerialised(item, positioned, position);
+            return;
+        }
+        committing = true;
+        boolean cached = false;
+        try {
+            cacheSerialised(item, true, position);
+            cached = true;
+        } finally {
+            committing = false;
+            if (!cached && !drainingDeferred) discardDeferred();
+        }
+        if (!drainingDeferred) drainDeferred();
     }
 
     /**
@@ -1827,6 +1831,11 @@ public class EventToQueuePublisher<T> {
 
     /** Commit and dispatch an already mapped item: sequence number, journal, event log, offers. Under the lock. */
     private void publishMapped(Object itemToPublish, Object mappedItem) {
+        publishMapped(itemToPublish, mappedItem, false, null);
+    }
+
+    /** As {@link #publishMapped(Object, Object)}, acknowledging a positioned item at {@code position}. */
+    private void publishMapped(Object itemToPublish, Object mappedItem, boolean positioned, Object position) {
         // On a feed with a blocking queue, the room checked for this item is reserved until its offers are done: a
         // publish into this feed from code run during the commit (the journal codec or append, an error listener, an
         // item's toString) is deferred until the commit completes (external review of d9eec79, finding 1)
@@ -1834,13 +1843,13 @@ public class EventToQueuePublisher<T> {
         // number and dispatch an item between this item's position and its dispatch (review: nested publish)
         boolean reserve = (blockingTargets > 0 || committer != null) && !committing;
         if (!reserve) {
-            commit(itemToPublish, mappedItem);
+            commit(itemToPublish, mappedItem, positioned, position);
             return;
         }
         committing = true;
         boolean committed = false;
         try {
-            commit(itemToPublish, mappedItem);
+            commit(itemToPublish, mappedItem, positioned, position);
             committed = true;
         } finally {
             committing = false;
@@ -1893,11 +1902,11 @@ public class EventToQueuePublisher<T> {
                 else publishDowngraded((T) op.item(), "publish nested inside a publisher's dispatch");
             }
             case PUBLISH_OR_CACHE -> {
-                if (!startComplete) cacheSerialised((T) op.item());
+                if (!startComplete) cacheSerialised((T) op.item(), false, null);
                 else if (blockingTargets == 0) publishSerialised((T) op.item());
                 else publishDowngraded((T) op.item(), "publish nested inside a publisher's dispatch");
             }
-            case CACHE -> cacheSerialised((T) op.item());
+            case CACHE -> cachePositioned((T) op.item(), op.positioned(), op.position());
             case REPLAY -> replaySerialised((ReplayRecord) op.item());
             case START_COMPLETE -> {
                 warnCacheReplayOnBlockingFeed();
@@ -1916,15 +1925,13 @@ public class EventToQueuePublisher<T> {
         }
     }
 
-    private void commit(Object itemToPublish, Object mappedItem) {
+    private void commit(Object itemToPublish, Object mappedItem, boolean positioned, Object position) {
         publishCounter.increment();
         sequenceNumber++;
-        Object position = null;
-        if (positionPending) {
-            positionPending = false;
-            position = pendingPosition;
+        if (positioned) {
             pendingAcks.add(sequenceNumber, position);
-            pendingPosition = null;
+        } else {
+            position = null;
         }
         journalItem(mappedItem, sequenceNumber);
 
@@ -1982,7 +1989,7 @@ public class EventToQueuePublisher<T> {
                 return;
             }
             if (!startComplete) {
-                cacheSerialised(item);
+                cacheSerialised(item, false, null);
                 return;
             }
             if (blockingTargets == 0) {
@@ -2004,19 +2011,16 @@ public class EventToQueuePublisher<T> {
                 defer(DeferredKind.CACHE, itemToCache);
                 return;
             }
-            cacheSerialised(itemToCache);
+            cacheSerialised(itemToCache, false, null);
         }
     }
 
-    private void cacheSerialised(T itemToCache) {
+    /** Cache one item, tracking {@code position} when {@code positioned}. Under the lock; see {@link #cachePositioned}. */
+    private void cacheSerialised(T itemToCache, boolean positioned, Object position) {
 
         Object mappedItem = mapItemSafely(itemToCache, "cache");
         if (mappedItem == null) {
-            if (positionPending) {
-                positionPending = false;
-                pendingAcks.addDone(sequenceNumber, pendingPosition);
-                pendingPosition = null;
-            }
+            if (positioned) pendingAcks.addDone(sequenceNumber, position);
             return;
         }
 
@@ -2024,13 +2028,10 @@ public class EventToQueuePublisher<T> {
             log.fine("listenerCount:" + targetQueues.size() + " sequenceNumber:" + sequenceNumber + " publish:" + itemToCache);
         }
         sequenceNumber++;
-        boolean positioned = positionPending;
-        Object position = null;
-        if (positionPending) {
-            positionPending = false;
-            position = pendingPosition;
+        if (positioned) {
             pendingAcks.add(sequenceNumber, position);
-            pendingPosition = null;
+        } else {
+            position = null;
         }
         journalItem(mappedItem, sequenceNumber);
         if (!cacheEventLog && positioned) {
