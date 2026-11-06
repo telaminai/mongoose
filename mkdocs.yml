@@ -139,6 +139,8 @@ nav:
           - Threading model: architecture/threading-model.md
           - Object pooling: architecture/object_pooling.md
           - Overload and loss policy (design): design/overload-policy.md
+          - Feed caught-up signal (design): design/feed-caught-up.md
+          - Feed delivery guarantees (design): design/feed-delivery.md
           - Server control: architecture/server-control.md
           - Failure handling (design, issue 77): design/failure-handling.md
       - Reference:
