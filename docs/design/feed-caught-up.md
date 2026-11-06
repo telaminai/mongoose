@@ -153,7 +153,9 @@ Edge cases:
   tailing source checks that the path still names that file and that it is not shorter than what was read. If not it
   reports `BEHIND` with detail `the input file was replaced while being read ...: reopening` (or `truncated`), and
   reads the file at the path; a COMMITED pointer moves to a new epoch ([feed-delivery.md](feed-delivery.md) section 4).
-  Before, the feed stayed `CAUGHT_UP` on the old file and delivered nothing.
+  Before, the feed stayed `CAUGHT_UP` on the old file and delivered nothing. "That file" is the file the channel
+  opened: its identity is read before and after the open, and the open retried if the path changed in between
+  (independent delta review, finding 1).
 - **`cacheEventLog: true`**: lines read in `start()` are cached; the status is reported after `startComplete()`, and
   the positions count the replayed lines (`cachedPending` stays true until they are dispatched). When the cache replay
   pauses at a full PAUSE queue, the in-band startup status waits behind the rest of the cache and `cachedPending` stays

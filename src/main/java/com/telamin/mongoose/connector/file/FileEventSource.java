@@ -459,17 +459,45 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
         super.tearDown();
     }
 
+    /** Tests only: run just after the input file's channel is opened, to interleave a rotation there. */
+    Runnable afterOpenForTest;
+    /** Opens of a file whose identity changed during the open, before the open waits for the next duty cycle. */
+    private static final int OPEN_ATTEMPTS = 3;
+
     private InputStream connectReader() {
         if (startComplete.get() & stream == null && filename != null && !filename.isEmpty()) {
             try {
-                java.nio.channels.FileChannel opened = java.nio.channels.FileChannel.open(Paths.get(filename),
-                        java.nio.file.StandardOpenOption.READ);
+                // the identity is bound to the file actually opened (independent delta review, finding 1): the path's
+                // identity is read before and after the open, and the open retried if it changed, so a rotation between
+                // the open and the identity read never labels the old file with the replacement's key
+                java.nio.channels.FileChannel opened = null;
+                long identity = 0;
+                for (int attempt = 0; opened == null; attempt++) {
+                    long before = fileIdentity();
+                    java.nio.channels.FileChannel candidate = java.nio.channels.FileChannel.open(Paths.get(filename),
+                            java.nio.file.StandardOpenOption.READ);
+                    if (afterOpenForTest != null) afterOpenForTest.run();
+                    long after = fileIdentity();
+                    if (before == after) {
+                        opened = candidate;
+                        identity = after;
+                    } else {
+                        candidate.close();
+                        if (attempt >= OPEN_ATTEMPTS - 1) {
+                            if (warningEnabled) {
+                                log.log(Level.WARNING, serviceName + ": the input file keeps changing while being opened;"
+                                        + " trying again next duty cycle: " + filename);
+                            }
+                            return null;
+                        }
+                    }
+                }
                 channel = opened;
                 stream = java.nio.channels.Channels.newInputStream(opened);
                 // read from the position again: bytes of a partial line buffered from an earlier stream are read again
                 // (a reopen after a read failure or a live change), never appended to twice
                 offset = 0;
-                checkSourceIdentity();
+                checkSourceIdentity(identity);
                 if (legacyAlign) {
                     legacyAlign = false;
                     alignLegacyPointer();
@@ -744,10 +772,10 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
      * change, is the same file; so is one under another file key whose fingerprinted bytes match (a remount, a
      * copy-up, a rewrite-and-rename appender), kept with a warning. With no file key (Windows) only the fingerprint and
      * the size decide. Other strategies have no
-     * pointer: their epoch is the file key, stable for as long as the file is the same.
+     * pointer: their epoch is the file key, stable for as long as the file is the same. {@code identity} is the file key
+     * of the file the channel opened: read before and after the open, unchanged.
      */
-    private void checkSourceIdentity() throws IOException {
-        long identity = fileIdentity();
+    private void checkSourceIdentity(long identity) throws IOException {
         openIdentity = identity;
         synchronized (commitLock) {
             if (commitPointer == null || !commitRead) {

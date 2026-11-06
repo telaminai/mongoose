@@ -235,6 +235,13 @@ state and need a handoff queue back to the source; rejected.
   that long; the fingerprint catches both at the next open (except the rewrite above that keeps the fingerprinted
   bytes). A reopen (this one, or after a read error) reads a partial last line again from the position, never appending
   its bytes twice (before: `partpartial`; `aPartialLineIsReadOnceAcrossAReopen`).
+  **The identity is the opened file's** (independent delta review of PR #98, finding 1). Java gives no file key for an
+  open channel, so the path's identity is read before and after the open; if it changed, the channel is closed and the
+  open retried (three times, then the next duty cycle). Before, the identity was read once, after the open: a rotation
+  between the two labelled the old file with the replacement's key, so every later end-of-file check compared the
+  replacement with itself, the feed read only the old file and reported `CAUGHT_UP`, and the new file never arrived
+  (`FileEventSourceOpenRaceTest`, COMMITED and EARLIEST). A rotation after the second read is the ordinary live case
+  above. Without file keys (Windows) the two reads cannot differ, as before.
 - **Pointer files of earlier layouts** (review 2, findings 7 and 8): every release created a 1,024-byte pointer file;
   v1.1.2 and before wrote only slot 0 (the offset), leaving the epoch slot 0. A pointer file shorter than 1,024 bytes
   (not one Mongoose wrote: hand-made, or truncated by other tooling) is extended in place, keeping its offset; shorter
