@@ -1,9 +1,12 @@
 # Feed delivery guarantees: commit after processing, PAUSE, honest status
 
 Status: implemented and committed on `feature/feed-caught-up` (not yet merged), on top of the feed caught-up work
-([feed-caught-up.md](feed-caught-up.md)), including the fixes of the second independent review (section 11). Scope: `EventToQueuePublisher`, `EventFlowManager`, `FileEventSource`, the overload policy
+([feed-caught-up.md](feed-caught-up.md)), including the fixes of the second and third reviews and of the independent
+review of 9567d6d (R1 to R6, section 11). Scope: `EventToQueuePublisher`, `EventFlowManager`, `FileEventSource`, the overload policy
 (`OverloadPolicy`, `OverloadSettings`, `OverloadPolicyConfig`), `FeedStatusReport` / `feed.status`, a new package
-`service.delivery`, and the final commit step of the ordered shutdown (`LifecycleManager`). No change to Fluxtion, generated processors, the plugins, or the replay format.
+`service.delivery`, and the final commit step of the ordered shutdown (`LifecycleManager`). No change to Fluxtion,
+generated processors or the plugins. The replay recording gains the delivery of each positioned input (section 8a): a
+`delivery` component on `ReplayEntry.Indexed` and `Inline`, and a `DELIVERY` line kind in `CsvReplayStore`.
 
 Each item is marked **implemented** or **proposed** (follow-up).
 
@@ -117,7 +120,9 @@ state and need a handoff queue back to the source; rejected.
   given and did not process is never acknowledged in this run**. Its acknowledgement point is *retained* (marked
   explicitly, still reading what its reader counted) for as long as an entry of the window waits for it, then dropped;
   a later removal of another queue never touches it (review 2, findings 2 and 3; before, removing one of several
-  consumers acknowledged its backlog on the others' progress, and any later unsubscribe erased a retained point).
+  consumers acknowledged its backlog on the others' progress, and any later unsubscribe erased a retained point;
+  the independent review's R1 found the same with consumers that subscribed after the hold and were never given the
+  held items: `FileEventSourceIndependentReviewTest.anUnsubscribeAfterTheLastConsumerLeftKeepsItsHold`).
   A consumer that had processed everything it was given leaves nothing behind and holds nothing.
   - *Other consumers remain*: they go on being fed; the pointer stays before the removed consumer's first unprocessed
     item, the window grows behind it until its cap (below) pauses the source, and `feed.status` reports the feed
@@ -147,6 +152,13 @@ state and need a handoff queue back to the source; rejected.
   this fix the nested item was numbered and dispatched between the outer item's position and its dispatch, and the
   window marked the outer item done with no condition (`aPublishNestedInAPositionedCommitDoesNotAcknowledgeTheOuterItem`).
   The window itself now never marks an entry done on an out-of-order dispatch: it leaves it holding.
+- *A positioned cache* (`cache(item, position)`, and `tryPublish` before the start completes: a file source's cached
+  startup) is reserved the same way (independent review R2). The data mapper and the journal codec it runs are inside
+  the reservation: a nested `tryPublish` is told to retry, any other producer operation (a push publish, another
+  cache, a status) is deferred and run in order once the item is cached, and a deferred positioned cache keeps its
+  own position. Positions are passed with each call, never through state a nested call could overwrite. Before this
+  fix a `tryPublish` from the mapper of a cached item was cached ahead of it with its own position and took the outer
+  item's position away, so consuming only the nested item acknowledged past the outer one (`PositionedCacheNestingTest`).
 - *An item dropped for a queue* (explicit `DROP_AFTER_SPIN`): it never enters the queue, so it does not hold that
   queue's condition back. Committing past it is what a drop means; the drop is counted and `lossless` goes false
   (`anExplicitDropPolicyDropsCountsAndCommitsPastTheDrop`).
@@ -186,18 +198,41 @@ state and need a handoff queue back to the source; rejected.
   fingerprint; truncated means shorter than the pointer. The fingerprint is taken at each open and **grown at each
   commit** while it covers less than 4 KB and the file is longer (at most 4 KB read per commit, nothing once full), so a
   file first opened holding only a header is fingerprinted over what was read, and a later rewrite with the same
-  header is caught (review 3, item 1). A **file key that changes while the fingerprinted bytes match** and the file is
+  header is caught (review 3, item 1). The fingerprint is always of the file being read (its open channel, by
+  positional reads), never of whatever the path names now: a commit made after the file was replaced, before the source
+  reopened it, used to fingerprint the replacement into the old file's pointer, so the next start took the new file
+  for the old one and skipped its first bytes (independent review R4,
+  `aCommitAfterAReplacementNeverFingerprintsTheNewFile`). A **file key that changes while the fingerprinted bytes match** and the file is
   not shorter than the pointer (an NFS remount or a FUSE/overlay copy-up changes the device id; a writer that appends
   by writing a temporary file and renaming it changes the inode) keeps the pointer and epoch, with a warning, instead
-  of re-delivering the whole file (review 3, item 4). Not detected: a file truncated and rewritten in place **while the
-  source is running** (the next fingerprint is taken of the new content), and a rewrite that keeps the first 4 KB
-  (or, for a shorter fingerprint, all of them) and the length past the pointer. **Never a time** (review 2, finding 1, a blocker): the first
+  of re-delivering the whole file (review 3, item 4). Never detected: a rewrite that keeps the first 4 KB (or, for a
+  shorter fingerprint, all of them) and the length past the pointer. **Never a time** (review 2, finding 1, a blocker): the first
   version used `creationTime()`, which on Linux before JDK 21's `statx` support (verified in Docker, Temurin 21.0.1) and
   on file systems without a birth time is the modification time, so every append followed by a restart reset the
   pointer and re-delivered the whole file under a new epoch, defeating `alreadyApplied`. Appending to the file, or
   changing its times, is not a replacement. With no file key (Windows) only the fingerprint and the size decide.
   Strategies without a pointer use the file key as their epoch (an in-place rewrite is not detected for them: they have
   no pointer to keep a fingerprint in, and their items carry no position). See 5a.
+- **Replaced or truncated while tailing** (independent review R4). Before, identity was checked only when the file was
+  opened, so a file rotated or replaced at the path left the reader on the old file, and a file truncated in place left
+  it past the new end: the feed delivered nothing and stayed `CAUGHT_UP`. Now, at the end of the open file and before
+  it reports `CAUGHT_UP`, a tailing source checks that the path still names the file it reads (the same file key) and
+  that the file is not shorter than what was read. If not, it reports `BEHIND` with the reason (`the input file was
+  replaced while being read ...` or `... truncated ...`), closes the file, and opens the one at the path on its next
+  duty cycle. That open runs the identity check above, exactly as a restart would: a COMMITED pointer moves to 0 under
+  a new epoch (or is kept, for the same leading bytes under another file key). Lines of the old file already published
+  are still delivered, but their acknowledgements are of the old epoch and never written into the new file's pointer
+  (`anOldFileAcknowledgementIsNotCommittedAfterALiveReplacement`); an unterminated last line of the old file is not
+  published; on a rotation, what the writer appended to the old file before the new one appeared is read first
+  (`aRotatedFileIsReadToItsEndBeforeTheNewOne`). A path with no file (a rotation in progress) is not a change: the
+  open file is read on. Strategies without a pointer read the new file from its start. **Design choice**: moving to the
+  new epoch rather than failing closed with a restart-required status, because the reopen goes through the same
+  identity check as a restart (reading on is exactly as safe as restarting) and a rotated log keeps being read without
+  an operator. Cost: one file-attribute read per idle duty cycle. **Not detected while running**: a file rewritten in
+  place to at least the length already read, and, on a platform without file keys (Windows), a replacement at least
+  that long; the fingerprint catches both at the next open (except the rewrite above that keeps the fingerprinted
+  bytes). A reopen (this one, or after a read error) reads a partial last line again from the position, never appending
+  its bytes twice (before: `partpartial`; `aPartialLineIsReadOnceAcrossAReopen`).
 - **Pointer files of earlier layouts** (review 2, findings 7 and 8): every release created a 1,024-byte pointer file;
   v1.1.2 and before wrote only slot 0 (the offset), leaving the epoch slot 0. A pointer file shorter than 1,024 bytes
   (not one Mongoose wrote: hand-made, or truncated by other tooling) is extended in place, keeping its offset; shorter
@@ -207,7 +242,17 @@ state and need a handoff queue back to the source; rejected.
   that offset is committed at once, **together with the epoch**: a start that stops before opening the file leaves the
   pointer a legacy one, aligned at the next start (review 3, item 2). The char count is never past the true byte offset of
   the processed lines, so this skips only the rest of a line already processed, never an unprocessed line; a line may be
-  re-delivered.
+  re-delivered. Checked for an 8-byte and a 1,024-byte legacy pointer (`aPointerFileHoldingOnlyTheOffsetIsUpgraded`,
+  `anEightBytePointerAfterNonAsciiTextResumesAtALineStart`, `aV112CharCountPointerAfterNonAsciiTextResumesAtALineStart`);
+  a pointer file shorter than 8 bytes, or empty, is read from 0 with a warning
+  (`aPointerFileTooShortForAnOffsetReadsFromTheStart`, `anEmptyPointerFileReadsFromTheStart`). **The ambiguity is not
+  resolved, only bounded**: a char count cannot be turned back into the byte offset it stood for. After non-ASCII text
+  it can be several lines short of the processed bytes, and every whole line between it and the true end is delivered
+  again, under the new epoch, so `Delivery.alreadyApplied` does not recognise those lines as applied
+  (`aLegacyCharCountPointerCanDeliverAProcessedLineAgain`). This is at-least-once, not a correct migration. The count is
+  exact only when everything before it is ASCII; otherwise an app that cannot tolerate the re-delivery must set the
+  pointer itself before upgrading (the byte length of the first `count` characters as v1.1.2 decoded them) or de-duplicate those
+  lines by content.
 - `start()` resets the read buffer and pending line, and registers the committer for `COMMITED` only (other strategies
   have no pointer).
 - **Clean stop** (review 2, finding 4): `stop()` polls acknowledgements once (enough for a source stopped on its own).
@@ -393,7 +438,13 @@ re-readable source does not need to wait, because it can simply not read.
   is kept. Before this, the replay dropped.
 - **In-band feed status** (`feedStatusEvents: true`): a status that finds a PAUSE queue full waits for room (the host
   keeps seeing the previous state meanwhile) and is delivered before any later item
-  (`anInBandStatusWaitsForRoomInAPausedQueue`). A later report replaces a waiting one.
+  (`anInBandStatusWaitsForRoomInAPausedQueue`). A later report replaces a waiting one. A status never overtakes cached
+  items either: the status reported before the start completed waits behind a cache replay that paused, and is
+  delivered once the cache is dispatched and there is room; until then the feed is not drained (`cachedPending`).
+  Before, it was written into the full queue with drop semantics, so a PAUSE run lost it and counted a drop
+  (independent review R6, `aCachedStartupStatusWaitsBehindTheCacheAndIsNotDropped`). Only PAUSE queues hold a status: on a
+  `DROP_AFTER_SPIN` or `BLOCK_WITH_DEADLINE` queue (even under `tryPublish`, where items pause for it) a status is still
+  offered with drop-after-spin semantics ([feed-caught-up.md](feed-caught-up.md) section 9).
 - **Push publishes** (`publish`, a source that cannot pause) into a full PAUSE queue fall back to `DROP_AFTER_SPIN`
   with the spin bound; the drop is counted (`dropped`) and the fallback counted as `downgraded`, warned once.
 - **Health**: PAUSE is a never-drop policy: a loss on it (only via a fallback) latches like BLOCK
@@ -534,6 +585,23 @@ audit therefore reads "processed twice, once per run", which is the truth of at-
 recording holds exactly 2 entries and replays to run 2's output). A dropped item (explicit DROP) is still marked
 `Dropped` in the recording, as before.
 
+**Delivery metadata is recorded and replayed (independent review R3).** What a processor reads through
+`DeliveryContext` (feed, sequence, epoch, source position) is input to it, so a replay that withholds it is not
+equivalent for a processor that reads it, such as one that skips positions its state has already applied. Before this
+fix the live cycle read the item's delivery and the replayed cycle read null. Now the recorder takes the delivery of
+each input when its dispatch begins and stores it with the input's entry (`ReplayEntry.Indexed.delivery()`,
+`ReplayEntry.Inline.delivery()`, null for an input without a position); the replayer enters it for the replayed cycle,
+the whole cycle, and clears it in a finally. In `CsvReplayStore` it is a `DELIVERY` line written, in the same write,
+just before the input's line (the position through the store's codec). A reader from before this change refuses such a
+file (an unknown entry kind) rather than replaying it without the metadata, and a `DELIVERY` line whose input line was
+never written adds nothing. Verified by `FeedDeliveryReplayContextTest`: indexed and inline recordings replay the same
+delivery, and a processor that restores `(epoch, position)` state and skips re-delivered lines makes the same
+decisions in its replay (live: `skip c, skip d`; replay before the fix: `apply c, apply d`); and by
+`CsvReplayStoreDeliveryTest`. **A recording without delivery metadata** replays with none, and says nothing about it:
+equivalent for a recording made by v1.1.2 or earlier (no `DeliveryContext` existed, so the live cycles read none too),
+**not** equivalent for a recording of a processor that read `DeliveryContext` under a build of this branch before the
+fix (unreleased). Re-record such a stream.
+
 ## 9. Other sources (proposed; plugins are follow-ups, `mongoose-plugins` not modified)
 
 Every re-readable source follows the same three steps: `output.acknowledgeWith(committer)` at start; publish with
@@ -584,6 +652,11 @@ And `setPauseByDefault(true)` in `setEventFlowManager` if PAUSE should be its de
   server as `mongoose.processingCheckpoints`); `MongooseServer.processingCheckpoint`.
 - A positioned feed's items travel in their queues as `PositionedItem` (the reader unwraps it; processors see the bare
   item). Code that drains a subscriber queue itself (tests) sees the wrapper; its `toString` is the item's.
+- **Behaviour change**: a tailing file source notices a replaced, rotated or truncated input file while running and
+  reads the new content, under a new epoch for COMMITED (section 4); it used to go on reading the old file, or nothing.
+- Replay format: `ReplayEntry.Indexed` and `Inline` gain a `delivery` component (the earlier constructors remain, with
+  no delivery); `CsvReplayStore` writes a `DELIVERY` line before a positioned input, which an earlier reader refuses
+  (section 8a). Recordings of feeds without positions are unchanged.
 - New `DeliveryContext` / `Delivery` (registered as `mongoose.deliveryContext`).
 - Push sources and every existing publish path are unchanged.
 
@@ -615,6 +688,16 @@ And `setPauseByDefault(true)` in `setEventFlowManager` if PAUSE should be its de
   and `FeedStatusServerTest.aBoundedFileEndsAndASilentSourceIsAFallbackFeed`: `unterminated` (finding 9). The Linux
   behaviour of finding 1 was also checked outside the suite, in Docker (Temurin 21.0.1 and 21.0.7): an append and a
   restart re-deliver only the appended line; an in-place rewrite resets the pointer.
+- Independent review of 9567d6d (R1 to R6), each failing before its fix on bf73ed9 unless noted:
+  `dispatch/PositionedCacheNestingTest` (4, R2): a `tryPublish` from a positioned cache's mapper or journal codec is
+  told to retry, a push publish from it follows the outer item, a deferred positioned cache keeps its position.
+  `connector/file/FileEventSourceIndependentReviewTest` (13): R1, the reviewer's later-unsubscribe case (already fixed
+  by 606db9f); R4, a file replaced, truncated, or rotated while tailed is read under a new epoch, an old-file
+  acknowledgement after a live replacement is not committed, a commit after a replacement never fingerprints the new
+  file, an `EARLIEST` tail re-reads a truncated file, a partial line is read once across a reopen; R5, 8-byte non-ASCII,
+  short and empty pointer files, and the explicit legacy re-delivery (already fixed by 2d0597a, so passing before);
+  R6, the cached startup status waits behind the cache and is not dropped.
+  `service/delivery/FeedDeliveryReplayContextTest` (3) and `replay/CsvReplayStoreDeliveryTest` (3): R3.
 - Third review regressions, each failing before its fix: `FileEventSourcePointerTest`
   `aHeaderOnlyFirstOpenThenAnInPlaceRewriteWithTheSameHeaderIsAReplacement` (item 1),
   `aV112PointerIsAlignedEvenIfTheFirstStartStopsBeforeOpeningTheFile` (item 2),

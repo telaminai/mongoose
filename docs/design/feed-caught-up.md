@@ -148,9 +148,16 @@ Edge cases:
   detail `unterminated last line not published`, and `feed.status` counts the bytes in `unterminated`
   ([feed-delivery.md](feed-delivery.md) section 7).
 - **Read error**: `UNKNOWN`, detail `read failed, reopening: ...`; the next poll reopens at the stream offset and
-  reports as above.
+  reports as above (a partial line buffered before is read again, not appended twice).
+- **Input replaced, rotated or truncated while tailed**: before reporting `CAUGHT_UP` at the end of the open file, a
+  tailing source checks that the path still names that file and that it is not shorter than what was read. If not it
+  reports `BEHIND` with detail `the input file was replaced while being read ...: reopening` (or `truncated`), and
+  reads the file at the path; a COMMITED pointer moves to a new epoch ([feed-delivery.md](feed-delivery.md) section 4).
+  Before, the feed stayed `CAUGHT_UP` on the old file and delivered nothing.
 - **`cacheEventLog: true`**: lines read in `start()` are cached; the status is reported after `startComplete()`, and
-  the positions count the replayed lines (`cachedPending` stays true until they are dispatched).
+  the positions count the replayed lines (`cachedPending` stays true until they are dispatched). When the cache replay
+  pauses at a full PAUSE queue, the in-band startup status waits behind the rest of the cache and `cachedPending` stays
+  true until it is delivered too.
 - `ONCE_LATEST` publishes nothing: as `docs/guide/read-strategy.md` documents, it starts at the end of the file, makes
   one pass and completes. Its signal is `END_OF_STREAM` @ 0 at the first poll after start, so a launcher waiting on it
   settles at once (asserted in `FileEventSourceFeedStatusTest`).
@@ -253,8 +260,11 @@ covers:
   journals are unchanged;
 - delivered to `onEvent` routes only: a reader on a typed callback route (`CallBackType.forClass`) takes it, counts it
   as dispatched and does not give it to its strategy, which could not take it;
-- offered with drop-after-spin semantics, like the cached-event replay: a full queue drops it and counts the drop as
-  any other (a `BLOCK_WITH_DEADLINE` feed does not block on it);
+- on a `PAUSE` queue (the default of a `FileEventSource` feed, or any feed configured `PAUSE`) never dropped: a
+  status with no room waits, after any cached items still to be dispatched, and is delivered before any later item
+  ([feed-delivery.md](feed-delivery.md) section 6, which supersedes the drop rule for PAUSE queues). On other queues it
+  is offered with drop-after-spin semantics: a full `DROP_AFTER_SPIN` queue drops it and counts the drop as any other,
+  and a `BLOCK_WITH_DEADLINE` feed does not block on it;
 - a node handles it as an ordinary event: `@OnEventHandler(filterString = "lines") public boolean onStatus(FeedStatus s)`.
 
 **Audit**: the processor's audit log records the event like any other input.
