@@ -159,7 +159,10 @@ Edge cases:
 - **`cacheEventLog: true`**: lines read in `start()` are cached; the status is reported after `startComplete()`, and
   the positions count the replayed lines (`cachedPending` stays true until they are dispatched). When the cache replay
   pauses at a full PAUSE queue, the in-band startup status waits behind the rest of the cache and `cachedPending` stays
-  true until it is delivered too.
+  true until it is delivered too, or, when a later report replaces it while it waits, until that report is delivered
+  and its positions taken (independent delta review, finding 2: before, the replacement dropped the hold, and the
+  host reported the feed settled on the startup status's position-0 snapshot with eight items unprocessed;
+  `CachedStartupStatusReplacementTest`).
 - `ONCE_LATEST` publishes nothing: as `docs/guide/read-strategy.md` documents, it starts at the end of the file, makes
   one pass and completes. Its signal is `END_OF_STREAM` @ 0 at the first poll after start, so a launcher waiting on it
   settles at once (asserted in `FileEventSourceFeedStatusTest`).

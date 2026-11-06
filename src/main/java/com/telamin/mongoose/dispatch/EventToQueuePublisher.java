@@ -355,6 +355,14 @@ public class EventToQueuePublisher<T> {
      */
     @Getter(lombok.AccessLevel.NONE)
     private PendingStatus pausedStatus;
+    /**
+     * The status reported before the start completed waits to be delivered behind the cache, and its positions to be
+     * taken again: the feed is not drained until then. Held whichever pending status wins: a later report that replaces
+     * the waiting startup status keeps it until that report is delivered and its positions taken (independent delta
+     * review, finding 2). Guarded by the lock.
+     */
+    @Getter(lombok.AccessLevel.NONE)
+    private boolean startupStatusPending;
 
     /** How far one physical target queue's readers have processed, and whether its group is fenced off. */
     private static final class AckPoint {
@@ -442,6 +450,7 @@ public class EventToQueuePublisher<T> {
             }
         }
         pausedStatus = null;
+        startupStatusPending = false;   // this report is delivered, and its positions taken, below
         var status = new com.telamin.mongoose.service.feedstatus.FeedStatus(name, state, sequenceNumber, bounded, detail);
         if (startComplete) {
             // what was cached goes first, as on a publish: the status claims it was delivered
@@ -480,6 +489,7 @@ public class EventToQueuePublisher<T> {
             // behind the cached items once there is room, never dropped (review R6). Until then the feed is not drained
             com.telamin.mongoose.service.feedstatus.FeedStatus reported = feedPosition.status();
             pausedStatus = new PendingStatus(reported.state(), reported.bounded(), reported.detail(), true);
+            startupStatusPending = true;
             return;
         }
         deliverStartupStatus();
@@ -496,6 +506,7 @@ public class EventToQueuePublisher<T> {
 
     /** Deliver the status reported before the start completed, and take its positions again. Under the publish lock. */
     private void deliverStartupStatus() {
+        startupStatusPending = false;
         FeedPosition reported = feedPosition;
         if (deliverFeedStatus) {
             deliverFeedStatusSerialised(reported.status());
@@ -523,7 +534,7 @@ public class EventToQueuePublisher<T> {
         synchronized (publishLock) {
             java.util.function.BooleanSupplier probe = feedStatusProbe;
             // a startup status waiting behind the cache is part of the cached delivery: not drained until it is delivered
-            boolean cachedPending = cacheReadPointer < eventLog.size() || pausedStatus != null && pausedStatus.startup();
+            boolean cachedPending = cacheReadPointer < eventLog.size() || startupStatusPending;
             if (probe == null) {
                 FeedPosition reported = feedPosition;
                 return reported.cachedPending() == cachedPending ? reported

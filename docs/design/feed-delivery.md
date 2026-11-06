@@ -527,7 +527,10 @@ re-readable source does not need to wait, because it can simply not read.
   items either: the status reported before the start completed waits behind a cache replay that paused, and is
   delivered once the cache is dispatched and there is room; until then the feed is not drained (`cachedPending`).
   Before, it was written into the full queue with drop semantics, so a PAUSE run lost it and counted a drop
-  (independent review R6, `aCachedStartupStatusWaitsBehindTheCacheAndIsNotDropped`). Only PAUSE queues hold a status: on a
+  (independent review R6, `aCachedStartupStatusWaitsBehindTheCacheAndIsNotDropped`). The hold on completion is a flag
+  of its own (`startupStatusPending`), not a property of whichever status waits: a later report that replaces the
+  waiting startup status keeps the feed undrained until that report is delivered and its positions taken (independent
+  delta review of PR #98, finding 2, `CachedStartupStatusReplacementTest`; before, the replacement dropped the hold). Only PAUSE queues hold a status: on a
   `DROP_AFTER_SPIN` or `BLOCK_WITH_DEADLINE` queue (even under `tryPublish`, where items pause for it) a status is still
   offered with drop-after-spin semantics ([feed-caught-up.md](feed-caught-up.md) section 9).
 - **Push publishes** (`publish`, a source that cannot pause) into a full PAUSE queue fall back to `DROP_AFTER_SPIN`
