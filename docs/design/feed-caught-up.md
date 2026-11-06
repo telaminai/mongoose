@@ -210,11 +210,15 @@ Response (one `output` call; on an unknown feed one `errOutput` call:
 `no such feed: <name>; usage: feed.status [--json] [feed ...]`):
 
 ```json
-{"settled":true,"fallbackFeeds":[],"feeds":[
+{"settled":true,"lossless":true,"fallbackFeeds":[],"feeds":[
   {"feed":"lines","state":"CAUGHT_UP","bounded":false,"sequence":3,"version":2,"detail":null,
-   "drained":true,"settled":true,
+   "drained":true,"settled":true,"lossless":true,"policy":"PAUSE","dropped":0,"refused":0,"downgraded":0,
+   "paused":false,"pauses":0,"acknowledged":3,"pendingAcks":0,"consumers":1,"stalled":null,"unterminated":0,
    "subscribers":[{"queue":"g/lines/onEventCallBack","position":3,"dispatched":3,"drained":true}]}]}
 ```
+
+(Line breaks added; the command prints one line. The delivery fields are described in
+[feed-delivery.md](feed-delivery.md) section 7.)
 
 Fields: top-level `settled` (every *reporting* feed in the report is settled), `fallbackFeeds` (feeds in `UNKNOWN`,
 sorted), `feeds` (sorted by name). Per feed: `state`, `bounded`, `sequence` (position of the claim), `version`

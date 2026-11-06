@@ -78,7 +78,8 @@ public class EventFeedConfig<IN> {
 
     /**
      * What the feed's publisher does when a subscriber's queue is full, with overrides per subscriber group
-     * (telaminai/mongoose#79). Null: {@code DROP_AFTER_SPIN} with a one-time boot warning. YAML key {@code overload}.
+     * (telaminai/mongoose#79). Null: the source's default with a one-time boot warning, {@code PAUSE} for a re-readable
+     * source ({@code FileEventSource}), else {@code DROP_AFTER_SPIN}. YAML key {@code overload}.
      */
     private OverloadPolicyConfig overload;
 
