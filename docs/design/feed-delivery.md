@@ -129,8 +129,10 @@ state and need a handoff queue back to the source; rejected.
     pointer stays before the removed consumer's items (`theHeldPointOfARemovedLastConsumerSurvivesALaterUnsubscribe`,
     `PositionedFeedStallTest`).
   - *Liveness trade-off*: a feed held this way does not complete in this run; it reports `stalled` with its reason and
-    is not `settled`, so a launcher times out with the reason instead of declaring an incomplete run complete. An
-    operator command to release a removed consumer's hold, accepting the loss of its backlog, is open question 1.
+    is not `settled`, so a launcher times out with the reason instead of declaring an incomplete run complete. There
+    is **no operator release yet**: `delivery.release` (open question 1) is a priority follow-up (section 12, item 0)
+    before COMMITED feeds are relied on with dynamic subscriptions, where a routine unsubscribe of a consumer with a
+    backlog holds the feed for the rest of the run.
 - *A queue whose group is fenced (quarantine in progress) or dead* (review F1): **holds** acknowledgement, and a
   positioned feed pauses while any of its consumers is fenced or dead: nothing reaches a fenced queue, nothing of its
   backlog is committed, and reading resumes when the fence lifts (`aTransientFenceHoldsThePointer`). Before this fix a
@@ -179,20 +181,31 @@ state and need a handoff queue back to the source; rejected.
   fingerprint: `[0]` offset, `[8]` epoch, `[16]` file key hash, `[24]` layout version, `[32]` fingerprint length,
   `[40]` fingerprint. A new pointer file gets a new epoch; at each open, an input file that was **replaced** or
   **truncated** resets the pointer to 0 under a new epoch, with a warning (before, a truncated file was read from past
-  its end, i.e. not at all). Replaced means another file key (device and inode on Unix) or other leading bytes than
-  those fingerprinted at the last open (an FNV-1a hash of the first `min(4096, size)` bytes, kept in the pointer
-  file); truncated means shorter than the pointer. **Never a time** (review 2, finding 1, a blocker): the first
+  its end, i.e. not at all). Replaced means other leading bytes than those fingerprinted (an FNV-1a hash of the first
+  `min(4096, size)` bytes, kept in the pointer file), or another file key (device and inode on Unix) with no matching
+  fingerprint; truncated means shorter than the pointer. The fingerprint is taken at each open and **grown at each
+  commit** while it covers less than 4 KB and the file is longer (at most 4 KB read per commit, nothing once full), so a
+  file first opened holding only a header is fingerprinted over what was read, and a later rewrite with the same
+  header is caught (review 3, item 1). A **file key that changes while the fingerprinted bytes match** and the file is
+  not shorter than the pointer (an NFS remount or a FUSE/overlay copy-up changes the device id; a writer that appends
+  by writing a temporary file and renaming it changes the inode) keeps the pointer and epoch, with a warning, instead
+  of re-delivering the whole file (review 3, item 4). Not detected: a file truncated and rewritten in place **while the
+  source is running** (the next fingerprint is taken of the new content), and a rewrite that keeps the first 4 KB
+  (or, for a shorter fingerprint, all of them) and the length past the pointer. **Never a time** (review 2, finding 1, a blocker): the first
   version used `creationTime()`, which on Linux before JDK 21's `statx` support (verified in Docker, Temurin 21.0.1) and
   on file systems without a birth time is the modification time, so every append followed by a restart reset the
   pointer and re-delivered the whole file under a new epoch, defeating `alreadyApplied`. Appending to the file, or
   changing its times, is not a replacement. With no file key (Windows) only the fingerprint and the size decide.
   Strategies without a pointer use the file key as their epoch (an in-place rewrite is not detected for them: they have
   no pointer to keep a fingerprint in, and their items carry no position). See 5a.
-- **Pointer files of earlier layouts** (review 2, findings 7 and 8): a pointer file shorter than 1,024 bytes (v1.1.2
-  and before wrote only the 8-byte offset) is extended in place, keeping its offset; shorter than 8 bytes, it restarts
-  at 0. A pointer with no epoch was written by v1.1.2 as a count of decoded chars, which after non-ASCII text is less
-  than the byte offset and may point inside a line: if the byte before it is not `\n` or `\r`, reading resumes after
-  the next line terminator, and that offset is committed at once. The char count is never past the true byte offset of
+- **Pointer files of earlier layouts** (review 2, findings 7 and 8): every release created a 1,024-byte pointer file;
+  v1.1.2 and before wrote only slot 0 (the offset), leaving the epoch slot 0. A pointer file shorter than 1,024 bytes
+  (not one Mongoose wrote: hand-made, or truncated by other tooling) is extended in place, keeping its offset; shorter
+  than 8 bytes, it restarts at 0. A pointer with no epoch was written by v1.1.2 as a count of decoded chars, which
+  after non-ASCII text is less than the byte offset and may point inside a line: if the byte before it is not `\n` or
+  `\r` (or it sits between the `\r` and `\n` of one terminator), reading resumes after the next line terminator, and
+  that offset is committed at once, **together with the epoch**: a start that stops before opening the file leaves the
+  pointer a legacy one, aligned at the next start (review 3, item 2). The char count is never past the true byte offset of
   the processed lines, so this skips only the rest of a line already processed, never an unprocessed line; a line may be
   re-delivered.
 - `start()` resets the read buffer and pending line, and registers the committer for `COMMITED` only (other strategies
@@ -205,11 +218,16 @@ state and need a handoff queue back to the source; rejected.
   `SourceCommitter.commitsAfterStop()`; the file source re-maps its pointer file for that write). The pointer then
   covers exactly what the slowest group processed (`FeedDeliveryCleanStopTest`, one and two groups). Items a group
   never processed (the drain timed out, the queue was dropped at close) stay uncommitted and are re-delivered at the
-  next start. A crash leaves the pointer at the last acknowledged line, re-read on restart.
+  next start. A crash leaves the pointer at the last acknowledged line, re-read on restart. The final commit runs only
+  once every source has stopped: if the feed-stop phase runs out of its bound, it is skipped, and made when the late
+  stop is joined after the processor groups close (review 3, item 5; `FeedDeliveryStopOrderTest`).
 - After a reset in the middle of a run (a reopen that finds the file replaced), an acknowledgement of an item of the
   old file is never committed: the committer forgets the last acknowledged offset on the reset and commits only after
-  an acknowledgement of the current epoch (review 2, finding 6;
-  `anAcknowledgementOfTheOldFileIsNotCommittedAfterAReset`).
+  an acknowledgement of the current epoch (review 2, finding 6; `anAcknowledgementOfTheOldFileIsNotCommittedAfterAReset`
+  for a restart, `anAcknowledgementOfTheOldFileIsNotCommittedAfterAMidRunReopen` for a reopen while running).
+- **Line terminators at the end of a once read** (review 3, item 6): a tailing read waits for the byte after a `\r`
+  (it may be the `\n` of `\r\n`); a once read that ends with a lone `\r` takes it as the terminator of the last line,
+  which is published, and reports no `unterminated` bytes.
 - With `cacheEventLog`, the cached lines carry their positions; they are acknowledged once dispatched after the start
   completes.
 
@@ -545,7 +563,10 @@ And `setPauseByDefault(true)` in `setEventFlowManager` if PAUSE should be its de
   unaffected. The pointer file also holds an epoch, the input file's key and a fingerprint of its first bytes; a
   replaced or truncated input file resets the pointer to 0 (it used to stay past the end); an appended one never does.
   A pointer written before epochs keeps its position (aligned to a line start if it was inside a line, section 4) and
-  gets an epoch on first use; a pointer file shorter than the current layout is extended.
+  gets an epoch on first use; a pointer file shorter than the current layout is extended. **Downgrade, then upgrade
+  again**: once this release has written an epoch, the pointer is never re-aligned; if v1.1.2 then runs on it and
+  writes a char count after non-ASCII lines, the slot-8 epoch survives, so the next upgrade trusts that count as a byte
+  offset and may resume inside a line. Delete the pointer (a full re-read under a new epoch) after such a downgrade.
 - **Behaviour change**: a positioned feed (COMMITED file) pauses, holding its position, while it has no live consumer
   or a consumer is fenced or dead, holds its position before what a removed consumer did not process, and is reported
   `stalled` (not settled) meanwhile.
@@ -593,7 +614,16 @@ And `setPauseByDefault(true)` in `setEventFlowManager` if PAUSE should be its de
   `DROP_AFTER_SPIN`, also on a file feed (finding 9). `FileEventSourceFeedStatusTest.anUnterminatedLastLineOfAOnceReadIsCounted`
   and `FeedStatusServerTest.aBoundedFileEndsAndASilentSourceIsAFallbackFeed`: `unterminated` (finding 9). The Linux
   behaviour of finding 1 was also checked outside the suite, in Docker (Temurin 21.0.1 and 21.0.7): an append and a
-  restart re-deliver only the appended line; a new inode and an in-place rewrite reset the pointer.
+  restart re-deliver only the appended line; an in-place rewrite resets the pointer.
+- Third review regressions, each failing before its fix: `FileEventSourcePointerTest`
+  `aHeaderOnlyFirstOpenThenAnInPlaceRewriteWithTheSameHeaderIsAReplacement` (item 1),
+  `aV112PointerIsAlignedEvenIfTheFirstStartStopsBeforeOpeningTheFile` (item 2),
+  `theSameContentUnderANewFileKeyKeepsThePointer` (item 4; `aNewFileWithOtherContentAtTheSamePathIsAReplacement` keeps a
+  new inode with other content a replacement), `anAcknowledgementOfTheOldFileIsNotCommittedAfterAMidRunReopen` (item 7:
+  passes before and after, and fails if the reset path stops forgetting the acknowledged offset),
+  `aV112PointerBetweenCrAndLfResumesAfterTheTerminator`; `ProcessingCheckpointSharedQueueTest`
+  `aRepeatedDeregistrationDoesNotUnbindTheOtherBindingOfTheQueue` (item 3); `FeedDeliveryStopOrderTest` (item 5);
+  `FileEventSourceFeedStatusTest.aOnceReadLastLineEndedByALoneCrIsPublished` (item 6).
 
 - `service/delivery/FeedDeliveryKillTest` (2): a real crash. The server runs in a separate JVM
   (`KillChildServer`: COMMITED file feed, default PAUSE, a processor that appends each line to an unbuffered output and
@@ -618,6 +648,10 @@ And `setPauseByDefault(true)` in `setEventFlowManager` if PAUSE should be its de
 
 ## 12. Follow-ups
 
+0. **Priority, before COMMITED feeds are relied on with dynamic subscriptions**: an operator release of a held
+   position, `delivery.release <feed> [<queue>]` (open question 1). A removed consumer (including a voluntary
+   unsubscribe) or a dead group holds a positioned feed for the rest of the run (section 3), and today only a restart
+   ends the hold.
 1. Plugins (section 9): `connector-kafka` (commit + pause/resume + rebalance), `connector-chronicle`,
    `connector-file`, `connector-aeron` archive mode; a JMS connector with individual acknowledge.
 2. Starter `BundleLifecycle`: the settled rule with the `lossless` step (section 7).
@@ -634,7 +668,7 @@ And `setPauseByDefault(true)` in `setEventFlowManager` if PAUSE should be its de
 1. (Resolved by review F1/F2 and review 2: a fenced or dead group holds acknowledgement and pauses a positioned feed;
    a removed consumer holds what it did not process.) Should such a hold be released by an operator command
    (accepting the loss of the backlog), e.g. `overload.clear`-style `delivery.release <feed> <group>`? Until then a
-   held feed is reported `stalled`, and a restart re-delivers.
+   held feed is reported `stalled`, and a restart re-delivers. Recorded as priority follow-up 0 (section 12).
 2. Should PAUSE be the default for every feed whose source declares itself re-readable (an `EventSource` capability
    flag), rather than a per-source call? Today only `FileEventSource` sets it.
 3. (Resolved by review F3: marks belong to a binding; a resubscribe starts a new one.)
