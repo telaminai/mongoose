@@ -172,7 +172,15 @@ class Review77cProbesTest {
                     + feed.publisher.getTargetQueues().size());
             int burst = 200_000;
             for (int i = 0; i < burst; i++) feed.publisher.publish(new RunIntent(i));
-            await(() -> healthy.events.get() == burst, "healthy got " + healthy.events.get());
+            // the feed is a push source under the default DROP_AFTER_SPIN: a publish that finds the healthy group's
+            // queue full for the 10 ms spin drops, counted. A reader stall that long (a GC pause, a descheduled thread
+            // on a loaded machine) drops a few items: the full suite once saw 199,998 of 200,000, 2 counted drops
+            // (independent delta review of PR #98, item 4). What this test asserts is that the fenced group does not
+            // hold the healthy one back and that nothing is lost silently: every item is handled or counted as dropped,
+            // and nearly all are handled
+            await(() -> healthy.events.get() + feed.publisher.droppedCount() == burst,
+                    "healthy got " + healthy.events.get() + ", dropped " + feed.publisher.droppedCount());
+            assertTrue(healthy.events.get() > burst * 0.99, "the healthy group kept up: " + healthy.events.get());
             assertEquals(0, dying.events.get());
             assertEquals(HealthStatus.Verdict.DOWN, verdict(server, "g1"));
             assertEquals(HealthStatus.Verdict.UP, verdict(server, "g2"));
