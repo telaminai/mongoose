@@ -83,6 +83,9 @@ public abstract class AbstractEventSourceService<T>
     private SlowConsumerStrategy slowConsumerStrategy = SlowConsumerStrategy.BACKOFF;
     @Getter(AccessLevel.PROTECTED)
     private Function<T, ?> dataMapper = Function.identity();
+    /** Deliver feed status changes to subscribers (docs/design/feed-caught-up.md); off by default. */
+    @Getter
+    private boolean feedStatusEvents = false;
 
     /**
      * Construct an event source with default ON_EVENT callback type.
@@ -125,6 +128,7 @@ public abstract class AbstractEventSourceService<T>
         output = eventFlowManager.registerEventSource(serviceName, this);
         output.setEventWrapStrategy(eventWrapStrategy);
         output.setDataMapper(dataMapper);
+        output.setDeliverFeedStatus(feedStatusEvents);
         subscriptionKey = new EventSubscriptionKey<>(
                 new EventSourceKey<>(serviceName),
                 eventToInvokeType
@@ -219,6 +223,24 @@ public abstract class AbstractEventSourceService<T>
     @Override
     public void setSlowConsumerStrategy(SlowConsumerStrategy slowConsumerStrategy) {
         this.slowConsumerStrategy = slowConsumerStrategy;
+    }
+
+    @Override
+    public void setFeedStatusEvents(boolean feedStatusEvents) {
+        this.feedStatusEvents = feedStatusEvents;
+        if (output != null) {
+            output.setDeliverFeedStatus(feedStatusEvents);
+        }
+    }
+
+    /**
+     * Report a change of this feed's state to the host and, when {@link #setFeedStatusEvents delivery} is on, to the
+     * subscribers (docs/design/feed-caught-up.md). Call on a transition only; a no-op before the publisher is bound.
+     */
+    protected void reportFeedStatus(com.telamin.mongoose.service.feedstatus.FeedState state, boolean bounded, String detail) {
+        if (output != null) {
+            output.reportFeedStatus(state, bounded, detail);
+        }
     }
 
     @Override

@@ -62,6 +62,14 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     private com.telamin.mongoose.dispatch.DropMarks dropMarks;
     /** RECORD mode: the recorder's per-processor copy of each input, taken just before the processor is given it. */
     private java.util.function.BiConsumer<DataFlow, Object> received;
+    /**
+     * Items taken from the queue whose dispatch has finished (handled, or skipped after a failure), shared by the
+     * readers of one queue; with the queue's producer position it tells the host the processors have drained it
+     * (docs/design/feed-caught-up.md). One ordered write per item. Null when built outside the flow manager.
+     */
+    private java.util.concurrent.atomic.AtomicLong dispatched;
+    /** The item being dispatched set a DeliveryContext; cleared once its cycle is done. */
+    private boolean positionEntered;
 
     public EventQueueToEventProcessorAgent(
             OneToOneConcurrentArrayQueue<?> inputQueue,
@@ -111,15 +119,32 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
             // a drop marked after the check above but before this item was offered precedes it: mark it first, so the
             // Dropped entry lands exactly where the items were lost (review of 1d925ee, finding 7)
             if (marking) markDrops(inputQueue.removedCount() - 1);
+            if (event instanceof com.telamin.mongoose.service.feedstatus.FeedStatus && !route.isEmpty()
+                    && !com.telamin.mongoose.service.CallBackType.ON_EVENT_CALL_BACK.name().equals(route)) {
+                // an in-band feed status (docs/design/feed-caught-up.md) reaches onEvent processors only: a typed
+                // callback route cannot take it. Taken and counted, so the host still sees the queue drained
+                processed++;
+                if (dispatched != null) dispatched.lazySet(dispatched.get() + 1);
+                continue;
+            }
             // this queue's reference to a pooled event is held until every processor has been given it (released in
             // the finally below, so a failure that escapes the retry loop cannot leak it)
             PoolTracker<?> tracker = trackerOf(event);
+            failureMarks = null;    // RECORD: the processors whose input of this item is marked Failed, so far
             try {
                 // Replay OFF pays one instanceof and one null check here (measured: DispatchPathJmh). A journalled item
                 // exists only in RECORD mode; it carries its feed's sequence number, and the processor receives the bare
                 // item (R3)
                 long seq = -1;
                 java.util.Collection<DataFlow> targets = null;
+                // a positioned item (docs/design/feed-delivery.md, section 5a): its source position is readable by the
+                // processor through DeliveryContext for this item's event cycle, cleared in the finally below
+                if (event instanceof com.telamin.mongoose.dispatch.PositionedItem positioned) {
+                    com.telamin.mongoose.service.delivery.DeliveryContext.enter(sourceName, positioned.sequence(),
+                            positioned.epoch(), positioned.position());
+                    event = positioned.item();
+                    positionEntered = true;
+                }
                 // a journalled feed writes JournalledItems to EVERY queue, including those of groups that do not record:
                 // always unwrap, so every processor receives the bare item (review of #63)
                 boolean journalledItem = event instanceof JournalledItem;
@@ -235,7 +260,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                         if (at < 0) {
                             // Unknown progress: the recording cannot attribute successful input delivery and is
                             // marked for every target, not continued as if nothing happened (the recorder never throws)
-                            if (recorder != null && !wholeFailed) recorder.failed(sourceName, delivered(event), t, targets);
+                            if (recorder != null && !wholeFailed) markAllFailed(event, t, targets);
                             if (!wholeFailed) {
                                 wholeFailed = true;
                                 attempt = 0;        // a resumed processor's attempts were its own; the whole dispatch starts its count
@@ -247,7 +272,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                                 // is marked failed (D4); the processors before it are recorded as they handled it
                                 failingAt = at;
                                 attempt = 0;
-                                if (recorder != null) recorder.failed(sourceName, delivered(event), t, failed);
+                                if (recorder != null) markFailed(event, t, failed);
                             }
                             from = at;
                         }
@@ -259,6 +284,12 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                         DataFlow identified = failed;
                         if (identified == null && thrower != null) {
                             synchronized (subscribed) { if (subscribed.contains(thrower)) identified = thrower; }
+                        }
+                        // the delivery-complete hook (feed-delivery.md 5b): the callbacks the failing processor registered
+                        // in this attempt are discarded (all of them when it is not known); a retry registers them again
+                        if (positionEntered) {
+                            com.telamin.mongoose.service.delivery.DeliveryContext.dispatchFailed(
+                                    identified != null ? identified : thrower);
                         }
                         if (at < 0 && solo == null && identified != null
                                 && !ProcessorDispatchException.requiresIsolation(identified)) {
@@ -383,6 +414,11 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                     }
                 }
 
+                // the delivery is complete: its callbacks run now, after every event the processors queued reentrantly,
+                // with the delivery still entered, before the recording and before the item counts as dispatched (so
+                // before the source can acknowledge it); feed-delivery.md 5b
+                if (positionEntered && completeDelivery(event, seq, targets)) wholeFailed = true;
+
                 // recorded after the dispatch, outside it: a recording failure is not a dispatch failure, so it is never
                 // retried as one (the processor would handle the input again) and never marks the processor as failing.
                 // A processor whose handler threw is already marked Failed (D4, a retry is a failure: marked, not
@@ -395,6 +431,10 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                 }
 
             } finally {
+                if (positionEntered) {
+                    positionEntered = false;
+                    com.telamin.mongoose.service.delivery.DeliveryContext.exit();
+                }
                 // After dispatching to all processors, drop this queue's reference: released before dispatch, another
                 // queue's last release could recycle the event while a processor here still read it (#54). In a
                 // finally: a throw out of the retry loop (a backoff, the recorder, failure logging) must not leak it.
@@ -414,8 +454,89 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
 
             // Count it as processed even if dropped to avoid infinite loops
             processed++;
+            if (dispatched != null) {
+                // single writer (the group's thread); ordered, so a host that reads it sees the processors' effects
+                dispatched.lazySet(dispatched.get() + 1);
+            }
         }
         return processed;
+    }
+
+    /**
+     * Run the completion callbacks of the positioned item just dispatched (DeliveryContext.onComplete), in order. A
+     * callback that throws is retried alone under the retry policy, the item still not counted as dispatched; once the
+     * policy gives up it is reported and skipped, and the callbacks after it run. The processors are never given the
+     * item again for it: their cycles completed. RECORD: the first failure of a callback marks its processor's input
+     * Failed (D4); true when a callback with no known owner failed, so every target was marked and the normal entries
+     * are not written.
+     */
+    private boolean completeDelivery(Object event, long seq, java.util.Collection<DataFlow> targets) {
+        // RECORD (hook review R2): a callback that throws is a failure of its processor's input, marked and not
+        // reproduced (D4), as a dispatch failure is: the first failure marks the owner's input Failed (its normal entry
+        // is then not written); a callback with no known owner marks every target, and nothing more is recorded
+        boolean allMarked = false;
+        com.telamin.mongoose.service.delivery.DeliveryContext.Completion completion;
+        while ((completion = com.telamin.mongoose.service.delivery.DeliveryContext.takeCompletion()) != null) {
+            for (int attempt = 1; ; attempt++) {
+                try {
+                    completion.run();
+                    break;
+                } catch (VirtualMachineError fatal) {
+                    throw fatal;
+                } catch (Throwable t) {
+                    if (recorder != null && !allMarked) {
+                        // once per processor and input, across dispatch and completion (hook recheck F3, recheck 2 F2)
+                        DataFlow owner = completion.owner();
+                        if (owner == null || targets == null) {
+                            markAllFailed(event, t, targets);
+                            allMarked = true;
+                        } else {
+                            markFailed(event, t, owner);
+                        }
+                    }
+                    String warnMsg = "delivery completion callback failed: agent=" + name + ", attempt=" + attempt
+                            + (completion.owner() == null ? "" : ", processor=" + completion.owner())
+                            + ", callback=" + completion.callback() + ", event=" + event + ", error=" + t;
+                    logger.warning(warnMsg);
+                    com.telamin.mongoose.service.error.ErrorReporting.report("EventQueueToEventProcessorAgent:" + name,
+                            warnMsg, t, com.telamin.mongoose.service.error.ErrorEvent.Severity.WARNING);
+                    if (!retryPolicy.shouldRetry(t, attempt)) {
+                        String errMsg = "skipping a delivery completion callback after retries (the item counts as"
+                                + " dispatched, as a failed item does): agent=" + name + ", attempts=" + attempt
+                                + (completion.owner() == null ? "" : ", processor=" + completion.owner())
+                                + ", callback=" + completion.callback() + ", event=" + event + ", lastError=" + t;
+                        logger.severe(errMsg);
+                        com.telamin.mongoose.service.error.ErrorReporting.report("EventQueueToEventProcessorAgent:" + name,
+                                errMsg, t, com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
+                        if (completionFailed != null) completionFailed.run();   // feed.status: not lossless
+                        break;
+                    }
+                    retryPolicy.backoff(attempt);
+                }
+            }
+        }
+        return allMarked;
+    }
+
+    /** RECORD: the processors whose input of the item being dispatched is already marked Failed. */
+    private java.util.Set<DataFlow> failureMarks;
+
+    /** RECORD: mark {@code target}'s input of this item Failed, once per item, whichever phase failed. */
+    private void markFailed(Object event, Throwable t, DataFlow target) {
+        if (recorder == null || target == null) return;
+        if (failureMarks == null) failureMarks = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        if (failureMarks.add(target)) recorder.failed(sourceName, delivered(event), t, target);
+    }
+
+    /** RECORD: mark every one of {@code targets} not yet marked for this item Failed. */
+    private void markAllFailed(Object event, Throwable t, java.util.Collection<DataFlow> targets) {
+        if (recorder == null || targets == null) return;
+        if (failureMarks == null) failureMarks = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        java.util.List<DataFlow> fresh = new java.util.ArrayList<>();
+        for (DataFlow target : targets) {
+            if (failureMarks.add(target)) fresh.add(target);
+        }
+        if (!fresh.isEmpty()) recorder.failed(sourceName, delivered(event), t, fresh);
     }
 
     /** What the processor was given: the event a ReplayRecord or BroadcastEvent carries, else the event itself. */
@@ -519,6 +640,21 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                     + (unmarked > 0 ? ", plus " + unmarked + " dropped while the drop marks were full" : "") + "): "
                     + reason + "; the processor never received them");
         }
+    }
+
+    /** Called once per delivery-complete callback skipped after the retry policy gave up: the feed reports the loss. */
+    private Runnable completionFailed;
+
+    /** Report each delivery-complete callback given up on to the feed (docs/design/feed-delivery.md 5b, 7). */
+    public EventQueueToEventProcessorAgent withCompletionFailureCounter(Runnable completionFailed) {
+        this.completionFailed = completionFailed;
+        return this;
+    }
+
+    /** Count each item this reader finishes dispatching into {@code dispatched} (docs/design/feed-caught-up.md). */
+    public EventQueueToEventProcessorAgent withDispatchedCounter(java.util.concurrent.atomic.AtomicLong dispatched) {
+        this.dispatched = dispatched;
+        return this;
     }
 
     /** RECORD mode: record what this queue dispatches (spec-replay-recording R2). */
@@ -660,6 +796,9 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
     private PoolTracker<?> trackerOf(Object event) {
         if (event == null) return null;
         Object candidate = event;
+        if (candidate instanceof com.telamin.mongoose.dispatch.PositionedItem positioned) {
+            candidate = positioned.item();
+        }
         if (candidate instanceof JournalledItem journalled) { // any group: see doWork
             candidate = journalled.item();
         }

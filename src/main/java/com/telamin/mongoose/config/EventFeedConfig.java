@@ -78,9 +78,17 @@ public class EventFeedConfig<IN> {
 
     /**
      * What the feed's publisher does when a subscriber's queue is full, with overrides per subscriber group
-     * (telaminai/mongoose#79). Null: {@code DROP_AFTER_SPIN} with a one-time boot warning. YAML key {@code overload}.
+     * (telaminai/mongoose#79). Null: the source's default with a one-time boot warning, {@code PAUSE} for a re-readable
+     * source ({@code FileEventSource}), else {@code DROP_AFTER_SPIN}. YAML key {@code overload}.
      */
     private OverloadPolicyConfig overload;
+
+    /**
+     * Deliver the source's feed status changes to the feed's subscribers as {@code FeedStatus} events, in order with its
+     * items (docs/design/feed-caught-up.md). Off by default: the host reads the status either way. YAML key
+     * {@code feedStatusEvents}.
+     */
+    private boolean feedStatusEvents = false;
 
     /**
      * Function to transform event values before delivery
@@ -166,6 +174,9 @@ public class EventFeedConfig<IN> {
             eventSource_t.setEventWrapStrategy(eventWrapStrategy);
             eventSource_t.setSlowConsumerStrategy(slowConsumerStrategy);
             eventSource_t.setDataMapper(valueMapper);
+            if (feedStatusEvents) {
+                eventSource_t.setFeedStatusEvents(true);
+            }
         }
         Service<NamedFeed> svc = new Service<>((NamedFeed) instance, NamedFeed.class, name);
         return svc;
@@ -210,6 +221,7 @@ public class EventFeedConfig<IN> {
         private boolean wrapWithNamedEvent;
         private EventSource.SlowConsumerStrategy slowConsumerStrategy;
         private OverloadPolicyConfig overload;
+        private boolean feedStatusEvents;
         private Function<IN, ?> valueMapper;
         private String agentName;
         private IdleStrategy idleStrategy;
@@ -265,6 +277,12 @@ public class EventFeedConfig<IN> {
             return this;
         }
 
+        /** Deliver feed status changes to subscribers as events (docs/design/feed-caught-up.md); off by default. */
+        public Builder<IN> feedStatusEvents(boolean feedStatusEvents) {
+            this.feedStatusEvents = feedStatusEvents;
+            return this;
+        }
+
         /**
          * Sets the value mapping function
          */
@@ -293,6 +311,7 @@ public class EventFeedConfig<IN> {
             cfg.setWrapWithNamedEvent(wrapWithNamedEvent);
             if (slowConsumerStrategy != null) cfg.setSlowConsumerStrategy(slowConsumerStrategy);
             cfg.setOverload(overload);
+            cfg.setFeedStatusEvents(feedStatusEvents);
             if (valueMapper != null) cfg.setValueMapper(valueMapper);
             cfg.setAgentName(agentName);
             cfg.setIdleStrategy(idleStrategy);

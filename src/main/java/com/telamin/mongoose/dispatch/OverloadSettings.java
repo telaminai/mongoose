@@ -37,9 +37,17 @@ public record OverloadSettings(OverloadPolicy policy, long spinBoundNanos, long 
             throw new IllegalArgumentException("BLOCK_WITH_DEADLINE needs a positive block deadline, was "
                     + blockDeadlineNanos + "ns");
         }
-        if (policy == OverloadPolicy.DROP_AFTER_SPIN && blockDeadlineNanos != 0) {
+        if (policy != OverloadPolicy.BLOCK_WITH_DEADLINE && blockDeadlineNanos != 0) {
             throw new IllegalArgumentException("a block deadline applies only to BLOCK_WITH_DEADLINE");
         }
+    }
+
+    /** Pause a re-readable source while the queue is full (docs/design/feed-delivery.md). */
+    public static final OverloadSettings PAUSE = new OverloadSettings(OverloadPolicy.PAUSE, DEFAULT_SPIN_BOUND_NANOS, 0);
+
+    /** Pause a re-readable source while the queue is full; a push publish falls back to dropping after the spin bound. */
+    public static OverloadSettings pause() {
+        return PAUSE;
     }
 
     /** Spin for {@code spinBound}, then drop for that queue. */
@@ -55,5 +63,15 @@ public record OverloadSettings(OverloadPolicy policy, long spinBoundNanos, long 
     /** True when a publish may wait for room for a queue under these settings. */
     public boolean blocks() {
         return policy == OverloadPolicy.BLOCK_WITH_DEADLINE;
+    }
+
+    /** True when a re-readable source pauses instead of dropping for a queue under these settings. */
+    public boolean pauses() {
+        return policy == OverloadPolicy.PAUSE;
+    }
+
+    /** A never-drop policy (BLOCK_WITH_DEADLINE or PAUSE): a loss on it latches until an operator clears it. */
+    public boolean neverDrop() {
+        return policy != OverloadPolicy.DROP_AFTER_SPIN;
     }
 }

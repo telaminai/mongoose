@@ -37,6 +37,11 @@ then filters, redispatch and fan-out have happened, so the record is what the pr
 | a service delivered to or withdrawn from the running processor, after the server started | a `ServiceChanged` entry with the service's registry version; a replay delivers it at the same point |
 | a control request the processor made through `MongooseServerController` | a `ControlCall` entry with its arguments and outcome; a replay matches it instead of executing it |
 
+An input from a feed that tracks source positions (a `COMMITED` file feed) also records its `DeliveryContext`
+(feed, sequence, epoch, position), and a replay sets it for the replayed cycle, so a processor that de-duplicates by
+position makes the same decisions in its replay. See
+[De-duplicate re-delivered events](how-to-deduplicate-with-delivery-context.md#record-and-replay).
+
 Beside each stream, not among its entries, the recording keeps the stream's **provenance**: the processor class and
 the handler class it wraps. A replay into a processor whose classes differ stops. The exact contract for every entry
 kind, and every reason a replay stops, is in

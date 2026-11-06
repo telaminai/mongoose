@@ -101,15 +101,31 @@ class OverloadPolicyConfigTest {
     void slowConsumerStrategyBackoffMapsToDropAfterSpinWithAWarning() {
         try (Captured log = new Captured()) {
             var cfg = EventFeedConfig.builder().name("md").slowConsumerStrategy(EventSource.SlowConsumerStrategy.BACKOFF).build();
-            assertEquals(FeedOverloadSettings.DEFAULT, cfg.resolveOverload());
+            FeedOverloadSettings backoff = cfg.resolveOverload();
+            assertEquals(FeedOverloadSettings.of(OverloadSettings.DEFAULT), backoff);
+            assertEquals(OverloadPolicy.DROP_AFTER_SPIN, backoff.feedDefault().policy());
+            assertTrue(backoff.explicit(), "an explicit, if deprecated, choice: not the source's default");
             assertTrue(log.contains("feed 'md': slowConsumerStrategy BACKOFF is deprecated and means DROP_AFTER_SPIN"),
                     log.messages());
-            assertEquals(FeedOverloadSettings.DEFAULT, load("""
+            assertEquals(FeedOverloadSettings.of(OverloadSettings.DEFAULT), load("""
                     pipes:
                       - name: p
                         slowConsumerStrategy: BACKOFF
                     """).getPipes().getFirst().resolveOverload());
         }
+    }
+
+    /**
+     * Review finding 9: an explicit {@code slowConsumerStrategy: BACKOFF} on a re-readable source (a file feed, whose
+     * default is PAUSE) means what its warning says, DROP_AFTER_SPIN, not the source's PAUSE default.
+     */
+    @Test
+    void slowConsumerStrategyBackoffOnAFileFeedIsDropAfterSpinNotPause() {
+        var cfg = EventFeedConfig.builder().name("lines").slowConsumerStrategy(EventSource.SlowConsumerStrategy.BACKOFF).build();
+        EventToQueuePublisher<String> publisher = new EventToQueuePublisher<>("lines");
+        publisher.setPauseByDefault(true);
+        publisher.setOverload(cfg.resolveOverload());
+        assertEquals(OverloadPolicy.DROP_AFTER_SPIN, publisher.overload().feedDefault().policy());
     }
 
     @Test

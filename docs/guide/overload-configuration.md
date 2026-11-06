@@ -11,11 +11,22 @@ individual subscriber groups (processor group names).
 
 | Policy | What happens when a subscriber queue is full | Use for |
 | --- | --- | --- |
-| `DROP_AFTER_SPIN` (default) | Spin for the spin bound (10 ms by default), then drop the item for that queue only. Counted, and the queue's health turns DEGRADED. | Replaceable data, where the next update fully supersedes the last: top-of-book and quote snapshots, telemetry. |
+| `DROP_AFTER_SPIN` (default for push feeds) | Spin for the spin bound (10 ms by default), then drop the item for that queue only. Counted, and the queue's health turns DEGRADED. | Replaceable data, where the next update fully supersedes the last: top-of-book and quote snapshots, telemetry. |
+| `PAUSE` (default for file feeds, from 1.1.3) | The source does not publish the item. It keeps the item and its read position, reads nothing further, and offers the same item again on its next duty cycle. Nothing waits and nothing is dropped. | Sources that can re-read: a `FileEventSource`. The source slows to the pace of its slowest subscriber. |
 | `BLOCK_WITH_DEADLINE` | Wait up to the deadline for room, without holding any lock. Then deliver to every **blocking** subscriber, or to none, and throw `PublishRefusedException` to the publisher. Subscribers given a drop-tolerant override may still drop their copy, by design. A loss latches the queue until an operator clears it. | Data that must not be lost silently: venue session and health events, fills, order acknowledgements, credit and limit updates, hedge instructions. |
 
-If you set nothing, a feed keeps the behaviour of earlier releases and logs at boot:
-`feed 'X' has no explicit overload policy`. Set a policy on every feed so the choice is explicit.
+If you set nothing, a feed uses its source's default and logs at boot:
+`feed 'X' has no explicit overload policy: using the source's default, PAUSE for a re-readable source
+(FileEventSource), else DROP_AFTER_SPIN (spin 10 ms, then drop for that queue)`. Set a policy on every feed so the
+choice is explicit.
+
+!!! note "Changed in 1.1.3: file feeds pause by default"
+    A `FileEventSource` feed with no `overload` block now uses `PAUSE`. Before 1.1.3 it used `DROP_AFTER_SPIN`, so a
+    slow processor could lose lines from a large file. Now the file feed slows to the processor's pace and loses
+    nothing; `feed.status` reports `policy: PAUSE` and counts `pauses`. To keep the old behaviour, set
+    `overload.policy: DROP_AFTER_SPIN` on the feed. An explicit policy always wins, and so does the deprecated
+    `slowConsumerStrategy: BACKOFF`, which means an explicit `DROP_AFTER_SPIN` on every feed, file feeds included.
+    Every other source keeps `DROP_AFTER_SPIN` as its default.
 
 ## 2. Recommended policies for a market maker
 
@@ -71,9 +82,9 @@ eventFeeds:
 
 | Key | Where | Default | Rule |
 | --- | --- | --- | --- |
-| `policy` | feed, subscriber | required in a block | `DROP_AFTER_SPIN` or `BLOCK_WITH_DEADLINE` |
-| `blockDeadlineMillis` | feed, subscriber | none | Required for, and only for, `BLOCK_WITH_DEADLINE`; > 0; warned above 60000 |
-| `spinBoundMillis` | feed, subscriber | 10 | ≥ 0 |
+| `policy` | feed, subscriber | required in a block | `DROP_AFTER_SPIN`, `BLOCK_WITH_DEADLINE` or `PAUSE` |
+| `blockDeadlineMillis` | feed, subscriber | none | Required for, and only for, `BLOCK_WITH_DEADLINE`; > 0; warned above 60000. Rejected with `PAUSE` |
+| `spinBoundMillis` | feed, subscriber | 10 | ≥ 0. With `PAUSE`, used only when a push publish falls back to drop |
 | `subscribers` | feed | none | Keys are processor group names; an unknown name is warned at boot and after start |
 | `quietPeriodMillis` | feed | 60000 | ≥ 1000; recovery of drop-tolerant queues |
 | `killSwitch` | feed | false | Calls the server's kill-switch hook when a never-drop queue latches |
@@ -102,10 +113,61 @@ EventFeedConfig.builder().name("fills").instance(fillSource)
   so a retry does not duplicate. Reject the order upstream, alarm, or retry.
 - **Pooled items:** copy the payload before you publish if you may retry. The refused instance is back in its pool
   and has been reset by the time you see the exception. Acquire a fresh one and fill it from your copy.
-- **Pre-start caches are not protected.** A feed that caches events before start (`cacheEventLog`) replays them
-  with drop semantics. This is warned.
+- **Pre-start caches are not protected on drop or block feeds.** A feed that caches events before start
+  (`cacheEventLog`) replays them with drop semantics. This is warned. On a `PAUSE` feed the replay pauses at a full
+  queue and resumes in order instead (section 5).
 
-## 5. Wiring the kill switch
+## 5. PAUSE: no-drop backpressure for re-readable sources
+
+`PAUSE` (new in 1.1.3) is the lossless choice for a source that can read the same data again. When a subscriber's
+queue under `PAUSE` is full, the publish does not happen at all: no sequence number, no journal entry, no queue holds
+the item. The source keeps the item and offers it again on its next duty cycle. Nothing waits, so it is safe on an
+agent thread, which is where a `FileEventSource` publishes from. (`BLOCK_WITH_DEADLINE` cannot wait on an agent thread
+and falls back to drop there; that is why a file feed had no lossless setting before 1.1.3.)
+
+```yaml
+eventFeeds:
+  - name: orders
+    instance: !!com.telamin.mongoose.connector.file.FileEventSource
+      filename: data/orders.csv
+    overload:
+      policy: PAUSE                 # the file default; DROP_AFTER_SPIN to keep the old behaviour
+      spinBoundMillis: 10           # optional: used only by a push publish's fallback
+      subscribers:
+        telemetryGroup:             # a lossy subscriber that must not slow the others
+          policy: DROP_AFTER_SPIN
+          spinBoundMillis: 0
+```
+
+Programmatic: `OverloadPolicyConfig.pause()`.
+
+What to expect:
+
+- **The whole feed slows to its slowest PAUSE subscriber.** That is the price of losing nothing. To stop a slow,
+  drop-tolerant subscriber from holding the others back, give its group a `DROP_AFTER_SPIN` override, as above. Only
+  `PAUSE` (and `BLOCK_WITH_DEADLINE`) queues are checked for room; a `DROP_AFTER_SPIN` queue of the same feed still
+  drops after its spin.
+- **A file source on a pause** keeps the line and the rest of its buffer, reads nothing further from the file, and
+  stays `BEHIND` in `feed.status`. It reports `CAUGHT_UP` only once it has published everything to the end of the file.
+- **`BLOCK_WITH_DEADLINE` on a file feed** pauses too, instead of falling back to drop on the agent thread.
+- **Push publishes** (a source that cannot pause: in-memory feeds, pipes, most connectors) into a full `PAUSE` queue
+  fall back to `DROP_AFTER_SPIN` with the spin bound. The drop is counted in `dropped`, the fallback in `downgraded`,
+  and it is warned once. Use `PAUSE` only on sources that support it: today, `FileEventSource`.
+- **Cache replay** (`cacheEventLog`) pauses at a full queue and resumes in order.
+- **Health.** A pause is not a loss and changes no health state. `PAUSE` is a never-drop policy, so a loss on it (only
+  possible through the push fallback) latches the queue like a `BLOCK_WITH_DEADLINE` loss.
+- **Fenced or dead groups.** On a feed that commits positions (a `COMMITED` file feed) a fenced or dead consumer
+  pauses the whole feed until the fence lifts. See
+  [Process a file feed at least once](../example/how-to/how-to-file-feed-at-least-once.md#when-the-feed-holds-its-pointer-stalled).
+
+`feed.status` shows the policy and the pauses per feed: `policy`, `paused` (now), `pauses` (episodes), and
+`dropped`, `refused`, `downgraded`, `lossless`. See
+[Wait until a feed has caught up](../example/how-to/how-to-wait-for-feed-caught-up.md#the-fields).
+
+A pause that never ends (a wedged subscriber) is visible only in `feed.status` today: the feed stays `paused` and does
+not settle. There is no health check for it yet.
+
+## 6. Wiring the kill switch
 
 The hook is off by default. To use it, set `killSwitch: true` on the feeds that should trigger it, and register a
 hook once:
@@ -125,7 +187,7 @@ server.setOverloadKillSwitch(loss -> {
 - A hook that runs longer than 5 s is warned. Each feed has its own hook thread, so a slow hook never delays
   another feed's.
 
-## 6. Operator runbook: LATCHED and clear
+## 7. Operator runbook: LATCHED and clear
 
 | You see | Meaning | Do |
 | --- | --- | --- |
@@ -155,9 +217,12 @@ In RECORD mode the processor's recording holds a `Dropped` entry at the point of
 marks are not placed individually; they are counted into the first entry after the overflow. A replay reports it
 (`GroupReplayer.losses`, `lossless()`) and carries on.
 
-## 7. Checklist
+## 8. Checklist
 
 - [ ] Every feed and pipe has an explicit `overload.policy`, and no boot warning says otherwise.
+- [ ] File feeds that must not lose lines use `PAUSE`; slow, drop-tolerant subscribers on them have a
+      `DROP_AFTER_SPIN` override.
+- [ ] Your launcher fails a run that reaches `settled` with `lossless: false` in `feed.status`.
 - [ ] Every never-drop feed is published from non-agent threads, and its publishers handle `PublishRefusedException`.
 - [ ] Telemetry and other slow subscribers on never-drop feeds have a `DROP_AFTER_SPIN` override.
 - [ ] Every subscriber override names a real processor group: no warning at boot or after start.

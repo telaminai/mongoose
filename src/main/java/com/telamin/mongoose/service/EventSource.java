@@ -70,6 +70,17 @@ public interface EventSource<T> {
     }
 
     /**
+     * Deliver this source's feed status changes to its subscribers as ordinary events, in order with its items
+     * ({@link com.telamin.mongoose.service.feedstatus.FeedStatus}; docs/design/feed-caught-up.md). Off by default: the
+     * host reads the status either way, and a processor sees no new event unless its feed turns this on. A source that
+     * reports no transitions delivers nothing.
+     *
+     * @param feedStatusEvents true to deliver feed status events to subscribers
+     */
+    default void setFeedStatusEvents(boolean feedStatusEvents) {
+    }
+
+    /**
      * Set a mapping function to transform outbound events before delivery.
      *
      * @param dataMapper mapping function from T -> outbound

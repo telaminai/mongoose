@@ -142,6 +142,28 @@ public class MongooseServerAdmin implements Lifecycle {
         // #79: overload health per feed and queue, and the operator clear of a latched never-drop feed
         registry.registerCommand("overload.status", this::overloadStatus);
         registry.registerCommand("overload.clear", this::overloadClear);
+        // whether the feeds have delivered everything available and the processors have dispatched it
+        // (docs/design/feed-caught-up.md): what a launcher polls to know a run has settled
+        registry.registerCommand("feed.status", this::feedStatus);
+    }
+
+    private void feedStatus(List<String> args, Consumer<String> out, Consumer<String> err) {
+        if (!(serverController instanceof com.telamin.mongoose.MongooseServer server)) {
+            err.accept("feed.status needs a MongooseServer");
+            return;
+        }
+        boolean json = false;
+        List<String> feeds = new java.util.ArrayList<>();
+        for (String arg : args.subList(1, args.size())) {
+            if ("--json".equals(arg)) json = true;
+            else feeds.add(arg);
+        }
+        try {
+            var report = server.feedStatus(feeds.toArray(new String[0]));
+            out.accept(json ? report.toJson() : report.toString());
+        } catch (IllegalArgumentException failed) {
+            err.accept(failed.getMessage() + "; usage: feed.status [--json] [feed ...]");
+        }
     }
 
     private void acknowledgeCaptureFailures(List<String> args, Consumer<String> out, Consumer<String> err) {

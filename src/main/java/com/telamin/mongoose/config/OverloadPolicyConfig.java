@@ -69,6 +69,13 @@ public class OverloadPolicyConfig {
         return cfg;
     }
 
+    /** Pause a re-readable source while a queue is full (docs/design/feed-delivery.md). */
+    public static OverloadPolicyConfig pause() {
+        OverloadPolicyConfig cfg = new OverloadPolicyConfig();
+        cfg.setPolicy(OverloadPolicy.PAUSE);
+        return cfg;
+    }
+
     public static OverloadPolicyConfig blockWithDeadline(Duration deadline) {
         OverloadPolicyConfig cfg = new OverloadPolicyConfig();
         cfg.setPolicy(OverloadPolicy.BLOCK_WITH_DEADLINE);
@@ -167,6 +174,14 @@ public class OverloadPolicyConfig {
                 yield new OverloadSettings(OverloadPolicy.BLOCK_WITH_DEADLINE, spinNanos,
                         TimeUnit.MILLISECONDS.toNanos(blockDeadlineMillis));
             }
+            case PAUSE -> {
+                if (blockDeadlineMillis != null) {
+                    throw new ConfigurationException("feed '" + feed + "': " + where
+                            + ".blockDeadlineMillis applies only to BLOCK_WITH_DEADLINE");
+                }
+                // the spin bound applies only when a push source (one that cannot pause) publishes into the queue
+                yield new OverloadSettings(OverloadPolicy.PAUSE, spinNanos, 0);
+            }
         };
     }
 
@@ -175,8 +190,8 @@ public class OverloadPolicyConfig {
      * <ul>
      *     <li>an {@code overload} block wins; an explicit {@code slowConsumerStrategy} beside it is ignored, with a
      *     warning;</li>
-     *     <li>else an explicit {@code slowConsumerStrategy: BACKOFF} maps to {@code DROP_AFTER_SPIN} (what it has always
-     *     done), with a warning; {@code DISCONNECT} and {@code EXIT_PROCESS} fail boot, naming the feed, until they are
+     *     <li>else an explicit {@code slowConsumerStrategy: BACKOFF} maps to an explicit {@code DROP_AFTER_SPIN} (what it
+     *     has always done, also on a source whose own default is {@code PAUSE}), with a warning; {@code DISCONNECT} and {@code EXIT_PROCESS} fail boot, naming the feed, until they are
      *     implemented;</li>
      *     <li>else the feed gets {@link FeedOverloadSettings#DEFAULT}, with a one-time boot warning that it has no
      *     explicit policy.</li>
@@ -198,15 +213,18 @@ public class OverloadPolicyConfig {
                 case BACKOFF -> {
                     LOG.warning("feed '" + feed + "': slowConsumerStrategy BACKOFF is deprecated and means "
                             + "DROP_AFTER_SPIN (spin 10 ms, then drop for that queue); set overload.policy explicitly");
-                    return FeedOverloadSettings.DEFAULT;
+                    // explicit, so it means what the warning says on every source, including one whose default is
+                    // PAUSE (a file feed): an explicit choice always wins over the source's default (review 2, finding 9)
+                    return FeedOverloadSettings.of(com.telamin.mongoose.dispatch.OverloadSettings.DEFAULT);
                 }
                 case DISCONNECT, EXIT_PROCESS -> throw new ConfigurationException("feed '" + feed
                         + "': slowConsumerStrategy " + slowConsumerStrategy + " is not implemented; use an overload "
                         + "block (DROP_AFTER_SPIN or BLOCK_WITH_DEADLINE)");
             }
         }
-        LOG.warning("feed '" + feed + "' has no explicit overload policy: using DROP_AFTER_SPIN (spin 10 ms, then "
-                + "drop for that queue). Set overload.policy on the feed to make the choice explicit");
+        LOG.warning("feed '" + feed + "' has no explicit overload policy: using the source's default, PAUSE for a "
+                + "re-readable source (FileEventSource), else DROP_AFTER_SPIN (spin 10 ms, then drop for that queue). "
+                + "Set overload.policy on the feed to make the choice explicit");
         return FeedOverloadSettings.DEFAULT;
     }
 }

@@ -503,7 +503,7 @@ public final class GroupReplayer {
                         ? new NamedFeedEventImpl<>(i.source()).data(item).sequenceNumber(i.seq())
                         : item;
                 pin(c, i.instant(), i.reads());
-                route.replayTo(c.flow, event);
+                replayTo(route, c.flow, event, i.delivery());
                 return readsMatch(c, i.reads());
             }
             case ReplayEntry.Inline in -> {
@@ -514,8 +514,8 @@ public final class GroupReplayer {
                 // held in its feed's codec, or in the journal, is read back through that codec, never another (cd52628 F1)
                 Object event = materialised(in.event());
                 pin(c, in.instant(), in.reads());
-                route.replayTo(c.flow, event instanceof RecordedNamedEvent named ? named.rebuild(materialised(named.data()))
-                        : rewrapped(in.source(), event, in.seq()));
+                replayTo(route, c.flow, event instanceof RecordedNamedEvent named ? named.rebuild(materialised(named.data()))
+                        : rewrapped(in.source(), event, in.seq()), in.delivery());
                 return readsMatch(c, in.reads());
             }
             case ReplayEntry.TimerFired t -> {
@@ -583,6 +583,30 @@ public final class GroupReplayer {
                 }
                 return readsMatch(c, sc.reads());
             }
+        }
+    }
+
+    /**
+     * Deliver a recorded input with the delivery context its live cycle had (review R3): the processor reads the same
+     * feed, sequence, epoch and source position through DeliveryContext as it did live, for the whole cycle, and
+     * nothing once it is done. The callbacks the replayed cycle registered with DeliveryContext.onComplete run before
+     * it is done, as live. An input recorded without one (it had no source position, or the recording predates
+     * delivery metadata) is replayed with none.
+     */
+    private static void replayTo(ReplayRoute route, DataFlow flow, Object event,
+                                 com.telamin.mongoose.service.delivery.Delivery delivery) {
+        if (delivery == null) {
+            route.replayTo(flow, event);
+            return;
+        }
+        com.telamin.mongoose.service.delivery.DeliveryContext.enter(delivery.feed(), delivery.sequence(), delivery.epoch(), delivery.position());
+        try {
+            route.replayTo(flow, event);
+            // the input's completion callbacks run as they did live (feed-delivery.md 5b): after the replayed cycle and
+            // the events it queued, with the delivery entered, inside the input's replay; no retry
+            com.telamin.mongoose.service.delivery.DeliveryContext.runCompletions();
+        } finally {
+            com.telamin.mongoose.service.delivery.DeliveryContext.exit();
         }
     }
 

@@ -34,8 +34,17 @@ public sealed interface ReplayEntry {
         return reads.get(0);
     }
 
-    /** An input from a journalled feed: the event is the journal's {@code (source, seq)}. */
-    record Indexed(String source, String route, long seq, long instant, List<Long> reads) implements Timed {
+    /**
+     * An input from a journalled feed: the event is the journal's {@code (source, seq)}. {@code delivery} is the
+     * {@link com.telamin.mongoose.service.delivery.DeliveryContext} the processor read during the live cycle (its feed,
+     * sequence, epoch and source position), restored for the replayed cycle; null when the input had none (review R3).
+     */
+    record Indexed(String source, String route, long seq, long instant, List<Long> reads,
+                   com.telamin.mongoose.service.delivery.Delivery delivery) implements Timed {
+        public Indexed(String source, String route, long seq, long instant, List<Long> reads) {
+            this(source, route, seq, instant, reads, null);
+        }
+
         public Indexed(String source, long seq, List<Long> reads) {
             this(source, "", seq, first(reads), reads);
         }
@@ -46,7 +55,13 @@ public sealed interface ReplayEntry {
      * (finding 2). A delivered {@code NamedFeedEvent} is a {@link RecordedNamedEvent}, rebuilt on replay with its own
      * name, topic and number (finding 3); {@code seq} is its number, otherwise -1.
      */
-    record Inline(String source, String route, Object event, long seq, long instant, List<Long> reads) implements Timed {
+    record Inline(String source, String route, Object event, long seq, long instant, List<Long> reads,
+                  com.telamin.mongoose.service.delivery.Delivery delivery) implements Timed {
+        /** {@code delivery}: as {@link Indexed#delivery()}. */
+        public Inline(String source, String route, Object event, long seq, long instant, List<Long> reads) {
+            this(source, route, event, seq, instant, reads, null);
+        }
+
         public Inline(String source, Object event, long seq, List<Long> reads) {
             this(source, "", event, seq, first(reads), reads);
         }

@@ -9,6 +9,7 @@ import com.telamin.fluxtion.runtime.event.NamedFeedEvent;
 import com.telamin.mongoose.config.ReadStrategy;
 import com.telamin.mongoose.dispatch.EventToQueuePublisher;
 import com.telamin.mongoose.service.extension.AbstractAgentHostedEventSourceService;
+import com.telamin.mongoose.service.feedstatus.FeedState;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.java.Log;
@@ -32,8 +33,17 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
     @Setter
     private String filename;
     private InputStream stream;
-    private BufferedReader reader = null;
-    private char[] buffer;
+    /**
+     * The channel {@link #stream} reads: the file being read, whatever the path names now. Its identity checks and its
+     * fingerprint are of this file, never of a replacement at the path (review R4). Closed with the stream.
+     */
+    private volatile java.nio.channels.FileChannel channel;
+    /**
+     * Bytes read from the file and not yet taken as lines. Lines are split on the bytes {@code \n} and {@code \r}
+     * (never part of a multi-byte UTF-8 sequence, nor of any ASCII-compatible encoding) and only then decoded, so the
+     * read position is the exact byte offset on disk whatever the bytes decode to (review F4).
+     */
+    private byte[] buffer;
     private int offset = 0;
     @Getter
     @Setter
@@ -52,6 +62,50 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
     private boolean publishToQueue = false;
     /** Set by stop, cleared by start: a stopped source reads nothing, so it never reopens the file it released. */
     private volatile boolean stopped = false;
+    /** The feed state last reported (docs/design/feed-caught-up.md), so only transitions are reported, never polls. */
+    private FeedState reportedState;
+    private String reportedDetail;
+
+    // ---- delivery (docs/design/feed-delivery.md) ----
+    /** A line read from the file that the publisher could not take (a full PAUSE queue): offered first next time. */
+    private String pendingLine;
+    /** The stream offset just after {@link #pendingLine}. */
+    private long pendingLineEnd;
+    /** A once strategy has read data: it ends once it has published everything to the end of the file. */
+    private boolean onceReadData;
+    /** Guards {@link #commitPointer} between the committer (the agent's duty cycle) and {@link #stop()}. */
+    private final Object commitLock = new Object();
+    /** The offset last written to the read pointer. */
+    private long committedOffset;
+    /**
+     * COMMITED: the read pointer is written only for lines every subscriber has processed, never for a line merely read
+     * (at-least-once across a crash: a restart re-reads what was read but not processed).
+     */
+    private final com.telamin.mongoose.service.delivery.SourceCommitter<Long> committer =
+            new com.telamin.mongoose.service.delivery.SourceCommitter<>() {
+                @Override
+                public void acknowledged(long sequence, Long position) {
+                    // an item published before the last reset is of the old file: never this file's position
+                    if (sequence > resetAtSequence) acknowledgedOffset = position;
+                }
+
+                @Override
+                public void commit() {
+                    // only once an item of the current epoch has been acknowledged (review 2, finding 6)
+                    if (acknowledgedOffset >= 0) writePointer(acknowledgedOffset);
+                }
+
+                @Override
+                public boolean commitsAfterStop() {
+                    // the server's clean stop commits what its processor groups finish after the source stopped
+                    return true;
+                }
+            };
+    /**
+     * The offset after the last acknowledged line of the current epoch; -1 until one is acknowledged since the start or
+     * the last reset. Written and read by the committer only (the source's thread, or the stop thread after stop).
+     */
+    private volatile long acknowledgedOffset = -1;
 
     // Cached JUL log guards to minimize per-call allocations
     private final boolean infoEnabled;
@@ -67,7 +121,7 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
     /* visible for testing */
     public FileEventSource(int initialBufferSize) {
         super("fileEventFeed");
-        buffer = new char[initialBufferSize];
+        buffer = new byte[initialBufferSize];
         infoEnabled = log.isLoggable(Level.INFO);
         fineEnabled = log.isLoggable(Level.FINE);
         finestEnabled = log.isLoggable(Level.FINEST);
@@ -92,6 +146,19 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
         if (infoEnabled) {
             log.log(Level.INFO, "tail:" + tail + " once:" + once + ", commitRead:" + commitRead + " latestRead:" + latestRead + " readStrategy:" + readStrategy);
         }
+        // a (re)started source has read nothing yet; it reports from doWork once the start is complete
+        reportedState = null;
+        report(FeedState.BEHIND, "starting");
+        // reading restarts at the pointer (or the strategy's start): nothing read before is pending
+        offset = 0;
+        pendingLine = null;
+        onceReadData = false;
+        acknowledgedOffset = -1;
+        legacyAlign = false;
+        if (output != null) output.setUnterminatedBytes(0);
+        if (commitRead && output != null) {
+            output.acknowledgeWith(committer);
+        }
 
         File committedReadFile = new File(filename + ".readPointer");
         File committedReadFileParent = committedReadFile.getParentFile();
@@ -105,14 +172,34 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
         if (readStrategy == ReadStrategy.ONCE_EARLIEST | readStrategy == ReadStrategy.EARLIEST) {
             streamOffset = 0;
         } else if (committedReadFile.exists()) {
+            // a pointer file shorter than the current layout (not one this source wrote: every release created a
+            // 1,024-byte file, v1.1.2 writing only slot 0; a hand-made or truncated file) is extended to it first,
+            // keeping its offset (review 2, finding 7)
+            extendPointerFile(committedReadFile);
             commitPointer = IoUtil.mapExistingFile(committedReadFile, "committedReadFile_" + filename);
             streamOffset = commitPointer.getLong(0);
+            committedOffset = streamOffset;
+            epoch = commitPointer.getLong(EPOCH_SLOT);
+            if (epoch == 0) {
+                // a pointer written before epochs: its positions are kept, under a new epoch from now on. Such a
+                // pointer (v1.1.2) counted decoded chars, which after non-ASCII text is short of the byte offset and
+                // may point inside a line: it is aligned to a line start when the file is opened (finding 8). Its epoch
+                // is written only with the aligned offset, so a start that stops before opening the file leaves it a
+                // legacy pointer, aligned at the next start (review 3, item 2)
+                epoch = newEpoch();
+                legacyAlign = commitRead && streamOffset > 0;
+                if (!legacyAlign) commitPointer.putLong(EPOCH_SLOT, epoch);
+            }
             if (infoEnabled) {
                 log.log(Level.INFO, serviceName + " reading committedReadFile:" + committedReadFile.getAbsolutePath() + ", streamOffset:" + streamOffset);
             }
         } else if (commitRead) {
-            commitPointer = IoUtil.mapNewFile(committedReadFile, 1024);
+            commitPointer = IoUtil.mapNewFile(committedReadFile, POINTER_FILE_SIZE);
             streamOffset = 0;
+            committedOffset = 0;
+            // a new pointer, a new position space: a deleted pointer never resumes an application's old positions
+            epoch = newEpoch();
+            commitPointer.putLong(EPOCH_SLOT, epoch);
             if (infoEnabled) {
                 log.log(Level.INFO, serviceName + " creating committedReadFile:" + committedReadFile.getAbsolutePath() + ", streamOffset:" + streamOffset);
             }
@@ -182,58 +269,89 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
         return getName();
     }
 
-    @SuppressWarnings("all")
+    /**
+     * One duty cycle: commit what the subscribers have processed since the last cycle, then read. The commit lag is
+     * bounded by one duty cycle of this source's agent after a line's event cycle completes (docs/design/feed-delivery.md
+     * section 4): a cycle that committed reports work, so the agent does not idle-sleep while acknowledgements flow.
+     */
     @Override
     public int doWork() {
-//        if (!tail && !cacheEventLog) {
-        if (!tail || stopped) {
+        if (stopped) {
+            return 0;
+        }
+        int acknowledged = publishToQueue ? output.pollAcknowledgements() : 0;
+        int read = read();
+        if (read > 0 && publishToQueue) {
+            // lines published this cycle may already be processed by a fast subscriber: commit them now
+            acknowledged += output.pollAcknowledgements();
+        }
+        return read + (acknowledged > 0 ? 1 : 0);
+    }
+
+    @SuppressWarnings("all")
+    private int read() {
+        if (stopped) {
+            return 0;
+        }
+        if (publishToQueue) {
+            // finish a paused cache replay (or a waiting status) before reading on
+            if (!output.flushPaused()) {
+                return 0;
+            }
+        }
+        if (!tail) {
+            // a once strategy has read the file: nothing more will ever be published
+            if (publishToQueue) report(FeedState.END_OF_STREAM, null);
             return 0;
         }
         try {
             if (connectReader() == null) {
+                // nothing to read yet: everything available (nothing) is delivered; BEHIND once the file appears
+                if (publishToQueue) report(FeedState.CAUGHT_UP, "file not found: " + filename);
                 return 0;
             }
             if (fineEnabled) {
                 log.log(Level.FINE, "doWork FileEventFeed");
             }
-            String lastReadLine = null;
             int readCount = 0;
-            int nread;
 
-            while (reader.ready()) {
-                tail = !once;
-                nread = reader.read(buffer, offset, buffer.length - offset);
+            // what was read but not taken last time goes first: the line the publisher paused on, then whole lines
+            // left in the buffer. Nothing more is read from the file while the feed is paused
+            if (pendingLine != null) {
+                if (!offer(pendingLine, pendingLineEnd)) {
+                    return readCount;
+                }
+                pendingLine = null;
+                readCount++;
+            }
+            int drained = drainBufferedLines();
+            if (drained < 0) {
+                return readCount - drained - 1;
+            }
+            readCount += drained;
+
+            int nread;
+            while (stream.available() > 0) {
+                // more is available: reported before the first line it publishes, so a host never sees CAUGHT_UP at a
+                // position these lines are past
+                if (publishToQueue) report(FeedState.BEHIND, null);
+                onceReadData |= once;
+                nread = stream.read(buffer, offset, buffer.length - offset);
                 if (finestEnabled) {
                     log.log(Level.FINEST, "Read " + nread + " bytes from " + getFilename());
                 }
 
                 if (nread > 0) {
                     offset += nread;
-                    String line;
-                    do {
-                        line = extractLine();
-                        if (line != null) {
-                            readCount++;
-                            if (finestEnabled) {
-                                log.log(Level.FINEST, "Read a line from " + getFilename() + " count:" + readCount + " line:" + line);
-                            }
-                            if (latestRead) {
-                                lastReadLine = line;
-                            } else {
-                                publish(line);
-                            }
-                        }
-                    } while (line != null);
-
-                    if (latestRead & lastReadLine != null & !once) {
-                        if (finestEnabled) {
-                            log.log(Level.FINEST, "publish latest:" + lastReadLine);
-                        }
-                        publish(lastReadLine);
+                    drained = drainBufferedLines();
+                    if (drained < 0) {
+                        // paused: the line and the rest of the buffer are kept, and the file position with them
+                        return readCount - drained - 1;
                     }
+                    readCount += drained;
 
-                    if (lastReadLine == null && offset == buffer.length) {
-                        char[] newbuf = new char[buffer.length * 2];
+                    if (offset == buffer.length) {
+                        byte[] newbuf = new byte[buffer.length * 2];
                         System.arraycopy(buffer, 0, newbuf, 0, buffer.length);
                         if (infoEnabled) {
                             log.log(Level.INFO, "Increased buffer from " + buffer.length + " to " + newbuf.length);
@@ -242,23 +360,53 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
                     }
                 }
             }
-            tail |= readStrategy != ReadStrategy.ONCE_EARLIEST;
+            if (!once) {
+                // at the end of the open file: before it is reported caught up, the path must still name this file and
+                // the file must not be shorter than what was read (review R4)
+                String changed = inputChangedWhileOpen();
+                if (changed != null) {
+                    reopenAfterChange(changed);
+                    return readCount + 1;
+                }
+            }
+            if (onceReadData) {
+                if (offset > 0 && buffer[offset - 1] == '\r' && !latestRead) {
+                    // at the end of a once read nothing can follow a trailing \r: it terminates the last line
+                    // (a tailing read waits for the next byte, which may be the \n of a \r\n; review 3, item 6)
+                    String last = new String(buffer, 0, offset - 1, StandardCharsets.UTF_8);
+                    long end = streamOffset + offset;
+                    streamOffset = end;
+                    offset = 0;
+                    if (!offer(last, end)) {
+                        return readCount;
+                    }
+                    readCount++;
+                }
+                // a once strategy has published everything to the end of the file as it was: it ends here
+                tail = false;
+            }
+            if (publishToQueue) {
+                if (!tail) {
+                    // counted, so a host can tell machine-readably that the file ended without a line terminator
+                    output.setUnterminatedBytes(offset);
+                    report(FeedState.END_OF_STREAM, offset > 0 ? "unterminated last line not published" : null);
+                } else {
+                    // at the end of the file as it is now; an unterminated last line is published once it ends
+                    report(FeedState.CAUGHT_UP, offset > 0 ? "partial line pending" : null);
+                }
+            }
 
             return readCount;
 
         } catch (IOException e) {
-            try {
-                reader.close();
-            } catch (IOException ex) {
-
-            }
+            if (publishToQueue) report(FeedState.UNKNOWN, "read failed, reopening: " + e);
             try {
                 stream.close();
             } catch (IOException ex) {
 
             }
-            reader = null;
             stream = null;
+            channel = null;
         }
         return 0;
     }
@@ -268,6 +416,18 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
         stopped = true;
         if (infoEnabled) {
             log.log(Level.INFO, "Stopping");
+        }
+        if (commitRead && output != null) {
+            try {
+                // commit everything processed so far; what is not is re-read at the next start. On a server, the
+                // processor groups go on draining their queues after the feeds stop: the server's ordered stop commits
+                // again once they have drained and closed (SourceCommitter.commitsAfterStop)
+                output.pollAcknowledgements();
+            } catch (Throwable t) {
+                if (warningEnabled) {
+                    log.log(Level.WARNING, serviceName + " final commit failed: " + t);
+                }
+            }
         }
         try {
             if (stream != null) {
@@ -283,11 +443,13 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
         } finally {
             // mongoose#56: drop the references once released, so a second stop neither closes nor unmaps them again
             stream = null;
-            reader = null;
-            if (commitPointer != null) {
-                commitPointer.force();
-                IoUtil.unmap(commitPointer);
-                commitPointer = null;
+            channel = null;
+            synchronized (commitLock) {
+                if (commitPointer != null) {
+                    commitPointer.force();
+                    IoUtil.unmap(commitPointer);
+                    commitPointer = null;
+                }
             }
         }
     }
@@ -297,10 +459,49 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
         super.tearDown();
     }
 
-    private Reader connectReader() {
+    /** Tests only: run just after the input file's channel is opened, to interleave a rotation there. */
+    Runnable afterOpenForTest;
+    /** Opens of a file whose identity changed during the open, before the open waits for the next duty cycle. */
+    private static final int OPEN_ATTEMPTS = 3;
+
+    private InputStream connectReader() {
         if (startComplete.get() & stream == null && filename != null && !filename.isEmpty()) {
             try {
-                stream = Files.newInputStream(Paths.get(filename));
+                // the identity is bound to the file actually opened (independent delta review, finding 1): the path's
+                // identity is read before and after the open, and the open retried if it changed, so a rotation between
+                // the open and the identity read never labels the old file with the replacement's key
+                java.nio.channels.FileChannel opened = null;
+                long identity = 0;
+                for (int attempt = 0; opened == null; attempt++) {
+                    long before = fileIdentity();
+                    java.nio.channels.FileChannel candidate = java.nio.channels.FileChannel.open(Paths.get(filename),
+                            java.nio.file.StandardOpenOption.READ);
+                    if (afterOpenForTest != null) afterOpenForTest.run();
+                    long after = fileIdentity();
+                    if (before == after) {
+                        opened = candidate;
+                        identity = after;
+                    } else {
+                        candidate.close();
+                        if (attempt >= OPEN_ATTEMPTS - 1) {
+                            if (warningEnabled) {
+                                log.log(Level.WARNING, serviceName + ": the input file keeps changing while being opened;"
+                                        + " trying again next duty cycle: " + filename);
+                            }
+                            return null;
+                        }
+                    }
+                }
+                channel = opened;
+                stream = java.nio.channels.Channels.newInputStream(opened);
+                // read from the position again: bytes of a partial line buffered from an earlier stream are read again
+                // (a reopen after a read failure or a live change), never appended to twice
+                offset = 0;
+                checkSourceIdentity(identity);
+                if (legacyAlign) {
+                    legacyAlign = false;
+                    alignLegacyPointer();
+                }
                 if (infoEnabled) {
                     log.log(Level.INFO, "Found previous offset, trying to skip to file offset " + streamOffset);
                 }
@@ -319,7 +520,6 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
                 if (infoEnabled) {
                     log.log(Level.INFO, "Skipped to offset " + streamOffset);
                 }
-                reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8));
                 if (infoEnabled) {
                     log.log(Level.INFO, "Opened " + getFilename() + " for reading");
                 }
@@ -334,23 +534,449 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
                 throw new RuntimeException(e);
             }
         }
-        return reader;
+        return stream;
     }
 
-    private void publish(String line) {
+    // ---- source epoch (docs/design/feed-delivery.md 5a, review F5) ----
+    // The pointer file (POINTER_FILE_SIZE bytes) holds: [0] the committed byte offset, [8] the epoch, [16] the input
+    // file's identity (its file key), [24] the layout version, [32] how many leading bytes of the input file the
+    // fingerprint covers, [40] the fingerprint. v1.1.2 created the same 1,024-byte file but wrote only [0]; a layout
+    // without [24] == LAYOUT_VERSION has no trusted identity or fingerprint, and gets them at the next open.
+
+    private static final int POINTER_FILE_SIZE = 1024;
+    private static final int EPOCH_SLOT = 8;
+    private static final int IDENTITY_SLOT = 16;
+    private static final int LAYOUT_SLOT = 24;
+    private static final int FINGERPRINT_LENGTH_SLOT = 32;
+    private static final int FINGERPRINT_SLOT = 40;
+    private static final long LAYOUT_VERSION = 2;
+    /** The fingerprint covers at most this many leading bytes of the input file. */
+    private static final int FINGERPRINT_MAX_BYTES = 4096;
+    /** The epoch of this source's positions; a new one whenever the position space is reset. */
+    private volatile long epoch;
+    /** Acknowledgements of items published before the last reset are of the old epoch: ignored. */
+    private volatile long resetAtSequence;
+    /** The pointer predates epochs (v1.1.2, a char count): align it to a line start when the file is opened. */
+    private boolean legacyAlign;
+
+    private static long newEpoch() {
+        long e;
+        do {
+            e = java.util.concurrent.ThreadLocalRandom.current().nextLong();
+        } while (e == 0);
+        return e;
+    }
+
+    /**
+     * The input file's identity: its file key (device and inode on Unix), 0 when the platform has none (Windows).
+     * Never a time: on Linux before JDK 21's statx support, and on file systems without a birth time,
+     * {@code creationTime()} is the modification time, which every append changes (review 2, finding 1).
+     */
+    private long fileIdentity() {
+        try {
+            return identityOf(Files.readAttributes(Paths.get(filename), java.nio.file.attribute.BasicFileAttributes.class));
+        } catch (IOException e) {
+            return 0;
+        }
+    }
+
+    private static long identityOf(java.nio.file.attribute.BasicFileAttributes attrs) {
+        Object key = attrs.fileKey();
+        if (key == null) {
+            return 0;
+        }
+        long id = fnv1a(key.toString().getBytes(StandardCharsets.UTF_8), 0, -1);
+        return id == 0 ? 1 : id;
+    }
+
+    /** The identity of the file the open stream reads, taken when it was opened; 0 when unknown. */
+    private long openIdentity;
+
+    /**
+     * While tailing, at the end of the open file (review R4): why the open stream no longer reads the input, or null.
+     * The path names another file (replaced, or rotated and recreated: another file key), or the file is shorter than
+     * what was read from it (truncated). A path with no file (a rotation in progress) is not a change: the open file is
+     * read on until a file appears at the path. One file-attribute read per idle duty cycle. Not detected while running:
+     * a file rewritten in place to at least the length read, or replaced on a platform without file keys by a file at
+     * least that long; both are detected by the fingerprint at the next open.
+     */
+    private String inputChangedWhileOpen() {
+        java.nio.file.attribute.BasicFileAttributes attrs;
+        try {
+            attrs = Files.readAttributes(Paths.get(filename), java.nio.file.attribute.BasicFileAttributes.class);
+        } catch (IOException e) {
+            return null;
+        }
+        long identity = identityOf(attrs);
+        if (identity != 0 && openIdentity != 0 && identity != openIdentity) {
+            return "the input file was replaced while being read (another file at the path)";
+        }
+        long read = streamOffset + offset;
+        if (attrs.size() < read) {
+            return "the input file was truncated while being read (" + attrs.size() + " bytes, " + read + " read)";
+        }
+        return null;
+    }
+
+    /**
+     * The input changed under the open stream: it is closed, and the next duty cycle opens the file at the path, whose
+     * identity check moves a COMMITED pointer to a new epoch (replaced or truncated) or keeps it (the same leading bytes
+     * under another file key: a rewrite-and-rename appender). Lines of the old file already published are still
+     * delivered, but their acknowledgements are of the old epoch and never committed into the new file's pointer. An
+     * unterminated last line of the old file is not published. Other strategies read the new file from its start.
+     */
+    private void reopenAfterChange(String changed) {
+        if (warningEnabled) {
+            log.log(Level.WARNING, serviceName + ": " + changed + "; reopening " + filename);
+        }
+        if (publishToQueue) report(FeedState.BEHIND, changed + ": reopening");
+        try {
+            stream.close();
+        } catch (IOException e) {
+            // the stream is dropped either way
+        }
+        stream = null;
+        channel = null;
+        offset = 0;
+        if (!commitRead) {
+            streamOffset = 0;
+        }
+    }
+
+    /** 64-bit FNV-1a of {@code bytes[from, to)} ({@code to < 0}: to the end). */
+    private static long fnv1a(byte[] bytes, int from, int to) {
+        long h = 0xcbf29ce484222325L;
+        for (int i = from, n = to < 0 ? bytes.length : to; i < n; i++) {
+            h ^= bytes[i] & 0xff;
+            h *= 0x100000001b3L;
+        }
+        return h;
+    }
+
+    /**
+     * The fingerprint of the first {@code length} bytes of the file being read (the open channel, by positional reads
+     * that leave the stream's position alone), or 0 when fewer can be read or no file is open. Never of the file the
+     * path names now: after a replacement that is another file (review R4).
+     */
+    private long fingerprint(int length) throws IOException {
+        java.nio.channels.FileChannel in = channel;
+        if (in == null) return 0;
+        java.nio.ByteBuffer head = java.nio.ByteBuffer.allocate(length);
+        long at = 0;
+        while (head.hasRemaining()) {
+            int n = in.read(head, at);
+            if (n < 0) return 0;
+            at += n;
+        }
+        long h = fnv1a(head.array(), 0, -1) ^ length;
+        return h == 0 ? 1 : h;
+    }
+
+    /** Extend a pointer file shorter than the current layout, keeping its offset (or 0 if it has none). */
+    private void extendPointerFile(File pointerFile) {
+        long length = pointerFile.length();
+        if (length >= POINTER_FILE_SIZE) {
+            return;
+        }
+        try (RandomAccessFile raf = new RandomAccessFile(pointerFile, "rw")) {
+            if (length < 8) {
+                // not even a whole offset: start from 0 under a new epoch (slot 8 stays 0)
+                raf.setLength(0);
+            }
+            raf.setLength(POINTER_FILE_SIZE);
+            if (warningEnabled) {
+                log.log(Level.WARNING, serviceName + ": read pointer " + pointerFile + " had " + length
+                        + " bytes, extended to " + POINTER_FILE_SIZE + (length < 8 ? " (no offset: reading from 0)" : ""));
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException("cannot extend read pointer " + pointerFile, e);
+        }
+    }
+
+    /**
+     * A v1.1.2 pointer counted decoded chars: after non-ASCII text it is short of the byte offset and may be inside a
+     * line. If the byte before it is not a line terminator, resume after the next terminator. The char count is never
+     * past the true byte offset of the processed lines, so this skips only part of a line already processed (or a
+     * whole line re-delivered), never an unprocessed line. The aligned offset is committed at once, with the epoch: the
+     * pointer has an epoch from then on, so a later start does not align it again. If the file cannot be read the
+     * pointer stays a legacy one, aligned at a later open.
+     */
+    private void alignLegacyPointer() {
+        long from = streamOffset;
+        long aligned = from;
+        try (RandomAccessFile raf = new RandomAccessFile(filename, "r")) {
+            if (from > 0 && from <= raf.length()) {
+                aligned = alignedOffset(raf, from);
+            }
+        } catch (IOException e) {
+            if (warningEnabled) log.log(Level.WARNING, serviceName + ": cannot align a v1.1.2 read pointer: " + e);
+            legacyAlign = true;
+            return;
+        }
+        if (aligned != from && warningEnabled) {
+            log.log(Level.WARNING, serviceName + ": the read pointer " + from + " (written by v1.1.2 as a char count) "
+                    + "is inside a line; resuming at the next line start, byte " + aligned + ": " + filename);
+        }
+        synchronized (commitLock) {
+            streamOffset = aligned;
+            committedOffset = aligned;
+            if (commitPointer != null) {
+                commitPointer.putLong(0, aligned);
+                commitPointer.putLong(EPOCH_SLOT, epoch);
+                commitPointer.force();
+            }
+        }
+    }
+
+    /** The first line start at or after {@code from} (see {@link #alignLegacyPointer}). */
+    private static long alignedOffset(RandomAccessFile raf, long from) throws IOException {
+        long aligned = from;
+        raf.seek(from - 1);
+        int prev = raf.read();
+        if (prev == '\n') {
+            return from;
+        }
+        if (prev == '\r') {
+            // between \r and \n of one terminator: past the \n
+            if (raf.read() == '\n') aligned = from + 1;
+        } else {
+            byte[] chunk = new byte[8192];
+            long pos = from;
+            int n;
+            scan:
+            while ((n = raf.read(chunk)) > 0) {
+                for (int i = 0; i < n; i++) {
+                    byte b = chunk[i];
+                    if (b == '\n') {
+                        aligned = pos + i + 1;
+                        break scan;
+                    }
+                    if (b == '\r') {
+                        long cr = pos + i;
+                        raf.seek(cr + 1);
+                        aligned = raf.read() == '\n' ? cr + 2 : cr + 1;
+                        break scan;
+                    }
+                }
+                pos += n;
+            }
+        }
+        return aligned;
+    }
+
+    /**
+     * At each open: a COMMITED pointer is only meaningful for the file it was written for. When the input file was
+     * replaced (other leading bytes than those fingerprinted, or another file key with no matching fingerprint) or
+     * truncated (shorter than the pointer), the pointer restarts at 0 with a new epoch, so an application that keeps
+     * (epoch, position) with its state never takes a new line for an applied one. A file appended to, or whose times
+     * change, is the same file; so is one under another file key whose fingerprinted bytes match (a remount, a
+     * copy-up, a rewrite-and-rename appender), kept with a warning. With no file key (Windows) only the fingerprint and
+     * the size decide. Other strategies have no
+     * pointer: their epoch is the file key, stable for as long as the file is the same. {@code identity} is the file key
+     * of the file the channel opened: read before and after the open, unchanged.
+     */
+    private void checkSourceIdentity(long identity) throws IOException {
+        openIdentity = identity;
+        synchronized (commitLock) {
+            if (commitPointer == null || !commitRead) {
+                epoch = identity == 0 ? 1 : identity;
+            } else {
+                boolean layoutCurrent = commitPointer.getLong(LAYOUT_SLOT) == LAYOUT_VERSION;
+                long recorded = layoutCurrent ? commitPointer.getLong(IDENTITY_SLOT) : 0;
+                int fingerprinted = layoutCurrent ? (int) commitPointer.getLong(FINGERPRINT_LENGTH_SLOT) : 0;
+                long size = channel.size();
+                boolean keyChanged = recorded != 0 && identity != 0 && recorded != identity;
+                boolean sameLeadingBytes = fingerprinted > 0
+                        && fingerprint(fingerprinted) == commitPointer.getLong(FINGERPRINT_SLOT);
+                String reset = size < streamOffset
+                        ? "the input file was truncated (" + size + " < pointer " + streamOffset + ")"
+                        : fingerprinted > 0 && !sameLeadingBytes
+                        ? "the input file was replaced (its first " + fingerprinted + " bytes changed)"
+                        : keyChanged && !sameLeadingBytes ? "the input file was replaced (another file key)"
+                        : null;
+                if (reset == null && keyChanged && warningEnabled) {
+                    // a remount, a copy-up, or a writer that appends by rewrite-and-rename: the same content, kept
+                    // (review 3, item 4)
+                    log.log(Level.WARNING, serviceName + ": the input file has another file key but the same first "
+                            + fingerprinted + " bytes and is not shorter than the pointer: taken as the same file, the "
+                            + "read pointer is kept: " + filename);
+                }
+                if (reset != null) {
+                    if (warningEnabled) {
+                        log.log(Level.WARNING, serviceName + ": " + reset + "; the read pointer restarts at 0 with a "
+                                + "new epoch: " + filename);
+                    }
+                    streamOffset = 0;
+                    committedOffset = 0;
+                    offset = 0;
+                    pendingLine = null;
+                    legacyAlign = false;
+                    // nothing of the new file is acknowledged yet; a later acknowledgement of the old file is ignored
+                    acknowledgedOffset = -1;
+                    commitPointer.putLong(0, 0);
+                    epoch = newEpoch();
+                    commitPointer.putLong(EPOCH_SLOT, epoch);
+                    resetAtSequence = output == null ? 0 : output.getSequenceNumber();
+                }
+                // the file as it is now: an append-only file keeps these leading bytes for as long as it is the same
+                int cover = (int) Math.min(FINGERPRINT_MAX_BYTES, size);
+                long fingerprint = cover > 0 ? fingerprint(cover) : 0;
+                if (fingerprint == 0) cover = 0;     // shrank while being read: no fingerprint this time
+                commitPointer.putLong(IDENTITY_SLOT, identity);
+                commitPointer.putLong(FINGERPRINT_LENGTH_SLOT, cover);
+                commitPointer.putLong(FINGERPRINT_SLOT, fingerprint);
+                commitPointer.putLong(LAYOUT_SLOT, LAYOUT_VERSION);
+                commitPointer.force();
+                fingerprintCover = cover;
+            }
+        }
+        if (output != null) output.setSourceEpoch(epoch);
+    }
+
+    /** How many leading bytes the stored fingerprint covers; grown at commits up to the maximum. Under commitLock. */
+    private int fingerprintCover = FINGERPRINT_MAX_BYTES;
+
+    /**
+     * Grow the fingerprint with the file (review 3, item 1): a file opened holding only a header would otherwise be
+     * fingerprinted over the header alone, and a rewrite with the same header go unnoticed at the next start. At each
+     * commit, while the cover is below the maximum and the file has grown past it, the fingerprint is taken again over
+     * up to the maximum: at most 4 KB read per commit, and nothing once the cover is full. A file rewritten in place
+     * while the source is running to at least the length read is not detected (the fingerprint is then taken of the new
+     * content). The fingerprint is of the file being read, never of the path: with no file open (the source stopped, or
+     * reopening after a replacement) it is not grown (review R4). Under commitLock.
+     */
+    private void growFingerprint(MappedByteBuffer pointer) {
+        if (fingerprintCover >= FINGERPRINT_MAX_BYTES) return;
+        java.nio.channels.FileChannel open = channel;
+        if (open == null) return;
+        try {
+            long size = open.size();
+            if (size <= fingerprintCover) return;
+            int cover = (int) Math.min(FINGERPRINT_MAX_BYTES, size);
+            long fingerprint = fingerprint(cover);
+            if (fingerprint == 0) return;
+            pointer.putLong(FINGERPRINT_LENGTH_SLOT, cover);
+            pointer.putLong(FINGERPRINT_SLOT, fingerprint);
+            fingerprintCover = cover;
+        } catch (IOException e) {
+            // the fingerprint keeps its current cover; the next commit tries again
+        }
+    }
+
+    /** The epoch of this source's positions (docs/design/feed-delivery.md 5a). */
+    public long epoch() {
+        return epoch;
+    }
+
+    /**
+     * Report a feed state change once: a repeat of the last state and detail is not reported again, nor BEHIND while
+     * already BEHIND (reading on from the start is not a new transition).
+     */
+    private void report(FeedState state, String detail) {
+        if (state == reportedState && (state == FeedState.BEHIND || java.util.Objects.equals(detail, reportedDetail))) {
+            return;
+        }
+        reportedState = state;
+        reportedDetail = detail;
+        // bounded: a once strategy ends; a tailing strategy reads for as long as it runs
+        reportFeedStatus(state, once, detail);
+    }
+
+    /**
+     * Offer every whole line in the buffer, in order. Returns how many were taken, or, when the publisher paused,
+     * {@code -(taken + 1)}: the paused line is kept in {@link #pendingLine} and the rest stays in the buffer.
+     */
+    private int drainBufferedLines() {
+        int taken = 0;
+        String lastReadLine = null;
+        long lastReadEnd = streamOffset;
+        String line;
+        while ((line = extractLine()) != null) {
+            if (finestEnabled) {
+                log.log(Level.FINEST, "Read a line from " + getFilename() + " line:" + line);
+            }
+            if (latestRead) {
+                // LATEST publishes the last line of each read only
+                lastReadLine = line;
+                lastReadEnd = streamOffset;
+            } else if (offer(line, streamOffset)) {
+                taken++;
+            } else {
+                return -(taken + 1);
+            }
+        }
+        if (latestRead & lastReadLine != null & !once) {
+            if (finestEnabled) {
+                log.log(Level.FINEST, "publish latest:" + lastReadLine);
+            }
+            if (!offer(lastReadLine, lastReadEnd)) {
+                return -(taken + 1);
+            }
+            taken++;
+        }
+        return taken;
+    }
+
+    /**
+     * Publish (after start) or cache (before it) one line read up to {@code endOffset}. False when the publisher paused:
+     * the line is kept and offered again on the next duty cycle, and the file is not read further meanwhile.
+     */
+    private boolean offer(String line, long endOffset) {
+        Long position = commitRead ? Long.valueOf(endOffset) : null;
         if (publishToQueue) {
             if (fineEnabled) {
                 log.log(Level.FINE, "publish record:" + line);
             }
-            output.publish(line);
-        } else {
-            if (fineEnabled) {
-                log.log(Level.FINE, "cache record:" + line);
+            if (output.tryPublish(line, position)) {
+                return true;
             }
-            output.cache(line);
+            pendingLine = line;
+            pendingLineEnd = endOffset;
+            return false;
         }
-        if (commitRead) {
-            commitPointer.force();
+        if (fineEnabled) {
+            log.log(Level.FINE, "cache record:" + line);
+        }
+        output.cache(line, position);
+        return true;
+    }
+
+    /**
+     * Write the read pointer for a processed position, forward only. After {@link #stop()} released the mapping (the
+     * final commit of a clean server stop, once the processor groups have drained) the pointer file is mapped again for
+     * the write.
+     */
+    private void writePointer(long acknowledgedOffset) {
+        synchronized (commitLock) {
+            if (acknowledgedOffset <= committedOffset) {
+                return;
+            }
+            if (commitPointer == null) {
+                File pointerFile = new File(filename + ".readPointer");
+                if (!stopped || !commitRead || !pointerFile.exists()) {
+                    return;
+                }
+                MappedByteBuffer remapped = IoUtil.mapExistingFile(pointerFile, "committedReadFile_" + filename);
+                try {
+                    remapped.putLong(0, acknowledgedOffset);
+                    growFingerprint(remapped);
+                    remapped.force();
+                } finally {
+                    IoUtil.unmap(remapped);
+                }
+            } else {
+                commitPointer.putLong(0, acknowledgedOffset);
+                growFingerprint(commitPointer);
+                commitPointer.force();
+            }
+            committedOffset = acknowledgedOffset;
+        }
+    }
+
+    /** The offset the read pointer holds: every line before it has been processed. */
+    public long committedOffset() {
+        synchronized (commitLock) {
+            return committedOffset;
         }
     }
 
@@ -373,21 +999,37 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
         }
 
         if (until != -1) {
-            String result = new String(buffer, 0, until);
+            // decoded as UTF-8 (malformed bytes become U+FFFD in the line); the position is the exact byte count, which
+            // a restart skips; the read pointer is written only once the line is processed
+            String result = new String(buffer, 0, until, StandardCharsets.UTF_8);
+            streamOffset += newStart;
             System.arraycopy(buffer, newStart, buffer, 0, buffer.length - newStart);
             offset = offset - newStart;
-            streamOffset += newStart;
-            if (commitRead) {
-                commitPointer.putLong(0, streamOffset);
-            }
             return result;
         } else {
             return null;
         }
     }
 
+    /** For testing: what a read failure does, the stream closed and dropped; the next duty cycle reopens the file. */
+    void closeStreamForTesting() throws IOException {
+        if (stream != null) {
+            stream.close();
+            stream = null;
+            channel = null;
+        }
+    }
+
     //for testing
     void setOutput(EventToQueuePublisher<String> output) {
         this.output = output;
+        output.setPauseByDefault(true);
+    }
+
+    /** A file can be re-read from its pointer: a feed with no overload policy pauses instead of dropping. */
+    @Override
+    public void setEventFlowManager(com.telamin.mongoose.dispatch.EventFlowManager eventFlowManager, String serviceName) {
+        super.setEventFlowManager(eventFlowManager, serviceName);
+        output.setPauseByDefault(true);
     }
 }
