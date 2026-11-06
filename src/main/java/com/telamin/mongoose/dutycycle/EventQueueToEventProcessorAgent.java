@@ -284,6 +284,12 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                         if (identified == null && thrower != null) {
                             synchronized (subscribed) { if (subscribed.contains(thrower)) identified = thrower; }
                         }
+                        // the delivery-complete hook (feed-delivery.md 5b): the callbacks the failing processor registered
+                        // in this attempt are discarded (all of them when it is not known); a retry registers them again
+                        if (positionEntered) {
+                            com.telamin.mongoose.service.delivery.DeliveryContext.dispatchFailed(
+                                    identified != null ? identified : thrower);
+                        }
                         if (at < 0 && solo == null && identified != null
                                 && !ProcessorDispatchException.requiresIsolation(identified)) {
                             if (!supportsSingleTargetDelivery()) {
@@ -407,6 +413,11 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                     }
                 }
 
+                // the delivery is complete: its callbacks run now, after every event the processors queued reentrantly,
+                // with the delivery still entered, before the recording and before the item counts as dispatched (so
+                // before the source can acknowledge it); feed-delivery.md 5b
+                if (positionEntered) completeDelivery(event);
+
                 // recorded after the dispatch, outside it: a recording failure is not a dispatch failure, so it is never
                 // retried as one (the processor would handle the input again) and never marks the processor as failing.
                 // A processor whose handler threw is already marked Failed (D4, a retry is a failure: marked, not
@@ -448,6 +459,44 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
             }
         }
         return processed;
+    }
+
+    /**
+     * Run the completion callbacks of the positioned item just dispatched (DeliveryContext.onComplete), in order. A
+     * callback that throws is retried alone under the retry policy, the item still not counted as dispatched; once the
+     * policy gives up it is reported and skipped, and the callbacks after it run. The processors are never given the
+     * item again for it: their cycles completed.
+     */
+    private void completeDelivery(Object event) {
+        com.telamin.mongoose.service.delivery.DeliveryContext.Completion completion;
+        while ((completion = com.telamin.mongoose.service.delivery.DeliveryContext.takeCompletion()) != null) {
+            for (int attempt = 1; ; attempt++) {
+                try {
+                    completion.run();
+                    break;
+                } catch (VirtualMachineError fatal) {
+                    throw fatal;
+                } catch (Throwable t) {
+                    String warnMsg = "delivery completion callback failed: agent=" + name + ", attempt=" + attempt
+                            + (completion.owner() == null ? "" : ", processor=" + completion.owner())
+                            + ", callback=" + completion.callback() + ", event=" + event + ", error=" + t;
+                    logger.warning(warnMsg);
+                    com.telamin.mongoose.service.error.ErrorReporting.report("EventQueueToEventProcessorAgent:" + name,
+                            warnMsg, t, com.telamin.mongoose.service.error.ErrorEvent.Severity.WARNING);
+                    if (!retryPolicy.shouldRetry(t, attempt)) {
+                        String errMsg = "skipping a delivery completion callback after retries (the item counts as"
+                                + " dispatched, as a failed item does): agent=" + name + ", attempts=" + attempt
+                                + (completion.owner() == null ? "" : ", processor=" + completion.owner())
+                                + ", callback=" + completion.callback() + ", event=" + event + ", lastError=" + t;
+                        logger.severe(errMsg);
+                        com.telamin.mongoose.service.error.ErrorReporting.report("EventQueueToEventProcessorAgent:" + name,
+                                errMsg, t, com.telamin.mongoose.service.error.ErrorEvent.Severity.ERROR);
+                        break;
+                    }
+                    retryPolicy.backoff(attempt);
+                }
+            }
+        }
     }
 
     /** What the processor was given: the event a ReplayRecord or BroadcastEvent carries, else the event itself. */

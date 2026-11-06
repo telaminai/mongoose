@@ -589,7 +589,8 @@ public final class GroupReplayer {
     /**
      * Deliver a recorded input with the delivery context its live cycle had (review R3): the processor reads the same
      * feed, sequence, epoch and source position through DeliveryContext as it did live, for the whole cycle, and
-     * nothing once it is done. An input recorded without one (it had no source position, or the recording predates
+     * nothing once it is done. The callbacks the replayed cycle registered with DeliveryContext.onComplete run before
+     * it is done, as live. An input recorded without one (it had no source position, or the recording predates
      * delivery metadata) is replayed with none.
      */
     private static void replayTo(ReplayRoute route, DataFlow flow, Object event,
@@ -601,6 +602,9 @@ public final class GroupReplayer {
         com.telamin.mongoose.service.delivery.DeliveryContext.enter(delivery.feed(), delivery.sequence(), delivery.epoch(), delivery.position());
         try {
             route.replayTo(flow, event);
+            // the input's completion callbacks run as they did live (feed-delivery.md 5b): after the replayed cycle and
+            // the events it queued, with the delivery entered, inside the input's replay; no retry
+            com.telamin.mongoose.service.delivery.DeliveryContext.runCompletions();
         } finally {
             com.telamin.mongoose.service.delivery.DeliveryContext.exit();
         }
