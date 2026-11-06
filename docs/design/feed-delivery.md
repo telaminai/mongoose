@@ -790,7 +790,17 @@ And `setPauseByDefault(true)` in `setEventFlowManager` if PAUSE should be its de
   file, an `EARLIEST` tail re-reads a truncated file, a partial line is read once across a reopen; R5, 8-byte non-ASCII,
   short and empty pointer files, and the explicit legacy re-delivery (already fixed by 2d0597a, so passing before);
   R6, the cached startup status waits behind the cache and is not dropped.
-  `service/delivery/FeedDeliveryReplayContextTest` (3) and `replay/CsvReplayStoreDeliveryTest` (3): R3.
+  R3: `service/delivery/FeedDeliveryReplayContextTest` (3, each failing before) and
+  `replay/CsvReplayStoreDeliveryTest`, of whose first three cases only `aDeliveryIsReadBackOntoItsInput` failed
+  before: `aDeliveryWithNoInputAfterItAddsNothing` and `aStoreWrittenWithoutDeliveriesReadsNone` are compatibility
+  checks that pass on the predecessor too (the delta review of PR #98 ran each removal control and noted this). The
+  orphan case now asserts that its fixture holds a `DELIVERY` row before truncating it, and two cases of the delta
+  review's finding 3 (append after an orphan row) fail before that fix.
+- Independent delta review of PR #98 (bf73ed9..cb97cfd), each failing on fc1778a before its fix:
+  `connector/file/FileEventSourceOpenRaceTest` (2, finding 1), `dispatch/CachedStartupStatusReplacementTest` (1 of 2,
+  finding 2; the other checks the delivery order and passes before too), `replay/CsvReplayStoreDeliveryTest`
+  `anInterruptedDeliveryCannotAttachToALaterUnpositionedInput` and `aStoreWithAnOrphanDeliveryRowIsReadButNeverAppendedTo`
+  (finding 3).
 - Third review regressions, each failing before its fix: `FileEventSourcePointerTest`
   `aHeaderOnlyFirstOpenThenAnInPlaceRewriteWithTheSameHeaderIsAReplacement` (item 1),
   `aV112PointerIsAlignedEvenIfTheFirstStartStopsBeforeOpeningTheFile` (item 2),
