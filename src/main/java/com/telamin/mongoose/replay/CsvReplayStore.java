@@ -83,7 +83,14 @@ public final class CsvReplayStore implements ReplayStore, AutoCloseable {
                     add(f.get(0), d == null ? entry : withDelivery(entry, d));
                 }
                 // a DELIVERY line with no input after it: the write of its input did not complete, so the input was
-                // never recorded (as for a torn line); nothing is added for it
+                // never recorded; nothing is added for it. The recording is incomplete, as with a torn line: it is
+                // read, never appended to, or the next input appended for the processor would take this delivery
+                // (independent delta review of PR #98, finding 3)
+                if (!delivering.isEmpty() && torn == null) {
+                    var orphan = delivering.entrySet().iterator().next();
+                    torn = "a DELIVERY line of processor " + orphan.getKey() + " (" + orphan.getValue()
+                            + ") with no input after it";
+                }
             }
             boolean fresh = !Files.exists(file) || Files.size(file) == 0;
             out = Files.newBufferedWriter(file, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND);

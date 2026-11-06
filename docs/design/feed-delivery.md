@@ -682,7 +682,11 @@ each input when its dispatch begins and stores it with the input's entry (`Repla
 the whole cycle, and clears it in a finally. In `CsvReplayStore` it is a `DELIVERY` line written, in the same write,
 just before the input's line (the position through the store's codec). A reader from before this change refuses such a
 file (an unknown entry kind) rather than replaying it without the metadata, and a `DELIVERY` line whose input line was
-never written adds nothing. Verified by `FeedDeliveryReplayContextTest`: indexed and inline recordings replay the same
+never written adds nothing and marks the recording incomplete, as a torn last line does: the store is read, never
+appended to (`append` and `began` refuse), and `holdsRecording()` is true, so it is never reused as an empty
+recording. Before, a reopened store gave the orphan delivery to the next input appended for that processor, so an
+unpositioned input replayed with the interrupted input's feed, epoch and position (independent delta review of PR
+#98, finding 3; `CsvReplayStoreDeliveryTest`). Verified by `FeedDeliveryReplayContextTest`: indexed and inline recordings replay the same
 delivery, and a processor that restores `(epoch, position)` state and skips re-delivered lines makes the same
 decisions in its replay (live: `skip c, skip d`; replay before the fix: `apply c, apply d`); and by
 `CsvReplayStoreDeliveryTest`. **A recording without delivery metadata** replays with none, and says nothing about it:
