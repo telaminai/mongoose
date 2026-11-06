@@ -78,18 +78,23 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
      */
     private final com.telamin.mongoose.service.delivery.SourceCommitter<Long> committer =
             new com.telamin.mongoose.service.delivery.SourceCommitter<>() {
-                private long acknowledged = -1;
-
                 @Override
                 public void acknowledged(long sequence, Long position) {
-                    if (sequence > resetAtSequence) acknowledged = position;
+                    // an item published before the last reset is of the old file: never this file's position
+                    if (sequence > resetAtSequence) acknowledgedOffset = position;
                 }
 
                 @Override
                 public void commit() {
-                    writePointer(acknowledged);
+                    // only once an item of the current epoch has been acknowledged (review 2, finding 6)
+                    if (acknowledgedOffset >= 0) writePointer(acknowledgedOffset);
                 }
             };
+    /**
+     * The offset after the last acknowledged line of the current epoch; -1 until one is acknowledged since the start or
+     * the last reset. Written and read by the committer only (the source's thread, or the stop thread after stop).
+     */
+    private volatile long acknowledgedOffset = -1;
 
     // Cached JUL log guards to minimize per-call allocations
     private final boolean infoEnabled;
@@ -137,6 +142,7 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
         offset = 0;
         pendingLine = null;
         onceReadData = false;
+        acknowledgedOffset = -1;
         if (commitRead && output != null) {
             output.acknowledgeWith(committer);
         }
@@ -166,7 +172,7 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
                 log.log(Level.INFO, serviceName + " reading committedReadFile:" + committedReadFile.getAbsolutePath() + ", streamOffset:" + streamOffset);
             }
         } else if (commitRead) {
-            commitPointer = IoUtil.mapNewFile(committedReadFile, 1024);
+            commitPointer = IoUtil.mapNewFile(committedReadFile, POINTER_FILE_SIZE);
             streamOffset = 0;
             committedOffset = 0;
             // a new pointer, a new position space: a deleted pointer never resumes an application's old positions
@@ -445,10 +451,20 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
     }
 
     // ---- source epoch (docs/design/feed-delivery.md 5a, review F5) ----
-    // The pointer file holds: [0] the committed byte offset, [8] the epoch, [16] the input file's identity
+    // The pointer file (POINTER_FILE_SIZE bytes) holds: [0] the committed byte offset, [8] the epoch, [16] the input
+    // file's identity (its file key), [24] the layout version, [32] how many leading bytes of the input file the
+    // fingerprint covers, [40] the fingerprint. v1.1.2 wrote only [0]; a layout without [24] == LAYOUT_VERSION has no
+    // trusted identity or fingerprint, and gets them at the next open.
 
+    private static final int POINTER_FILE_SIZE = 1024;
     private static final int EPOCH_SLOT = 8;
     private static final int IDENTITY_SLOT = 16;
+    private static final int LAYOUT_SLOT = 24;
+    private static final int FINGERPRINT_LENGTH_SLOT = 32;
+    private static final int FINGERPRINT_SLOT = 40;
+    private static final long LAYOUT_VERSION = 2;
+    /** The fingerprint covers at most this many leading bytes of the input file. */
+    private static final int FINGERPRINT_MAX_BYTES = 4096;
     /** The epoch of this source's positions; a new one whenever the position space is reset. */
     private volatile long epoch;
     /** Acknowledgements of items published before the last reset are of the old epoch: ignored. */
@@ -462,22 +478,52 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
         return e;
     }
 
-    /** The input file's identity: its file key (inode on Unix) and creation time; 0 when unknown. */
+    /**
+     * The input file's identity: its file key (device and inode on Unix), 0 when the platform has none (Windows).
+     * Never a time: on Linux before JDK 21's statx support, and on file systems without a birth time,
+     * {@code creationTime()} is the modification time, which every append changes (review 2, finding 1).
+     */
     private long fileIdentity() {
         try {
             var attrs = Files.readAttributes(Paths.get(filename), java.nio.file.attribute.BasicFileAttributes.class);
-            long id = 31L * String.valueOf(attrs.fileKey()).hashCode() + attrs.creationTime().toMillis();
+            Object key = attrs.fileKey();
+            if (key == null) {
+                return 0;
+            }
+            long id = fnv1a(key.toString().getBytes(StandardCharsets.UTF_8), 0, -1);
             return id == 0 ? 1 : id;
         } catch (IOException e) {
             return 0;
         }
     }
 
+    /** 64-bit FNV-1a of {@code bytes[from, to)} ({@code to < 0}: to the end). */
+    private static long fnv1a(byte[] bytes, int from, int to) {
+        long h = 0xcbf29ce484222325L;
+        for (int i = from, n = to < 0 ? bytes.length : to; i < n; i++) {
+            h ^= bytes[i] & 0xff;
+            h *= 0x100000001b3L;
+        }
+        return h;
+    }
+
+    /** The fingerprint of the first {@code length} bytes of the input file, or 0 when fewer can be read. */
+    private long fingerprint(int length) throws IOException {
+        try (InputStream in = Files.newInputStream(Paths.get(filename))) {
+            byte[] head = in.readNBytes(length);
+            if (head.length < length) return 0;
+            long h = fnv1a(head, 0, -1) ^ length;
+            return h == 0 ? 1 : h;
+        }
+    }
+
     /**
      * At each open: a COMMITED pointer is only meaningful for the file it was written for. When the input file was
-     * replaced (another identity) or truncated (shorter than the pointer), the pointer restarts at 0 with a new epoch,
-     * so an application that keeps (epoch, position) with its state never takes a new line for an applied one. Other
-     * strategies have no pointer: their epoch is the file's identity, stable for as long as the file is the same.
+     * replaced (another file key, or other leading bytes than those fingerprinted at the last open) or truncated
+     * (shorter than the pointer), the pointer restarts at 0 with a new epoch, so an application that keeps (epoch,
+     * position) with its state never takes a new line for an applied one. A file appended to, or whose times change,
+     * is the same file. With no file key (Windows) only the fingerprint and the size decide. Other strategies have no
+     * pointer: their epoch is the file key, stable for as long as the file is the same.
      */
     private void checkSourceIdentity() throws IOException {
         long identity = fileIdentity();
@@ -485,10 +531,15 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
             if (commitPointer == null || !commitRead) {
                 epoch = identity == 0 ? 1 : identity;
             } else {
-                long recorded = commitPointer.getLong(IDENTITY_SLOT);
+                boolean layoutCurrent = commitPointer.getLong(LAYOUT_SLOT) == LAYOUT_VERSION;
+                long recorded = layoutCurrent ? commitPointer.getLong(IDENTITY_SLOT) : 0;
+                int fingerprinted = layoutCurrent ? (int) commitPointer.getLong(FINGERPRINT_LENGTH_SLOT) : 0;
                 long size = Files.size(Paths.get(filename));
-                String reset = recorded != 0 && identity != 0 && recorded != identity ? "the input file was replaced"
+                String reset = recorded != 0 && identity != 0 && recorded != identity
+                        ? "the input file was replaced (another file key)"
                         : size < streamOffset ? "the input file was truncated (" + size + " < pointer " + streamOffset + ")"
+                        : fingerprinted > 0 && fingerprint(fingerprinted) != commitPointer.getLong(FINGERPRINT_SLOT)
+                        ? "the input file was replaced (its first " + fingerprinted + " bytes changed)"
                         : null;
                 if (reset != null) {
                     if (warningEnabled) {
@@ -499,12 +550,21 @@ public class FileEventSource extends AbstractAgentHostedEventSourceService<Strin
                     committedOffset = 0;
                     offset = 0;
                     pendingLine = null;
+                    // nothing of the new file is acknowledged yet; a later acknowledgement of the old file is ignored
+                    acknowledgedOffset = -1;
                     commitPointer.putLong(0, 0);
                     epoch = newEpoch();
                     commitPointer.putLong(EPOCH_SLOT, epoch);
                     resetAtSequence = output == null ? 0 : output.getSequenceNumber();
                 }
-                if (identity != 0) commitPointer.putLong(IDENTITY_SLOT, identity);
+                // the file as it is now: an append-only file keeps these leading bytes for as long as it is the same
+                int cover = (int) Math.min(FINGERPRINT_MAX_BYTES, size);
+                long fingerprint = cover > 0 ? fingerprint(cover) : 0;
+                if (fingerprint == 0) cover = 0;     // shrank while being read: no fingerprint this time
+                commitPointer.putLong(IDENTITY_SLOT, identity);
+                commitPointer.putLong(FINGERPRINT_LENGTH_SLOT, cover);
+                commitPointer.putLong(FINGERPRINT_SLOT, fingerprint);
+                commitPointer.putLong(LAYOUT_SLOT, LAYOUT_VERSION);
                 commitPointer.force();
             }
         }

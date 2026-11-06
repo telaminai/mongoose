@@ -1,0 +1,214 @@
+/*
+ * SPDX-FileCopyrightText: © 2025 Gregory Higgins <greg.higgins@v12technology.com>
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+package com.telamin.mongoose.connector.file;
+
+import com.telamin.mongoose.config.ReadStrategy;
+import com.telamin.mongoose.dispatch.EventToQueuePublisher;
+import com.telamin.mongoose.dispatch.PositionedItem;
+import org.agrona.concurrent.OneToOneConcurrentArrayQueue;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributeView;
+import java.nio.file.attribute.FileTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/**
+ * The read pointer file across restarts (docs/design/feed-delivery.md section 4): what identifies the input file, a
+ * reset in the middle of a run, and pointer files written by earlier releases.
+ */
+class FileEventSourcePointerTest {
+
+    @TempDir
+    Path dir;
+
+    private Path data() {
+        return dir.resolve("events.txt");
+    }
+
+    private Path pointerFile() {
+        return Path.of(data() + ".readPointer");
+    }
+
+    private void write(int from, int to) throws Exception {
+        StringBuilder b = new StringBuilder();
+        for (int i = from; i <= to; i++) b.append("line-").append(i).append('\n');
+        Files.writeString(data(), b, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+    }
+
+    private static long offsetAfter(int n) {
+        long off = 0;
+        for (int i = 1; i <= n; i++) off += ("line-" + i + "\n").length();
+        return off;
+    }
+
+    private long pointer() throws Exception {
+        return ByteBuffer.wrap(Files.readAllBytes(pointerFile()), 0, 8).getLong();
+    }
+
+    private record Run(FileEventSource src, OneToOneConcurrentArrayQueue<Object> queue,
+                       EventToQueuePublisher<String> pub) {
+        List<String> drain() {
+            List<Object> out = new ArrayList<>();
+            queue.drainTo(out, 1024);
+            return out.stream().map(String::valueOf).toList();
+        }
+
+        long epoch() {
+            return ((PositionedItem) queue.peek()).epoch();
+        }
+    }
+
+    /** A source whose only queue is judged by its consumer position: draining the queue processes it. */
+    private Run run() {
+        OneToOneConcurrentArrayQueue<Object> q = new OneToOneConcurrentArrayQueue<>(256);
+        EventToQueuePublisher<String> p = new EventToQueuePublisher<>("feed");
+        p.addTargetQueue(q, "q");
+        FileEventSource src = new FileEventSource(256);
+        src.setFilename(data().toString());
+        src.setReadStrategy(ReadStrategy.COMMITED);
+        src.setOutput(p);
+        src.onStart();
+        src.start();
+        src.startComplete();
+        return new Run(src, q, p);
+    }
+
+    /** Process everything read, commit it, and stop. */
+    private static void processAndStop(Run r) {
+        r.drain();
+        r.src().doWork();
+        r.src().stop();
+    }
+
+    /**
+     * Finding 1 (BLOCKER): on Linux before JDK 21's statx support, and on file systems without a birth time,
+     * {@code creationTime()} is the modification time, so every append changed the input file's "identity" and a
+     * restart re-delivered the whole file under a new epoch. Here the creation time is moved explicitly (what such a
+     * system reports after an append); the file is the same file, appended to: the pointer and epoch must hold.
+     */
+    @Test
+    void anAppendThatMovesTheFileTimesIsNotAReplacement() throws Exception {
+        write(1, 3);
+        Run first = run();
+        first.src().doWork();
+        long epoch = first.epoch();
+        processAndStop(first);
+        assertEquals(offsetAfter(3), pointer());
+
+        write(4, 4);
+        FileTime later = FileTime.fromMillis(System.currentTimeMillis() + 3_600_000);
+        // modified, accessed and (where the file system keeps one) created: all move, as on Linux without btime
+        Files.getFileAttributeView(data(), BasicFileAttributeView.class).setTimes(later, later, later);
+
+        Run second = run();
+        second.src().doWork();
+        assertEquals(epoch, second.epoch(), "the same file, appended to: the same epoch");
+        assertEquals(List.of("line-4"), second.drain(), "only the appended line, not the whole file again");
+        second.src().doWork();
+        assertEquals(offsetAfter(4), pointer());
+        second.src().stop();
+    }
+
+    /** A real replacement is still detected: a new file (another inode) at the same path, longer than the pointer. */
+    @Test
+    void aNewFileAtTheSamePathIsAReplacement() throws Exception {
+        write(1, 3);
+        Run first = run();
+        first.src().doWork();
+        long epoch = first.epoch();
+        processAndStop(first);
+
+        Path tmp = dir.resolve("events.txt.new");
+        StringBuilder b = new StringBuilder();
+        for (int i = 1; i <= 10; i++) b.append("line-").append(i).append('\n');
+        Files.writeString(tmp, b, StandardCharsets.UTF_8);
+        Files.move(tmp, data(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+
+        Run second = run();
+        second.src().doWork();
+        assertNotEquals(epoch, second.epoch(), "another file: a new epoch");
+        assertEquals(10, second.drain().size(), "read from the start of the new file");
+        second.src().stop();
+    }
+
+    /**
+     * Rewritten in place (same inode), longer than the pointer, with different first bytes: not the file the pointer was
+     * written for. Detected by the content fingerprint kept in the pointer file.
+     */
+    @Test
+    void aFileRewrittenInPlaceWithOtherContentIsAReplacement() throws Exception {
+        write(1, 3);
+        Run first = run();
+        first.src().doWork();
+        long epoch = first.epoch();
+        processAndStop(first);
+
+        StringBuilder b = new StringBuilder();
+        for (int i = 1; i <= 10; i++) b.append("other-").append(i).append('\n');
+        Files.writeString(data(), b, StandardCharsets.UTF_8, StandardOpenOption.TRUNCATE_EXISTING);
+
+        Run second = run();
+        second.src().doWork();
+        assertNotEquals(epoch, second.epoch(), "other content: a new epoch");
+        List<String> lines = second.drain();
+        assertEquals("other-1", lines.get(0), "read from the start of the rewritten file: " + lines);
+        assertEquals(10, lines.size());
+        second.src().stop();
+    }
+
+    /**
+     * Finding 6: after a reset in the middle of a run, an acknowledgement of an item of the old file must never write
+     * the old file's offset into the new file's pointer. Here the same source is restarted on a replaced file while
+     * five lines of the old file are still unacknowledged, and they are processed after the reset.
+     */
+    @Test
+    void anAcknowledgementOfTheOldFileIsNotCommittedAfterAReset() throws Exception {
+        write(1, 10);
+        OneToOneConcurrentArrayQueue<Object> q = new OneToOneConcurrentArrayQueue<>(256);
+        EventToQueuePublisher<String> p = new EventToQueuePublisher<>("feed");
+        p.addTargetQueue(q, "g/feed/onEvent");
+        AtomicLong dispatched = new AtomicLong();
+        p.bindAcknowledgementPoint(q, dispatched::get);
+        FileEventSource src = new FileEventSource(256);
+        src.setFilename(data().toString());
+        src.setReadStrategy(ReadStrategy.COMMITED);
+        src.setOutput(p);
+        src.onStart();
+        src.start();
+        src.startComplete();
+        src.doWork();
+        dispatched.set(5);
+        src.doWork();
+        assertEquals(offsetAfter(5), pointer());
+        src.stop();
+
+        // replaced by a longer file; the same source restarts (as after a reopen) and resets to 0 under a new epoch
+        Files.delete(data());
+        StringBuilder b = new StringBuilder();
+        for (int i = 1; i <= 20; i++) b.append("new-").append(i).append('\n');
+        Files.writeString(data(), b, StandardCharsets.UTF_8);
+        src.start();
+        src.startComplete();
+        src.doWork();
+        assertEquals(0, pointer(), "reset: nothing of the new file processed yet");
+        dispatched.set(10);          // the old file's lines 6..10 finish processing after the reset
+        src.doWork();
+        assertEquals(0, pointer(), "an acknowledgement of the old file is never committed into the new file's pointer");
+        dispatched.set(11);          // the first line of the new file
+        src.doWork();
+        assertEquals("new-1\n".length(), pointer());
+        src.stop();
+    }
+}
