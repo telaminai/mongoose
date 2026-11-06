@@ -432,15 +432,27 @@ item. Work the delivery publishes to another feed, queue or processor group is n
   (their cycles completed), the item **not** counted as dispatched meanwhile, so not acknowledged. When the policy gives
   up the failure is reported (ERROR), the callback skipped, the callbacks after it run, and the item counts as
   dispatched: the same rule as any failed item (section 3, *A failed item*). Holding the item instead would stall the
-  feed for good on one failing save.
+  feed for good on one failing save. In RECORD mode the first failure of a callback marks its processor's input
+  `Failed` (D4: a retry is a failure, marked and not reproduced), exactly as a failed dispatch does, and that input's
+  ordinary entry is not written; a callback with no known processor marks every target. A replay stops at the mark,
+  saying why (hook review R2, `DeliveryCompletionServerTest.aCallbackThatFailedLiveIsRecorded...`; before, the input
+  was recorded as ordinary and the replay ran the callback once, diverging from the live run without a mark).
+- *Decision kept after R2: an exhausted callback's item is acknowledged.* Fixing R2 changes what the recording says,
+  not the delivery policy. The item still counts as dispatched once the retry policy gives up, so the source commits
+  past it; the failure is visible as WARNING/ERROR reports and as the `Failed` mark in a recording, but **not** in
+  `feed.status` (`lossless` counts publisher drops and refusals only, `drained` and `acknowledged` advance). For a
+  node that saves state in its callback this means a save that keeps failing lets the source position move past
+  state that is not durable: a crash before a later successful save loses that delivery's effect. Completion is
+  therefore not a durability guarantee when saves fail; operators should alert on the ERROR report. A hold policy or a
+  `completionFailures` status field is follow-up 6 (section 12).
 - *Several queues* (a broadcast feed, several groups): each queue's reader completes its own delivery of the item on
   its own thread, with the callbacks registered there; the source acknowledges the item when every queue has counted
   it (section 3), so after every group's callbacks.
 - *Record and replay* (R2, R3): the callbacks run before `afterDispatch`, so anything they read through a recording
   clock belongs to the input's entry. `GroupReplayer` runs a replayed input's callbacks inside the input's replay,
   after `replayTo` and before the delivery is cleared, so a replay makes the same saves at the same point; no retry
-  in a replay (a live retry is a failure, marked and not reproduced, D4), and a callback that throws stops that
-  processor's replay with the reason. An input replayed without a recorded delivery has no completion, as it had none
+  in a replay (a live callback retry is a failure, marked `Failed` in the recording and not reproduced, D4, as above),
+  and a callback that throws in a replay stops that processor's replay with the reason. An input replayed without a recorded delivery has no completion, as it had none
   live.
 - *ProcessingCheckpoint*: a `mark()` taken in a callback does not cover the item being completed (it is not dispatched
   yet), as for a mark taken in a handler (section 5).
@@ -855,6 +867,9 @@ And `setPauseByDefault(true)` in `setEventFlowManager` if PAUSE should be its de
    (a wedged PAUSE subscriber stalls the feed silently today, visible only in `feed.status`).
 5. Fold `BLOCK_WITH_DEADLINE`'s agent-thread downgrade into PAUSE for push sources that can buffer (in-memory: keep in
    its staging queue instead of draining).
+6. Delivery-complete failures in `feed.status` (section 5b): a `completionFailures` count per feed, or an opt-in hold
+   that keeps an item unacknowledged while its completion keeps failing, reported `stalled` with the reason, so a
+   launcher and an operator see durable-state failures, not only the ERROR report.
 
 ## 13. Open questions
 

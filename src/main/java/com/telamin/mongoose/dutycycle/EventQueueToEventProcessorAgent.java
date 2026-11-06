@@ -416,7 +416,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                 // the delivery is complete: its callbacks run now, after every event the processors queued reentrantly,
                 // with the delivery still entered, before the recording and before the item counts as dispatched (so
                 // before the source can acknowledge it); feed-delivery.md 5b
-                if (positionEntered) completeDelivery(event);
+                if (positionEntered && completeDelivery(event, seq, targets)) wholeFailed = true;
 
                 // recorded after the dispatch, outside it: a recording failure is not a dispatch failure, so it is never
                 // retried as one (the processor would handle the input again) and never marks the processor as failing.
@@ -465,9 +465,16 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
      * Run the completion callbacks of the positioned item just dispatched (DeliveryContext.onComplete), in order. A
      * callback that throws is retried alone under the retry policy, the item still not counted as dispatched; once the
      * policy gives up it is reported and skipped, and the callbacks after it run. The processors are never given the
-     * item again for it: their cycles completed.
+     * item again for it: their cycles completed. RECORD: the first failure of a callback marks its processor's input
+     * Failed (D4); true when a callback with no known owner failed, so every target was marked and the normal entries
+     * are not written.
      */
-    private void completeDelivery(Object event) {
+    private boolean completeDelivery(Object event, long seq, java.util.Collection<DataFlow> targets) {
+        // RECORD (hook review R2): a callback that throws is a failure of its processor's input, marked and not
+        // reproduced (D4), as a dispatch failure is: the first failure marks the owner's input Failed (its normal entry
+        // is then not written); a callback with no known owner marks every target, and nothing more is recorded
+        java.util.Set<DataFlow> marked = null;
+        boolean allMarked = false;
         com.telamin.mongoose.service.delivery.DeliveryContext.Completion completion;
         while ((completion = com.telamin.mongoose.service.delivery.DeliveryContext.takeCompletion()) != null) {
             for (int attempt = 1; ; attempt++) {
@@ -477,6 +484,16 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                 } catch (VirtualMachineError fatal) {
                     throw fatal;
                 } catch (Throwable t) {
+                    if (recorder != null && !allMarked) {
+                        DataFlow owner = completion.owner();
+                        if (owner == null || targets == null) {
+                            if (targets != null) recorder.failed(sourceName, delivered(event), t, targets);
+                            allMarked = true;
+                        } else {
+                            if (marked == null) marked = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+                            if (marked.add(owner)) recorder.failed(sourceName, delivered(event), t, owner);
+                        }
+                    }
                     String warnMsg = "delivery completion callback failed: agent=" + name + ", attempt=" + attempt
                             + (completion.owner() == null ? "" : ", processor=" + completion.owner())
                             + ", callback=" + completion.callback() + ", event=" + event + ", error=" + t;
@@ -497,6 +514,7 @@ public class EventQueueToEventProcessorAgent implements EventQueueToEventProcess
                 }
             }
         }
+        return allMarked;
     }
 
     /** What the processor was given: the event a ReplayRecord or BroadcastEvent carries, else the event itself. */

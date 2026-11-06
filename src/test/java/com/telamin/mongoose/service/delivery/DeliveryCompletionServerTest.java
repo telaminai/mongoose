@@ -66,6 +66,8 @@ class DeliveryCompletionServerTest {
         final List<long[]> ackSeenInCallback = new CopyOnWriteArrayList<>();
         volatile MongooseServer server;
         private final Runnable complete = this::complete;
+        /** Live only: the first completion throws once, then the reader's retry succeeds. */
+        boolean failFirstCompletion;
 
         @ServiceRegistered
         public void sink(MessageSink<String> sink, String name) {
@@ -91,6 +93,10 @@ class DeliveryCompletionServerTest {
         }
 
         private void complete() {
+            if (failFirstCompletion) {
+                failFirstCompletion = false;
+                throw new IllegalStateException("DEMO transient completion failure");
+            }
             Delivery d = DeliveryContext.current();
             MongooseServer s = server;
             if (s != null) {
@@ -154,24 +160,40 @@ class DeliveryCompletionServerTest {
     }
 
     private List<List<String>> recordAndReplay(Map<String, EventCodec> journalled) throws Exception {
+        return recordAndReplay(journalled, false, null);
+    }
+
+    private List<List<String>> recordAndReplay(Map<String, EventCodec> journalled, boolean liveCallbackFailsOnce,
+                                               java.util.function.Consumer<GroupReplayer> stopped) throws Exception {
         Path file = tempDir.resolve("lines.txt");
         Files.writeString(file, "a\nb\n", StandardCharsets.UTF_8);
         InMemoryMessageSink sink = new InMemoryMessageSink();
         EventJournal journal = new InMemoryEventJournal();
         InMemoryReplayStore store = new InMemoryReplayStore();
+        Saver liveSaver = new Saver();
+        liveSaver.failFirstCompletion = liveCallbackFailsOnce;
         MongooseServer live = boot(ReplayConfig.record(Set.of(PROCESSOR), journalled, journal, store), file,
-                ReadStrategy.COMMITED, sink, new Saver());
+                ReadStrategy.COMMITED, sink, liveSaver);
         try {
             await(() -> live.feedStatus(FEED).settled() && sink.getMessages().size() == 6, "live run settled");
         } finally {
             live.stop();
         }
+        lastRecording = store.entries(PROCESSOR);
         Path empty = tempDir.resolve("replay.txt");
         Files.writeString(empty, "", StandardCharsets.UTF_8);
         InMemoryMessageSink replaySink = new InMemoryMessageSink();
         MongooseServer replay = boot(ReplayConfig.replay(Set.of(PROCESSOR), journalled, journal, store), empty,
                 ReadStrategy.EARLIEST, replaySink, new Saver());
         try {
+            if (stopped != null) {
+                await(() -> {
+                    GroupReplayer replayer = replay.replayers().get(AGENT);
+                    return replayer != null && replayer.stopped(PROCESSOR) != null;
+                }, "replay stopped");
+                stopped.accept(replay.replayers().get(AGENT));
+                return List.of(strings(sink.getMessages()));
+            }
             await(() -> {
                 GroupReplayer replayer = replay.replayers().get(AGENT);
                 return replayer != null && replayer.complete() && replayer.outputs(PROCESSOR).size() >= 6;
@@ -197,5 +219,39 @@ class DeliveryCompletionServerTest {
         List<List<String>> out = recordAndReplay(Map.of());
         assertEquals(6, out.get(0).size(), out.get(0).toString());
         assertEquals(out.get(0), out.get(1));
+    }
+
+    private List<com.telamin.mongoose.replay.ReplayEntry> lastRecording;
+
+    /**
+     * Hook review R2: a completion callback that throws live and succeeds on the reader's retry. A live retry is a
+     * failure, marked and not reproduced (D4), as for a processor's dispatch: the input is recorded as Failed for the
+     * callback's processor, never as an ordinary input, and a replay stops there saying why. Before, it was recorded as
+     * an ordinary input, so the replay ran the callback once and diverged from the live run without a mark.
+     */
+    private void aCallbackFailureIsRecordedAsAFailure(Map<String, EventCodec> journalled) throws Exception {
+        List<List<String>> out = recordAndReplay(journalled, true, replayer -> {
+            String why = replayer.stopped(PROCESSOR);
+            assertTrue(why.contains("the recorded run failed here") && why.contains("DEMO transient completion failure"),
+                    why);
+        });
+        assertEquals(List.of("apply a", "apply a+", "complete [a, a+] position=2",
+                "apply b", "apply b+", "complete [b, b+] position=4"), out.get(0), "live: the callback's retry succeeded");
+        assertInstanceOf(com.telamin.mongoose.replay.ReplayEntry.Failed.class, lastRecording.get(0),
+                "the input whose callback failed: " + lastRecording);
+        assertTrue(((com.telamin.mongoose.replay.ReplayEntry.Failed) lastRecording.get(0)).description()
+                .contains("DEMO transient completion failure"), lastRecording.toString());
+        assertEquals(2, lastRecording.size(), "a Failed marker instead of the input, then line b: " + lastRecording);
+        assertFalse(lastRecording.get(1) instanceof com.telamin.mongoose.replay.ReplayEntry.Failed, lastRecording.toString());
+    }
+
+    @Test
+    void aCallbackThatFailedLiveIsRecordedAsAFailureIndexed() throws Exception {
+        aCallbackFailureIsRecordedAsAFailure(Map.of(FEED, new JavaSerializationCodec()));
+    }
+
+    @Test
+    void aCallbackThatFailedLiveIsRecordedAsAFailureInline() throws Exception {
+        aCallbackFailureIsRecordedAsAFailure(Map.of());
     }
 }
