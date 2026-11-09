@@ -68,6 +68,12 @@ MongooseServerConfig app = MongooseServerConfig.builder()
 var server = com.telamin.mongoose.MongooseServer.bootServer(app, logRecordListener);
 ```
 
+## No analytics calls
+
+Mongoose makes no analytics or usage-reporting calls. Chronicle Queue, which backs audit capture, reports
+usage to Google Analytics by default; Mongoose leaves its analytics jar off the classpath and sets
+`chronicle.analytics.disable=true` before any queue opens, unless you set that property yourself.
+
 ## Documentation
 
 - [Main documentation site](https://telaminai.github.io/mongoose/)

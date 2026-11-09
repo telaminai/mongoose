@@ -66,6 +66,11 @@ import java.util.logging.Level;
 public final class ChronicleAuditCaptureService implements MongooseAuditCaptureService,
         com.telamin.mongoose.service.audit.AuditCaptureResources {
 
+    static {
+        // This class opens the queues; it can be used without a MongooseServer, so it disables too.
+        ChronicleAnalytics.disableUnlessConfigured();
+    }
+
     private final AuditCaptureConfig config;
     private final MongooseCountersService counters;
     private final Object attachmentLock = new Object();

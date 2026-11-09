@@ -153,12 +153,25 @@
              flag is off the NoOp service is installed and Chronicle is
              never touched at runtime, but the classes need to load.
              Same pattern as HdrHistogram above. Version line matches the
-             connector-chronicle plugin (chronicle-bom 2.27ea5). -->
+             connector-chronicle plugin (chronicle-bom 2.27ea5).
+             chronicle-analytics is excluded: Chronicle Queue sends a usage
+             event to Google Analytics whenever a queue is opened, and only
+             when that jar is on the classpath (chronicle-core's
+             AnalyticsFacade.isEnabled() checks for it). Mongoose applications
+             make no analytics calls; ChronicleAnalytics also sets
+             chronicle.analytics.disable for classpaths that bring the jar
+             back by another route. -->
         <dependency>
             <groupId>net.openhft</groupId>
             <artifactId>chronicle-queue</artifactId>
             <!-- Version supplied by the chronicle-bom dependencyManagement above. -->
             <scope>compile</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>net.openhft</groupId>
+                    <artifactId>chronicle-analytics</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
     </dependencies>
 
@@ -202,6 +215,53 @@
                                 <dependencyConvergence />
                             </rules>
                             <fail>false</fail>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <!-- Chronicle's analytics client must never reach the
+                             runtime classpath (see the chronicle-queue exclusion). -->
+                        <id>no-chronicle-analytics</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <bannedDependencies>
+                                    <excludes>
+                                        <exclude>net.openhft:chronicle-analytics</exclude>
+                                    </excludes>
+                                    <searchTransitive>true</searchTransitive>
+                                </bannedDependencies>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <!-- ChronicleAnalyticsTest runs a child JVM with Chronicle's analytics jar
+                 added back, to prove chronicle.analytics.disable alone keeps the client
+                 mute. The jar is copied aside rather than declared, so it is on no
+                 Maven classpath and the no-chronicle-analytics rule stays meaningful. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.7.0</version>
+                <executions>
+                    <execution>
+                        <id>chronicle-analytics-for-tests</id>
+                        <phase>generate-test-resources</phase>
+                        <goals>
+                            <goal>copy</goal>
+                        </goals>
+                        <configuration>
+                            <artifactItems>
+                                <artifactItem>
+                                    <groupId>net.openhft</groupId>
+                                    <artifactId>chronicle-analytics</artifactId>
+                                    <!-- Version supplied by the chronicle-bom dependencyManagement. -->
+                                    <destFileName>chronicle-analytics.jar</destFileName>
+                                </artifactItem>
+                            </artifactItems>
+                            <outputDirectory>${project.build.directory}/chronicle-analytics</outputDirectory>
                         </configuration>
                     </execution>
                 </executions>
