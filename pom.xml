@@ -88,7 +88,7 @@
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
-            <version>1.18.42</version>
+            <version>1.18.48</version>
             <scope>provided</scope>
         </dependency>
         <!-- Disclosure regression exercises the public API; resolve it on clean CI instead of assuming ~/.m2. -->
@@ -218,7 +218,7 @@
                         <path>
                             <groupId>org.projectlombok</groupId>
                             <artifactId>lombok</artifactId>
-                            <version>1.18.42</version>
+                            <version>1.18.48</version>
                         </path>
                     </annotationProcessorPaths>
                     <compilerArgs>
@@ -248,7 +248,7 @@
                                 <path>
                                     <groupId>org.projectlombok</groupId>
                                     <artifactId>lombok</artifactId>
-                                    <version>1.18.42</version>
+                                    <version>1.18.48</version>
                                 </path>
                             </annotationProcessorPaths>
                         </configuration>
