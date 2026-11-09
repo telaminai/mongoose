@@ -85,3 +85,17 @@ on the stable metadata commit. If runtime code changes, requalify that change be
 
 Publish core first, then plugins after the public core resolves. Create ordinary GitHub releases
 for stable versions. Client migration remains independently gated by its checklist.
+
+## Mongoose 1.1.4: Repsy-only publication
+
+The owner approved Repsy-only publication for 1.1.4. Do not run the legacy `release` profile or the automatic
+`release` branch workflow: those publish to Central. After the Java 21 `mvn -B verify` gate passes, publish the
+qualified checkout locally with the configured `repsy-fluxtion` Maven server:
+
+```sh
+mvn -B -DskipTests -DaltDeploymentRepository=repsy-fluxtion::https://repo.repsy.io/mvn/fluxtion/fluxtion-public deploy
+```
+
+Never print Maven settings or credentials. The qualified-tag workflow is now explicitly dispatched and targets
+Repsy too; do not dispatch it after a successful local publication. Push immutable version tags only after the
+local gate and verify the publicly downloaded POM and JAR. No Maven Central publication is part of this release.

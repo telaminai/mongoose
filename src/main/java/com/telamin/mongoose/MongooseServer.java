@@ -118,6 +118,11 @@ import java.util.function.Supplier;
 @Log
 public class MongooseServer implements MongooseServerController {
 
+    static {
+        // Before any Chronicle queue is opened: no usage analytics from Chronicle (see ChronicleAnalytics).
+        com.telamin.mongoose.internal.ChronicleAnalytics.disableUnlessConfigured();
+    }
+
     public static final String CONFIG_FILE_PROPERTY = "mongooseServer.config.file";
     private static LogRecordListener logRecordListener = logRecord -> {log.info(logRecord.toString());};
     private final MongooseServerConfig mongooseServerConfig;

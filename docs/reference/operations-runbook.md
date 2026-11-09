@@ -162,6 +162,9 @@ delivering queued events.
 - Secrets: inject via env/secret manager; avoid hardcoding in config.
 - Transport: use TLS for external I/O; validate certificates.
 - Access: restrict admin command surface; audit usage.
+- Outbound calls: Mongoose makes no analytics calls. Chronicle Queue's usage analytics is off: the
+  `chronicle-analytics` jar is not on Mongoose's classpath, and `chronicle.analytics.disable=true` is set
+  before any queue opens unless you set it yourself.
 
 ## Troubleshooting quick reference
 - "Handlers not receiving events": confirm feed names and subscription timing; see Troubleshooting and FAQ.
