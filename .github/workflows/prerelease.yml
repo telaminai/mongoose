@@ -11,9 +11,6 @@ on:
         description: Full qualified commit SHA; must match the tag
         required: true
         type: string
-  push:
-    tags:
-      - 'v[0-9]*'
 
 permissions:
   contents: read
@@ -49,36 +46,20 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           java-version: '21'
-          distribution: 'adopt'
-          server-id: central
+          distribution: 'temurin'
+          server-id: repsy-fluxtion
           server-username: MAVEN_USERNAME
-          server-password: MAVEN_CENTRAL_TOKEN
-          gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
-          gpg-passphrase: MAVEN_GPG_PASSPHRASE
-      - name: Use Maven compatible with the tagged Central publisher
-        # Central publisher 0.10.0 supports Maven 3.9.x. Maven 3.10 adds local repository
-        # bookkeeping to its staged bundle, rejected by Central as content without a POM.
-        run: |
-          set -euo pipefail
-          base=https://archive.apache.org/dist/maven/maven-3/3.9.11/binaries
-          archive=apache-maven-3.9.11-bin.tar.gz
-          curl --fail --location --retry 3 "$base/$archive" -o "$RUNNER_TEMP/$archive"
-          curl --fail --location --retry 3 "$base/$archive.sha512" -o "$RUNNER_TEMP/$archive.sha512"
-          cd "$RUNNER_TEMP"
-          printf '%s  %s\n' "$(cat "$archive.sha512")" "$archive" | sha512sum --check --strict
-          tar -xzf "$archive"
-          echo "$RUNNER_TEMP/apache-maven-3.9.11/bin" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/apache-maven-3.9.11/bin/mvn" --version
-      - name: Publish the tagged version to Central
-        run: mvn -B -ntp -Dmaven.test.redirectTestOutputToFile=true -P release clean deploy
+          server-password: MAVEN_PASSWORD
+      # Explicit dispatch only: local releases must not also publish from a tag push.
+      # Do not enable the legacy Central release profile for Repsy publication.
+      - name: Publish the tagged version to Repsy
+        run: mvn -B -ntp -Dmaven.test.redirectTestOutputToFile=true -DaltDeploymentRepository=repsy-fluxtion::https://repo.repsy.io/mvn/fluxtion/fluxtion-public clean deploy
         env:
-          MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
-          MAVEN_CENTRAL_TOKEN: ${{ secrets.OSSRH_TOKEN }}
-          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+          MAVEN_USERNAME: ${{ secrets.REPSY_USER }}
+          MAVEN_PASSWORD: ${{ secrets.REPSY_PASSWORD }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: prerelease-test-reports
           path: |
             target/surefire-reports/
-            target/central-publishing/*.zip
