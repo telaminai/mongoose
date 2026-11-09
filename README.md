@@ -17,6 +17,15 @@ can focus on business logic.
 - Operational control: Admin commands, scheduling, logging/audit support, and dynamic registration make operations
   simpler.
 
+## Run a Fluxtion application on Mongoose
+
+Mongoose hosts [Fluxtion](https://github.com/telaminai/fluxtion) processors: the processor holds the logic, Mongoose
+supplies the feeds, sinks, threads and admin. To start a Fluxtion application on Mongoose, download the
+[Java-authoring starter](https://fluxtion-playground.dev/start/scaffold?template=java-authoring), a Maven project with
+the graph written in plain Java. Its first build generates the processor on the hosted Fluxtion compiler under your
+compiler sign-in ([how to sign in](https://telaminai.github.io/fluxtion/home/quickstart-aot/#1-sign-in-to-the-compiler)).
+Mongoose itself needs only `fluxtion-runtime` and no sign-in.
+
 ## Minimal bootstrap from code (using EventProcessorConfig):
 
 ```java
