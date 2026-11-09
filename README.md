@@ -69,5 +69,7 @@ var server = com.telamin.mongoose.MongooseServer.bootServer(app, logRecordListen
 
 ## License
 
-AGPL-3.0-only. See LICENSE for details.
+Mongoose is dual-licensed: under the GNU Affero General Public License v3.0 (AGPL-3.0-only, see
+[LICENSE](./LICENSE)), or under a commercial licence from Telamin, which lets you use it on Telamin's terms
+instead of the AGPL's. Commercial licences and support: see [telamin.com/licensing](https://telamin.com/licensing/).
 
